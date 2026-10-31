@@ -1220,6 +1220,19 @@ void ESPectrum::setup() {
     }
   }
 
+  // The PROFI IDE decode exists on Profi hardware only (a stale pick from another machine).
+  if (Config::arch != A_PROFI && Config::ide_scheme == IDE::PROFI) {
+    Debug::log("setup: PROFI IDE scheme off (not a Profi)");
+    Config::ide_scheme = IDE::OFF;
+  }
+  // Profi / Karabas: boot-time twin of the MachineSwitch rule. A persisted esxDOS came up
+  // here and DivMMC's automap took the machine down at the boot ROM (and its #EB decode
+  // sits ahead of the Profi IDE high-byte port); the Devices menu hides the row on Profi.
+  if (Config::arch == A_PROFI && Config::esxdos) {
+    Debug::log("setup: Profi - DivMMC off");
+    Config::esxdos = 0;
+  }
+
   // ATM-Turbo: boot-time twin of the MachineSwitch / CPU::reset rules — DivMMC and MB-02+
   // would page over a BIOS that runs from all four windows, and the IDE scheme follows
   // the board (the 2+ has its own interface, the ATM1 none). Before DivMMC::init reads

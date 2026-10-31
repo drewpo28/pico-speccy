@@ -53,7 +53,34 @@ public:
     static void reset();    // reset ATA register/transfer state
     static void close();    // close image files, free buffers
 
-    static bool present();  // true if at least one image is open
+    static bool present();  // true if at least one slot has a medium (image or raw window)
+
+    // ── Raw SD slot ───────────────────────────────────────────────────────────
+    // An IDE slot can be served straight off the SD card instead of from an .hdf:
+    // the guest's LBA 0 is Config::ide_raw_lba[slot] on the card and the drive is
+    // the window of Config::ide_raw_len[slot] sectors after it. Sectors go through
+    // fatfs/diskio.h on the FatFs drive that holds the root volume, exactly as
+    // DivSD serves esxDOS (DivMMC.cpp), so no FAT, no file, and the whole card
+    // visible at `raw_lba` granularity. Writes exist only in mode 2 — a raw write
+    // lands in the card's own sectors, so a wrong window is destructive — and every
+    // one of them notifies FatFs (ff_raw_write_notify), or its cached FAT/dir would
+    // serve stale data afterwards.
+    // `mounted(d)` is the "there is a device here" test; file_open[d] alone no
+    // longer answers it.
+    static bool     isRaw(int slot);
+    static bool     rawReadOnly(int slot);   // mode 1: every write is refused
+    static uint32_t rawStart(int slot);      // card sector served as the guest's LBA 0
+    static uint32_t rawSectors(int slot);    // window length in sectors (real, after clamping)
+    static uint8_t  rawDevice();             // FatFs drive of the medium (0 = SD, 1 = USB root)
+
+    // The four MBR entries of sector 0 of the card, for the menu's "from MBR"
+    // picker (speccy/devices/storage/IdeMbr.h does the decoding). Returns how many
+    // name a usable volume; 0 means no MBR there — a super-floppy card has FAT at
+    // LBA 0, and then the window's start and length have to be typed in; -1 means
+    // the card could not be read at all. `out[i].card` is the card's size in
+    // sectors, so a caller can show a length as "the rest of the card".
+    struct MbrPart { uint8_t type; uint32_t lba; uint32_t sectors; uint32_t card; };
+    static int mbrParts(MbrPart out[4]);
 
     // True if the slot holds an ATAPI CD-ROM (.iso). Used by the OSD menu/info.
     static bool isCD(int slot);
@@ -112,6 +139,8 @@ public:
 
 private:
     static bool open_image(int slot, const char* path);
+    static bool openRaw(int slot);      // Config::ide_raw[slot] -> raw[]/raw_start[]
+    static bool mounted(int d);         // file_open[d] || raw[d]
     static uint32_t lba();
     static int  drive();
     static bool lbaBeyondEnd(int d, uint32_t l);   // past C*H*S -> a real drive errors
@@ -139,6 +168,13 @@ private:
     // SRAM when disabled.
     static FIL* file;
     static bool file_open[2];
+
+    // Raw-SD slots: the card IS the medium (see the public accessors above). One
+    // flag pair per slot, and the window in CARD sectors.
+    static bool     raw[2];
+    static bool     raw_ro[2];
+    static uint32_t raw_start[2];    // card LBA of the guest's LBA 0
+    static uint32_t raw_count[2];    // window length in sectors, after clamping
 
     // Per-slot device type + post-reset signature validity (master/slave).
     static bool is_atapi[2];   // slot is an ATAPI CD-ROM (.iso)

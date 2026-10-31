@@ -204,6 +204,9 @@ bool     Config::zcontroller = true;
 uint8_t  Config::ide_scheme = 0;
 string   Config::ide_image[2] = {"", ""};
 uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
+uint8_t  Config::ide_raw[2] = {0, 0};
+uint32_t Config::ide_raw_lba[2] = {0, 0};
+uint32_t Config::ide_raw_len[2] = {0, 0};
 uint8_t  Config::zifi_enabled = 0;
 uint8_t  Config::zifi_tx_pin = 0xFE; // 0xFE = board default (BoardPins)
 uint8_t  Config::zifi_rx_pin = 0xFE;
@@ -1631,6 +1634,19 @@ void Config::load() {
             if (scanUints(chs.c_str(), '/', v, 3) == 3) {
                 ide_chs[s][0]=v[0]; ide_chs[s][1]=v[1]; ide_chs[s][2]=v[2];
             }
+            // Raw-SD window: mode plus "start/length" in CARD sectors.
+            snprintf(k, sizeof(k), "ide_raw%d", s);
+            ide_raw[s] = 0;
+            nvs_get_u8(k, ide_raw[s], sts);
+            if (ide_raw[s] > 2) ide_raw[s] = 0;
+            snprintf(k, sizeof(k), "ide_rwin%d", s);
+            string win; nvs_get_str(k, win, sts);
+            unsigned w[2];   // start / length
+            if (scanUints(win.c_str(), '/', w, 2) == 2) {
+                ide_raw_lba[s] = w[0]; ide_raw_len[s] = w[1];
+            } else {
+                ide_raw_lba[s] = 0; ide_raw_len[s] = 0;
+            }
         }
         nvs_get_u8("mb02", mb02, sts);
         for (int i = 0; i < 4; i++) {
@@ -2092,6 +2108,11 @@ void Config::writeKeys(NvsWriter& buf) {
         char k[10]; snprintf(k, sizeof(k), "ide_chs%d", s);
         char v[20]; snprintf(v, sizeof(v), "%u/%u/%u", ide_chs[s][0], ide_chs[s][1], ide_chs[s][2]);
         nvs_set_str(buf, k, v);
+        snprintf(k, sizeof(k), "ide_raw%d", s);
+        nvs_set_u8(buf, k, ide_raw[s]);
+        snprintf(k, sizeof(k), "ide_rwin%d", s);
+        char w[32]; snprintf(w, sizeof(w), "%u/%u", (unsigned)ide_raw_lba[s], (unsigned)ide_raw_len[s]);
+        nvs_set_str(buf, k, w);
     }
     nvs_set_u8(buf,"mb02", mb02);
     for (int i = 0; i < 4; i++) {
@@ -2410,6 +2431,7 @@ static const char* const kSnapRebootKeys[] = {
     "esxdos", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
     "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
+    "ide_raw0", "ide_raw1", "ide_rwin0", "ide_rwin1",
     "dckcart", "alfcart", "alfCartBanks", "MEM_PG_CNT", "tsconf_vdac2",
     "gs_enabled", "gs_ram_size", "gs_clock", "ngs_clock",
 };
@@ -2449,6 +2471,8 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "rtc_enabled", "CMOS + NVRAM" },  { "ide_scheme", "IDE interface" },
         { "ide_img0", "IDE image" },        { "ide_img1", "IDE image" },
         { "ide_chs0", "IDE geometry" },     { "ide_chs1", "IDE geometry" },
+        { "ide_raw0", "IDE raw SD" },        { "ide_raw1", "IDE raw SD" },
+        { "ide_rwin0", "IDE raw window" },   { "ide_rwin1", "IDE raw window" },
         { "dckcart", "DOCK cartridge" },    { "alfcart", "ALF cartridge" },
         { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
         { "MEM_PG_CNT", "Murmuzavr RAM" },  { "tsconf_vdac2", "VDAC2 (FT812)" },

@@ -11664,6 +11664,66 @@ phantom controller with no disk behind it (the owner's rule).
   `SMUC card` row says which of the two halves is live, which is the quick check
   before suspecting the setting was lost.
 
+## IDE slot served off the real SD card (raw sector window), 2026-11-01, hw: reads work, writes owed
+
+"IDE as an emulation of the real SD card, the way DivSD does it for esxDOS." An IDE
+slot can be backed by the card's OWN sectors instead of an `.hdf`: the guest's LBA 0 is
+`Config::ide_raw_lba[slot]` and the drive is `Config::ide_raw_len[slot]` sectors after
+it. `src/speccy/devices/storage/IdeMbr.h` is a pure MBR decoder (host test
+`tools/ide_mbr_test.cpp`, 23 checks).
+
+- **`Config::ide_raw[2]` is the MODE and it is the write switch**: 0 = the slot uses
+  its image (off), **1 = read-only (the only value anything ever sets by itself)**,
+  2 = writable. Owner's rule, and the reason the default is 1-and-off: a raw write
+  lands in the card's own sectors PAST FatFs, so a wrong window destroys the card's
+  filesystem. Every IDE scheme (NEMO/PROFI/SMUC/IDEDOS/divIDE/ATM/NEMO-on-Evo) can use
+  a raw slot — the window is a property of the SLOT, not of the controller.
+- **The window is the safety, and it is clamped twice**: `IDE::openRaw` refuses a start
+  past the end of the card, clamps `len` to what is left, and clamps it to the CHS
+  ceiling **65535 x 16 x 63 = 66 047 280 sectors** (Profi's CHS-compat mode is
+  H=16/S=16, i.e. a quarter of that, so the ceiling is computed per scheme). The clamp
+  is not cosmetic: every guest here SIZES a drive by walking cylinders until a read
+  fails, so a longer window would be truncated by the GUEST at a place we did not pick.
+  `size_bytes` is saturated at 4 GB for the same reason (it is only the "same disk"
+  key for snapshots; the menu and IDENTIFY work from the geometry).
+- **Reads go through `disk_read`, writes through `disk_write` + `ff_raw_write_notify`**
+  on the FatFs drive that holds the root volume (`rawDevice()` = `FileUtils::usbRoot ? 1
+  : 0`, DivSD's rule). The notify is not optional: the card may be the volume this
+  firmware's own files live on, and FatFs caches FAT/directory sectors — DivSD does
+  exactly this. A card error is reported as IDNF, **never served as 0xFF**, because a
+  guest reads until a failure to size the disk.
+- **A read-only slot refuses WRITE SECTOR (0x30/0x31) in `execute_command`**, with
+  ABRT and no data phase, before anything is read or written. Silently dropping the
+  512 bytes would hand the guest a "completed" write that changed nothing, and
+  IDEDOS/CP/M cache their idea of the disk from those writes.
+- **One medium per drive**: turning the window on clears the slot's image
+  (`Config::ide_image`), mounting an image clears the mode (`DiskSlots::slotMount`),
+  F8 eject clears both (`slotEject`) — `IDE::init` prefers the window, so leaving
+  either behind would keep serving the card after the user ejected the drive.
+- **`mounted(d)` replaced `file_open[d]`** as the "is there a device here" test
+  (`present()`, `read_sector`, `write_sector_done`, `preload_sector`, `reset_signature`,
+  `write8` case 6, `init`'s geometry block, `snapSave`/`snapLoad`). `setupFastSeek` and
+  the ProfiHiDD header synthesis stay FILE-only: a raw slot has no cluster chain and no
+  `f_size`.
+- **Snapshots**: the raw bits ride in the spare high bits of `snapSave`'s open-mask byte
+  (`0x10`/`0x20`), so `IDE_SNAP_VER` stays 1 and an older `.pss` simply has 0 there —
+  refused on a raw slot, which is the safe answer (an image file and a card window can
+  report the same size and are different disks). `ide_raw0/1` and `ide_rwin0/1` are
+  class-2 keys in Config's list, like `ide_img0/1`.
+- **Menu**: Devices > IDE / HDD > **SD card (raw)** — per slot a `source` action that
+  CYCLES off -> read-only -> write (Write is the third press, not a value the cursor can
+  Tab onto, and it toasts "writes go to the card!"), a `window` action typing
+  `start/len` (0/0 = the whole card; empty entry changes nothing) and a **`from MBR`**
+  action that lists the card's four partition entries and fills the window with the
+  chosen one — the picker only fills the typed window, it is not a second medium type.
+  The window rows grey out while the slot's source is off. The slots level shows
+  `hd0 master  SD card` with a `RO` badge and the geometry; F2 edits the window of a
+  raw slot and the C/H/S of an image slot.
+- Not done on purpose: no `.pss` `liveMedia()` line for a raw slot (there is no file to
+  name, and that list is re-opened by path), no MBR *writing*, no partition-table
+  parsing beyond the four primary entries (logical partitions inside an extended
+  container are skipped by `ide_mbr::parse`).
+
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
 `MEM_PG_CNT` (Machine → Murmuzavr, 64/256/512/1024/2048 pages = Off/4/8/16/32 MB,
@@ -16897,6 +16957,27 @@ plus the staged value (nodeValueLabel looks it up there). Decisions: Next shows 
 disk/interface rows (DivSD forced); Byte 48K no Beta; CMOS row hidden on 48K/128K arch
 (Quorum 64 keeps it) and EP. `slotNodeFor` searches the new arrays by builder. Hw owed: disk hot keys and
 the F5 "which slot" path on each machine, a machine switch from inside the session.
+
+- **Review fixes the same day (host-checked; hw on `debug/DVp2w-profi-ide3-1.1.1`, owner: "работает", not itemised, raw WRITES not tested yet):**
+  `openRaw`/`mbrParts` passed a `DWORD` to `GET_SECTOR_COUNT`, which stores a full `LBA_t`
+  (FF_LBA64 = 8 B): stack smash on the host and through the USB driver, harmless only on the SD
+  driver. The image path now survives the window: turning raw on no longer clears
+  `Config::ide_image` (`IDE::init` prefers the window, cycling to off brings the image back, a
+  `.pss` does not list it for a raw slot), and the two OSDMain image writers + create clear
+  `ide_raw`. **esxDOS on Profi had no boot backstop or menu constraint**, only MachineSwitch: a
+  persisted `esxdos` gave a black screen at the boot ROM, and its `#EB` decode sits ahead of the
+  Profi IDE high-byte port; the Devices menu hides the row on Profi, so it could not be turned
+  off. `ESPectrum::setup` + `resolveConstraints` now force it off. The PROFI scheme is listed on
+  Profi/Karabas only (its decode is `&& PROFI`). Host, CP/M from `CP_M_2GB_CF.hdd`: ROMain reaches
+  the NC panel by image AND by raw window, PQ-DOS finds HDD0, the original ROM boots `cpm10mb.hdd`,
+  identical to a HEAD build. So no host reproduction of a dead Profi IDE: the hw report stays open.
+  A raw window over a card that is not a Profi disk has no HiDD header, and one is synthesized
+  only over an all-zero LBA 256, so the BIOS correctly finds no disk there.
+  Mode 2 (write) asks a default-No confirmation first; declining stays on read-only.
+  **The scheme now follows the machine** (owner's reading of the report): PROFI on a non-Profi is
+  forced Off (resolveConstraints, MachineSwitch, setup, CPU::reset; images stay in Config), and
+  ENTERING Profi turns a leftover scheme, or Off with a medium in a slot, into PROFI (an edge:
+  NEMO picked on Profi afterwards stays, and so does a NEMO persisted across a reboot).
 
 ## Next: Layer 2 640x256x4 goes through the 640 pair frame — SymbOS ZNX 4.0 (2026-10-20, hw-confirmed DVp2 on `debug/DVp2-next-l2hi640-1.0.10`: owner "текст читаемый, картинка хорошая")
 

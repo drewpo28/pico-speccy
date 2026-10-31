@@ -9,6 +9,8 @@
 #include "app/Buffer.h"
 #include "app/TryAlloc.h"
 #include "fs/FileUtils.h"
+#include "fatfs/diskio.h"              // raw-SD slots: disk_read/write/ioctl
+#include "speccy/devices/storage/IdeMbr.h"
 
 // IDE_PORT_TRACE is a LEVEL, not a flag — the diagnostic being too loud has cost this
 // port two debugging rounds already (see CLAUDE.md):
@@ -31,6 +33,10 @@ uint8_t IDE::scheme = IDE::OFF;
 
 FIL* IDE::file = nullptr;
 bool IDE::file_open[2] = { false, false };
+bool IDE::raw[2] = { false, false };
+bool IDE::raw_ro[2] = { false, false };
+uint32_t IDE::raw_start[2] = { 0, 0 };
+uint32_t IDE::raw_count[2] = { 0, 0 };
 bool IDE::is_atapi[2]  = { false, false };
 bool IDE::sig_valid[2] = { false, false };
 bool IDE::profi_hidd_slot[2] = { false, false };
@@ -399,9 +405,13 @@ void IDE::init() {
     }
 
     for (int d = 0; d < 2; d++) {
-        open_image(d, Config::ide_image[d].c_str());
+        // A raw-SD slot has no image: the medium is the card itself (see openRaw).
+        raw[d] = raw_ro[d] = false;
+        raw_start[d] = raw_count[d] = 0;
+        if (Config::ide_raw[d]) openRaw(d);
+        else                    open_image(d, Config::ide_image[d].c_str());
         // Per-slot geometry override (Config::ide_chs); 0,0,0 = keep auto-detect.
-        if (file_open[d]) {
+        if (mounted(d)) {
             uint16_t c = Config::ide_chs[d][0], h = Config::ide_chs[d][1], s = Config::ide_chs[d][2];
             if (c && h && s) {
                 if (profi_hidd_slot[d]) {
@@ -430,7 +440,7 @@ void IDE::init() {
             // 3884/16/16 = 485 MB for a 2 GB disk and breaking CP/M detection).
             // ROMain also addresses purely by LBA, so it only needs the geometry
             // reported correctly, not forced.
-            if (scheme == PROFI && !profi_hidd_slot[d]) {
+            if (scheme == PROFI && !profi_hidd_slot[d] && !raw[d]) {
                 heads[d] = 16; sectors[d] = 16;
                 if (c) cylinders[d] = c;  // keep user cylinder count if specified
                 Debug::log("IDE hd%d: Profi forced H=16 S=16 C=%u for CHS compat",
@@ -439,13 +449,16 @@ void IDE::init() {
         }
     }
 
+    // A raw-SD slot has no FatFs file, so no cluster link map: its sectors are
+    // already a single disk_read each.
     for (int d = 0; d < 2; d++)
         if (file_open[d]) setupFastSeek(d);
 
     // A scheme with no disk on it reads as OFF to the port decoders (see IDE.h).
     portScheme = present() ? scheme : OFF;
-    Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d)%s",
-               scheme, file_open[0], file_open[1],
+    Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d%s%s)%s",
+               scheme, file_open[0] || raw[0], file_open[1] || raw[1],
+               raw[0] ? " raw0" : "", raw[1] ? " raw1" : "",
                portScheme == OFF && scheme != OFF ? " - no image, ports off" : "");
     reset();
 }
@@ -458,7 +471,144 @@ uint32_t IDE::geomLBA(int slot) {
     return (uint32_t)cylinders[slot]*heads[slot]*sectors[slot];
 }
 uint32_t IDE::sizeBytes(int slot) { return (slot>=0&&slot<2)?size_bytes[slot]:0; }
-bool IDE::isCD(int slot) { return (slot>=0&&slot<2) && file_open[slot] && is_atapi[slot]; }
+bool IDE::isCD(int slot) { return (slot>=0&&slot<2) && mounted(slot) && is_atapi[slot];
+}
+
+// ============================================================
+// Raw-SD slots
+// ============================================================
+
+// The FatFs drive the medium sits on: the card, or the USB stick when it is the
+// root volume (no card at boot). Same rule as DivSD's raw_pdrv().
+uint8_t IDE::rawDevice() { return FileUtils::usbRoot ? 1 : 0; }
+
+bool IDE::mounted(int d) { return (d >= 0 && d < 2) && (file_open[d] || raw[d]); }
+bool IDE::isRaw(int slot) { return (slot>=0&&slot<2) && raw[slot]; }
+bool IDE::rawReadOnly(int slot) { return (slot>=0&&slot<2) && raw[slot] && raw_ro[slot]; }
+uint32_t IDE::rawStart(int slot) { return (slot>=0&&slot<2)?raw_start[slot]:0; }
+uint32_t IDE::rawSectors(int slot) { return (slot>=0&&slot<2)?raw_count[slot]:0; }
+
+// A raw slot: the window Config asks for, clamped to what the geometry can name.
+//
+// The CHS ceiling is not cosmetic. An ATA drive reports C<=65535, H<=16, S<=63,
+// and every guest here SIZES a disk by walking its cylinders until a read fails
+// (IDEDOS, NEMO, +3e all do), so a window longer than C*H*S would simply be
+// truncated by the guest at a place we did not choose. Clamping here means the
+// menu can say what the drive really is, and IDENTIFY never lies about it.
+// Profi's own CHS compatibility mode is H=16/S=16 (init()), i.e. four times
+// smaller — the reason the ceiling is computed per scheme.
+bool IDE::openRaw(int slot) {
+    const uint8_t drv = rawDevice();
+    LBA_t card = 0;   // LBA_t, not DWORD: GET_SECTOR_COUNT stores a full LBA_t (FF_LBA64)
+    if (disk_ioctl(drv, GET_SECTOR_COUNT, &card) != RES_OK || card == 0) {
+        Debug::log("IDE hd%d: raw SD - no card on drv%u", slot, drv);
+        return false;
+    }
+    const uint32_t start = Config::ide_raw_lba[slot];
+    if (start >= card) {
+        Debug::log("IDE hd%d: raw SD - start %u past the card (%u sectors)",
+                   slot, (unsigned)start, (unsigned)card);
+        return false;
+    }
+    const uint32_t avail = (uint32_t)card - start;
+
+    // --- Profi CP/M: the drive IS the volume, and its geometry comes from the HiDD
+    // header at cylinder 1 — exactly as it does for an image (open_image): the BIOS
+    // reads that sector before it will touch the disk at all, and ROMain addresses
+    // purely by LBA so it has to be told the H/S of the disk it is on. The probe runs
+    // BEFORE the CHS ceiling below because that ceiling depends on S (a Romain volume
+    // is H=16 S=63, four times the Dos5 reach).
+    // A window over anything else has no header: the geometry then stays at the
+    // Dos5-compatible H=16 S=16 the probe itself uses, and the read path synthesizes
+    // a header for the guest (read_sector) — without that the Profi BIOS reports no
+    // HDD at all, which is what a card-backed slot looked like.
+    // Two header LBAs, as open_image tries them. The shared 2 KB ATA buffer is the
+    // scratch: no heap and no 512-byte local in the menu chain.
+    uint16_t gh = 16;
+    uint16_t gs = (scheme == PROFI) ? 16 : 63;
+    uint16_t hdr_c = 0;
+    uint32_t hdr_lba = 0;
+    if (scheme == PROFI && buffer) {
+        static const uint32_t hid_lbas[2] = { 256, 1008 };
+        for (int k = 0; k < 2 && !hdr_c; k++) {
+            const uint32_t hl = hid_lbas[k];
+            if (hl >= avail) continue;
+            if (disk_read(drv, buffer, (LBA_t)(start + hl), 1) != RES_OK) continue;
+            if (memcmp(buffer + 16, "rPfoHiDD", 8) != 0) continue;
+            uint16_t h = ((uint16_t)buffer[0] << 8) | buffer[1];   // big-endian in header
+            uint16_t s = ((uint16_t)buffer[2] << 8) | buffer[3];
+            uint32_t c = ((uint16_t)buffer[4] << 8) | buffer[5];
+            if (h < 1 || h > 16 || s < 1 || s > 63) {               // sane geometry only
+                h = 16; s = (hl == 256) ? 16 : 63;
+            }
+            gh = h; gs = s; hdr_c = (uint16_t)c; hdr_lba = hl;
+        }
+    }
+
+    const uint32_t cap = 65535u * gh * gs;
+    uint32_t len = Config::ide_raw_len[slot];
+    bool clipped = false;
+    if (len == 0 || len > avail) { len = avail; clipped = (Config::ide_raw_len[slot] != 0); }
+    if (len > cap) { len = cap; clipped = true; }
+
+    raw[slot] = true;
+    raw_ro[slot] = (Config::ide_raw[slot] == 1);
+    raw_start[slot] = start;
+    raw_count[slot] = len;
+    data_offset[slot] = 0;
+    half_sector[slot] = false;
+    is_atapi[slot] = false;
+    profi_hidd_slot[slot] = false;
+    heads[slot] = gh;
+    sectors[slot] = gs;
+
+    if (hdr_c) {
+        // Never claim more cylinders than the window really holds: the header may
+        // describe the drive the volume was FORMATTED on, not the window picked here.
+        uint32_t maxC = len / ((uint32_t)gh * gs);
+        if (maxC == 0) maxC = 1;
+        if (hdr_c > maxC) hdr_c = (uint16_t)maxC;
+        cylinders[slot] = hdr_c;
+        profi_hidd_slot[slot] = true;
+        Debug::log("IDE hd%d: raw SD HiDD (cyl1=LBA%u) H=%u S=%u C=%u",
+                   slot, (unsigned)hdr_lba, gh, gs, cylinders[slot]);
+    } else {
+        cylinders[slot] = (uint16_t)(len / ((uint32_t)gh * gs));
+        if (!cylinders[slot]) cylinders[slot] = 1;
+    }
+    // 33.8 GB does not fit a uint32 count of bytes; the menu and IDENTIFY work
+    // from the geometry, this is only the "is it the same disk" key.
+    size_bytes[slot] = (len > 0xFFFFFFFFu / 512u) ? 0xFFFFFFFFu : len * 512u;
+    memset(identity[slot], 0, 106);
+    Debug::log("IDE hd%d: raw SD %s, sectors %u+%u/%u -> %u/%u/%u%s",
+               slot, raw_ro[slot] ? "read-only" : "writable",
+               (unsigned)start, (unsigned)len, (unsigned)card,
+               cylinders[slot], heads[slot], sectors[slot],
+               clipped ? " (window clamped)" : "");
+    return true;
+}
+
+int IDE::mbrParts(MbrPart out[4]) {
+    for (int i = 0; i < 4; i++) out[i] = MbrPart{0, 0, 0, 0};
+    const uint8_t drv = rawDevice();
+    LBA_t card = 0;   // see openRaw
+    disk_ioctl(drv, GET_SECTOR_COUNT, &card);
+    // 512 B for one menu action: the heap, not .bss — the same rule as the FIL in
+    // createImage, and this one is called from the same deep menu chain.
+    ScopedHeap sh(512);
+    if (!sh) return -1;
+    uint8_t* sec = sh.as<uint8_t>();
+    if (disk_read(drv, sec, 0, 1) != RES_OK) return -1;
+    ide_mbr::Part p[ide_mbr::MAX_PARTS];
+    const int n = ide_mbr::parse(sec, (uint32_t)card, p);
+    for (int i = 0; i < 4; i++) {
+        out[i].type = p[i].type;
+        out[i].lba = p[i].lba;
+        out[i].sectors = p[i].sectors;
+        out[i].card = (uint32_t)card;
+    }
+    return n;
+}
 
 bool IDE::createImage(const char* path, uint32_t megabytes,
                       void (*progress)(uint32_t, uint32_t)) {
@@ -507,7 +657,8 @@ bool IDE::createImage(const char* path, uint32_t megabytes,
 //   ATA HDD (ATA-3): count=sec=err=1, cyl=0, DRDY|DSC status. Profi BIOS checks this.
 //   ATAPI CD-ROM:    count=sec=err=1, cyl=0xEB14 (ATAPI magic), status=0 (DRDY clear
 //                    at rest; the cylinder signature is the canonical detection).
-// Uses per-device presence (file_open[dev]) — an absent selected slot reads 0.
+// Uses per-device presence (mounted(dev) — an image file or a raw-SD window) — an
+// absent selected slot reads 0.
 void IDE::reset_signature() {
     int d = drive();
     reg_sector_count = 1;
@@ -516,14 +667,14 @@ void IDE::reset_signature() {
     // NB: reg_head is left untouched — when this is called from a device-select
     // reload (write8 reg 6) it must preserve the DEV bit the host just wrote.
     // The full reset() clears reg_head to select the master itself.
-    if (file_open[d] && is_atapi[d]) {
+    if (mounted(d) && is_atapi[d]) {
         reg_cyl_lo = ATAPI_SIG_CYL_LO;
         reg_cyl_hi = ATAPI_SIG_CYL_HI;
         reg_status = 0x00;
     } else {
         reg_cyl_lo = 0;
         reg_cyl_hi = 0;
-        reg_status = file_open[d] ? IDE_STATUS_READY : 0x00;
+        reg_status = mounted(d) ? IDE_STATUS_READY : 0x00;
     }
 }
 
@@ -559,6 +710,8 @@ void IDE::close() {
             file_open[d] = false;
         }
         if (clmt[d]) { Buffer::pfree(clmt[d]); clmt[d] = nullptr; }
+        raw[d] = raw_ro[d] = false;
+        raw_start[d] = raw_count[d] = 0;
         data_offset[d] = 0;
         cylinders[d] = heads[d] = sectors[d] = 0;
         is_atapi[d] = false;
@@ -576,7 +729,9 @@ void IDE::close() {
 }
 
 bool IDE::present() {
-    return file_open[0] || file_open[1];
+    // A raw-SD slot counts: the port decoders must answer for a card-backed drive
+    // exactly as for an image file.
+    return mounted(0) || mounted(1);
 }
 
 int IDE::drive() {
@@ -612,13 +767,18 @@ uint32_t IDE::lba() {
 // NOTE this also makes NEMO/PROFI report the end of the disk truthfully, where they
 // used to read 0xFF for ever; in-range accesses are untouched.
 bool IDE::lbaBeyondEnd(int d, uint32_t l) {
+    // A raw window is bounded by the WINDOW first, whatever geometry the guest or the
+    // CHS editor believes: a C/H/S override, or a HiDD header from a bigger drive,
+    // must never name card sectors the user did not hand over. Everything below is
+    // then free to trust the geometry for the IDENTIFY/size answers.
+    if (raw[d] && l >= raw_count[d]) return true;
     const uint32_t total = (uint32_t)cylinders[d] * heads[d] * sectors[d];
     return total != 0 && l >= total;
 }
 
 void IDE::read_sector() {
     int d = drive();
-    if (!file_open[d]) {
+    if (!mounted(d)) {
         reg_error = IDE_ERROR_IDNF;
         reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
         return;
@@ -638,7 +798,24 @@ void IDE::read_sector() {
     // correctly and then the status register was never touched, so it stayed 0x00 and
     // the ROM polled a drive that would never raise DRQ (hw 2026-09-04, the trace read
     // `WR cmd/stat 20` followed by `RD cmd/stat x748 00..00` for ever).
-    if (half_sector[d]) {
+    if (raw[d]) {
+        // The card IS this slot's medium: one sector at the window's offset (the same
+        // raw access DivSD serves esxDOS with). A card error is reported as a bad
+        // sector, never served as 0xFF — a guest SIZES a drive by reading until one
+        // fails, and 0xFF would read as "the disk goes on and on".
+        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
+        if (disk_read(rawDevice(), buffer, card_lba, 1) != RES_OK) {
+            Debug::log("IDE hd%d: raw SD read failed at card lba %u", d, (unsigned)card_lba);
+            reg_error = IDE_ERROR_IDNF;
+            reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+            data_index = -1;
+            return;
+        }
+#if IDE_PORT_TRACE
+        Debug::log("IDE READ  hd%d lba=%u (card %u) [%02X %02X %02X %02X ...]",
+                   d, l, (unsigned)card_lba, buffer[0], buffer[1], buffer[2], buffer[3]);
+#endif
+    } else if (half_sector[d]) {
         // 256 stored bytes are the LOW halves of the 512-byte sector: read them to the
         // top of the buffer and spread them over the even positions, so the rest of the
         // engine (and the 16-bit data path) sees an ordinary sector. The high halves
@@ -667,7 +844,17 @@ void IDE::read_sector() {
     // which maps to LBA = heads[d] * sectors[d] (first sector of cylinder 1).
     // We don't hardcode 256 — use the actual current geometry so the check is
     // valid regardless of what H/S were set to.
-    if (scheme == PROFI) {
+    //
+    // A RAW window is included: on real hardware the card IS the drive and the
+    // header sits on it, but a window over anything else (a partition picked in the
+    // menu, or a fresh card) has no header there. Without one the Profi BIOS reports
+    // no HDD and CP/M never starts, which is exactly what a card-backed slot looked
+    // like — the image path always had the synthesis below, the raw path skipped it.
+    // The `!profi_hidd_slot` term is what keeps that in its place: a window whose
+    // header openRaw DID find keeps its geometry, and a Dos5 header is not synthesized
+    // over a Romain volume's cylinder-1 data (which is CP/M file space for it, and may
+    // well be all zeros).
+    if (scheme == PROFI && (!raw[d] || !profi_hidd_slot[d])) {
         uint32_t hidd_lba = (uint32_t)heads[d] * sectors[d];  // cyl=1, head=0, sec=1
         if (l == hidd_lba) {
             // ProfiHiDD signature at offset 16: "ProfiHiDD" stored as byte-swapped
@@ -683,8 +870,12 @@ void IDE::read_sector() {
                 // with H=16 S=16 (standard Profi CP/M) so the BIOS detects the drive.
                 // This matches our forced H=16 S=16 init, so lba(cyl=1)=256 is consistent.
                 const uint16_t h = 16, s = 16;
-                uint32_t total_secs = (uint32_t)(f_size(&file[d]) / 512);
+                // The medium is the card for a raw slot: f_size() is a FatFs call on
+                // a FIL that was never opened there.
+                uint32_t total_secs = raw[d] ? raw_count[d]
+                                             : (uint32_t)(f_size(&file[d]) / 512);
                 uint16_t c = (total_secs > 0) ? (uint16_t)(total_secs / ((uint32_t)h * s)) : 1;
+                if (!c) c = 1;
                 memset(buffer, 0, 512);
                 buffer[0] = h >> 8;   buffer[1] = h & 0xFF;  // H big-endian
                 buffer[2] = s >> 8;   buffer[3] = s & 0xFF;  // S big-endian
@@ -714,6 +905,13 @@ void IDE::read_sector() {
                 uint16_t s = ((uint16_t)buffer[2] << 8) | buffer[3];
                 uint16_t c = ((uint16_t)buffer[4] << 8) | buffer[5];
                 if (h >= 1 && h <= 255 && s >= 1 && s <= 255 && c >= 1) {
+                    if (raw[d]) {
+                        // Same clamp as openRaw: the header may describe the drive it
+                        // was formatted on, and a raw slot must stay inside its window.
+                        uint32_t maxC = raw_count[d] / ((uint32_t)h * s);
+                        if (maxC == 0) maxC = 1;
+                        if (c > maxC) c = (uint16_t)maxC;
+                    }
                     heads[d] = h; sectors[d] = s; cylinders[d] = c;
                     Debug::log("IDE hd%d: ProfiHiDD geometry H=%u S=%u C=%u at LBA %u",
                                d, h, s, c, l);
@@ -728,9 +926,31 @@ void IDE::read_sector() {
 
 void IDE::write_sector_done() {
     int d = drive();
-    if (!file_open[d]) return;
+    if (!mounted(d)) return;
     uint32_t l = lba();
+    // Belt and braces next to the command-time IDNF: a raw slot never writes outside
+    // the window it was given, whatever the geometry says (see lbaBeyondEnd).
+    if (raw[d] && l >= raw_count[d]) return;
     UINT bw;
+    if (raw[d]) {
+        // A write goes into the card's own sector. That is why the default is
+        // read-only (Config::ide_raw) and why the refusal above exists: this branch
+        // is only reachable in mode 2. The FatFs notification is not optional — the
+        // card may be the volume this firmware's own files live on, and FatFs caches
+        // FAT and directory sectors, so without it the next f_write/f_read would
+        // overwrite this sector from a stale copy (DivSD does exactly this).
+        if (raw_ro[d]) return;
+        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
+        if (disk_write(rawDevice(), buffer, card_lba, 1) == RES_OK)
+            ff_raw_write_notify(rawDevice(), card_lba, buffer);
+        else
+            Debug::log("IDE hd%d: raw SD write failed at card lba %u", d, (unsigned)card_lba);
+#if IDE_PORT_TRACE
+        Debug::log("IDE WRITE hd%d lba=%u (card %u) [%02X %02X %02X %02X ...]",
+                   d, l, (unsigned)card_lba, buffer[0], buffer[1], buffer[2], buffer[3]);
+#endif
+        return;
+    }
     if (half_sector[d]) {
         // Only the low halves exist in the file — fold the even bytes down into the
         // FIRST 256 bytes of the buffer. Not into the second half: the destination
@@ -765,9 +985,15 @@ void IDE::write_sector_done() {
 // must not do. A failure just leaves the buffer as it was.
 void IDE::preload_sector() {
     int d = drive();
-    if (!file_open[d]) return;
+    if (!mounted(d)) return;
     uint32_t l = lba();
     UINT br;
+    if (raw[d]) {
+        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
+        if (disk_read(rawDevice(), buffer, card_lba, 1) != RES_OK)
+            memset(buffer, 0xFF, 512);
+        return;
+    }
     if (half_sector[d]) {
         f_lseek(&file[d], (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256);
         f_read(&file[d], buffer + 256, 256, &br);
@@ -863,6 +1089,18 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (retry)
         case 0x31: // WRITE SECTOR (no retry)
+            // A read-only raw-SD slot refuses the command the way a real drive with its
+            // write protect on does: ABRT with no data phase. It has to be refused HERE
+            // and not silently dropped later — the guest would otherwise get a
+            // completed write that changed nothing, and IDEDOS/CP/M cache their idea of
+            // the disk from those writes.
+            if (raw[drive()] && raw_ro[drive()]) {
+                Debug::log("IDE hd%d: write refused (raw SD is read-only)", drive());
+                reg_error = IDE_ERROR_ABRT;
+                reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+                data_index = -1;
+                break;
+            }
             // Beyond the drive: refuse rather than accept 512 bytes and drop them.
             if (lbaBeyondEnd(drive(), lba())) {
                 reg_error = IDE_ERROR_IDNF;
@@ -898,7 +1136,7 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0xEC: { // IDENTIFY DEVICE
             int d = drive();
-            if (!file_open[d]) {
+            if (!mounted(d)) {
                 reg_error = IDE_ERROR_ABRT;
                 reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
                 break;
@@ -1380,7 +1618,7 @@ void IDE::write8(uint8_t reg, uint8_t value) {
                     data_index = -1;
                     data_write = false;
                     data_discard = false;
-                    reg_status = file_open[now] ? IDE_STATUS_READY : 0x00;
+                    reg_status = mounted(now) ? IDE_STATUS_READY : 0x00;
                     reg_error = 0;
                 }
             }
@@ -1444,6 +1682,8 @@ static constexpr uint8_t IDE_SNAP_VER = 1;
 
 void IDE::flush() {
     if (!file) return;
+    // Raw slots have nothing to sync here: every raw write is already on the card
+    // when write_sector_done() returns (and goes through the FatFs notification).
     for (int d = 0; d < 2; d++) if (file_open[d]) f_sync(&file[d]);
 }
 
@@ -1451,7 +1691,8 @@ uint32_t IDE::snapSave(uint8_t* out) {
     SnapOut o(out);
     o.u8(IDE_SNAP_VER);
     o.u8(scheme);
-    o.u8((file_open[0] ? 1 : 0) | (file_open[1] ? 2 : 0));
+    o.u8((mounted(0) ? 1 : 0) | (mounted(1) ? 2 : 0) |
+         (raw[0] ? 0x10 : 0) | (raw[1] ? 0x20 : 0));
     for (int d = 0; d < 2; d++) o.u32(size_bytes[d]);
     for (int d = 0; d < 2; d++) { o.u16(cylinders[d]); o.u16(heads[d]); o.u16(sectors[d]); }
     o.u8(reg_feature); o.u8(reg_sector_count); o.u8(reg_sector); o.u8(reg_cyl_lo);
@@ -1492,14 +1733,20 @@ bool IDE::snapLoad(const uint8_t* in, uint32_t n) {
     const uint8_t sk = s.u8(), sa = s.u8(), sq = s.u8();
     const uint16_t blen = s.u16();
     if (!s.ok || sch != scheme || scheme == OFF || !buffer || blen > ATAPI_BLOCK) return false;
-    // The same disks: every drive that had an image has one now, of the same size.
+    // The same disks: every drive that had a medium has one now, of the same size —
+    // and of the same KIND. An image file and the card's raw window can report the
+    // same size and are different disks. Versions before this had no raw bits in the
+    // mask, so such a snapshot is refused on a machine whose slot is raw now, which is
+    // the safe answer.
+    const uint8_t rawMask = (openMask >> 4) & 3;
     for (int d = 0; d < 2; d++) {
         const bool had = (openMask >> d) & 1;
-        if (had != file_open[d] || (had && sz[d] != size_bytes[d])) return false;
+        if (had != mounted(d) || (had && sz[d] != size_bytes[d])) return false;
+        if (had && (((rawMask >> d) & 1) != 0) != raw[d]) return false;
     }
     if (blen) { s.raw(buffer, blen); if (!s.ok) return false; }
     for (int d = 0; d < 2; d++)
-        if (file_open[d] && geo[d][0] && geo[d][1] && geo[d][2]) {
+        if (mounted(d) && geo[d][0] && geo[d][1] && geo[d][2]) {
             cylinders[d] = geo[d][0]; heads[d] = geo[d][1]; sectors[d] = geo[d][2];
         }
     reg_feature = regs[0]; reg_sector_count = regs[1]; reg_sector = regs[2];

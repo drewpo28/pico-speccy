@@ -1261,7 +1261,7 @@ static const Option* ide_schemeOpts(uint8_t& cnt) {
         if (isAtm3Romset(r) || isEvoBaseRomset(r)) add(IDE::NEMO);
     } else {
         add(IDE::NEMO);
-        add(IDE::PROFI);
+        if (devProfi()) add(IDE::PROFI);   // Ports: the #xxCB/#xxEB/#xxAB decode is Profi-only
         if (a == A_SCORP || a == A_TSCONF) add(IDE::SMUC);
     }
     add(Stage::get(SET_IDE_SCHEME));
@@ -1339,11 +1339,27 @@ static const Node kMb02[] = {
     NM_DYN_EN  (TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
 };
+// Devices > IDE / HDD > "SD card (raw)". An IDE slot served straight off the card's own
+// sectors (the DivSD idea, one level up) instead of from an .hdf.
+// Off is the default on BOTH slots and Write is the third press of a cycling action, not
+// a radio the cursor can land on: the window is the only thing between the guest and this
+// card's filesystem. The two window rows are greyed until the slot really serves the card
+// (p_ideRaw0/1 read Config, which is what IDE::init consumes — a window that cannot be
+// opened leaves the slot empty and says so in the toast).
+static const Node kIdeRaw[] = {
+    NM_ACTIONV   (TXT_IDE_SRC0,  act_ideSrc0, vl_ideSrc0, nullptr),
+    NM_ACTIONV_EN(TXT_IDE_WIN0,  act_ideWin0, vl_ideWin0, nullptr, p_ideRaw0),
+    NM_ACTION_EN (TXT_IDE_PART0, act_ideMbr0, nullptr, p_ideRaw0),
+    NM_ACTIONV   (TXT_IDE_SRC1,  act_ideSrc1, vl_ideSrc1, nullptr),
+    NM_ACTIONV_EN(TXT_IDE_WIN1,  act_ideWin1, vl_ideWin1, nullptr, p_ideRaw1),
+    NM_ACTION_EN (TXT_IDE_PART1, act_ideMbr1, nullptr, p_ideRaw1),
+};
 static const Node kIde[] = {
     NM_RADIO_D (TXT_IFACE_MODE,    SET_IDE_SCHEME, ide_schemeOpts, nullptr),
     NM_DYNH_EN (TXT_IDE_IMAGES,    slots_buildIde, slots_keyIde,
                 opt_ide_slot_hints, nullptr, p_ideOn),
     NM_ACTION_EN(TXT_IDE_CREATE,   act_ideCreate, nullptr, p_ideOn),
+    NM_SUBV    (TXT_IDE_RAW,       kIdeRaw, vl_ideRaw, p_ideOn),
 };
 // The value beside a submenu row. Kept short: a long one clips the row's own label.
 static const char* vl_beta()  { return p_betaBuiltIn() ? nullptr : nodeValueLabel(kDiskBeta[0]); }

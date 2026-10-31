@@ -9220,12 +9220,14 @@ void ideSlotEdit(uint8_t slot) {
                 fname = zf;
             }
             Config::ide_image[slot] = fname;
+            Config::ide_raw[slot] = 0;      // IDE::init prefers a raw window over the image
             IDE::init();
             Config::save();
             continue;
         }
         if (has && sel == 1) {                           // eject
             Config::ide_image[slot].clear();
+            Config::ide_raw[slot] = 0;
             IDE::init();
             Config::save();
             continue;
@@ -9337,6 +9339,7 @@ void ideCreateImage() {
     OSD::progressDialog("", "", 0, 2);
     if (!ok) { nm::uiToast("Create failed", true, 2000); return; }
     Config::ide_image[slot] = path;
+    Config::ide_raw[slot] = 0;
     IDE::init();
     Config::save();
     nm::uiToast("HDD image created", false, 1500);

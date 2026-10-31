@@ -1170,6 +1170,11 @@ static void resolveConstraints(CommitReport& rep) {
         // screen into a Timex mode). Same rule as Gigascreen above.
         if (staged(SET_TIMEX) != 0 && stagedIsProfi())
             changed |= force(SET_TIMEX, 0, rep, "Timex is not available on Profi");
+        // DivMMC's automap and #EB/#E7 sit on top of the Profi ROMs and the Profi IDE
+        // high-byte port. MachineSwitch turns it off on a live switch; this covers a
+        // staged esxDOS the Devices menu no longer shows on Profi.
+        if (staged(SET_ESXDOS) && stagedIsProfi())
+            changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on Profi");
 
         // The +3 has no Beta Disk (its FDC is the uPD765 on #2FFD/#3FFD) and no SCLD;
         // both claim ports the +3 uses, and Beta's 0x3D00 trap would fire inside the
@@ -1230,6 +1235,26 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_IDE_SCHEME, IDE::DIVIDE, rep, "IDE set to the divIDE interface");
         } else if (staged(SET_IDE_SCHEME) == IDE::DIVIDE) {
             changed |= force(SET_IDE_SCHEME, IDE::OFF, rep, "IDE off: DivIDE needs the +3 (divIDE) ROM");
+        }
+
+        // The PROFI scheme decodes on Profi hardware only (Ports: `&& PROFI`), so anywhere
+        // else it is a selected interface with dead ports; same rule as the other schemes
+        // that belong to one machine. The images stay in Config for the way back.
+        if (!stagedIsProfi() && staged(SET_IDE_SCHEME) == IDE::PROFI)
+            changed |= force(SET_IDE_SCHEME, IDE::OFF, rep, "IDE off: the PROFI scheme needs Profi");
+
+        // EDGE: switching TO Profi. A scheme left from the old machine answers on ports the
+        // Profi BIOS never touches and the disk reads as absent, image or card alike; an Off
+        // left by the rule above with a medium still in a slot is the same case. An EDGE, so
+        // NEMO picked on Profi afterwards stays (the g_seq tie-break as for the +3e below).
+        if (bmGet(g_dirty, SET_MACHINE) && stagedIsProfi()
+            && ((g_base[SET_MACHINE] >> 8) & 0xFF) != A_PROFI
+            && ((g_base[SET_MACHINE] >> 8) & 0xFF) != A_KARABAS
+            && staged(SET_IDE_SCHEME) != IDE::PROFI
+            && (staged(SET_IDE_SCHEME) != IDE::OFF || Config::ide_raw[0] || Config::ide_raw[1] ||
+                !Config::ide_image[0].empty() || !Config::ide_image[1].empty())
+            && g_seq[SET_IDE_SCHEME] <= g_seq[SET_MACHINE]) {
+            changed |= force(SET_IDE_SCHEME, IDE::PROFI, rep, "IDE set to the PROFI interface");
         }
 
         // EDGE: switching TO the +3 (divIDE), same shape (and same g_seq tie-break) as
