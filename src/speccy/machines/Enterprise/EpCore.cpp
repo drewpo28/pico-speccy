@@ -275,10 +275,10 @@ int Nick::span(int n, uint8_t* o, int ostep, uint8_t* hi) {
     }
 }
 
-int Nick::line(uint8_t* out, uint8_t* aux, int visLo, int visHi) {
+int Nick::line(uint8_t* out, uint8_t* aux, int visLo, int visHi, int from, int to) {
     alignas(4) uint8_t scratch[8];
     int flags = 0;
-    for (int s = 0; s < SLOTS; s++) {
+    for (int s = from; s < to; s++) {
         if (s == rightMargin) {
             displayEnabled = false;
             vsync = false;
@@ -290,7 +290,7 @@ int Nick::line(uint8_t* out, uint8_t* aux, int visLo, int visHi) {
             // The display slots in runs up to the next margin event (the margin
             // test above runs at the start of each run, as it did per slot), split
             // again where the visible range of `out` begins and ends.
-            int e = LAST;
+            int e = LAST < to ? LAST : to;
             if (rightMargin > s && rightMargin < e) e = rightMargin;
             if (leftMargin > s && leftMargin < e) e = leftMargin;
             if (visLo > s && visLo < e) e = visLo;

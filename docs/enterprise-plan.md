@@ -387,7 +387,24 @@ SAVE; `:FORMAT B:` = 160 tracks of WRITE TRACK + verify, a valid empty disk, A: 
 Typing the next line right after a disk LOAD loses its first keys in the typed test
 (one or two frames of EXDOS with the scan off): a test artefact, a human's key lasts.
 
+## Timing round (2026-10-31, host-tested)
+
+- **The I/O cycle was missing**: `Ep::portIn/portOut` charged no T, and the core leaves
+  the whole I/O cycle to Ports, so every IN/OUT was 4 T short (EXOS's tape loop 53 T
+  against 61; sampled Dave sound ran fast). Now 3 T before the device, 1 after
+  (ep128emu doIn/doOut). A Nick port waits from T+3 for the next slot + 1 T + 0.363 us
+  (videoMemoryWait_IO). The memory waits were checked against the formulas and already
+  matched: data 1.5 + 1.44 T, M1 2.5 + 1.42 T.
+- **Nick runs in parts** (`Nick::line(.., from, to)`, `linePart`): the LPB slots right
+  after the previous line, so its IRQ reaches Dave at the line's start, a whole line
+  earlier than before; up to the current slot before a Nick port write, so a border /
+  fixed-bias / LPT write lands on its slot; the rest at the line end. CPU writes to
+  video RAM mid-line still show at the line end. A random-screen test splits 300 x 200
+  lines at random slots and matches whole lines byte for byte.
+- Still 256 T a line against the real 256.2 (the 48K frame + audio set depend on it).
+- Regressed: Boulder Dash tape (11 blocks), Turbo Esprit, frame cost unchanged.
+- Hi-res PIXEL was already done in Phase 3a.
+
 ## Next
 
-1. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
-2. Web catalog adapter, .pss (incl. the FDC).
+1. Web catalog adapter, .pss (incl. the FDC).

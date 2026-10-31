@@ -231,32 +231,60 @@ static void lineOutSlow(uint8_t* row, int y, const uint8_t* px, int nc, int (*cx
         if (!carved(i ^ 2)) row[i] = px[x0 + i];
 }
 
+// One raster line is run in parts: the LPB slots right after the previous line ended
+// (the LPB is read there on the hardware, and its IRQ bit raises INT1 at the line's
+// START, a whole line before the old line-end run), up to the current slot before a
+// Nick port write (a border or fixed-bias write lands on its slot), the rest at the
+// line end. The buffers therefore outlive a part: s_px is the line's edge / slow copy.
+static int  s_lSlot = 0;                       // the next slot to run
+static int  s_lFlags = 0;
+static bool s_lDirect = false;                 // Nick writes the row itself this line
+static uint8_t* s_lRow = nullptr;
+static int  s_lVisLo = 0, s_lVisHi = 0, s_lX0 = 0;
+static uint8_t* s_px = nullptr;                // OUT_PX bytes, heap (the machine's own)
+
+static void linePart(int to) {
+    if (to <= s_lSlot) return;
+    if (s_lSlot == 0) {                        // the line's first part decides its path
+        const bool pair = VIDEO::sam_pair_live && s_ps;
+        s_nick.hiOut = pair ? s_ps->hi : nullptr;
+        int y = 0, cx[8][2];
+        s_lRow = fbRow(y);
+        const int nc = s_lRow ? VIDEO::rowCarves(y, cx) : 0;
+        s_lDirect = s_lRow && nc == 0 && !pair;
+        if (s_lDirect) {
+            // Slots whose 8 px lie inside the row go straight in, the two edge slots
+            // (a 360-wide row starts 4 px into slot 8) land in s_px.
+            const int xres = (int)VIDEO::vga.xres;
+            s_lX0 = (EpCore::Nick::OUT_PX - xres) / 2;             // 4 at 360, 24 at 320
+            s_lVisLo = EpCore::Nick::FIRST + (s_lX0 + 7) / 8;
+            s_lVisHi = EpCore::Nick::FIRST + (s_lX0 + xres) / 8;
+        }
+    }
+    if (s_lDirect) s_lFlags |= s_nick.line(s_lRow - s_lX0, s_px, s_lVisLo, s_lVisHi, s_lSlot, to);
+    else           s_lFlags |= s_nick.line(s_px, nullptr, EpCore::Nick::FIRST, EpCore::Nick::LAST, s_lSlot, to);
+    s_lSlot = to;
+}
+
 static void lineRun() {
     EPT_BEGIN(t0);
-    alignas(4) uint8_t px[EpCore::Nick::OUT_PX];
-    const bool pair = VIDEO::sam_pair_live && s_ps;
-    s_nick.hiOut = pair ? s_ps->hi : nullptr;
+    linePart(EpCore::Nick::SLOTS);
     int y = 0;
     uint8_t* row = fbRow(y);
-    int cx[8][2];
-    const int nc = row ? VIDEO::rowCarves(y, cx) : 0;
-    int fl;
-    if (row && nc == 0 && !pair) {
-        // Nick writes the row itself: slots whose 8 px lie inside the row go
-        // straight in, the two edge slots (a 360-wide row starts 4 px into slot 8)
-        // land in px and their visible words are copied below.
+    if (s_lDirect) {
         const int xres = (int)VIDEO::vga.xres;
-        const int x0 = (EpCore::Nick::OUT_PX - xres) / 2;          // 4 at 360, 24 at 320
-        const int visLo = EpCore::Nick::FIRST + (x0 + 7) / 8;
-        const int visHi = EpCore::Nick::FIRST + (x0 + xres) / 8;
-        fl = s_nick.line(row - x0, px, visLo, visHi);
-        const int lo = (visLo - EpCore::Nick::FIRST) * 8, hi = (visHi - EpCore::Nick::FIRST) * 8;
-        for (int p = x0; p < lo; p += 4) __builtin_memcpy(row + (p - x0), px + p, 4);
-        for (int p = hi; p < x0 + xres; p += 4) __builtin_memcpy(row + (p - x0), px + p, 4);
-    } else {
-        fl = s_nick.line(px);
-        if (row) { EPT_BEGIN(t1); lineOutSlow(row, y, px, nc, cx); EPT_ADD(out, t1); }
+        const int lo = (s_lVisLo - EpCore::Nick::FIRST) * 8, hi = (s_lVisHi - EpCore::Nick::FIRST) * 8;
+        if (s_px) {
+            for (int p = s_lX0; p < lo; p += 4) __builtin_memcpy(s_lRow + (p - s_lX0), s_px + p, 4);
+            for (int p = hi; p < s_lX0 + xres; p += 4) __builtin_memcpy(s_lRow + (p - s_lX0), s_px + p, 4);
+        }
+    } else if (row && s_px) {
+        int cx[8][2];
+        const int nc = VIDEO::rowCarves(y, cx);
+        EPT_BEGIN(t1); lineOutSlow(row, y, s_px, nc, cx); EPT_ADD(out, t1);
     }
+    const int fl = s_lFlags;
+    s_lFlags = 0; s_lSlot = 0;
     if (fl & EpCore::Nick::L_HIRES) s_hiSeen = true;
     const bool vs = (fl & EpCore::Nick::L_VSYNC) != 0;
     if (s_prevVs && !vs) s_row = 0;
@@ -299,6 +327,7 @@ void catchUp() {
         lineRun();
         daveTo(lineT);
         lineT += T_PER_LINE;
+        linePart(4);                            // the new line's LPB: mode, IRQ
     }
 }
 
@@ -428,6 +457,8 @@ void reset() {
         for (int c = 0; c < 256; c++) s_fbMap[c] = (uint8_t)(PAL_SLOT0 + q7((uint8_t)c));
     s_nick.setOutMap(s_fbMap);                  // no heap: raw Nick colours (a wrong picture, no crash)
     if (!s_aud) s_aud = (uint8_t*)tryCalloc(2 * AUD_CAP);   // no heap: no sound
+    if (!s_px) s_px = (uint8_t*)tryMalloc(EpCore::Nick::OUT_PX);
+    s_lSlot = 0; s_lFlags = 0;
     s_dave.outL = s_aud;
     s_dave.outR = s_aud ? s_aud + AUD_CAP : nullptr;
     s_dave.outCap = s_aud ? AUD_CAP : 0;
@@ -481,7 +512,14 @@ void drawOpcode(bool contended) { tickOp(contended); }
 // ---------------------------------------------------------------------------
 // Ports (low byte only): Dave #A0..#BF, Nick #80..#8F.
 
+// A port access is 4 T (ep128emu doIn/doOut: 3 before the devices see it, 1 after);
+// the RAM-resident core leaves the whole I/O cycle to Ports. A Nick port then waits
+// from T+3 for the next slot + 1 T + the 0.363 us latency, which includes that last T.
+static __attribute__((always_inline)) inline void nickPortWait() { vramWait(0, 57 + 83, 0); }
+
 uint8_t portIn(uint16_t address) {
+    CPU::tstates += 3;
+    struct Tail { bool on = true; ~Tail() { if (on) CPU::tstates += 1; } } tail;
     const uint8_t lo = (uint8_t)address;
     if (lo >= 0xA0 && lo <= 0xBF) {
 #if PERF_TRACE || HOST_BUILD
@@ -516,13 +554,15 @@ uint8_t portIn(uint16_t address) {
     if ((lo & 0xF0) == 0x10) return EpFdc::in(lo);
     if ((lo & 0xF0) == 0x80) {
         catchUp();
-        vramWait(0, 83, 0);
+        nickPortWait(); tail.on = false;
         return s_nick.readPort();
     }
     return 0xFF;
 }
 
 void portOut(uint16_t address, uint8_t data) {
+    CPU::tstates += 3;
+    struct Tail { bool on = true; ~Tail() { if (on) CPU::tstates += 1; } } tail;
     const uint8_t lo = (uint8_t)address;
     if (lo >= 0xA0 && lo <= 0xBF) {
 #if PERF_TRACE || HOST_BUILD
@@ -551,7 +591,13 @@ void portOut(uint16_t address, uint8_t data) {
     }
     if ((lo & 0xF0) == 0x80) {
         catchUp();
-        vramWait(0, 83, 0);
+        nickPortWait(); tail.on = false;
+        catchUp();
+        {   // the slots before this one keep the old value
+            const uint32_t done = CPU::tstates + T_PER_LINE - lineT;
+            int slot = (int)(done * 57u / T_PER_LINE);
+            linePart(slot < EpCore::Nick::SLOTS ? slot : EpCore::Nick::SLOTS);
+        }
         s_nick.writePort(lo, data);
         return;
     }

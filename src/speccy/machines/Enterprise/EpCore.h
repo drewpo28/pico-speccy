@@ -63,7 +63,9 @@ struct Nick {
     // Slots outside [visLo, visHi) go to `aux` (same layout, may be null) instead of
     // `out`: the caller clips the line to its row and copies the edge slots itself.
     enum { L_VSYNC = 1, L_HIRES = 2 };   // L_HIRES: a 2-colour PIXEL slot was displayed
-    int line(uint8_t* out, uint8_t* aux, int visLo, int visHi);
+    // [from, to) runs part of the line, so a port write mid-line lands on its slot;
+    // the caller passes the same buffers for every part of a line.
+    int line(uint8_t* out, uint8_t* aux, int visLo, int visHi, int from = 0, int to = SLOTS);
     int line(uint8_t* out) { return line(out, nullptr, FIRST, LAST); }
     // Optional, OUT_PX * 2 bytes: the line at the 16-px-a-slot resolution of
     // 2-colour PIXEL mode (every other mode's pixels written twice), LINEAR order,
