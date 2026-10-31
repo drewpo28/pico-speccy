@@ -3062,7 +3062,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             ;
                     Config::save();
                 }
-                else if (ext == "com" || (ext == "bas" && Config::arch == A_ENT)) {
+                else if (ext == "com" || ext == "128" || (ext == "bas" && Config::arch == A_ENT)) {
                     // Enterprise program (EXOS header, machine code or IS-BASIC):
                     // EXOS loads it through FILE: from its own folder.
                     Ep::launchFile(fname);
