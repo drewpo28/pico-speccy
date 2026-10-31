@@ -710,7 +710,8 @@ void Tape::LoadRemembered() {
         !FileUtils::hasTZXextension(full) &&
         !FileUtils::hasPZXextension(full) &&
         !FileUtils::hasCSWextension(full) &&
-        !FileUtils::hasEPTextension(full)) return;
+        !FileUtils::hasEPTextension(full) &&
+        !(Config::arch == A_ENT && FileUtils::hasWAVextension(full))) return;
     size_t slash = full.rfind('/');
     if (slash == string::npos) return;
     // A remembered "USB:/..." tape must wait for the stick to enumerate (boot
@@ -822,6 +823,8 @@ void Tape::WAV_Open(const string& name) {
     wav_offset = f_tell(&tape);
     tapePlayOffset = wav_offset; // initial offset
     tapeNumBlocks = 1; // one huge block
+    // Enterprise: a tape launch resets the machine with the tape in the deck.
+    if (Config::arch == A_ENT) Config::tape_file = fname;
 }
 
 #define WORKING_SIZE        4000
@@ -1430,6 +1433,29 @@ void Tape::TAP_GetBlock() {
     tapeNext = tapeSyncLen;
     if (tapeCurByte) tapeHdrPulses = tapeHdrShort;
     else tapeHdrPulses = tapeHdrLong;
+}
+
+// Enterprise fast load: run the deck ahead to the next change of the ear bit without
+// guest time passing (the deck's start moves back), and say how many T that was.
+// 0 = nothing to skip.
+uint32_t Tape::fastEdge() {
+    if (tapeStatus != TAPE_LOADING) return 0;
+    const bool pulses = tapeFileType == TAPE_FTYPE_EPTE || tapeFileType == TAPE_FTYPE_CSW;
+    if (!pulses && tapeFileType != TAPE_FTYPE_WAV) return 0;
+    const uint8_t lvl = tapeEarBit;
+    uint32_t dt = 0;
+    while (dt < 200000 && tapeStatus == TAPE_LOADING) {
+        uint32_t rem = 40;              // a WAV has no pulse length: walk it
+        if (pulses) {
+            const uint64_t cur = tapeClock() - tapeStart;
+            rem = tapeNext > cur ? (uint32_t)(tapeNext - cur) : 1;
+        }
+        tapeStart -= rem;
+        dt += rem;
+        Read();
+        if (tapeEarBit != lvl) break;
+    }
+    return dt;
 }
 
 void Tape::Stop(bool quiet) {

@@ -408,3 +408,21 @@ Typing the next line right after a disk LOAD loses its first keys in the typed t
 ## Next
 
 1. Web catalog adapter, .pss (incl. the FDC).
+
+## Fast tape load + small items (2026-10-31, host-tested, NOT hw-tested)
+
+Devices > Fast tape load on the EP. No ROM patch and no shared-core hook: EXOS times each
+pulse with `EI / HALT` (#EBD5 half a period, #EBDE a whole one, 2.0 = 0x9B lower), and
+`CPU::epFrameLoop` sees that HALT. `Ep::tapeFastHalt` recognises the bytes, runs the deck
+ahead to the edge(s) (`Tape::fastEdge`), sets E = (T - channel 0 period) / 60 + 1 and
+jumps to the common tail #EBFE. Called from the byte reader #EBB9 (return address and the
+CRC routine checked by their bytes) it takes all bits but the last itself, CRC in HL'
+included, moving the deck 400 T per bit — the measured guest time of that bit code, without
+which E comes out ~6 too big and the 0x6A sync never matches. Real EXOS code still does
+the leader average, threshold, chunks and CRC compare, so a bad tape still fails. STOP takes
+the real loop; tape wear, an MP3 and a loader with other code play in real time.
+A WAV is walked in 40 T steps. A WAV is also re-mounted after the launch reset now (it was the one format that was not: the deck came up empty, SEARCHING for ever).
+Host: 720 Degrees, Amaurote, Boulder Dash, Bruce Lee, JETPAC.EPT, JETPAC.WAV reach their game screens
+with 0 CRC errors, 1400-2800 frames for 270-530 KB .tap files.
+Also: no toast on a remote pause, the notify banner carved like SAM and erased from
+rows an LPT does not cover. Web catalog for the EP: dropped (owner, ep128.hu is all .rar).
