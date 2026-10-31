@@ -8143,7 +8143,15 @@ void VIDEO::setNoticeCarve(int x0, int y0, int x1, int y1) {
     ovRecalc();
 }
 
-void VIDEO::clearNoticeCarve() { ts_notice_y1 = -1; ovRecalc(); }
+void VIDEO::clearNoticeCarve() {
+    // Enterprise: an LPT shorter than the fb leaves rows Nick never writes, so the
+    // banner must be taken off them here; rows Nick does write repaint next frame.
+    if (Z80Ops::isEnt && ts_notice_y1 > ts_notice_y0 && vga.frameBuffer)
+        for (int y = ts_notice_y0; y < ts_notice_y1 && y < (int)vga.yres; y++)
+            memset(vga.frameBuffer[y] + ts_notice_x0, Ep::PAL_SLOT0, ts_notice_x1 - ts_notice_x0);
+    ts_notice_y1 = -1;
+    ovRecalc();
+}
 
 void VIDEO::setLedCarve(int x0, int y0, int x1, int y1) {
     led_carve_x0 = x0; led_carve_x1 = x1;

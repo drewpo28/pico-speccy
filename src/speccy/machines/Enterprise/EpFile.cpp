@@ -624,7 +624,7 @@ void tapeRemote(uint8_t bits) {
         if (s_byRemote && Tape::tapeStatus == TAPE_LOADING &&
             (Tape::tapeFileType == TAPE_FTYPE_EPTE || Tape::tapeFileType == TAPE_FTYPE_CSW ||
              Tape::tapeFileType == TAPE_FTYPE_WAV || Tape::tapeFileType == TAPE_FTYPE_MP3))
-            Tape::Stop();
+            Tape::Stop(true);     // EXOS pauses between chunks: no toast for each
         s_byRemote = false;
     }
 }
