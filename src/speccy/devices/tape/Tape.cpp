@@ -1432,13 +1432,13 @@ void Tape::TAP_GetBlock() {
     else tapeHdrPulses = tapeHdrLong;
 }
 
-void Tape::Stop() {
+void Tape::Stop(bool quiet) {
     // Only notify when an actual load was in progress. Stop() is also called as a
     // teardown step by LoadTape() (incl. the silent F11/boot re-mount via
     // LoadRemembered) — popping the OSD there put a spurious "Tape loading is
     // stopped" message on screen on every reset.
     if (tapeStatus == TAPE_LOADING) {
-        OSD::notify(" Tape loading is stopped ", LEVEL_INFO, 900);
+        if (!quiet) OSD::notify(" Tape loading is stopped ", LEVEL_INFO, 900);
         if (tapeFileType == TAPE_FTYPE_WAV) wavElapsed = tapeClock() - tapeStart;
     }
     tapeEarBit = 0;

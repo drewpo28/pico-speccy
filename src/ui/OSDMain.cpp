@@ -1799,8 +1799,8 @@ static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
         if (px1 - px0 < textw) return false;
         VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
-    } else if (Z80Ops::isSam) {
-        // SAM Coupe: the standard band geometry, but no border machine — every fb
+    } else if (Z80Ops::isSam || Z80Ops::isEnt) {
+        // SAM Coupe (and Enterprise, the same shape: Nick lines): the standard band geometry, but no border machine — every fb
         // row (border included) is rendered on the beam by Sam::renderRow, which
         // keeps only the rects VIDEO::rowCarves names. Without the carve the banner
         // painted at EndFrame lived until the next frame's row tick reached rows
