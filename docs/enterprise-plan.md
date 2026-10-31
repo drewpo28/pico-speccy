@@ -355,7 +355,19 @@ block and only said "EXOS runs".
   EXOS 2.0's tape routine is byte-for-byte 2.1's, so not the timing: most likely the
   game needs 128K (a 48K Spectrum conversion + the EP's video RAM in segment FF). Not
   checked against ep128emu (not installed here).
-- Not done: tape SAVE (the remote + Dave's tape output bits), TZX/CSW of real EP
+- **Tape SAVE** (`EpTapeRec.{h,cpp}`, host: SAVE "TAPE:" -> LOAD "TAPE:" -> RUN prints the
+  program's 12345): EXOS plays the cassette on Dave's left output (ch 0 interrupt +
+  #A8 volume per half period), ep128emu records that, so the frame's 31250 Hz samples
+  thresholded at half the frame's peak are a 1-bit ep128emu `.tap` at 31250 Hz. No REC
+  key: remote up + left output nonzero + no #B6 read this frame = new
+  `/pico-speccy/tapes/EPnnnn.tap`, the deck stops; frames count while the remote is up
+  (incl. the frame it drops in: that one held the CRC's last byte); 5 s down, or a
+  reset, closes the file. A decoder of the file's
+  bits reproduces the writer layout byte for byte. MP3 resume needs nothing: MP3_Open
+  converts to a WAV.
+- EP64 + Amaurote: left as it is — the chunks read clean, the game then dies in its own
+  code on 64K.
+- Not done: TZX/CSW of real EP
   recordings untested (only the deck's generic pulse path), the "tape loading is
   stopped" toast fires on every remote stop (cosmetic).
 - **Hw 2026-10-31 (owner, `debug/DVp2w-ep-tape4-1.1.1`): "работает"** — Amaurote and Boulder
@@ -364,8 +376,18 @@ block and only said "EXOS runs".
   stop/start and the TAPE: default all confirmed on the board. Not itemised: the tape
   audible from the speaker, the EPTE/WAV test tapes, Enter-rewind in the tape browser.
 
+## EXDOS exercised (2026-10-31, host; no code change was needed)
+
+`PICOSPECCY_EP_TYPE` (`|` wait for the prompt, `^` ENTER), `PICOSPECCY_EP_NEWIMG=/path`
+(F9's createEmpty), `PICOSPECCY_EP_SWAP=frame:/path` (a disk change), all host-only. Checked
+with mtools on the resulting images: SAVE to A: and LOAD back; SAVE to B:, nothing on A:;
+EP64 + EXDOS SAVE; EXDOS.INI read whole at start (17 reads for 15 chars, 1 without it);
+a blank F9 image is valid FAT12 720 KB; a disk swapped under a running EXDOS takes the next
+SAVE; `:FORMAT B:` = 160 tracks of WRITE TRACK + verify, a valid empty disk, A: untouched.
+Typing the next line right after a disk LOAD loses its first keys in the typed test
+(one or two frames of EXDOS with the scan off): a test artefact, a human's key lasts.
+
 ## Next
 
-1. Tape SAVE, EXDOS writes exercised, drive B:.
-2. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
-3. Web catalog adapter, .pss (incl. the FDC).
+1. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
+2. Web catalog adapter, .pss (incl. the FDC).

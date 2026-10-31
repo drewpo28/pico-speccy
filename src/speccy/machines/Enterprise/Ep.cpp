@@ -347,6 +347,13 @@ void frameEnd() {
     lineT -= CPU::statesInFrame;
     launchTick();
     EpFdc::frameEnd();
+#if HOST_BUILD
+    {   // Tests: PICOSPECCY_EP_SWAP="frame:/path" changes the disk in A: at that frame.
+        static uint32_t n = 0; n++;
+        if (const char* e = getenv("PICOSPECCY_EP_SWAP"))
+            if (n == strtoul(e, nullptr, 10)) EpFdc::mount(0, strchr(e, ':') + 1);
+    }
+#endif
     EPT_ADD(fe, tfe);
 #if PERF_TRACE || HOST_BUILD
     {

@@ -634,6 +634,8 @@ void launchResume() {
 #if HOST_BUILD
     // Tests: PICOSPECCY_EP_TYPE types lines at the prompt ('|' = wait for the prompt,
     // '^' = ENTER), the launch machinery's way (chords work there, not in PICOSPECCY_KEYS).
+    // PICOSPECCY_EP_NEWIMG=/path makes a blank disk as F9 does.
+    if (const char* n = getenv("PICOSPECCY_EP_NEWIMG")) Debug::log("[EP] new image %s: %d", n, (int)EpFdc::createEmpty(n));
     if (const char* t = getenv("PICOSPECCY_EP_TYPE")) {
         std::string l(t);
         for (char& c : l) { if (c == '|') c = '\n'; else if (c == '^') c = '\r'; }
