@@ -35,6 +35,7 @@
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Enterprise/EpFdc.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/devices/gs/GS.h"
@@ -64,7 +65,7 @@ bool bootResume = false;
 static bool archSupported(ArchIdx a) {
     return a == A_48K || a == A_128K || a == A_PENT || a == A_P512 || a == A_P1024 ||
            a == A_SCORP || a == A_PROFI || a == A_ATM || a == A_TSCONF || a == A_ALF ||
-           a == A_NEXT || a == A_SAM;
+           a == A_NEXT || a == A_SAM || a == A_ENT;
 }
 
 bool supported() {
@@ -88,6 +89,7 @@ static int pageCount(bool& sparse) {
     if (Z80Ops::isAtm) n = (int)MEM_PG_CNT;   // 1 MB on the 1/2+, 4 MB on the 3 and the Evo
     if (Z80Ops::isTsconf) n = (int)MEM_PG_CNT;   // 4 MB
     if (Z80Ops::isSam) n = (int)MEM_PG_CNT;      // 32 internal + the external pages
+    if (Z80Ops::isEnt) n = 8;                    // segments F8..FF
     if (n > (int)MEM_PG_CNT) n = (int)MEM_PG_CNT;
     if (n > MAX_PAGES) n = MAX_PAGES;
     sparse = n > 64;
@@ -172,6 +174,7 @@ static void flushMedia() {
     if (IDE::scheme != IDE::OFF) IDE::flush();
     if (DivMMC::enabled) DivMMC::flush();
     if (Z80Ops::isSam) SamFdc::sync();
+    if (Z80Ops::isEnt) EpFdc::sync();
 }
 
 // VDAC2 (FT812): PSFS = the chip's serialized state, PSFA = one raw area (u8 id +
@@ -446,6 +449,18 @@ bool save(const string& path, const string& name) {
                 const uint32_t fn = SamFdc::snapSave(d, fb);
                 w.begin("PSSF"); w.raw(fb, fn); w.end();
             }
+            free(fb);
+        }
+    }
+
+    if (Z80Ops::isEnt) {   // PSEP: Nick + Dave + the glue; PSEF: the WD1770
+        uint8_t b[Ep::SNAP_MAX];
+        const uint32_t n = Ep::snapSave(b);
+        w.begin("PSEP"); w.raw(b, n); w.end();
+        uint8_t* fb = (uint8_t*)tryMalloc(EpFdc::SNAP_MAX);
+        if (fb) {
+            const uint32_t fn = EpFdc::snapSave(fb);
+            w.begin("PSEF"); w.raw(fb, fn); w.end();
             free(fb);
         }
     }
@@ -845,6 +860,11 @@ static void liveMedia(vector<MediaSlot>& out) {
         out.push_back({ k, string("SAM ") + (char)('1' + i) + ":",
                         Z80Ops::isSam && SamFdc::mounted(i) ? SamFdc::fname(i) : "" });
     }
+    for (uint8_t i = 0; i < 2; i++) {
+        snprintf(k, sizeof(k), "epd%u.file", i);
+        out.push_back({ k, string("EP ") + (char)('A' + i) + ":",
+                        Z80Ops::isEnt && EpFdc::mounted(i) ? EpFdc::fname(i) : "" });
+    }
     out.push_back({ "tape_file", "Tape:", Tape::tapeFileType != TAPE_FTYPE_EMPTY ? Config::tape_file : "" });
     for (uint8_t i = 0; i < 2; i++) {
         snprintf(k, sizeof(k), "ide_img%u", i);
@@ -988,6 +1008,8 @@ static void applyLiveMedia(const vector<string>& lines) {
             }
             SamFdc::setWriteProtect(i, Config::samWP[i]);
         }
+    }
+    if (Z80Ops::isEnt) {
         for (uint8_t i = 0; i < 2; i++) {
             snprintf(key, sizeof(key), "epd%u.wp", i);
             if (cfgValue(lines, key, v)) Config::epWP[i] = v == "true";
@@ -1199,6 +1221,7 @@ bool load(const string& path) {
     bool haveDmmc = false; uint8_t dmmcCtl = 0; bool dmmcPaged = false;
     bool haveAlf = false; uint8_t alfSel = 0, alfBit = 0;
     uint8_t sam[Sam::SNAP_MAX] = {}; uint32_t samSize = 0;
+    uint8_t ep[Ep::SNAP_MAX] = {}; uint32_t epSize = 0;
     JoyProf::Profile joyOffer; bool joyMissing = false;
     uint8_t bd[2][16] = {}; bool haveBd[2] = {}, bdV2[2] = {};
     uint8_t up[UPD_SNAP_MAX] = {}; uint32_t upSize = 0;
@@ -1214,7 +1237,7 @@ bool load(const string& path) {
             p = (uint8_t*)tryMalloc(n);
             if (p) r.raw(p, n); else n = 0;
         }
-    } ide, sdc, ngs, ftState, samFdc[2];
+    } ide, sdc, ngs, ftState, samFdc[2], epFdc;
     // VDAC2: a blank, reset chip first, so a file without its blocks (saved before
     // they existed, or with the board off) does not keep the previous session's.
     const bool ftOn = Z80Ops::isTsconf && Ft812::enabled;
@@ -1277,6 +1300,8 @@ bool load(const string& path) {
         else if (idIs(id, "PSPR") && sz >= 1)  { prSize = sz < sizeof(pr) ? sz : sizeof(pr); r.raw(pr, prSize); }
         else if (idIs(id, "PSAT") && sz >= 1)  { atmSize = sz < sizeof(atm) ? sz : sizeof(atm); r.raw(atm, atmSize); }
         else if (idIs(id, "PSAL") && sz >= 3)  { r.u8(); alfSel = r.u8(); alfBit = r.u8(); haveAlf = true; }
+        else if (idIs(id, "PSEP") && sz >= 1 && Z80Ops::isEnt) { epSize = sz < sizeof(ep) ? sz : sizeof(ep); r.raw(ep, epSize); }
+        else if (idIs(id, "PSEF") && sz >= 1 && Z80Ops::isEnt) epFdc.take(r, sz, EpFdc::SNAP_MAX);
         else if (idIs(id, "PSSM") && sz >= 1 && Z80Ops::isSam) { samSize = sz < sizeof(sam) ? sz : sizeof(sam); r.raw(sam, samSize); }
         else if (idIs(id, "PSSF") && sz >= 2 && Z80Ops::isSam) {
             // byte 1 = the drive; the record is taken whole
@@ -1394,6 +1419,9 @@ bool load(const string& path) {
         NEXTVID::snapLoadEnd();
         if (nxpSize) NextPorts::snapLoad(nxp, nxpSize);
         if (nxdSize) Z80DMA::snapLoad(nxd, nxdSize);
+    } else if (Z80Ops::isEnt) {
+        if (!epSize || !Ep::snapLoad(ep, epSize))
+            Debug::log("[PSS] Enterprise record missing/refused - the machine keeps its reset state");
     } else if (Z80Ops::isSam) {
         if (!samSize || !Sam::snapLoad(sam, samSize)) {
             Debug::log("[PSS] SAM record missing/refused - the ASIC keeps its reset state");
@@ -1411,7 +1439,7 @@ bool load(const string& path) {
             MemESP::plug16(3, MemESP::ram[MemESP::bankLatch].sync(3), Z80Ops::isPentagon ? false : (MemESP::bankLatch & 1) != 0);
         }
     }
-    if (!Z80Ops::is48 && !Z80Ops::isProfi && !Z80Ops::isAtm && !Z80Ops::isTsconf && !nxOn && !Z80Ops::isSam)   // they set their own (DS80 4/6, ATM remap, VPage, Next, SAM)
+    if (!Z80Ops::is48 && !Z80Ops::isProfi && !Z80Ops::isAtm && !Z80Ops::isTsconf && !nxOn && !Z80Ops::isSam && !Z80Ops::isEnt)   // they set their own (DS80 4/6, ATM remap, VPage, Next, SAM)
         VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
 
     // DivMMC last of the memory map: it overrides page 0 while mapped.
@@ -1447,6 +1475,8 @@ bool load(const string& path) {
         if (haveBd[1]) applyFdc(ESPectrum::mb02_fdd, bd[1], bdV2[1]); else syncFdcTrack(ESPectrum::mb02_fdd);
     }
     if (upSize && Config::isPlus3()) Plus3Fdc::snapLoad(up, upSize);
+    if (Z80Ops::isEnt && epFdc.n && !EpFdc::snapLoad(epFdc.p, epFdc.n))
+        Debug::log("[PSS] Enterprise FDC record refused");
     if (Z80Ops::isSam)
         for (uint8_t d = 0; d < 2; d++)
             if (samFdc[d].n && !SamFdc::snapLoad(d, samFdc[d].p, samFdc[d].n))

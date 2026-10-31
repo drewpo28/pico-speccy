@@ -4,6 +4,10 @@
 
 #include "Ep.h"
 #include "EpFdc.h"
+#if HOST_BUILD
+#include "speccy/core/Pss.h"
+#endif
+#include "app/SnapPack.h"
 #include "EpTapeRec.h"
 #include "speccy/devices/tape/Tape.h"
 #include "ui/LEDIndicators.h"
@@ -243,24 +247,26 @@ static uint8_t* s_lRow = nullptr;
 static int  s_lVisLo = 0, s_lVisHi = 0, s_lX0 = 0;
 static uint8_t* s_px = nullptr;                // OUT_PX bytes, heap (the machine's own)
 
+static void linePath() {
+    const bool pair = VIDEO::sam_pair_live && s_ps;
+    s_nick.hiOut = pair ? s_ps->hi : nullptr;
+    int y = 0, cx[8][2];
+    s_lRow = fbRow(y);
+    const int nc = s_lRow ? VIDEO::rowCarves(y, cx) : 0;
+    s_lDirect = s_lRow && nc == 0 && !pair;
+    if (s_lDirect) {
+        // Slots whose 8 px lie inside the row go straight in, the two edge slots
+        // (a 360-wide row starts 4 px into slot 8) land in s_px.
+        const int xres = (int)VIDEO::vga.xres;
+        s_lX0 = (EpCore::Nick::OUT_PX - xres) / 2;             // 4 at 360, 24 at 320
+        s_lVisLo = EpCore::Nick::FIRST + (s_lX0 + 7) / 8;
+        s_lVisHi = EpCore::Nick::FIRST + (s_lX0 + xres) / 8;
+    }
+}
+
 static void linePart(int to) {
     if (to <= s_lSlot) return;
-    if (s_lSlot == 0) {                        // the line's first part decides its path
-        const bool pair = VIDEO::sam_pair_live && s_ps;
-        s_nick.hiOut = pair ? s_ps->hi : nullptr;
-        int y = 0, cx[8][2];
-        s_lRow = fbRow(y);
-        const int nc = s_lRow ? VIDEO::rowCarves(y, cx) : 0;
-        s_lDirect = s_lRow && nc == 0 && !pair;
-        if (s_lDirect) {
-            // Slots whose 8 px lie inside the row go straight in, the two edge slots
-            // (a 360-wide row starts 4 px into slot 8) land in s_px.
-            const int xres = (int)VIDEO::vga.xres;
-            s_lX0 = (EpCore::Nick::OUT_PX - xres) / 2;             // 4 at 360, 24 at 320
-            s_lVisLo = EpCore::Nick::FIRST + (s_lX0 + 7) / 8;
-            s_lVisHi = EpCore::Nick::FIRST + (s_lX0 + xres) / 8;
-        }
-    }
+    if (s_lSlot == 0) linePath();              // the line's first part decides its path
     if (s_lDirect) s_lFlags |= s_nick.line(s_lRow - s_lX0, s_px, s_lVisLo, s_lVisHi, s_lSlot, to);
     else           s_lFlags |= s_nick.line(s_px, nullptr, EpCore::Nick::FIRST, EpCore::Nick::LAST, s_lSlot, to);
     s_lSlot = to;
@@ -336,6 +342,11 @@ uint32_t nextLineT() { return lineT; }
 uint32_t nextDaveIntT() { return s_dave.intArmed() ? s_daveStatT : 0xFFFFFFFFu; }
 void davePoll() { if (CPU::tstates >= s_daveStatT) daveTo(CPU::tstates); }
 
+#if HOST_BUILD
+static const char* s_pssAt = nullptr;
+void hostPssPoll() { if (s_pssAt) { Debug::log("[EP] pss %s: %d", s_pssAt, (int)Pss::save(s_pssAt, "host")); s_pssAt = nullptr; } }
+#endif
+
 void frameEnd() {
 #if PERF_TRACE && PERF_HIST
     { static int n; if (++n >= 50) { n = 0; ::pcprof_dump(); } }
@@ -381,6 +392,9 @@ void frameEnd() {
         static uint32_t n = 0; n++;
         if (const char* e = getenv("PICOSPECCY_EP_SWAP"))
             if (n == strtoul(e, nullptr, 10)) EpFdc::mount(0, strchr(e, ':') + 1);
+        // PICOSPECCY_EP_PSS="frame:/path" writes a .pss at that frame.
+        if (const char* e = getenv("PICOSPECCY_EP_PSS"))
+            if (n == strtoul(e, nullptr, 10)) s_pssAt = strchr(e, ':') + 1;
     }
 #endif
     EPT_ADD(fe, tfe);
@@ -508,6 +522,45 @@ void draw(unsigned int n, bool contended) {
 }
 
 void drawOpcode(bool contended) { tickOp(contended); }
+
+// ---------------------------------------------------------------------------
+// .pss: Nick, Dave, the glue's clocks. The segments and the FILE: channels are not
+// here: RAM is the file's, an open FILE: channel is closed by a load.
+
+uint32_t snapSave(uint8_t* out) {
+    SnapOut o(out);
+    o.u8(1);
+    auto io = [&](const void* p, uint32_t n) { o.raw(p, n); };
+    s_nick.snapFields(io);
+    s_dave.snapFields(io);
+    o.u32(lineT); o.u32(frac57); o.u32(s_daveT);
+    o.u16((uint16_t)s_row); o.u8(s_prevVs ? 1 : 0);
+    o.u8((uint8_t)s_lSlot); o.u8((uint8_t)s_lFlags);
+    o.u8(s_exdosOn ? 1 : 0);
+    return o.n;
+}
+
+bool snapLoad(const uint8_t* in, uint32_t n) {
+    SnapIn i(in, n);
+    if (i.u8() < 1) return false;
+    auto io = [&](void* p, uint32_t len) { i.raw(p, len); };
+    s_nick.snapFields(io);
+    s_dave.snapFields(io);
+    lineT = i.u32(); frac57 = i.u32(); s_daveT = i.u32();
+    s_row = i.u16(); s_prevVs = i.u8() != 0;
+    s_lSlot = i.u8(); s_lFlags = i.u8();
+    s_exdosOn = i.u8() != 0;
+    if (!i.ok) { reset(); return false; }
+    launchAbort();
+    s_nick.palRebuild();
+    s_dave.snapDone();
+    s_dave.outN = 0;
+    for (int w = 0; w < 4; w++) mapWin(w, s_dave.page[w]);
+    wait1Rd = s_dave.waitMode() == 0; wait1Op = s_dave.waitMode() <= 1;
+    daveStatRecalc();
+    if (s_lSlot) linePath();                    // mid-line: this run's row and buffers
+    return true;
+}
 
 // ---------------------------------------------------------------------------
 // Ports (low byte only): Dave #A0..#BF, Nick #80..#8F.

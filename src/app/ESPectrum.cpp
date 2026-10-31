@@ -4826,6 +4826,9 @@ void ESPectrum::loop() {
     faudbufcntSN = audbufcntSN;
     faudbufcntCMS = audbufcntCMS;
 
+#if HOST_BUILD
+    if (Z80Ops::isEnt) Ep::hostPssPoll();
+#endif
     if (!CPU::paused) {
 #if LOAD_WAV_PIO
       if (Config::real_player) {
