@@ -22,6 +22,7 @@ struct Level {
     uint8_t     top;            // first visible row on screen
     uint8_t     nvis;
     uint8_t     vis[NM_MAX_ROWS];
+    uint8_t     nhead;          // leading rows orderLevel() moved up (the active group)
     bool        dyn;            // rows come from S.dyn, not from nodes[]
 };
 

@@ -988,6 +988,33 @@ static const Node kMachine[] = {
     NM_PAGE (TXT_GAME,       act_gameScwong, nullptr),
 };
 
+// The Machine level opens on the RUNNING machine: its family row and the indented
+// rows under it (cartridge, COBMECT, Murmuzavr, TS-Conf/BaseConf options) move to
+// the top of the visible list, the rest keep their order. Running, not staged:
+// a pick inside the session must not reshuffle the rows under the cursor.
+uint8_t orderLevel(const Node* nodes, uint8_t* vis, uint8_t nvis) {
+    if (nodes != kMachine || nvis < 2) return 0;
+    const int32_t want = NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
+    uint8_t g = 0xFF;
+    for (uint8_t i = 0; i < NM_COUNT(kMachine) && g == 0xFF; i++) {
+        const Node& n = kMachine[i];
+        if (n.kind != K_RADIO || n.setting != SET_MACHINE) continue;
+        uint8_t cnt = 0;
+        const Option* o = nodeOptions(n, cnt);
+        for (uint8_t k = 0; k < cnt; k++)
+            if (o[k].value == want) { g = i; break; }
+    }
+    if (g == 0xFF) return 0;
+    uint8_t end = g + 1;
+    while (end < NM_COUNT(kMachine) && kMachine[end].label[0] == ' ') end++;
+    uint8_t out[NM_COUNT(kMachine)], n = 0;   // nvis <= rows of kMachine
+    for (uint8_t i = 0; i < nvis; i++) if (vis[i] >= g && vis[i] < end) out[n++] = vis[i];
+    const uint8_t head = n;   // rows of the running machine's group, now at the front
+    for (uint8_t i = 0; i < nvis; i++) if (vis[i] <  g || vis[i] >= end) out[n++] = vis[i];
+    memcpy(vis, out, nvis);
+    return head;
+}
+
 // The subheader's "Machine: <family> (<option>)" — read straight out of kMachine,
 // so a new machine row names itself. Byte/Profi/Karabas/Scorpion/TS-Conf/ALF all
 // resolve the same way; Scorpion's runtime table is reached through nodeOptions().
