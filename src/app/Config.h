@@ -577,6 +577,18 @@ public:
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)
     static uint16_t ide_chs[2][3]; // per-slot geometry override [C,H,S]; 0,0,0 = auto-detect
+    // Where an IDE slot's sectors come from: 0 = the .hdf in ide_image[],
+    // 1 = the SD card itself, read-only, 2 = the SD card with writes. Sectors
+    // go straight to the card the way DivSD serves esxDOS (raw sector reads /
+    // writes on the FatFs drive), through a WINDOW of the card: [ide_raw_lba,
+    // +ide_raw_len) in CARD sectors, and the guest's LBA 0 is the first of them.
+    // A window rather than the whole card, and read-only rather than writable,
+    // because writing to a card at the wrong sector destroys the firmware's own
+    // files — a raw slot writes only what the user asked for, and only after
+    // they said so. ide_raw_len == 0 means "to the end of the card".
+    static uint8_t ide_raw[2];
+    static uint32_t ide_raw_lba[2];
+    static uint32_t ide_raw_len[2];
     // Guest-visible serial port: the ZiFi FIFO window (#xxEF), the 16550 window and
     // the ZX UNO pair (#FC3B/#FD3B), all bridged to the ESP link. Independent of
     // wifi_enabled — with WiFi off this is a PLAIN UART the guest owns end to end

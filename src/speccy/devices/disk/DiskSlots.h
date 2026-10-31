@@ -136,7 +136,11 @@ namespace DiskSlots {
             DivMMC::init();
         }
         else if (iface == IFACE_IDE) {
+            // An image and a raw-SD window are two answers to "what is in hd0", and
+            // IDE::init prefers the window — eject has to clear both or the card keeps
+            // being served after the user ejected the drive.
             Config::ide_image[idx].clear();
+            Config::ide_raw[idx] = 0;
             IDE::init();
         }
     }
@@ -179,6 +183,7 @@ namespace DiskSlots {
         }
         else if (iface == IFACE_IDE) {
             Config::ide_image[idx] = fname;
+            Config::ide_raw[idx] = 0;      // one medium per drive (see slotEject)
             IDE::init();
             LastRun::note(fname);
         }

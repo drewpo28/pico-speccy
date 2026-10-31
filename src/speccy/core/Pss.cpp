@@ -869,7 +869,7 @@ static void liveMedia(vector<MediaSlot>& out) {
     for (uint8_t i = 0; i < 2; i++) {
         snprintf(k, sizeof(k), "ide_img%u", i);
         out.push_back({ k, string("IDE ") + (char)('0' + i) + ":",
-                        IDE::scheme != IDE::OFF ? Config::ide_image[i] : "" });
+                        IDE::scheme != IDE::OFF && !IDE::isRaw(i) ? Config::ide_image[i] : "" });
     }
     out.push_back({ "esxdos_hdf", "esxDOS:",   Config::esxdos ? Config::esxdos_hdf_image[0] : "" });
     out.push_back({ "esxdos_hd1", "esxDOS 1:", Config::esxdos ? Config::esxdos_hdf_image[1] : "" });

@@ -533,6 +533,8 @@ void CPU::reset() {
     } else if (Config::ide_scheme == IDE::PLUS3E) {
         Config::ide_scheme = IDE::OFF;
     }
+    if (Config::arch != A_PROFI && Config::ide_scheme == IDE::PROFI)
+        Config::ide_scheme = IDE::OFF;   // its decode is Profi-only (snapshot-forced arch)
     if (Config::arch == A_SAM) {   // the Atom Lite is the SAM's card and nobody else's
         if (Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::ATOMLITE) Config::ide_scheme = IDE::ATOMLITE;
     } else if (Config::ide_scheme == IDE::ATOMLITE) {

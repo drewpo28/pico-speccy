@@ -312,6 +312,23 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                     OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
                 }
             }
+            // Profi: its IDE decode exists on Profi hardware only. Twin of the menu's rule
+            // and edge in resolveConstraints, for the switches that never pass the menu.
+            {
+                const bool isProfi = (arch == A_PROFI || arch == A_KARABAS);
+                const bool wasProfi = (Config::arch == A_PROFI);
+                if (isProfi && !wasProfi && Config::ide_scheme != IDE::PROFI &&
+                    (Config::ide_scheme != IDE::OFF || Config::ide_raw[0] || Config::ide_raw[1] ||
+                     !Config::ide_image[0].empty() || !Config::ide_image[1].empty())) {
+                    Config::ide_scheme = IDE::PROFI;
+                    IDE::init();
+                    OSD::osdCenteredMsg("IDE: PROFI", LEVEL_WARN, 1500);
+                } else if (!isProfi && Config::ide_scheme == IDE::PROFI) {
+                    Config::ide_scheme = IDE::OFF;
+                    IDE::init();
+                    OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
+                }
+            }
             if (isP3e && Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
                 Config::zifi_enabled = 0;
                 ZiFi::deinit();
