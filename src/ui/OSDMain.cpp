@@ -3024,7 +3024,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 #endif
                     goto f5_retry;
                 }
-                if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "wav" || ext == "mp3") {
+                if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "ept" || ext == "wav" || ext == "mp3") {
                     // Tape — sync TAP_Path: /tmp/ for ZIP, ALL_Path for normal files
                     FileUtils::TAP_Path = fromZip ? "/tmp/" : FileUtils::ALL_Path;
                     Config::save();
@@ -3036,6 +3036,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (!Config::tape_autostart && mFile.size() > 0)
                         mFile[0] = 'L';
                     Tape::LoadTape(mFile);
+                    // Enterprise: no loader snapshot — type LOAD "TAPE:" and let the
+                    // remote start the deck (EpFile.cpp).
+                    if (Config::arch == A_ENT && Config::tape_autostart) Ep::launchTape();
                 }
                 else if (FileUtils::ifaceForExt(ext) == IFACE_BETA) {
                     // TR-DOS disk. Enter in the browser mounts into Drive A;

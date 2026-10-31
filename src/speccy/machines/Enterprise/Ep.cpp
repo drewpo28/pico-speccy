@@ -4,6 +4,8 @@
 
 #include "Ep.h"
 #include "EpFdc.h"
+#include "speccy/devices/tape/Tape.h"
+#include "ui/LEDIndicators.h"
 #include "EpCore.h"
 
 #include <string.h>
@@ -300,6 +302,9 @@ void catchUp() {
 
 uint32_t nextLineT() { return lineT; }
 
+uint32_t nextDaveIntT() { return s_dave.intArmed() ? s_daveStatT : 0xFFFFFFFFu; }
+void davePoll() { if (CPU::tstates >= s_daveStatT) daveTo(CPU::tstates); }
+
 void frameEnd() {
 #if PERF_TRACE && PERF_HIST
     { static int n; if (++n >= 50) { n = 0; ::pcprof_dump(); } }
@@ -419,8 +424,13 @@ void reset() {
     // then its A: is the default device; with no disk the machine boots as before
     // (FILE: default, EXOS scans two segments fewer).
     EpFdc::reset();
-    s_exdosOn = EpFdc::anyMounted();
-    fileSetDefault(!s_exdosOn || launchWantsFile());
+    // A TAPE launch boots WITHOUT EXDOS even with a disk in A: (it would make A: the
+    // default device, and tape loaders chain their blocks with a plain LOAD "name" —
+    // Amaurote died after its first chunk asking A: for AMAUROTE.BIN). The disk stays
+    // mounted; the next plain reset (F11) puts EXDOS back on the bus.
+    const bool tape = launchWantsTape();
+    s_exdosOn = EpFdc::anyMounted() && !tape;
+    fileSetDefault(!tape && (!s_exdosOn || launchWantsFile()));
     memcpy(s_dave.keys, keys, sizeof(keys));
     lineT = T_PER_LINE;
     frac57 = 0;
@@ -431,7 +441,8 @@ void reset() {
     MemESP::p3special = 2;        // recoverPage0() keeps out of window 0
     MemESP::pagingLock = 0;
     for (int w = 0; w < 4; w++) mapWin(w, s_dave.page[w]);
-    Debug::log("[EP] reset: %s, %uK RAM", s_ep64 ? "EP64 EXOS 2.0" : "EP128 EXOS 2.1", s_ep64 ? 64u : 128u);
+    Debug::log("[EP] reset: %s, %uK RAM, EXDOS %s%s", s_ep64 ? "EP64 EXOS 2.0" : "EP128 EXOS 2.1", s_ep64 ? 64u : 128u,
+               s_exdosOn ? "on" : "off", tape ? " (tape launch)" : "");
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +486,13 @@ uint8_t portIn(uint16_t address) {
         } else if (lo == 0xB6) {
             s_dave.keys[14] = joy[0];
             s_dave.keys[15] = joy[1];
+            if (Tape::tapeStatus == TAPE_LOADING) { Tape::Read(); LED::touchR(LED::TAPE); }
+            // The level is also SOUND (tape feedback): Dave is run to now first, so the
+            // samples up to this edge carry the old level.
+            if (Tape::tapeEarBit != s_dave.tapeIn) {
+                if (s_dave.tapeFb) daveTo(CPU::tstates);
+                s_dave.setTapeIn(Tape::tapeEarBit);
+            }
         }
         return s_dave.read(lo);
     }
@@ -510,6 +528,7 @@ void portOut(uint16_t address, uint8_t data) {
 #endif
         s_dave.write(lo, data);
         if (lo <= 0xAF || lo == 0xB4 || lo == 0xBF) daveStatRecalc();   // source / clock / latches moved
+        if (lo == 0xB5) tapeRemote((uint8_t)(data >> 6));
         if (lo == 0xBF) { wait1Rd = s_dave.waitMode() == 0; wait1Op = s_dave.waitMode() <= 1; }
         return;
     }

@@ -15940,6 +15940,36 @@ EXDOS, SNAKE1K and HERO run from it; `PICOSPECCY_EPLOG=1` logs FDC commands + EX
 `PICOSPECCY_EP_NOFILE=1` lets a typed LOAD go to A:. Not exercised: writes, drive B:,
 disk change, EP64 + EXDOS, EXDOS.INI auto-start.
 
+**Tape (2026-10-31; hw-confirmed DVp2w on `debug/DVp2w-ep-tape4-1.1.1` — owner: Amaurote + Boulder Dash
+from ep128emu .tap with a disk mounted, "работает", not itemised; plan Phase 5).** `src/speccy/devices/tape/Tape_EPTE.cpp` =
+ep128emu's EPTE format (magic at 128, 128-entry chunk table, 24 kHz samples = 145.83 T) as
+one pulse stream in `TAPE_PHASE_EPTEF`, the standalone-CSW shape; WAV/TZX/CSW through the
+deck. EXOS hears the pulses on Dave #B6 bits 6-7 (`tapeIn ? 0x0F : 0xCF`), no fast load;
+Dave #B5 bits 6-7 (the remote) Play/Stop the deck (`Ep::tapeRemote`); F5 on a tape = reset +
+typed `load "tape:"` (`Ep::launchTape`). **EXOS times a pulse with HALT**: `OUT (A7),4E`
+releases channel 0 as the sound-interrupt source, `EI/HALT` sleeps exactly chFrq+1 Dave
+cycles, a busy loop counts the rest — our frame loop caught Dave up only at Nick line ends
+(up to 256 T late), so the measurement was noise and EXOS kept SEARCHING on a perfect
+stream. `Ep::nextDaveIntT()` (`s_daveStatT`) is a slice boundary in `CPU::epFrameLoop` now
+(`Ep::davePoll()` there). Two shared WAV fixes: 8-bit samples are unsigned — `(int8_t)v > 0`
+put 0x00 with the high half, now `v < 0x80` (same polarity otherwise); `Play()` restarted a
+WAV from the start, so the remote's stop/start between header and data fed EXOS the header
+again ("Cassette CRC error") — `wavElapsed` resumes it (WAV_Open / end / `WAV_RewindTo0` =
+tape-browser Enter reset it). `debug/ep-tape/mkeptape.py` makes EPTE + WAV from a .COM.
+**ep128emu's own `.tap`** (magic 0275CD72 1C445126, 4 KB big-endian header with cue points, 1/2/4/8-bit
+samples packed MSB-first in 4096-sample blocks — the owner's tapes) plays through the same file as
+a sampled stream (runs = pulses); LoadTape's `.tap` branch sniffs both EP magics ahead of the
+Spectrum TAP. **A tape launch keeps TAPE: the default device** (`launchWantsTape`): the loaders
+chain blocks with a plain `LOAD "name"`, and FILE: default answered "File not found". Host: 720
+Degrees, Amaurote, Boulder Dash, Bruce Lee all reach their title screens.
+**The tape is heard** (Dave #B5 bit 5 = 0 = tape feedback, +0x3F both sides while the input is high,
+EXOS keeps it on — `Dave::tapeFb/setTapeIn`, a level edge at #B6 runs Dave to that T first).
+**A tape launch boots without EXDOS even with a disk mounted** (A: default would eat the loaders' plain
+`LOAD "name"` — Amaurote died at its first chunk with GAMES_EP64_01.IMG still in A:). EP64 stops Amaurote
+after 4 chunks on the host too (needs 128K?, EXOS 2.0's tape code = 2.1's).
+Not done: SAVE, MP3 resume. Not itemised on hw: the tape audible from the speaker, the EPTE/WAV test
+tapes, Enter-rewind in the tape browser.
+
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 
 Plan + status: `docs/sam-coupe-plan.md`. Model = SimCoupe (`Base/SAMIO.cpp`,

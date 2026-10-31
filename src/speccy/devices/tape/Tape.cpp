@@ -66,6 +66,10 @@ using namespace std;
 
 wav_t Tape::wav;
 uint32_t Tape::wav_offset = 0;
+// WAV: guest T already played when Stop() stopped the deck, so Play() resumes
+// there (the Enterprise remote stops the tape between the header and the data
+// chunk; a restart from the start fed EXOS the header again = Cassette CRC error).
+static uint64_t wavElapsed = 0;
 
 uint32_t Tape:: mp3_read = 0;
 
@@ -102,10 +106,10 @@ uint32_t Tape::tapeBlkPauseLen;
 // one place, so Play / Read / the snapshot restore all agree.
 static inline uint64_t tapeClock() {
     const uint64_t t = CPU::global_tstates + CPU::tstates;
-    return Z80Ops::isSam ? t * 7 / 12 : t;
+    return Z80Ops::isSam ? t * 7 / 12 : Z80Ops::isEnt ? t * 7 / 8 : t;   // 6 MHz / 4 MHz CPUs to 3.5 MHz T
 }
 static inline uint32_t tapeFrameT() {
-    return Z80Ops::isSam ? CPU::statesInFrame * 7 / 12 : CPU::statesInFrame;
+    return Z80Ops::isSam ? CPU::statesInFrame * 7 / 12 : Z80Ops::isEnt ? CPU::statesInFrame * 7 / 8 : CPU::statesInFrame;
 }
 
 uint32_t Tape::tapeNext;
@@ -373,7 +377,7 @@ static inline bool tapeFastMachineOk() {
     // takes over only when the OS gives the load back to the deck (menu "Tape
     // Loader", no .tapein: Z80::next_os_tape_decline). So the deck must stay
     // STOPPED after a mount here too, or it spools past the header.
-    return Config::arch != A_ALF && Config::arch != A_SAM &&
+    return Config::arch != A_ALF && Config::arch != A_SAM && Config::arch != A_ENT &&
            Config::romSet != R_ZX81P && Config::romSet != R_48K_CS &&
            Config::romSet != R_128K_CS && !If2::live();   // a cartridge is not the 48K ROM
 }
@@ -439,6 +443,7 @@ void Tape::LoadTape(const string& mFile_) {
     const string savedTapPath = FileUtils::TAP_Path;
     StopRealPlayer();
     CSW_Close();
+    EPTE_Close();
     if (FileUtils::hasMP3extension(mFile)) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
@@ -446,7 +451,7 @@ void Tape::LoadTape(const string& mFile_) {
         // Read and analyze tap file
         Tape::MP3_Open(mFile);
         ESPectrum::TapeNameScroller = 0;
-        Tape::Play();
+        if (Config::arch != A_ENT) Tape::Play();     // Enterprise: the remote starts the deck
     } else if (FileUtils::hasWAVextension(mFile)) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
@@ -454,7 +459,15 @@ void Tape::LoadTape(const string& mFile_) {
         // Read and analyze tap file
         Tape::WAV_Open(mFile);
         ESPectrum::TapeNameScroller = 0;
-        Tape::Play();
+        if (Config::arch != A_ENT) Tape::Play();     // Enterprise: the remote (Dave #B5) starts the deck
+    } else if (FileUtils::hasEPTextension(mFile) ||
+               (FileUtils::hasTAPextension(mFile) && Tape::isEpteFile(FileUtils::TAP_Path + mFile.substr(1)))) {
+        // Enterprise tape (EPTE): pulses for Dave #B6, the EP's remote starts it.
+        mFile.erase(0, 1);
+        FileUtils::TAP_Path = savedTapPath;
+        Tape::Stop();
+        Tape::EPTE_Open(mFile);
+        ESPectrum::TapeNameScroller = 0;
     } else if (FileUtils::hasTAPextension(mFile)) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
@@ -617,8 +630,10 @@ void Tape::LoadTape(const string& mFile_) {
     const bool playFallback = runKey && Config::tape_autostart &&
         !Tape::flashloadAvailable() && Tape::tapeStatus == TAPE_STOPPED &&
         Tape::tapeFileType != TAPE_FTYPE_EMPTY && Tape::tapeFileType != TAPE_FTYPE_CSW &&
+        Tape::tapeFileType != TAPE_FTYPE_EPTE &&
         Tape::tapeFileName != "none" &&   // CSW: started by its own branch / the auto-start
-        Config::arch != A_SAM;            // SAM: Sam::portIn starts it when LOAD polls
+        Config::arch != A_SAM &&          // SAM: Sam::portIn starts it when LOAD polls
+        Config::arch != A_ENT;            // Enterprise: the remote (Dave #B5 bits 6-7) starts it
 #if TIMEX_PORT_TRACE
     // "the tape does nothing" has four possible causes and they are indistinguishable
     // from the screen: the caller asked for L not R, auto-start is off, flashload's
@@ -644,6 +659,7 @@ void Tape::LoadTape(const string& mFile_) {
 
 void Tape::Init() {
     CSW_Close();
+    EPTE_Close();
     f_close(&tape);
     tapeFileType = TAPE_FTYPE_EMPTY;
 }
@@ -662,6 +678,7 @@ void Tape::Eject() {
     FreeSymDefTable();
     if (cswBlock.obj.fs) f_close(&cswBlock);
     CSW_Close();
+    EPTE_Close();
     f_close(&tape);
     tapeFileType = TAPE_FTYPE_EMPTY;
     tapeFileName = "none";
@@ -692,7 +709,8 @@ void Tape::LoadRemembered() {
     if (!FileUtils::hasTAPextension(full) &&
         !FileUtils::hasTZXextension(full) &&
         !FileUtils::hasPZXextension(full) &&
-        !FileUtils::hasCSWextension(full)) return;
+        !FileUtils::hasCSWextension(full) &&
+        !FileUtils::hasEPTextension(full)) return;
     size_t slash = full.rfind('/');
     if (slash == string::npos) return;
     // A remembered "USB:/..." tape must wait for the stick to enumerate (boot
@@ -800,6 +818,7 @@ void Tape::WAV_Open(const string& name) {
         delete sch;
     }
     tapeFileType = TAPE_FTYPE_WAV;
+    wavElapsed = 0;
     wav_offset = f_tell(&tape);
     tapePlayOffset = wav_offset; // initial offset
     tapeNumBlocks = 1; // one huge block
@@ -1319,9 +1338,9 @@ void Tape::Play() {
     tapFlashCont = false;
     s_tapContBlock = -1;
 
-    if (tapeFileType == TAPE_FTYPE_CSW) {
+    if (tapeFileType == TAPE_FTYPE_CSW || tapeFileType == TAPE_FTYPE_EPTE) {
         // One pulse stream: resume where Stop() left it (rewinds after the end).
-        if (!CSW_Play()) { Stop(); return; }
+        if (!(tapeFileType == TAPE_FTYPE_CSW ? CSW_Play() : EPTE_Play())) { Stop(); return; }
         GDBEnd = false;
         Tape::tapeStatus = TAPE_LOADING;
         tapeStart = tapeClock();
@@ -1375,8 +1394,14 @@ void Tape::Play() {
     // Start loading
     Tape::tapeStatus = TAPE_LOADING;
     tapeStart = tapeClock();
+    if (tapeFileType == TAPE_FTYPE_WAV) tapeStart -= wavElapsed;   // resume (u64 wrap is fine)
 
     wearReset();
+}
+
+void Tape::WAV_RewindTo0() {
+    wavElapsed = 0;
+    if (tapeFileType == TAPE_FTYPE_WAV && tapeStatus == TAPE_LOADING) tapeStart = tapeClock();
 }
 
 void Tape::WAV_GetBlock() {
@@ -1412,8 +1437,10 @@ void Tape::Stop() {
     // teardown step by LoadTape() (incl. the silent F11/boot re-mount via
     // LoadRemembered) — popping the OSD there put a spurious "Tape loading is
     // stopped" message on screen on every reset.
-    if (tapeStatus == TAPE_LOADING)
+    if (tapeStatus == TAPE_LOADING) {
         OSD::notify(" Tape loading is stopped ", LEVEL_INFO, 900);
+        if (tapeFileType == TAPE_FTYPE_WAV) wavElapsed = tapeClock() - tapeStart;
+    }
     tapeEarBit = 0;
     tapeStatus = TAPE_STOPPED;
     tapePhase = TAPE_PHASE_STOPPED;
@@ -1670,11 +1697,16 @@ IRAM_ATTR void Tape::Read() {
         }
         if (tapeFileSize >= sampleNumber) {
             f_lseek(tape, sampleNumber);
-            int8_t v = readByteFile(tape);
-            tapeEarBit = v > 0 ? 1 : 0;
+            // 8-bit WAV samples are UNSIGNED (centre 0x80): the low half is one level,
+            // the high half the other. The old `(int8_t)v > 0` put 0x00 with the HIGH
+            // half, so a saturated 0x00/0xFF square wave never toggled (a generated
+            // Enterprise tape). Same polarity as before for every other value.
+            const uint8_t v = (uint8_t)readByteFile(tape);
+            tapeEarBit = v < 0x80 ? 1 : 0;
             tapePlayOffset = sampleNumber;
         } else {
             Stop();
+            wavElapsed = 0;                   // the end: Play() starts over
             f_lseek(tape, 0);
         }
         wearAudio();
@@ -1687,6 +1719,9 @@ IRAM_ATTR void Tape::Read() {
             switch (tapePhase) {
             case TAPE_PHASE_CSWF:
                 CSW_Step();          // flash: one call per pulse
+                break;
+            case TAPE_PHASE_EPTEF:
+                EPTE_Step();
                 break;
             case TAPE_PHASE_CSW:
                 tapeEarBit ^= 1;

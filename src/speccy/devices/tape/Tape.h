@@ -51,6 +51,7 @@ using namespace std;
 #define TAPE_FTYPE_MP3 4
 #define TAPE_FTYPE_PZX 5
 #define TAPE_FTYPE_CSW 6  // standalone .csw (Tape_CSW.cpp)
+#define TAPE_FTYPE_EPTE 7 // Enterprise EPTE tape image (Tape_EPTE.cpp)
 #define PZX_MAX_PULSES 16  // max pulses per symbol in PZX DATA block
 
 // Tape status definitions
@@ -85,6 +86,7 @@ using namespace std;
 #define TAPE_PHASE_PZX_PULS 17
 #define TAPE_PHASE_PZX_DATA 18
 #define TAPE_PHASE_CSWF 19     // standalone .csw pulse stream
+#define TAPE_PHASE_EPTEF 20    // Enterprise EPTE pulse stream
 
 // Tape sync phases lenght in microseconds
 #define TAPE_SYNC_LEN 2168 // 620 microseconds for 2168 tStates (48K)
@@ -292,7 +294,17 @@ public:
     // and drop the decoder (LoadTape / Eject / Init).
     static string cswBlockReadData();
     static void CSW_RewindTo0();
+    static void WAV_RewindTo0();     // the WAV resumes where Stop() left it; this forgets that
     static void CSW_Close();
+    // Enterprise EPTE tape (Tape_EPTE.cpp): same shape as the standalone CSW.
+    static bool isEpteFile(const string& path);   // the magic at offset 128
+    static void EPTE_Open(const string& name);
+    static bool EPTE_Play();
+    static void EPTE_Step();
+    static void EPTE_GetBlock();
+    static void EPTE_Close();
+    static void EPTE_RewindTo0();
+    static string epteBlockReadData();
     static bool pzxFlashCont;         // FlashLoad partial -> real-mode continuation pending
     // TAP FlashLoad filled the ROM's share of a longer block and left the rest
     // PLAYING (TAP_ContinueFrom). The traps' "stop an auto-started tape" must keep it.

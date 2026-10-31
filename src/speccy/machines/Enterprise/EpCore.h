@@ -91,6 +91,9 @@ struct Dave {
     uint8_t  page[4] = {0, 0, 0, 0};
     uint8_t  sysconf = 0;          // #BF: bits 2-3 wait mode (0 all, 1 M1 only, 2/3 none)
     uint8_t  kbRow = 0;
+    uint8_t  tapeIn = 0;           // tape input level (1 = high), host side writes; #B6 bits 6-7 = NOT it
+    uint8_t  tapeFb = 1;           // #B5 bit 5 = 0: the tape input is mixed into the sound (ep128emu tape_feedback)
+    void setTapeIn(uint8_t v) { if (v == tapeIn) return; tapeIn = v; if (tapeFb) sumOut(); }
     uint8_t  reg[32] = {};         // the raw write latch (sound registers, phase 1)
     uint8_t  keys[16];             // keyboard rows 0..9, active low (host side writes)
 
@@ -141,6 +144,7 @@ struct Dave {
     void tick(int n);                          // n Dave cycles at 250 kHz
     void setInt1(bool state);
     bool irq() const { return (actSnd | actHz | act1 | act2) != 0; }
+    bool intArmed() const { return (enSnd | enHz) != 0; }   // a timer source can raise the line
     int  waitMode() const { return (sysconf >> 2) & 3; }
     int  cycleT() const { return (sysconf & 2) ? 24 : 16; } // 4 MHz T a Dave cycle (#BF bit 1)
     // Cycles from now until the first one that can move the #B4 status (the 1 kHz
