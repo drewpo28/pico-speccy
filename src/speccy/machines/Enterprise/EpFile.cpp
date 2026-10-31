@@ -603,10 +603,15 @@ void launchTape(bool) {
 // remote between the chunks of a file; a block format would restart its block).
 static uint8_t s_remote = 0;
 static bool    s_byRemote = false;
+// True if the remote was up at any point of this frame (one-shot): the frame EXOS
+// drops it in still carries the end of the chunk.
+static bool s_remoteSeen = false;
+bool tapeRemoteUp() { const bool r = s_remote != 0 || s_remoteSeen; s_remoteSeen = false; return r; }
 void tapeRemote(uint8_t bits) {
     bits &= 3;
     if (bits == s_remote) return;
     const bool was = s_remote != 0, now = bits != 0;
+    if (was) s_remoteSeen = true;
     s_remote = bits;
     Debug::log("[EP] tape remote %u (deck %s, %s)", bits, Tape::tapeStatus == TAPE_LOADING ? "playing" : "stopped", Tape::tapeFileName.c_str());
     if (now && !was) {
@@ -626,6 +631,16 @@ void tapeRemote(uint8_t bits) {
 
 void launchResume() {
     Config::epKeepTmp = false;              // a disk launch that rebooted: the /tmp mount is back (Config::load)
+#if HOST_BUILD
+    // Tests: PICOSPECCY_EP_TYPE types lines at the prompt ('|' = wait for the prompt,
+    // '^' = ENTER), the launch machinery's way (chords work there, not in PICOSPECCY_KEYS).
+    if (const char* t = getenv("PICOSPECCY_EP_TYPE")) {
+        std::string l(t);
+        for (char& c : l) { if (c == '|') c = '\n'; else if (c == '^') c = '\r'; }
+        seqArmLine(l, false, "PICOSPECCY_EP_TYPE");
+        return;
+    }
+#endif
     if (watchdog_hw->scratch[LAUNCH_SCRATCH] != LAUNCH_TAG) return;
     watchdog_hw->scratch[LAUNCH_SCRATCH] = 0;
     FIL f;

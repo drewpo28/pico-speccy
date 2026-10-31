@@ -4,6 +4,7 @@
 
 #include "Ep.h"
 #include "EpFdc.h"
+#include "EpTapeRec.h"
 #include "speccy/devices/tape/Tape.h"
 #include "ui/LEDIndicators.h"
 #include "EpCore.h"
@@ -274,6 +275,7 @@ static void lineRun() {
 // move of s_daveT and every register write (a keyboard-polling game reads #B4
 // ~1500 times a frame; before this each read ran Dave to its own T).
 static uint32_t s_daveStatT = 0;
+static bool s_b6Read = false;                // the guest polled #B6 this frame (a LOAD)
 static __attribute__((always_inline)) inline void daveStatRecalc() {
     s_daveStatT = s_daveT + (s_dave.statusCycles() - 1) * (uint32_t)s_dave.cycleT();
 }
@@ -319,6 +321,12 @@ void frameEnd() {
         const uint8_t l = n ? s_aud[n - 1] : 0, r = n ? s_aud[AUD_CAP + n - 1] : 0;
         for (int i = n; i < AUD_CAP; i++) { s_aud[i] = l; s_aud[AUD_CAP + i] = r; }
     }
+    // Tape SAVE: the frame's left output is the cassette signal (EpTapeRec.cpp).
+    if (EpTapeRec::frame(s_aud, s_dave.outN, tapeRemoteUp(), s_b6Read)) {
+        if (Tape::tapeStatus == TAPE_LOADING) Tape::Stop();    // the deck is recording, not playing
+        s_dave.setTapeIn(0);                                   // no feedback under the signal
+    }
+    s_b6Read = false;
     s_dave.outN = 0;
     // The next frame's resolution: 16 px a slot if this one showed a hi-res line.
     bool want = s_hiSeen;
@@ -423,6 +431,7 @@ void reset() {
     // EXDOS: the ROM is on the bus from this reset on when a disk is in a drive, and
     // then its A: is the default device; with no disk the machine boots as before
     // (FILE: default, EXOS scans two segments fewer).
+    EpTapeRec::close();
     EpFdc::reset();
     // A TAPE launch boots WITHOUT EXDOS even with a disk in A: (it would make A: the
     // default device, and tape loaders chain their blocks with a plain LOAD "name" —
@@ -484,6 +493,7 @@ uint8_t portIn(uint16_t address) {
             memcpy(s_dave.keys, keys, sizeof(keys));
             if (injOn) for (int r = 0; r < 10; r++) s_dave.keys[r] &= injKeys[r];
         } else if (lo == 0xB6) {
+            s_b6Read = true;
             s_dave.keys[14] = joy[0];
             s_dave.keys[15] = joy[1];
             if (Tape::tapeStatus == TAPE_LOADING) { Tape::Read(); LED::touchR(LED::TAPE); }

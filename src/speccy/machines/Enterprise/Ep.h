@@ -106,7 +106,8 @@ namespace Ep {
     // EPTE image), its ear bit is Dave #B6 bits 6-7, the remote (#B5 bits 6-7) starts
     // and stops it. launchTape types LOAD "TAPE:" (reset unless BASIC is at its prompt).
     void launchTape(bool freshReset = false);   // freshReset: the machine was just reset (setup), type at its first prompt
-    void tapeRemote(uint8_t bits);   // #B5 bits 6-7 as written
+    void tapeRemote(uint8_t bits);
+    bool tapeRemoteUp();   // #B5 bits 6-7 as written
     // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
     // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)
     // into the matrix once IS-BASIC waits for a line.
