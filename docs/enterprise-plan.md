@@ -282,8 +282,90 @@ block and only said "EXOS runs".
   right after a `:DIR` typed its line at the prompt and nothing opened; the repeat
   worked — not reproduced, watch for it.
 
+## Phase 5 — tape (2026-10-31; hw-confirmed DVp2w: Amaurote + Boulder Dash from ep128emu .tap with a disk mounted)
+
+- Formats: **EPTE** (`"ENTERPRISE 128K TAPE FILE"` magic at offset 128, a 128-entry
+  LE32 chunk table, data from 512 — what ep128emu plays and writes;
+  `Tape_EPTE.cpp` is its `Tape_EPTE::runOneSample_` at pulse granularity in its own
+  phase `TAPE_PHASE_EPTEF`, one pulse stream like the standalone CSW, 24000 Hz samples
+  as 145.83 T of 3.5 MHz) and the deck's WAV/TZX/CSW (the EP only ever hears
+  pulses). No fast load: EXOS reads Dave #B6 bits 6-7 (`tapeIn ? 0x0F : 0xCF`, ep128emu
+  dave.cpp read 0x16) and `tapeFastMachineOk()` excludes the EP. The remote (Dave
+  register 0x15 = #B5 bits 6-7) starts the deck (`Ep::tapeRemote` -> `Tape::Play`) and
+  stops it again (EXOS does that between the header and the data chunk); a tape the
+  user started by hand is left alone. `tapeClock()`/`tapeFrameT()` scale the 4 MHz T
+  by 7/8. F5 / Web catalog on an .ept/.wav/.tzx/.csw/.mp3 = reset + typed
+  `load "tape:"` (`Ep::launchTape`, the `.COM` machinery; ':' is the EP's own key,
+  row 6 bit 5 unshifted — SHIFT+';' is '+'). `.ept` in the tape browser (one row,
+  Enter rewinds, `epteBlockReadData` = chunk + percent).
+- **How EXOS times a pulse, and the bug that cost the day**: it does NOT poll in a
+  tight loop. `EBD9`: arm Dave channel 0 as the sound-interrupt source (`OUT (A7),4E`
+  releases the channel, frequency code 1 while hunting the leader, 0x2D for the data),
+  `EI / HALT` sleeps exactly `chFrq + 1` Dave cycles, then a busy loop (`IN B6 / XOR C
+  / JP`) counts the rest of the half-period in E; `OUT (A7),4F` holds the channel
+  again. Our frame loop caught Dave up only at Nick line ends, so the HALT woke up to
+  256 T late and E was noise: SEARCHING for ever on a perfect pulse stream.
+  `Ep::nextDaveIntT()` (= `s_daveStatT` while a timer source is enabled) is a slice
+  boundary in `CPU::epFrameLoop` now, with `Ep::davePoll()` catching Dave up there.
+  Every HALT-timed Dave interrupt (games syncing on the 1 kHz / 50 Hz too) is exact
+  to a Dave cycle now, not to a line.
+- **Two WAV bugs, shared path, fixed**: 8-bit WAV samples are unsigned and the reader
+  tested `(int8_t)v > 0`, so 0x00 sat with the HIGH half and a saturated 0x00/0xFF
+  square wave never toggled — now `v < 0x80` (identical for every other value, so no
+  polarity change for the Spectrum); and `Play()` restarted a WAV from the start,
+  which after the remote stop fed EXOS the header block again as data = "Cassette CRC
+  error" — `wavElapsed` (set in Stop, consumed in Play, cleared at the end of file,
+  by WAV_Open and `WAV_RewindTo0` = the tape browser's Enter). MP3 still restarts.
+- Host: `scratchpad`-style `debug/ep-tape/mkeptape.py <file.com> NAME out.ept out.wav`
+  writes both from an EXOS .COM (tapeio.cpp TapeOutput::writeFile's layout — header
+  chunk `00 6A FF nlen+2 FF nlen NAME crc`, data chunks of 256-byte blocks with a
+  bit-serial CRC); `debug/ep-tape/JETPAC.{EPT,WAV}` are the test tapes.
+  `PICOSPECCY_EP_LAUNCH=/EP/JETPAC.EPT` (or `.WAV`) on the host plays to the Jetpac
+  menu; `PICOSPECCY_EPLOG=1` adds an `[EPLOG] epte pulse` line every 2000 pulses.
+- **ep128emu's OWN tape format (`.tap`, magic 0275CD72 1C445126)** — what the owner's
+  tapes are (720 Degrees, Amaurote, Boulder Dash, Bruce Lee: 1-bit 24 kHz, 89-174 s,
+  1-4 cue points): a 4096-byte big-endian header (bits per sample, rate, cue points =
+  sample positions), then samples packed MSB-first in 4096-sample blocks. Same file,
+  type and phase as EPTE (`s_sampled`): runs of equal samples become pulses (64-byte
+  window, run cap 2048), level = sample != 0 (Dave `setTapeInput(state)`). LoadTape's
+  `.tap` branch sniffs both magics before the Spectrum TAP path. All four load to their
+  title screens on the host (~2-3 min of tape each; remote stop/start between blocks).
+- **A tape launch keeps TAPE: the default device** (`launchWantsTape`, consumed by
+  `Ep::reset` like `launchWantsFile`; always through a reset, no prompt shortcut): the
+  loaders chain their blocks with a plain `LOAD "720.PCK"` / `BOULDASH.CHR`, and with
+  FILE: default (the .COM launch's choice, and a running IS-BASIC's) EXOS asked FILE:
+  and got "File not found". With a disk in A: EXDOS makes A: default, as on hardware.
+- **The tape is HEARD** (ep128emu `tape_feedback`): Dave #B5 bit 5 = 0 adds 0x3F to both
+  sides while the tape input is high (`Dave::tapeFb`, `setTapeIn`, `sumOut` saturating at
+  255); EXOS's keyboard scan keeps the bit clear, so a real EP plays the tape from its
+  speaker during a load. A level change at a #B6 read runs Dave to that T first
+  (`daveTo`), so the samples carry the edge in place. Host capture
+  (`PICOSPECCY_WAV`): the 2400 Hz leader = 4800 toggles/s at level ~31 during the load,
+  silence before and after.
+- **A tape launch boots WITHOUT EXDOS even with a disk in A:** (`Ep::reset`: `s_exdosOn =
+  anyMounted && !launchWantsTape()`): EXDOS makes A: the default device and the
+  loaders' plain `LOAD "name"` then went to the disk — Amaurote with GAMES_EP64_01.IMG
+  still mounted (the mount persists in Config) died after its first chunk on the
+  "ENTERPRISE" splash; the owner's hw report "resets at 2-3%" (= 3 s of tape) is that
+  shape. The disk stays mounted, the next plain reset (F11) has EXDOS again. On the
+  host stand the launch's reset is setup's own EXDOS re-reset (`tapeLaunchArm(false)`
+  from launchResume) — two resets consumed the one-shot flag one reset too early.
+- **EP64: Amaurote stops after its 4th chunk on the host too** (black screen, the
+  loaded code reading channel 1 and then nothing; EP128 loads 9 chunks and runs).
+  EXOS 2.0's tape routine is byte-for-byte 2.1's, so not the timing: most likely the
+  game needs 128K (a 48K Spectrum conversion + the EP's video RAM in segment FF). Not
+  checked against ep128emu (not installed here).
+- Not done: tape SAVE (the remote + Dave's tape output bits), TZX/CSW of real EP
+  recordings untested (only the deck's generic pulse path), the "tape loading is
+  stopped" toast fires on every remote stop (cosmetic).
+- **Hw 2026-10-31 (owner, `debug/DVp2w-ep-tape4-1.1.1`): "работает"** — Amaurote and Boulder
+  Dash from the ep128emu `.tap` files with the disk image still mounted (EXDOS off the bus
+  for the tape launch), i.e. the Dave-interrupt slice, the sampled reader, the remote
+  stop/start and the TAPE: default all confirmed on the board. Not itemised: the tape
+  audible from the speaker, the EPTE/WAV test tapes, Enter-rewind in the tape browser.
+
 ## Next
 
-1. Tape (.wav/.tzx? — the EP tape format), EXDOS writes exercised, drive B:.
+1. Tape SAVE, EXDOS writes exercised, drive B:.
 2. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
 3. Web catalog adapter, .pss (incl. the FDC).

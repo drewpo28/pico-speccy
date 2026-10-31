@@ -481,7 +481,12 @@ void Dave::write(uint8_t r, uint8_t value) {
         en2   = (t & 0x40) ? 0 : 1; if (t & 0xC0) act2 = 0;
         break;
     }
-    case 0x15: kbRow = value & 0x0F; break;
+    case 0x15: {
+        kbRow = value & 0x0F;
+        const uint8_t fb = (value & 0x20) ? 0 : 1;   // tape feedback: the tape is heard
+        if (fb != tapeFb) { tapeFb = fb; sumOut(); }
+        break;
+    }
     case 0x1F: sysconf = value; break;
     default: break;
     }
@@ -513,7 +518,7 @@ uint8_t Dave::read(uint8_t r) const {
         // them (dave.cpp read 0x16): EXT1 on keys[14], EXT2 on keys[15], both
         // active low with bits 0 RIGHT 1 LEFT 2 DOWN 3 UP 4 FIRE. Row 0 / 5 read the
         // fire buttons (bits 0-2 of the port), rows 1-4 / 6-9 the directions on bit 0.
-        uint8_t n = 0xCF;
+        uint8_t n = tapeIn ? 0x0F : 0xCF;   // ep128emu: (input - 1) & 0x80 / 0x40
         if (kbRow < 5) {
             if (kbRow == 0) n &= (uint8_t)(0xF8 | (keys[14] >> 4));
             else            n &= (uint8_t)(0xFE | (keys[14] >> (4 - kbRow)));
@@ -604,12 +609,15 @@ void Dave::step() {
 
 // DAC: in DAC mode a side plays channel 0's volume register x4 (sampled sound).
 void Dave::sumOut() {
-    unsigned l = 0, r = 0;
-    if (dacL) l = volL[0] << 2;
+    // ep128emu: the tape input adds 0x3F to both sides while tape feedback is on
+    // (its total may exceed 252; ours saturates at 255).
+    const unsigned fb = (tapeFb && tapeIn) ? 0x3Fu : 0u;
+    unsigned l = fb, r = fb;
+    if (dacL) l += volL[0] << 2;
     else for (int c = 0; c < 4; c++) if (st[c]) l += volL[c];
-    if (dacR) r = volR[0] << 2;
+    if (dacR) r += volR[0] << 2;
     else for (int c = 0; c < 4; c++) if (st[c]) r += volR[c];
-    outLv = (uint8_t)l; outRv = (uint8_t)r;
+    outLv = (uint8_t)(l > 255 ? 255 : l); outRv = (uint8_t)(r > 255 ? 255 : r);
 }
 
 // The T of `k` Dave cycles at one output level into the 128-T samples.

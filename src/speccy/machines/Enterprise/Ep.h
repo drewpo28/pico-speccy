@@ -64,6 +64,14 @@ namespace Ep {
     // unipolar; false = no buffer (no heap at reset).
     bool audio(const uint8_t** l, const uint8_t** r);
     uint32_t nextLineT();            // frame T of the next line end
+    // Frame T at which Dave's interrupt chain can next move the status (the sound
+    // source's toggle, the 1 kHz / 50 Hz chain), ~0 when neither interrupt is
+    // enabled: a slice must end there and davePoll() catch Dave up, or an interrupt
+    // armed inside a slice is taken up to a line late. EXOS's tape loader sleeps in
+    // HALT for exactly (chFrq + 1) Dave cycles after releasing channel 0 and counts
+    // the rest of the half-period in a busy loop, so that lateness is the measurement.
+    uint32_t nextDaveIntT();
+    void davePoll();                 // catch Dave up when CPU::tstates reached nextDaveIntT()
     void catchUp();                  // run the lines whose end CPU::tstates has passed
     void frameEnd();                 // EndFrame (before the frame's T are subtracted)
     void renderFrame();              // a paused redraw: nothing to redraw, the fb holds it
@@ -87,12 +95,18 @@ namespace Ep {
     void fileTrap();
     void fileReset();
     void fileSetDefault(bool on); // FILE: answers EXOS "default device?" with this (EXDOS A: otherwise)
-    bool launchWantsFile();       // a .COM/.BAS launch is pending: FILE: default at this reset (consumed)
+    bool launchWantsFile();
+    bool launchWantsTape();          // a tape launch: TAPE: stays the default device (one-shot)       // a .COM/.BAS launch is pending: FILE: default at this reset (consumed)
     // EXDOS: the card (EpFdc) is always on the bus; its ROM (segments 0x20-0x21) is
     // present from the next reset on while a disk is in a drive. F5 / Web catalog
     // on an EP disk image: mount in A:, switch to the Enterprise if needed, reset.
     bool exdosOn();
     bool launchDisk(const std::string& path);
+    // Tape: the deck is the shared Tape:: (TAP/TZX/PZX/CSW/WAV and the Enterprise
+    // EPTE image), its ear bit is Dave #B6 bits 6-7, the remote (#B5 bits 6-7) starts
+    // and stops it. launchTape types LOAD "TAPE:" (reset unless BASIC is at its prompt).
+    void launchTape(bool freshReset = false);   // freshReset: the machine was just reset (setup), type at its first prompt
+    void tapeRemote(uint8_t bits);   // #B5 bits 6-7 as written
     // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
     // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)
     // into the matrix once IS-BASIC waits for a line.

@@ -1007,6 +1007,7 @@ void act_tapePlayStop() {
 // the tape to the chosen block, exactly as the classic menuTape did.
 static void tapeRowCb(int idx, char* out, size_t n) {
     string row = Tape::tapeFileType == TAPE_FTYPE_CSW ? Tape::cswBlockReadData()
+               : Tape::tapeFileType == TAPE_FTYPE_EPTE ? Tape::epteBlockReadData()
                                                       : Tape::tapeBlockReadData(idx);
     while (!row.empty() && (row.back() == '\n' || row.back() == '\r')) row.pop_back();
     snprintf(out, n, "%s", row.c_str());
@@ -1035,10 +1036,12 @@ void act_tapeBrowser() {
         uiToast("Tape ejected", false, 900);
         return;
     }
-    if (Tape::tapeFileType == TAPE_FTYPE_CSW) {
+    if (Tape::tapeFileType == TAPE_FTYPE_CSW || Tape::tapeFileType == TAPE_FTYPE_EPTE || Tape::tapeFileType == TAPE_FTYPE_WAV) {
         // One pulse stream, one row: Enter rewinds it. The decoder keeps its own
         // read position, so the f_lseek restore above does not apply.
-        Tape::CSW_RewindTo0();
+        if (Tape::tapeFileType == TAPE_FTYPE_CSW) Tape::CSW_RewindTo0();
+        else if (Tape::tapeFileType == TAPE_FTYPE_WAV) Tape::WAV_RewindTo0();
+        else Tape::EPTE_RewindTo0();
         uiToast("Tape rewound", false, 900);
         return;
     }

@@ -2437,6 +2437,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     f_close(&Tape::tape);
   }
   Tape::CSW_Close();   // a .csw decoder (~45 KB) goes with the file; LoadRemembered re-opens it
+  Tape::EPTE_Close();
   Tape::tapeStatus = TAPE_STOPPED;
   Tape::tapePhase = TAPE_PHASE_STOPPED;
   // A JJ screen animation cut by F11 kept its flag for good: no ROM fast load and

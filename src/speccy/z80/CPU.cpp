@@ -1084,6 +1084,7 @@ __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, in
 #endif
     while (tstates < statesInFrame) {
         Ep::catchUp();
+        Ep::davePoll();
         // Checked only while the line can be taken: a source latched with IFF1
         // clear (a DI section, or a handler that never acknowledged it) used to
         // run every instruction checked — IS-BASIC after a game, 22 FPS on hw.
@@ -1096,7 +1097,10 @@ __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, in
             continue;
         }
         uint32_t next = Ep::nextLineT();
+        const uint32_t di = Ep::nextDaveIntT();    // the slice ends where Dave can raise /INT
+        if (di < next) next = di;
         if (next > statesInFrame) next = statesInFrame;
+        if (next <= tstates) next = tstates + 1;
         if (Z80::isHalted()) {
             if (!halted) { tstates_active = tstates; halted = true; }
             EPL_T(t0);

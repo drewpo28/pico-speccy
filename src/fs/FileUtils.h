@@ -185,6 +185,7 @@ public:
     static bool hasWAVextension(const string& filename);
     static bool hasPZXextension(const string& filename);
     static bool hasCSWextension(const string& filename);
+    static bool hasEPTextension(const string& filename);   // Enterprise EPTE tape image
     static bool hasMP3extension(const string& filename);
     static bool hasZIPextension(const string& filename);
     // A ZIP by its local-header signature, whatever the name: zxart/WoS ship

@@ -33,6 +33,8 @@
 #include "app/Debug.h"
 #include "app/TryAlloc.h"
 #include "app/ESPectrum.h"
+#include "speccy/devices/tape/Tape.h"
+#include "fs/FileUtils.h"
 #include "app/MachineSwitch.h"
 #include "ui/OSDMain.h"
 #include "fatfs/ff.h"
@@ -75,6 +77,11 @@ void fileSetDefault(bool on) { s_defFile = on; }
 // the default device even with a disk in A: (a plain disk launch leaves A: default).
 static bool s_launchWantsFile = false;
 bool launchWantsFile() { const bool w = s_launchWantsFile; s_launchWantsFile = false; return w; }
+// A tape launch must leave TAPE: the default device (no disk): a loader's second
+// `LOAD "name"` without a device goes to the default, and 720 Degrees / Amaurote
+// chain their blocks that way — with FILE: default they asked FILE: for "720.PCK".
+static bool s_launchWantsTape = false;
+bool launchWantsTape() { const bool w = s_launchWantsTape; s_launchWantsTape = false; return w; }
 static void launchPrefersFile() {
 #if HOST_BUILD
     if (getenv("PICOSPECCY_EP_NOFILE")) return;   // test: let the typed LOAD go to A:
@@ -384,6 +391,7 @@ static bool keyOf(char c, SeqKey& k) {
     if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
     switch (c) {
         case 'n': k = {0, 0, 0}; return true; case 'b': k = {0, 2, 0}; return true;
+        case ':': k = {6, 5, 0}; return true;   // the EP's ": *" key (SHIFT ; is +)
         case 'c': k = {0, 3, 0}; return true; case 'v': k = {0, 4, 0}; return true;
         case 'x': k = {0, 5, 0}; return true; case 'z': k = {0, 6, 0}; return true;
         case 'h': k = {1, 0, 0}; return true; case 'g': k = {1, 2, 0}; return true;
@@ -422,6 +430,16 @@ static bool seqAdd(const char* s) {
 
 // Type the launch of `name` (the file's base name) in the current folder.
 // `primed`: BASIC is already at its prompt — the first wait is over before it starts.
+static bool seqArmLine(const std::string& line, bool primed, const char* what) {
+    s_seqN = 0;
+    if (!seqAdd(line.c_str())) { s_seqN = 0; return false; }
+    s_seqI = 0; s_ph = 0;
+    s_quiet = primed ? SEQ_QUIET : 0; s_rdSeen = primed;
+    injClear();
+    Debug::log("[EP] launch: typing %d keys (%s)%s", s_seqN, what, primed ? " at the prompt" : "");
+    return true;
+}
+
 static bool seqArm(const std::string& name, bool bas, bool primed) {
     s_seqN = 0;
     if (name.size() > (size_t)EXOS_NAME_MAX) return false;
@@ -559,6 +577,53 @@ bool launchFile(const std::string& path) {
     return true;
 }
 
+// F5 / Web catalog on a tape while the Enterprise runs (the deck is mounted by
+// Tape::LoadTape before this): LOAD "TAPE:" typed into BASIC, no reset when it is at
+// its prompt. EXOS then switches the remote on (Dave #B5 bits 6-7) and the deck
+// plays; a real EP needs the same two things.
+// Always through a reset (the prompt shortcut of the .COM launch is wrong here: a
+// running IS-BASIC has FILE: as its default device, see launchWantsTape). The
+// reset is ours unless the caller knows one is coming (setup's EXDOS re-reset
+// after launchResume: a second reset here consumed the tape flag one reset too
+// early and the re-reset then brought EXDOS back — the host stand with a disk in).
+static void tapeLaunchArm(bool doReset) {
+    s_launchWantsTape = true;
+    if (doReset) ESPectrum::resetForLoad();
+    if (seqArmLine("\nload \"tape:\"\r", false, "LOAD TAPE:"))
+        OSD::notify(" LOAD \"TAPE:\" ", LEVEL_INFO, 2000);
+}
+void launchTape(bool) {
+    if (Config::arch != A_ENT) return;
+    tapeLaunchArm(true);
+}
+
+// Dave #B5 bits 6-7 = REMOTE 1/2 (ep128emu setRemote1/2State): either one up runs
+// the tape. Starts the deck when it is mounted and stopped; stops it again only for
+// the pulse-stream formats, which resume exactly where they stopped (EXOS drops the
+// remote between the chunks of a file; a block format would restart its block).
+static uint8_t s_remote = 0;
+static bool    s_byRemote = false;
+void tapeRemote(uint8_t bits) {
+    bits &= 3;
+    if (bits == s_remote) return;
+    const bool was = s_remote != 0, now = bits != 0;
+    s_remote = bits;
+    Debug::log("[EP] tape remote %u (deck %s, %s)", bits, Tape::tapeStatus == TAPE_LOADING ? "playing" : "stopped", Tape::tapeFileName.c_str());
+    if (now && !was) {
+        if (Tape::tapeFileType != TAPE_FTYPE_EMPTY && Tape::tapeStatus != TAPE_LOADING) {
+            Tape::Play();
+            s_byRemote = Tape::tapeStatus == TAPE_LOADING;
+            Debug::log("[EP] tape remote: deck %s, type %d, status %u", s_byRemote ? "PLAYING" : "did not start", (int)Tape::tapeFileType, (unsigned)Tape::tapeStatus);
+        }
+    } else if (!now && was) {
+        if (s_byRemote && Tape::tapeStatus == TAPE_LOADING &&
+            (Tape::tapeFileType == TAPE_FTYPE_EPTE || Tape::tapeFileType == TAPE_FTYPE_CSW ||
+             Tape::tapeFileType == TAPE_FTYPE_WAV || Tape::tapeFileType == TAPE_FTYPE_MP3))
+            Tape::Stop();
+        s_byRemote = false;
+    }
+}
+
 void launchResume() {
     Config::epKeepTmp = false;              // a disk launch that rebooted: the /tmp mount is back (Config::load)
     if (watchdog_hw->scratch[LAUNCH_SCRATCH] != LAUNCH_TAG) return;
@@ -573,7 +638,23 @@ void launchResume() {
     buf[got] = 0;
     bool autostart = false;
     if (char* nl = strchr(buf, '\n')) { *nl = 0; autostart = nl[1] == '1'; }
-    if (Config::arch == A_ENT && buf[0]) { launchPrefersFile(); armFor(buf, autostart); }   // the EXDOS re-reset in setup consumes it
+    if (Config::arch != A_ENT || !buf[0]) return;
+    std::string p(buf);
+    const size_t sl = p.rfind('/'), dot = p.rfind('.');
+    std::string ext = dot != std::string::npos && (sl == std::string::npos || dot > sl) ? p.substr(dot + 1) : "";
+    for (char& c : ext) c = (char)tolower(c);
+    if (ext == "ept" || ext == "tap" || ext == "wav" || ext == "tzx" || ext == "csw" || ext == "mp3") {
+        // A tape launch that rebooted the board (host stand too): mount it in the
+        // deck, FILE: serves its folder (a program's own files beside the tape), and
+        // LOAD "TAPE:" is typed at the first prompt.
+        const std::string dir = sl == std::string::npos ? std::string("/") : p.substr(0, sl + 1);
+        s_dir = dir;
+        FileUtils::TAP_Path = dir;
+        Tape::LoadTape("L" + p.substr(sl + 1));
+        tapeLaunchArm(!(EpFdc::anyMounted() && !exdosOn()));   // else setup's re-reset is the reset
+        return;
+    }
+    launchPrefersFile(); armFor(buf, autostart);   // the EXDOS re-reset in setup consumes it
 }
 
 } // namespace Ep

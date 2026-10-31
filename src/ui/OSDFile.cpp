@@ -506,7 +506,7 @@ static bool rfd_launch_tmp(string path) {
     string dir   = (slash == string::npos) ? "/" : path.substr(0, slash + 1); // keep trailing '/'
     string base  = (slash == string::npos) ? path : path.substr(slash + 1);
 
-    if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "wav" || ext == "mp3") {
+    if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "ept" || ext == "wav" || ext == "mp3") {
         FileUtils::TAP_Path = dir;
         Config::save();
         // Respect the Auto-start toggle:
@@ -516,6 +516,7 @@ static bool rfd_launch_tmp(string path) {
         // polls (the runtime turbo/ROM heuristic then starts it) keeps F8 stats out
         // of tape mode while the tape is merely mounted, not loading.
         Tape::LoadTape((Config::tape_autostart ? "R" : "L") + base); // LoadTape prepends TAP_Path
+        if (Config::arch == A_ENT && Config::tape_autostart) Ep::launchTape();   // types LOAD "TAPE:"
         return true;
     }
     if (ext == "com" || (ext == "bas" && Config::arch == A_ENT)) {
@@ -939,7 +940,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         // as the type. Anything unrecognised falls back to downloadBasename() (the real
         // name from the locator), which is the authoritative source of the extension.
         auto isLaunchExt = [](const string& lc) {
-            return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "csw" || lc == "wav" || lc == "mp3"
+            return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "csw" || lc == "ept" || lc == "wav" || lc == "mp3"
                 || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "rzx" || lc == "zip"
                 || lc == "rom" || lc == "bin" || lc == "com"
                 || FileUtils::ifaceForExt(lc) != IFACE_NONE; // trd/scl/fdi/udi/td0/pro/mbd/mmc/hdf
