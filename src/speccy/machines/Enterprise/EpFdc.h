@@ -44,6 +44,10 @@ namespace EpFdc {
     bool    looksEp(const std::string& path);
     // A blank 720 KB image, FAT12-formatted (80 x 2 x 9), empty root directory.
     bool    createEmpty(const std::string& path);
+    static constexpr uint32_t SNAP_MAX = 64 + 2 * (24 + 512);
+    void     sync();                       // buffered sector to the file (before a save)
+    uint32_t snapSave(uint8_t* out);
+    bool     snapLoad(const uint8_t* in, uint32_t n);
 
     // Diagnostic: last command / status / registers, commands so far.
     void    diag(char* out, int n);

@@ -95,6 +95,12 @@ namespace Ep {
     void fileTrap();
     void fileReset();
     void fileSetDefault(bool on); // FILE: answers EXOS "default device?" with this (EXDOS A: otherwise)
+    static constexpr uint32_t SNAP_MAX = 512;
+#if HOST_BUILD
+    void hostPssPoll();
+#endif
+    uint32_t snapSave(uint8_t* out);
+    bool snapLoad(const uint8_t* in, uint32_t n);
     bool launchWantsFile();
     bool launchWantsTape();          // a tape launch: TAPE: stays the default device (one-shot)       // a .COM/.BAS launch is pending: FILE: default at this reset (consumed)
     // EXDOS: the card (EpFdc) is always on the bus; its ROM (segments 0x20-0x21) is

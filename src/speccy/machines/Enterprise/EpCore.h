@@ -74,6 +74,17 @@ struct Nick {
     static constexpr int HI_PX = OUT_PX * 2;
     // Output byte per Nick colour (256 entries); the default is the identity.
     void setOutMap(const uint8_t* m);
+    // .pss: `io(ptr, bytes)` visits every field; palRebuild() after a load.
+    template <class F> void snapFields(F io) {
+#define EPF(x) io(&(x), sizeof(x))
+        EPF(port0); EPF(border); EPF(port3); EPF(lptBase); EPF(lptCur); EPF(lptFlags);
+        EPF(nLines); EPF(irqFlag); EPF(vres); EPF(reload); EPF(colorMode); EPF(videoMode);
+        EPF(altInd0); EPF(altInd1); EPF(lsbAlt); EPF(msbAlt); EPF(leftMargin); EPF(rightMargin);
+        EPF(dataBus); io(pal, sizeof pal); EPF(ld1); EPF(ld2); EPF(linesRemaining);
+        EPF(displayEnabled); EPF(vsync);
+#undef EPF
+    }
+    void palRebuild() { for (int i = 0; i < 16; i++) palO[i] = outMap[pal[i]]; }
 
 private:
     const uint8_t* outMap;
@@ -153,6 +164,22 @@ struct Dave {
     // chain, or the sound interrupt's channel running out): a status read before
     // that cycle completes sees the current latches, so it needs no catch-up.
     uint32_t statusCycles() const;
+    // .pss: `io(ptr, bytes)` visits every field; snapDone() after a load.
+    template <class F> void snapFields(F io) {
+#define EPF(x) io(&(x), sizeof(x))
+        io(page, sizeof page); EPF(sysconf); EPF(kbRow); EPF(tapeFb); io(reg, sizeof reg);
+        EPF(enSnd); EPF(enHz); EPF(en1); EPF(en2); EPF(actSnd); EPF(actHz); EPF(act1); EPF(act2);
+        EPF(stSnd); EPF(stHz); EPF(st1_); EPF(st2); EPF(sndSrc); EPF(clk1000); EPF(clk50); EPF(clk1);
+        io(chFrq, sizeof chFrq); io(chPhase, sizeof chPhase); io(chRun, sizeof chRun);
+        EPF(pvl.sr); EPF(pvl.m0); EPF(pvl.m1); EPF(pvl.mask); EPF(pvl.out); EPF(pvlPend);
+        EPF(t4); EPF(t5); EPF(t7); EPF(noise7);
+        io(chIn, sizeof chIn); io(chHp, sizeof chHp); io(chRm, sizeof chRm);
+        io(st, sizeof st); io(prv, sizeof prv); io(st1, sizeof st1); EPF(st2_3);
+        EPF(n3Clk); EPF(n3ClkPrv); EPF(n3Lp); EPF(n3Hp); EPF(n3Rm); EPF(clk62); EPF(clk62Phase);
+        io(volL, sizeof volL); io(volR, sizeof volR); EPF(dacL); EPF(dacR);
+#undef EPF
+    }
+    void snapDone() { maskDirty = true; stPrev = 0xFFFFFFFFu; sumOut(); }
 
 private:
     // The channel-class masks tick() skips with, derived from the registers alone:

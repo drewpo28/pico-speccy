@@ -1,5 +1,6 @@
 // pico-speccy — Enterprise EXDOS card (WD1770 + flat-image drives). See EpFdc.h.
 #include "EpFdc.h"
+#include "app/SnapPack.h"
 #include "fs/FileUtils.h"
 #include "ui/LEDIndicators.h"
 #include "app/Debug.h"
@@ -471,6 +472,45 @@ void reset() {
     s_cmd = 0; s_status = 0; s_sector = 1; s_track = 0xFF; s_data = 0xFF;
     s_irq = false; s_drq = false; s_stepIn = false;
     s_wtRemain = 0; s_wtState = 0xFF;
+}
+
+// .pss: the chip and each drive's head + the sector in transfer. A drive's image is
+// the file's (the mount comes back through the config lines), a sector half way
+// through a write stays in the record's buffer.
+void sync() { for (Drive& d : s_drv) d.flush(); }
+
+uint32_t snapSave(uint8_t* out) {
+    SnapOut o(out);
+    o.u8(1);
+    o.u8(s_cmd); o.u8(s_status); o.u8(s_track); o.u8(s_sector); o.u8(s_data);
+    o.u8((uint8_t)(s_irq | (s_drq << 1) | (s_stepIn << 2)));
+    o.u8(s_wtRemain); o.u8(s_wtState);
+    o.u8(s_cur == &s_drv[0] ? 0 : s_cur == &s_drv[1] ? 1 : 2);
+    for (Drive& d : s_drv) {
+        o.u8(d.curTrack); o.u8(d.side); o.u8(d.motor ? 1 : 0); o.u8((uint8_t)d.motorFrames);
+        o.u32((uint32_t)d.bufPos); o.u32((uint32_t)d.bufLba); o.u32((uint32_t)d.xfrLba);
+        o.u8(d.dirty ? 1 : 0);
+        o.raw(d.buf, 512);
+    }
+    return o.n;
+}
+
+bool snapLoad(const uint8_t* in, uint32_t n) {
+    SnapIn i(in, n);
+    if (i.u8() < 1) return false;
+    s_cmd = i.u8(); s_status = i.u8(); s_track = i.u8(); s_sector = i.u8(); s_data = i.u8();
+    const uint8_t f = i.u8();
+    s_irq = f & 1; s_drq = (f >> 1) & 1; s_stepIn = (f >> 2) & 1;
+    s_wtRemain = i.u8(); s_wtState = i.u8();
+    const uint8_t cur = i.u8();
+    s_cur = cur < NDRV ? &s_drv[cur] : &s_none;
+    for (Drive& d : s_drv) {
+        d.curTrack = i.u8(); d.side = i.u8(); d.motor = i.u8() != 0; d.motorFrames = i.u8();
+        d.bufPos = (int32_t)i.u32(); d.bufLba = (int32_t)i.u32(); d.xfrLba = (int32_t)i.u32();
+        d.dirty = i.u8() != 0;
+        i.raw(d.buf, 512);
+    }
+    return i.ok;
 }
 
 void frameEnd() {
