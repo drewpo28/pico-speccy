@@ -172,8 +172,8 @@
 
 
 // ── Additional hardware ────────────────────────────────────────────────────────
+#define TXT_IFACE_MODE      "Interface"
 #define TXT_BETA            "Betadisk"
-#define TXT_BETA_MODE       "Interface"
 #define TXT_BETA_DRIVES     "Drives A-D"
 #define TXT_BETA_FASTMODE   "Fast mode"
 #define TXT_BETA_SNDLED     "Sound and LED"
@@ -181,12 +181,12 @@
 #define TXT_BETA_AUTOBOOT   "Auto-boot"
 #define TXT_SNAPSHOT        "Snapshot"
 #define TXT_P3_DRIVES      "+3DOS"
+#define TXT_BETA_DRIVES_P3 "Drives A-B"
 #define TXT_SAM_DRIVES     "SAM drives"
 #define TXT_EP_DRIVES      "Enterprise drives"
 #define TXT_P3_FASTDISK    "Fast disk"
 #define TXT_P3_SPEEDLOCK   "Speedlock protection"
 #define TXT_MB02            "MB-02+"
-#define TXT_MB02_MODE       "Interface"
 #define TXT_MB02_DRIVES     "Drives 1-4"
 #define TXT_MB02_SNDLED     "Sound and LED"
 #define TXT_ESX_INTERFACE   "Interface"
