@@ -519,7 +519,7 @@ static bool rfd_launch_tmp(string path) {
         if (Config::arch == A_ENT && Config::tape_autostart) Ep::launchTape();   // types LOAD "TAPE:"
         return true;
     }
-    if (ext == "com" || (ext == "bas" && Config::arch == A_ENT)) {
+    if (ext == "com" || ext == "128" || (ext == "bas" && Config::arch == A_ENT)) {
         // Enterprise program: FILE: serves /tmp, LOAD "name" is typed (EpFile.cpp).
         return Ep::launchFile(path);
     }
@@ -942,7 +942,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         auto isLaunchExt = [](const string& lc) {
             return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "csw" || lc == "ept" || lc == "wav" || lc == "mp3"
                 || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "rzx" || lc == "zip"
-                || lc == "rom" || lc == "bin" || lc == "com"
+                || lc == "rom" || lc == "bin" || lc == "com" || lc == "128"
                 || FileUtils::ifaceForExt(lc) != IFACE_NONE; // trd/scl/fdi/udi/td0/pro/mbd/mmc/hdf
         };
         string ext;
