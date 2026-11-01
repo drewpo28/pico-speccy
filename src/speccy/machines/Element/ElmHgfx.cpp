@@ -128,7 +128,20 @@ void drain() {
         }
 }
 
+#if PERF_TRACE
+static uint32_t s_pWaitUs, s_pPush, s_pDrop;          // core0
+static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN;   // core1
+#endif
+
 static inline void push(uint32_t e) {
+#if PERF_TRACE
+    s_pPush++;
+    if (s_qw - s_qr >= Q_N) {
+        const uint32_t t0 = time_us_32();
+        while (s_qw - s_qr >= Q_N) { }
+        s_pWaitUs += time_us_32() - t0;
+    }
+#endif
     while (s_qw - s_qr >= Q_N) { }
     s_q[s_qw & (Q_N - 1)] = e;
     __sync_synchronize();
@@ -653,12 +666,27 @@ void frameEnd() {
     g_elm_c1_live = true;
     // core1 still on the last frame: this one is not drawn, its writes are.
     if (s_drawDone == s_drawPosted) { s_drawPosted = s_drawPosted + 1; push(Q_DRAW); }
+#if PERF_TRACE
+    else s_pDrop++;
+    static uint32_t n;
+    if (++n == 60) {
+        n = 0;
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u) draw %uus x%u fill=%u",
+                   s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60,
+                   s_pDraws ? s_pDrawUs / s_pDraws : 0, s_pDraws, s_qw - s_qr);
+        s_pPush = s_pWaitUs = s_pDrop = 0;
+        s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = 0;
+    }
+#endif
 }
 
 void repaint() { if (s_live) { drain(); frameSetup(); renderFrame(); } }
 
 // core1: a bounded batch, then back to the loop for the other pumps.
 void core1Pump() {
+#if PERF_TRACE
+    const uint32_t t0 = time_us_32(); uint32_t draw = 0, cnt = 0;
+#endif
     for (int n = 0; n < 256 && s_qr != s_qw; n++) {
         __sync_synchronize();
         const uint32_t e = s_q[s_qr & (Q_N - 1)];
@@ -666,10 +694,31 @@ void core1Pump() {
         case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24)); break;
         case Q_REG:  s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
         case Q_CMD:  execCmd((uint8_t)e); break;
-        default:     renderFrame(); s_drawDone = s_drawDone + 1; break;
+        default: {
+#if PERF_TRACE
+            const uint32_t d0 = time_us_32();
+#endif
+            renderFrame();
+#if PERF_TRACE
+            draw += time_us_32() - d0;
+            s_pDraws = s_pDraws + 1;
+#endif
+            s_drawDone = s_drawDone + 1;
+            break;
+        }
         }
         s_qr = s_qr + 1;
+#if PERF_TRACE
+        cnt++;
+#endif
     }
+#if PERF_TRACE
+    if (cnt) {
+        s_pDrawUs = s_pDrawUs + draw;
+        s_pExecUs = s_pExecUs + (time_us_32() - t0 - draw);
+        s_pExecN = s_pExecN + cnt;
+    }
+#endif
 }
 void paletteLost() { s_palDirty = true; }
 
