@@ -16,7 +16,7 @@
 // The AVR (and with it the PS/2 log, the modifier status and the F-key hand-over)
 // exists on both ZX-Evo configurations: TS-Conf and BaseConf (ATM arch, Atm::evo).
 // NedoOS on BaseConf reads its whole keyboard through the log (kernel/ps2drv.asm).
-static inline bool avrLive() { return Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo); }
+static inline bool avrLive() { return Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo) || Z80Ops::isElm; }
 
 namespace {
 
@@ -200,6 +200,9 @@ void cfgifWrite(uint8_t i, uint8_t v) {
 }
 
 } // namespace
+
+// eLeMeNt ZX: the same log, read through its scancode ports.
+uint8_t ZxEvoAvr::scanPop() { notePoll(); return logPop(); }
 
 bool ZxEvoAvr::guestPollsKeys() {
     if (!s_kbd_poll_ms) return false;

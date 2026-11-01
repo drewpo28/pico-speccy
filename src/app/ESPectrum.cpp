@@ -80,6 +80,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Ports.h"
 #include "speccy/core/Snapshot.h"
 #include "speccy/machines/Next/NexLaunch.h"
+#include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/devices/tape/Tape.h"
 #include "speccy/video/Video.h"
 #if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
@@ -1668,7 +1669,7 @@ void ESPectrum::setup() {
     // cannot switch it off (the user's AY48 pick is left alone for other 48Ks).
     AY_emu = Config::AY48 || Config::isTc2068();
     if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
-    SAA_emu = Config::SAA1099;
+    SAA_emu = Config::SAA1099 || Config::arch == A_ELM;
     Midi::enabled = Config::midi;
 #if defined(MIDI_TX_PIN)
     // Yield the MIDI TX pin to ZiFi when it owns it (boot-time, after Config).
@@ -1801,9 +1802,9 @@ void ESPectrum::setup() {
   TurboSubsys::request(!Config::tape_player &&
                        (Config::twoAyChips() || Config::arch == A_NEXT));
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled() ||
-                       Config::arch == A_NEXT);   // Next DAC ports
+                       Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
-  SaaSubsys::request(!Config::tape_player && Config::SAA1099);
+  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
@@ -2487,7 +2488,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   AY_emu = Config::AY48 || Config::isTc2068();   // built in on a TC2068 — see setup()
     if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
-    SAA_emu = Config::SAA1099;
+    SAA_emu = Config::SAA1099 || Config::arch == A_ELM;
     Midi::enabled = Config::midi;
     if (Midi::enabled) Midi::init();
     // dma.vhd: the DMA resets with the machine — on the Next even with
@@ -2581,9 +2582,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   TurboSubsys::request(!Config::tape_player &&
                        (Config::twoAyChips() || Config::arch == A_NEXT));
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled() ||
-                       Config::arch == A_NEXT);   // Next DAC ports
+                       Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
-  SaaSubsys::request(!Config::tape_player && Config::SAA1099);
+  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
@@ -5032,6 +5033,9 @@ void ESPectrum::loop() {
         // Enterprise Dave: unipolar 0..252 a side, rendered by Ep::frameEnd.
         const uint8_t* epL = nullptr; const uint8_t* epR = nullptr;
         if (Config::arch == A_ENT && !Ep::audio(&epL, &epR)) epL = epR = nullptr;
+        // eLeMeNt ZX SoundDMA: already re-centred.
+        const int16_t* elmL = Z80Ops::isElm ? ElmSdma::mixL() : nullptr;
+        const int16_t* elmR = Z80Ops::isElm ? ElmSdma::mixR() : nullptr;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
@@ -5044,6 +5048,7 @@ void ESPectrum::loop() {
           if (ftv) beeper_L += ftv[i] >> 1;
           int beeper_R = beeper_L;
           if (epL) { beeper_L += epL[i]; beeper_R += epR[i]; }
+          if (elmL) { beeper_L += elmL[i]; beeper_R += elmR[i]; }
           if (mix_covox) {
             beeper_L += audioBufferCovoxL[i];
             beeper_R += audioBufferCovoxR[i];

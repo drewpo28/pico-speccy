@@ -210,6 +210,17 @@ MoonSplit), MonsterBlaster на Covox, SAA на ZXi-портах, зеркало
 
 Проверка: SDMAPLAY, Lnx AmigaMOD Player, Wi-Fi Setup, Sarah.
 
+**Сделано (хост):** SoundDMA (`ElmSdma.{h,cpp}`, без зависимостей, тест `tools/elm_sdma_test.cpp`):
+8 каналов, моно/стерео, 16 бит на A, signed/unsigned, петли, расширенный период, чтение из
+защищённой URAM. Формат регистров снят с SDMAPLAY, смысл Length — с LNXMP: конец петли считается
+от Start, петля идёт от Loop до Start + Length. Громкость 64 (0 дБ) = +-32 в микшере, 255 = +-128.
+SounDrive/Czech DAC (#0F #1F #3F #4F #5F) в Covox, SAA на #6E3B/#6F3B, зеркало TSFM #7E3B/#7F3B
+(второй AY всегда), сканкоды u_zxi_004/005 и g_zxi_032 из лога ZxEvoAvr, UART #133B/#143B в ZiFi.
+Проверено: SDMAPLAY совпадает с исходным потоком (корреляция 0.969 на 44521 Гц, клиппинга нет),
+LNXMP играет 1989.MOD, Wi-Fi Setup видит модуль eLeMeNt ("E"), Sarah стартует.
+Не сделано: вторая мышь, прерывание от клавиатуры (это eINT, фаза 6), флаги заполнения FIFO
+UART (биты 2-4), разрешения e_zxi_002.
+
 ### Фаза 6. eINT и хвосты
 Enhanced Interrupts (таймеры 114.6875 МГц, строки, клавиатура, таблица приоритетов), SafeNMI,
 LIFO, RTC72421, переключение `e_zxi_000` на лету, Pentagon 4096, Gama 80, `.pss`.

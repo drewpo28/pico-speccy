@@ -38,6 +38,7 @@ namespace ZxEvoAvr {
     // Keyboard feed (main.cpp process_kbd_report): HID usage codes in, PS/2
     // set-2 make/break sequences into the log. No-ops off TS-Conf.
     void    hidKey(uint8_t hid, bool down);
+    uint8_t scanPop();                    // next set 2 byte, 0 = none
     void    hidModifiers(uint8_t now, uint8_t prev);
 
     // ── "the guest owns the keyboard" ────────────────────────────────────────

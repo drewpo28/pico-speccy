@@ -20,10 +20,12 @@ bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM
 
 // The ports the machine claims ahead of the generic decode, tested in the RAM path:
-// #xx3B, #9EFD/#9FFD, and the URAM ports #07 #27 #47 #67 #53 #73 (low byte only).
+// #xx3B, #9EFD/#9FFD, the URAM ports #07 #27 #47 #67 #53 #73 and the DACs #0F-#7F
+// (low byte only). portIn leaves the DAC ports to the generic decode.
 static inline bool isPort(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     return lo == 0x3B || (lo & 0x9F) == 0x07 || (lo & 0xDF) == 0x53 ||
+           (lo & 0x8F) == 0x0F ||
            (address & 0xFEFF) == 0x9EFD || address == 0xEFF7;
 }
 

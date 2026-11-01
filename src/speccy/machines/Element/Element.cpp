@@ -10,6 +10,10 @@
 #include "speccy/core/MemESP.h"
 #include "speccy/machines/Element/ElmLcu.h"
 #include "speccy/machines/Element/ElmHgfx.h"
+#include "speccy/machines/Element/ElmSdma.h"
+#include "speccy/machines/TsConf/ZxEvoAvr.h"
+#include "speccy/devices/sound/SAASound.h"
+#include "ui/LEDIndicators.h"
 #include "speccy/z80/MemGates.h"
 #include "app/Config.h"
 #include "app/ESPectrum.h"
@@ -48,7 +52,7 @@ static uint16_t s_slotPage[8];        // HGFX Area: its 8K step in the Zone
 uint8_t* wrKind;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
-enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2 };
+enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA };
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void windowsRebuild() {
@@ -63,6 +67,7 @@ static void windowsRebuild() {
     }
     if (s_r->g[0x040] & 1) w[s_r->g[0x041]] = W_FDMA;
     if ((s_r->g[0x060] & 0x81) == 1) w[s_r->g[0x061]] = W_LCU2;
+    if ((s_r->g[0x048] & 0x81) == 1) w[s_r->g[0x049]] = W_SDMA;
     for (int s = 0; s < 8; s++) {
         const uint8_t k = (s_lcuSlots >> s) & 1 ? W_LCU : (s_hgfxSlots >> s) & 1 ? W_CHUNKY
                         : (s_wpSlots >> s) & 1 ? W_PROTECT : W_NONE;
@@ -80,12 +85,18 @@ static uint8_t s_fd[64];
 static uint32_t s_fdSrc[2], s_fdDst[2];   // running addresses, 8.8 in the floating modes
 static bool s_fdBusy;
 static uint8_t s_radHi;
+static uint8_t s_scan;
+static uint8_t s_dac[5], s_dacUsed;
+static bool s_scanHeld;
 static bool s_radFlip;
 
 static inline uint16_t fd16(const uint8_t* r, int o) { return (uint16_t)(r[o] | r[o + 1] << 8); }
 static inline uint32_t fd24(const uint8_t* r, int o) { return r[o] | (uint32_t)r[o + 1] << 8 | (uint32_t)r[o + 2] << 16; }
 
 static uint8_t* uramPtr(uint16_t page);
+static void sdCatch() {
+    ElmSdma::renderTo((int)((CPU::tstates / ESPectrum::audioCOVOXDivider) >> ESPectrum::multiplicator));
+}
 static inline uint8_t* uramByte(uint32_t a) {
     uint8_t* p = uramPtr((uint16_t)(a >> 13));
     return p ? p + (a & 0x1FFF) : nullptr;
@@ -172,6 +183,14 @@ static uint8_t* uramPtr(uint16_t page) {
     return p ? p + (idx & 1) * 0x2000 : nullptr;
 }
 
+// SoundDMA reads protected URAM whatever the mode (the Reference: "works with protected
+// URAM only"); the address counts from its first page.
+static const uint8_t* sdPage(uint32_t page) {
+    const uint32_t idx = PROTECT_BASE + (page & (PROTECT_PAGES - 1));
+    const uint8_t* p = MemESP::ram[idx >> 1].direct();
+    return p ? p + (idx & 1) * 0x2000 : nullptr;
+}
+
 static uint16_t freePages() {
     const uint8_t mode = s_r->g[0x010];
     return mode == 1 ? FULL_PAGES : mode == 2 ? PROTECT_PAGES : 0;
@@ -247,6 +266,7 @@ void frameEnd() {
     Hgfx::radPad = s_r->u[0x42];
     Hgfx::radBank = s_r->u[0x43] & 3;
     Hgfx::frameEnd();
+    ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
 }
 
 bool memWrite(uint16_t a, uint8_t v) {
@@ -276,6 +296,12 @@ bool memWrite(uint16_t a, uint8_t v) {
     }
     case W_FDMA:
         fdmaWrite((uint8_t)a, v);
+        return false;
+    case W_SDMA:
+#if HOST_BUILD
+        if (getenv("PICOSPECCY_ELMLOG")) Debug::log("[SDMA] %02X=%02X pc=%04X", (uint8_t)a, v, Z80::getRegPC());
+#endif
+        if ((uint8_t)a < ElmSdma::REG_BYTES) { sdCatch(); ElmSdma::write((uint8_t)a, v); }
         return false;
     case W_LCU2:
         ElmLcu::write(s_lcu2, (uint8_t)a, v);
@@ -311,6 +337,9 @@ void reset() {
     if (s_lcu) ElmLcu::reset(s_lcu);
     ElmLcu::reset(s_lcu2);
     memset(s_fd, 0, sizeof(s_fd));
+    if (!ElmSdma::init(sdPage, ESPectrum::Audio_freq)) Debug::log("[ELM] no heap for SoundDMA");
+    s_scan = 0; s_scanHeld = false;
+    memset(s_dac, 0, sizeof(s_dac)); s_dacUsed = 0;
     s_r->g[0x000] = 0x01;   // the internal device, not an MB03+
     s_r->g[0x021] = 0x40;   // HGFX videoram
     s_r->g[0x022] = 0x5B;   // HGFX registers
@@ -328,6 +357,7 @@ void reset() {
     s_r->e[0x02B] = 0x01;   // RTC
     s_r->e[0x02D] = 0x01;   // esxDOS from flash
     s_r->e[0x02E] = 0x01;   // Z80 DMA
+    s_r->e[0x039] = 0x01;   // UART MB03+
     s_r->e[0x0FC] = kStampDay;
     s_r->e[0x0FD] = kStampMonth;
     s_r->e[0x0FE] = kStampYear;
@@ -342,6 +372,8 @@ static uint8_t gRead(uint8_t r) {
         return r == 0x01E ? (uint8_t)line : (uint8_t)(line >> 8);
     }
     case 0x02F: return Hgfx::status();
+    case 0x032: return ZxEvoAvr::scanPop();
+    case 0x04A: sdCatch(); return ElmSdma::posHigh();
     case 0x011: return (uint8_t)freePages();
     case 0x012: return (uint8_t)(freePages() >> 8);
     default:
@@ -381,7 +413,18 @@ static void gWrite(uint8_t r, uint8_t v) {
         windowsRebuild();
         return;
     }
-    case 0x040: case 0x041:
+    case 0x030:                       // write 1: the RX FIFO is erased
+        if ((v & 1) && Config::zifi_enabled)
+            while (ZiFi::uart16550Read(0xFD) & 1) ZiFi::uart16550Read(0xF8);
+        return;
+    case 0x032: case 0x04A:
+        return;                       // read only
+    case 0x048:
+        s_r->g[r] = v;
+        if (!(v & 1)) { sdCatch(); ElmSdma::reset(); }
+        windowsRebuild();
+        return;
+    case 0x040: case 0x041: case 0x049:
         s_r->g[r] = v;
         windowsRebuild();
         return;
@@ -423,8 +466,39 @@ static void eWrite(uint8_t r, uint8_t v) {
 }
 
 static uint8_t uRead(uint8_t r) {
-    if (r == 0xFF) return coreIdNext(&s_corePos);
+    switch (r) {
+    case 0xFF: return coreIdNext(&s_corePos);
+    case 0x04:                        // the last scancode; KEYSTAT may have taken it already
+        if (s_scanHeld) s_scanHeld = false;
+        else if (const uint8_t c = ZxEvoAvr::scanPop()) s_scan = c;
+        return s_scan;
+    case 0x05: {                      // PEN, cleared by this read
+        const uint8_t c = ZxEvoAvr::scanPop();
+        if (c) { s_scan = c; s_scanHeld = true; }
+        return c ? 1 : 0;
+    }
+    }
     return s_r->u[r];
+}
+
+// SounDrive and Czech DACs: the rail is the average of the DACs driven on it (Ports.cpp).
+static void dacWrite(int slot, uint8_t v) {
+    s_dac[slot] = v;
+    s_dacUsed |= (uint8_t)(1 << slot);
+    int ln = __builtin_popcount(s_dacUsed & 7), rn = __builtin_popcount(s_dacUsed & 0x18);
+    if (ln < 1) ln = 1;
+    if (rn < 1) rn = 1;
+    ESPectrum::lastCovoxVal = (s_dac[0] + s_dac[1] + s_dac[2]) / ln;
+    ESPectrum::lastCovoxValR = (s_dac[3] + s_dac[4]) / rn;
+    ESPectrum::CovoxGetSample();
+}
+
+// #133B status / TX, #143B RX / speed. There is one UART, behind ZiFi; the FIFO fill
+// bits (2..4) are not known here.
+static uint8_t uartStatus() {
+    if (!Config::zifi_enabled) return 0;
+    const uint8_t lsr = ZiFi::uart16550Read(0xFD);
+    return (uint8_t)((lsr & 1) | (lsr & 0x20 ? 0 : 2));
 }
 
 static bool unoUart(uint8_t r) { return r >= 0xC6 && r <= 0xC9 && Config::zifi_enabled; }
@@ -463,6 +537,9 @@ bool portIn(uint16_t a, uint8_t* out) {
     switch (a) {
     case 0x9EFD: *out = Ports::feLatch();            return true;   // #FE, readable
     case 0x9FFD: *out = VIDEO::timex_port_ff;        return true;   // #FF, readable
+    case 0x133B: *out = uartStatus();                return true;
+    case 0x143B: *out = Config::zifi_enabled ? ZiFi::uart16550Read(0xF8) : 0xFF; return true;
+    case 0x7E3B: *out = Ports::input(0xFFFD);        return true;   // TSFM mirror
     case 0x7C3B: *out = s_gIdx;                      return true;
     case 0x7D3B: *out = gRead(s_gIdx);               return true;
     case 0x783B: *out = s_eIdx;                      return true;
@@ -484,7 +561,25 @@ bool portOut(uint16_t a, uint8_t v) {
         Debug::log("[ELM] out %04X=%02X pc=%04X sp=%04X z=%u idx=%02X/%02X", a, v, Z80::getRegPC(), Z80::getRegSP(), s_zone, s_gIdx, s_eIdx);
 #endif
     if (uramOut((uint8_t)a, v)) return true;
+    switch ((uint8_t)a) {
+    case 0x0F: dacWrite(0, v); return true;
+    case 0x1F: dacWrite(1, v); return true;
+    case 0x3F: dacWrite(2, v); return true;
+    case 0x4F: dacWrite(3, v); return true;
+    case 0x5F: dacWrite(4, v); return true;
+    }
     switch (a) {
+    case 0x133B: if (Config::zifi_enabled) ZiFi::uart16550Write(0xF8, v); return true;
+    case 0x143B: s_r->g[0x030] = v;                  return true;
+    case 0x6E3B: case 0x6F3B:                        // SAA1099
+        if (ESPectrum::SAA_emu && saaChip) {
+            LED::touchW(LED::SAA);
+            ESPectrum::SAAGetSample();
+            if (a & 0x0100) saaChip->selectRegister(v); else saaChip->setRegisterData(v);
+        }
+        return true;
+    case 0x7E3B: Ports::output(0xFFFD, v);           return true;   // TSFM mirror
+    case 0x7F3B: Ports::output(0xBFFD, v);           return true;
     case 0x7C3B: s_gIdx = v;                         return true;
     case 0x7D3B: gWrite(s_gIdx, v);                  return true;
     case 0x783B: s_eIdx = v;                         return true;

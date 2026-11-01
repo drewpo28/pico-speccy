@@ -438,7 +438,7 @@ public:
     // literally two YM2203s, each an AY plus an FM half — so enabling TSFM has to
     // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
     // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
-    static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
+    static bool twoAyChips() { return turbosound != 0 || tsfm != 0 || arch == A_ELM; }
     // The running machine is a +2A/+3: the +3 romset over the 128K arch (like +2).
     static bool isPlus3() { return arch == A_128K && isPlus3Romset(romSet); }
     // ...and it is the +3e: the +3 with IDEDOS, which brings the 8-bit IDE interface.

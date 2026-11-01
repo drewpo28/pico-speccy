@@ -3705,7 +3705,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // AY
     // ========================================================================
     // TurboSound Next: decoded in NextPorts::ayWrite (NextPorts.cpp)
-    if ((ESPectrum::AY_emu) && (Config::turbosound || Config::tsfm) && address == 0xFFFD) {
+    if ((ESPectrum::AY_emu) && Config::twoAyChips() && address == 0xFFFD) {
       // NedoPC way: chip latched by the DATA written to #FFFD. The full family
       // is #F8..#FF, not just #FF/#FE — TurboSound FM is 2 × YM2203 (an AY plus
       // an FM half each), and its manual (nedopc.com/TURBOSOUND/tfm-prg.zip,
