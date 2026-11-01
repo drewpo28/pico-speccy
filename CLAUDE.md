@@ -16338,6 +16338,7 @@ Plan, sources and owner decisions: `docs/element-zx-plan.md`; Reference saved as
 `debug/element/ElementZX-ProgRef-20261101.txt`. Pentagon 1024 flags and timing (`Z80Ops::isPentagon/is1024`
 true + `isElm`), 128 pages, DivSD forced, no Beta, no MB-02+. All machine code in
 `src/speccy/machines/Element/`; one test + `Elm::isPort` in the RAM port paths, late 3 T as ATM. No RTL exists.
+URAM (`Elm::remap`, one writer of the slots, gate bit 5 of `g_atm_ro` -> `Elm::memWrite`) and LCU1 host-tested; `tools/elm_lcu_test.cpp` after any change to ElmLcu.h.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

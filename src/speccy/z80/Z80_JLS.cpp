@@ -4762,7 +4762,7 @@ Z80_COLD void Z80::zcInirBatch() {
         if (n < 2) break;
         const uint8_t ds = hl >> 13;
         if (ds < 2) break;
-        if ((g_atm_ro & 0x80) || (g_atm_ro & (1u << (hl >> 14)))) break;
+        if ((g_atm_ro & 0xA0) || (g_atm_ro & (1u << (hl >> 14)))) break;
         uint8_t* dp = MemESP::ramCurrent[ds];
         if ((uintptr_t)dp < 0x11000000u) break;       // ROM / accessor bank
         if (!g_ts_fastmem && VIDEO::grmem && dp >= VIDEO::grmem && dp < VIDEO::grmem + 0x4000) break;

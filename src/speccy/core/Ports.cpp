@@ -2137,6 +2137,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
             C16_BANK();
             MemESP::bankLatch = page;
             MemESP::plug16(3, MemESP::ram[page].sync(3), page & 0x01);
+            if (__builtin_expect(Z80Ops::isElm, 0)) Elm::remap();
           }
           if (MemESP::videoLatch != bitRead(data, 3)) {
         C16_FLIP();
@@ -4298,6 +4299,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
       } else {
         MemESP::plugPtr16(3, MemESP::ram[MemESP::bankLatch].sync(3));
       }
+      if (__builtin_expect(Z80Ops::isElm, 0)) Elm::remap();   // URAM stays over the page
 #if PROFI_PORT_TRACE
       if (PROFI && (portDFFD & 0x80)) {
         uint32_t bl = MemESP::bankLatch;
