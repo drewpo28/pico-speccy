@@ -14,6 +14,8 @@
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/devices/sound/SAASound.h"
 #include "ui/LEDIndicators.h"
+#include "ui/OSDMain.h"
+#include "speccy/devices/storage/RTC.h"
 #include "speccy/z80/MemGates.h"
 #include "app/Config.h"
 #include "app/ESPectrum.h"
@@ -86,6 +88,9 @@ static uint32_t s_fdSrc[2], s_fdDst[2];   // running addresses, 8.8 in the float
 static bool s_fdBusy;
 static uint8_t s_radHi;
 static uint8_t s_scan;
+static uint8_t s_lifo[32], s_lifoTop;     // #2B, 32 bytes, circular
+static uint64_t s_clkLatch;               // e_zxi_0F3..0F8, latched by reading 0F3
+static void cpuSpeed(uint8_t sel);
 static uint8_t s_dac[5], s_dacUsed;
 static bool s_scanHeld;
 static bool s_radFlip;
@@ -269,6 +274,15 @@ void frameEnd() {
     ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
 }
 
+// SafeNMI: the return address of the last NMI is readable, bit 7 locks the button.
+// Bit 0 (RAM write protection) is stored: the Reference does not say what it covers.
+bool nmiBlocked() { return s_r && (s_r->g[0x080] & 0x80); }
+void nmiTaken(uint16_t pc) {
+    if (!s_r) return;
+    s_r->g[0x081] = (uint8_t)pc;
+    s_r->g[0x082] = (uint8_t)(pc >> 8);
+}
+
 bool memWrite(uint16_t a, uint8_t v) {
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
     switch (s_r->win[a >> 8]) {
@@ -339,6 +353,7 @@ void reset() {
     memset(s_fd, 0, sizeof(s_fd));
     if (!ElmSdma::init(sdPage, ESPectrum::Audio_freq)) Debug::log("[ELM] no heap for SoundDMA");
     s_scan = 0; s_scanHeld = false;
+    s_lifoTop = 0;
     memset(s_dac, 0, sizeof(s_dac)); s_dacUsed = 0;
     s_r->g[0x000] = 0x01;   // the internal device, not an MB03+
     s_r->g[0x021] = 0x40;   // HGFX videoram
@@ -458,6 +473,7 @@ static void gWrite(uint8_t r, uint8_t v) {
 static void eWrite(uint8_t r, uint8_t v) {
     if (r >= 0xF3) return;            // counter, stamp, ID: read only
     if (r == 0xEF) return;            // FPGA ID: read only
+    if (r == 0x30) { s_r->e[r] = v; cpuSpeed(v); return; }
     if (r == 0x00 && v != s_r->e[0]) {
         static bool once;
         if (!once) { once = true; Debug::log("[ELM] e_zxi_000 = %02X: personality switch not modelled yet", v); }
@@ -468,6 +484,7 @@ static void eWrite(uint8_t r, uint8_t v) {
 static uint8_t uRead(uint8_t r) {
     switch (r) {
     case 0xFF: return coreIdNext(&s_corePos);
+    case 0x0B: return s_r->u[0x0B];
     case 0x04:                        // the last scancode; KEYSTAT may have taken it already
         if (s_scanHeld) s_scanHeld = false;
         else if (const uint8_t c = ZxEvoAvr::scanPop()) s_scan = c;
@@ -499,6 +516,46 @@ static uint8_t uartStatus() {
     if (!Config::zifi_enabled) return 0;
     const uint8_t lsr = ZiFi::uart16550Read(0xFD);
     return (uint8_t)((lsr & 1) | (lsr & 0x20 ? 0 : 2));
+}
+
+// e_zxi_030 / u_zxi_00B: the CPU clock. 20 MHz and the overclock modes run at our
+// 14 MHz (deviation, recorded in the plan).
+static void cpuSpeed(uint8_t sel) {
+    const uint8_t want = sel >= 2 ? 2 : sel;
+    const uint8_t old = ESPectrum::multiplicator;
+    if (want == old) return;
+    CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
+    ESPectrum::multiplicator = want;
+    CPU::updateStatesInFrame();
+    OSD::notifyClock(want == 2 ? " CPU: 14 MHz " : want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
+}
+
+// The 48-bit master counter at 114.6875 MHz, i.e. 32.77 counts per 3.5 MHz T.
+static uint64_t masterClock() {
+    const uint64_t t = (CPU::global_tstates + CPU::tstates) >> ESPectrum::multiplicator;
+    return t * 1146875 / 35000;
+}
+
+// RTC72421 at #0003-#0F03 (register = A11..A8): BCD nibbles of the host clock.
+// Writes are dropped: the clock is the host's.
+static uint8_t rtc72421(uint8_t reg) {
+    int y, mo, d, h, mi, sec;
+    if (!RTC::now(y, mo, d, h, mi, sec)) return 0;
+    switch (reg) {
+    case 0x0: return sec % 10;  case 0x1: return sec / 10;
+    case 0x2: return mi % 10;   case 0x3: return mi / 10;
+    case 0x4: return h % 10;    case 0x5: return h / 10;
+    case 0x6: return d % 10;    case 0x7: return d / 10;
+    case 0x8: return mo % 10;   case 0x9: return mo / 10;
+    case 0xA: return y % 10;    case 0xB: return (y / 10) % 10;
+    case 0xC: {                 // day of week, 0 = Sunday (Zeller)
+        int m = mo, yy = y;
+        if (m < 3) { m += 12; yy--; }
+        return (uint8_t)((d + 13 * (m + 1) / 5 + yy + yy / 4 - yy / 100 + yy / 400 + 6) % 7);
+    }
+    case 0xF: return 4;         // CF: 24-hour
+    }
+    return 0;
 }
 
 static bool unoUart(uint8_t r) { return r >= 0xC6 && r <= 0xC9 && Config::zifi_enabled; }
@@ -534,6 +591,16 @@ static bool uramOut(uint8_t lo, uint8_t v) {
 bool portIn(uint16_t a, uint8_t* out) {
     if (!s_r) return false;
     if (uramIn((uint8_t)a, out)) return true;
+    if ((a & 0xF0FF) == 0x0003) {
+        *out = (s_r->e[0x02B] & 1) ? rtc72421((uint8_t)(a >> 8)) : 0xFF;
+        return true;
+    }
+    if ((uint8_t)a == 0x2B) {
+        if (!(s_r->e[0x02F] & 1)) return false;
+        s_lifoTop = (s_lifoTop - 1) & 31;
+        *out = s_lifo[s_lifoTop];
+        return true;
+    }
     switch (a) {
     case 0x9EFD: *out = Ports::feLatch();            return true;   // #FE, readable
     case 0x9FFD: *out = VIDEO::timex_port_ff;        return true;   // #FF, readable
@@ -543,7 +610,11 @@ bool portIn(uint16_t a, uint8_t* out) {
     case 0x7C3B: *out = s_gIdx;                      return true;
     case 0x7D3B: *out = gRead(s_gIdx);               return true;
     case 0x783B: *out = s_eIdx;                      return true;
-    case 0x793B: *out = s_r->e[s_eIdx];                 return true;
+    case 0x793B:
+        if (s_eIdx == 0xF3) s_clkLatch = masterClock();
+        *out = s_eIdx >= 0xF3 && s_eIdx <= 0xF8 ? (uint8_t)(s_clkLatch >> ((s_eIdx - 0xF3) * 8))
+                                                : s_r->e[s_eIdx];
+        return true;
     case 0xFC3B: *out = s_uIdx;                      return true;
     case 0xFD3B:
         *out = unoUart(s_uIdx) ? ZiFi::unoUartRead(true) : uRead(s_uIdx);
@@ -567,6 +638,12 @@ bool portOut(uint16_t a, uint8_t v) {
     case 0x3F: dacWrite(2, v); return true;
     case 0x4F: dacWrite(3, v); return true;
     case 0x5F: dacWrite(4, v); return true;
+    }
+    if ((a & 0xF0FF) == 0x0003) return true;
+    if ((uint8_t)a == 0x2B && (s_r->e[0x02F] & 1)) {
+        s_lifo[s_lifoTop] = v;
+        s_lifoTop = (s_lifoTop + 1) & 31;
+        return true;
     }
     switch (a) {
     case 0x133B: if (Config::zifi_enabled) ZiFi::uart16550Write(0xF8, v); return true;
@@ -595,7 +672,10 @@ bool portOut(uint16_t a, uint8_t v) {
             if (s_radFlip) s_radHi = v & 0x3F; else s_r->u[0x41] = v;
             s_radFlip = !s_radFlip;
         }
-        else if (s_uIdx != 0xFF) s_r->u[s_uIdx] = v;
+        else if (s_uIdx != 0xFF) {
+            s_r->u[s_uIdx] = v;
+            if (s_uIdx == 0x0B && (s_r->e[0x032] & 1)) cpuSpeed(v >> 6);
+        }
         return true;
     }
     if ((a & 0xF8FF) == 0x703B) return true;

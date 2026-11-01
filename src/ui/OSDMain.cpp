@@ -44,6 +44,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <pico/multicore.h>
 
 #include "OSDMain.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Atm.h"
 #include "fs/FileUtils.h"
 #include "app/Subsystem.h"
@@ -2343,6 +2344,10 @@ void OSD::nmiAction() {
         } else if (!NextMf::request()) {
             notify(" Multiface NMI refused (NR 06) ", LEVEL_INFO, 1200);
         }
+        return;
+    }
+    if (Z80Ops::isElm && Elm::nmiBlocked()) {     // SafeNMI g_zxi_080 bit 7
+        notify(" NMI locked by the program ", LEVEL_INFO, 1200);
         return;
     }
     if (DivMMC::enabled) {

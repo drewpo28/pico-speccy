@@ -36,6 +36,7 @@
 #include "speccy/machines/Enterprise/Ep.h"   // ED FE: the FILE: device trap
 #include "speccy/machines/Enterprise/EpFast.h"   // the fetch of an Enterprise (MEMGATES_EP)
 #include "speccy/machines/EvoBase.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
 #include "fs/FileUtils.h"
@@ -1270,6 +1271,7 @@ Z80_COLD void Z80::nmi(void) {
 }
 
 Z80_COLD void Z80::doNMI(void) {
+    if (Z80Ops::isElm) Elm::nmiTaken(REG_PC);
 
     activeNMI = false;
     lastFlagQ = false;
