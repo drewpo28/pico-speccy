@@ -298,7 +298,7 @@ endif()
 # a Next boot gets it back as base heap instead of a sub-4 KB island between two
 # resident windows; TS-Conf + VDAC2 and the DMA card exclude each other for it.
 if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
-    set(DMAOVL_WIN_SIZE_EFFECTIVE 3456)   # classic loop: executeTransfer 1948 + transferOneByte 1324 = 3 272 measured
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 5120)   # classic loop 3 272 measured + eLeMeNt HGFX hot path
 else()
     set(DMAOVL_WIN_SIZE_EFFECTIVE ${DMAOVL_WIN_SIZE})
 endif()
@@ -321,7 +321,7 @@ if (GS_CODE_OVERLAY)
     set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *GS.cpp.o* *Z80_redcode.c.o* *NgsSd.cpp.o* *NgsMp3.cpp.o*")
 endif()
 if (DMA_CODE_OVERLAY)
-    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *Z80DMA.cpp.o*")
+    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *Z80DMA.cpp.o* *ElmHgfx.cpp.o*")
 endif()
 if (NEXT_CODE_OVERLAY)
     set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *NextVideo.cpp.o* *NextInt.cpp.o* *NextPorts.cpp.o*")
@@ -467,6 +467,7 @@ if (DMA_CODE_OVERLAY)
     .dmaovl __dmaovl_win_start : {\n\
         __dmaovl_start = .;\n\
         *Z80DMA.cpp.o*(.time_critical.dmaloop*)\n\
+        *ElmHgfx.cpp.o*(.time_critical.dmaloop*)\n\
         . = ALIGN(4);\n\
         __dmaovl_end = .;\n\
     } AT > FLASH\n\

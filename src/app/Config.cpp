@@ -517,7 +517,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         save();
         OSD::esp_hard_reset();   // never returns; setup() reserves the window
     }
-    if (wantedPages(newArch, newRomSet) != MEM_PG_CNT) {
+    // eLeMeNt ZX too whatever the count: its hot path is in the Z80 DMA window, loaded at boot.
+    if (wantedPages(newArch, newRomSet) != MEM_PG_CNT || (newArch == A_ELM && arch != A_ELM)) {
         arch = newArch;
         if (newRomSet != R_NONE) romSet = newRomSet;
         if (!g_snapshot_loading_path.empty())
