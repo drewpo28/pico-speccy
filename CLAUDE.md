@@ -16331,6 +16331,13 @@ switch away from stock 48K, on Eject, and when ZipExtract/quick-start reuses its
 path. F1 Info on a `.rom`/`.bin` (`If2::describe`): type (IF2 cartridge / 48K system ROM
 / ALF cartridge), CRC32, own IM1 handler at #0038, what Enter will do. Test material:
 TOSEC "ZX Spectrum - Cartridges" (Cookie CRC32 7108E9A8: copies itself to #6000).
+**The Machine row is shown for the STOCK 48K only** (`p_if2Active` in UiTree.cpp:
+staged or running `A_48K, R_48K`; hw-confirmed DVp2 2026-11-01 — owner: "работает")
+— 2026-11-01, owner: it appeared on Byte (48K) and every other 48K machine. The cartridge IS the machine's whole ROM, so the clones with
+their own machine underneath (Byte, Timex, Didaktik, Leningrad, Quorum 64) have no such
+slot; the predicate is deliberately `If2::live()`'s own test (`isStock48()`), so the
+row exists exactly where the cartridge can stay plugged in. Opening a .rom in F5 still
+works from any machine — `If2::insert` switches to the stock 48K itself.
 
 ## DVp2ws — `PICO_DV_WS`: the W module in a Pico DV base (2026-10-11, NOT hw-tested)
 
