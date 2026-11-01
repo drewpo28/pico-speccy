@@ -647,15 +647,21 @@ static bool p_tsconfActive() {
     return ((m >> 8) & 0xFF) == A_TSCONF;
 }
 
-// The TC2068 is running or staged — gates its cartridge submenu. (The TC2048 has no
-// cartridge port at all: no EX-ROM, no DOCK, no #F4.)
-// Interface 2 plugs into any 48K; the row follows the staged machine, like DOCK.
-static bool p_48kActive() {
+// Interface 2 plugs into a STOCK ZX Spectrum 48K and nowhere else: the cartridge IS
+// the machine's whole ROM (If2.h — the boot runs from #0000 of the window), so the
+// clones that keep their own ULA/ROM layout — Byte, Timex, Didaktik, Leningrad,
+// Quorum 64 — have no IF2 slot to offer. `If2::live()` makes the same test, so the
+// row is shown exactly where the cartridge can be plugged in; the row follows the
+// staged machine, like DOCK.
+static bool p_if2Active() {
     const int32_t m = Stage::get(SET_MACHINE);
-    if (m < 0) return Config::arch == A_48K;
-    return (m >> 8) == A_48K;
+    const uint8_t arch = (m < 0) ? Config::arch   : (uint8_t)((m >> 8) & 0xFF);
+    const uint8_t rom  = (m < 0) ? Config::romSet : (uint8_t)(m & 0xFF);
+    return arch == A_48K && rom == R_48K;
 }
 
+// The TC2068 is running or staged — gates its cartridge submenu. (The TC2048 has no
+// cartridge port at all: no EX-ROM, no DOCK, no #F4.)
 static bool p_tc2068Active() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::isTc2068();
@@ -953,7 +959,7 @@ static const Node kIf2Cart[] = {
 
 static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_SPECTRUM, SET_MACHINE, opt_mach_spectrum, nullptr),
-    NM_SUB    (NM_IND TXT_MACH_IF2_CART, kIf2Cart, p_48kActive),
+    NM_SUB    (NM_IND TXT_MACH_IF2_CART, kIf2Cart, p_if2Active),
     NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO  (TXT_MACH_TIMEX,    SET_MACHINE, opt_mach_timex,    nullptr),
