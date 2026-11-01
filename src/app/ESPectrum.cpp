@@ -1006,6 +1006,10 @@ void ESPectrum::setup() {
   // Config::mb02 too: MB02::init() turns dma_mode on only LATER in setup, after
   // this decision — without it an MB-02+ boot with dma_mode 0 in NVS would leave
   // Z80DMA::writePort in a released window.
+  // eLeMeNt ZX: its Z80 DMA is part of the board.
+  if (!Config::dma_mode && (Config::arch == A_ELM ||
+                            (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM)))
+    Config::dma_mode = 1;
   const bool dmaWin = Config::dma_mode != 0 || Config::mb02 != 0 || Config::arch == A_NEXT ||
                       (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_NEXT);
   // The CLASSIC byte loop (a second window since 2026-10-11) is the one part of

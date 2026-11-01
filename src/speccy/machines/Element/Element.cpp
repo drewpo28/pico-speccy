@@ -110,11 +110,13 @@ static uint8_t fdRead(uint32_t a, bool uram) {
     if (uram) { const uint8_t* p = uramByte(a); return p ? *p : 0xFF; }
     return MemESP::readbyte((uint16_t)a);
 }
+void busWrite(uint16_t a, uint8_t v) {
+    if (s_r && s_r->win[a >> 8] && memWrite(a, v)) return;
+    MemESP::writebyte(a, v);
+}
 static void fdWrite(uint32_t a, bool uram, uint8_t v) {
     if (uram) { uint8_t* p = uramByte(a); if (p) *p = v; return; }
-    const uint16_t z = (uint16_t)a;
-    if (s_r->win[z >> 8] && memWrite(z, v)) return;
-    MemESP::writebyte(z, v);
+    busWrite((uint16_t)a, v);
 }
 
 static void fdmaRun(int set, bool wide24) {

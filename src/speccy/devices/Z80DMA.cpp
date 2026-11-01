@@ -24,6 +24,13 @@
 #include "app/ESPectrum.h"
 #include "app/TryAlloc.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/machines/Element/Element.h"
+
+// eLeMeNt ZX: the memory-mapped windows (HGFX VRAM, registers) see DMA writes too.
+static inline void memPoke(uint16_t a, uint8_t v) {
+    if (__builtin_expect(Z80Ops::isElm, 0)) Elm::busWrite(a, v);
+    else MemESP::writebyte(a, v);
+}
 
 #undef IRAM_ATTR
 #define IRAM_ATTR __not_in_flash("z80dma")
@@ -596,13 +603,13 @@ void Z80DMA::nxOneByte() {
         val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
         VIDEO::Draw(port_b_cycles, false);
         if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
-        else MemESP::writebyte(cur_port_b, val);
+        else memPoke(cur_port_b, val);
     } else {
         VIDEO::Draw(port_b_cycles, false);
         val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
         VIDEO::Draw(port_a_cycles, false);
         if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
-        else MemESP::writebyte(cur_port_a, val);
+        else memPoke(cur_port_a, val);
     }
     cur_port_a += port_a_inc;
     cur_port_b += port_b_inc;
@@ -622,13 +629,13 @@ inline __attribute__((always_inline)) void Z80DMA::nxByteNoDraw(uint8_t ca, uint
         val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
         CPU::tstates += cb;
         if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
-        else MemESP::writebyte(cur_port_b, val);
+        else memPoke(cur_port_b, val);
     } else {
         CPU::tstates += cb;
         val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
         CPU::tstates += ca;
         if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
-        else MemESP::writebyte(cur_port_a, val);
+        else memPoke(cur_port_a, val);
     }
     cur_port_a += port_a_inc;
     cur_port_b += port_b_inc;
@@ -1146,14 +1153,14 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
             val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
             VIDEO::Draw(port_b_cycles, false);
             if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
-            else MemESP::writebyte(cur_port_b, val);
+            else memPoke(cur_port_b, val);
         } else {
             // B → A: read B, write A
             VIDEO::Draw(port_b_cycles, false);
             val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
             VIDEO::Draw(port_a_cycles, false);
             if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
-            else MemESP::writebyte(cur_port_a, val);
+            else memPoke(cur_port_a, val);
         }
 
         cur_port_a += port_a_inc;
@@ -1206,7 +1213,7 @@ DMA_LOOP_ATTR void Z80DMA::transferOneByte() {
         if (port_b_is_io) {
             Ports::output(cur_port_b, val);
         } else {
-            MemESP::writebyte(cur_port_b, val);
+            memPoke(cur_port_b, val);
         }
     } else {
         // B -> A (bit 2 = 0): read B (portB timing), write A (portA timing)
@@ -1219,7 +1226,7 @@ DMA_LOOP_ATTR void Z80DMA::transferOneByte() {
         if (port_a_is_io) {
             Ports::output(cur_port_a, val);
         } else {
-            MemESP::writebyte(cur_port_a, val);
+            memPoke(cur_port_a, val);
         }
     }
 

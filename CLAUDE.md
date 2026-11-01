@@ -16339,6 +16339,8 @@ Plan, sources and owner decisions: `docs/element-zx-plan.md`; Reference saved as
 true + `isElm`), 128 pages, DivSD forced, no Beta, no MB-02+. All machine code in
 `src/speccy/machines/Element/`; one test + `Elm::isPort` in the RAM port paths, late 3 T as ATM. No RTL exists.
 URAM (`Elm::remap`, one writer of the slots, gate bit 5 of `g_atm_ro` -> `Elm::memWrite`) and LCU1 host-tested; `tools/elm_lcu_test.cpp` after any change to ElmLcu.h.
+Phases 1-6 committed 2026-11-01, host-tested only beyond the phase 0 boot; status per phase in the plan. HGFX (`ElmHgfx`, drawn whole at EndFrame on core0), FastDMA, LCU2, SoundDMA (`ElmSdma`, firmware-free, `tools/elm_sdma_test.cpp`, `tools/elm_hgfx_test.cpp`), DACs, SAA, TSFM mirror, scancodes over the ZxEvoAvr log, UART over ZiFi, CPU speed capped at 14 MHz, master counter, LIFO, SafeNMI, RTC72421. Known wrong: HGFNICCC (dots only). Not done: eINT (stored only), `.pss`, live `e_zxi_000`, Pentagon 4096, Gama 80.
+Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

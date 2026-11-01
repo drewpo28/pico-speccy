@@ -158,6 +158,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                 Config::romSetEp = romset;
             } else if (arch == A_ELM) {
                 Config::romSet = romset;
+                if (!Config::dma_mode) Config::dma_mode = 1;   // part of the board
             } else {
                 Config::romSet = romset;
             }

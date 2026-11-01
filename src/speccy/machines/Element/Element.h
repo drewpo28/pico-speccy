@@ -17,6 +17,7 @@ bool portOut(uint16_t address, uint8_t data);
 void frameEnd();                              // EndFrame
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
+void busWrite(uint16_t address, uint8_t v);   // a DMA write, windows included
 bool nmiBlocked();                            // SafeNMI: the button is locked
 void nmiTaken(uint16_t pc);                   // SafeNMI: the return address
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM
