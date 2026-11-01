@@ -463,6 +463,7 @@ public:
   static int rowCarves(int row, int (*cx)[2]);
   static bool paper_hold;          // eLeMeNt HGFX owns the paper: the timing runs, no pixels
   static void elmPaletteSet(uint8_t slot, uint32_t rgb);
+  static uint32_t zxRgb(uint8_t i);
   // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):
   static void gmxApplyPending();         // deferred on/off switch, vblank only
   static void gmxBorderFrame(bool skipFrame); // top/bottom band repaint

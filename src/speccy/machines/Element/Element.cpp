@@ -44,7 +44,7 @@ static Zone s_z[4];
 static uint8_t s_zone;
 static uint8_t s_active;              // Zones currently over the legacy mapping
 static uint8_t s_wpSlots, s_lcuSlots, s_hgfxSlots; // 8K slot masks
-static uint16_t s_slotPage[8];        // HGFX Area: page per slot
+static uint16_t s_slotPage[8];        // HGFX Area: its 8K step in the Zone
 uint8_t* wrKind;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
@@ -75,10 +75,12 @@ static void windowsRebuild() {
 
 // FastDMA: Programmer's Reference + FDMA-EN.TXT. Two register sets of 32 bytes. A
 // transfer stops the CPU and runs at memory speed, independent of the CPU clock:
-// taken as 7 MB/s, half a 3.5 MHz T a byte (the document gives no figure).
+// CHUNKY.TXT gives about 0.48 T a byte at 3.5 MHz, taken as 0.5.
 static uint8_t s_fd[64];
 static uint32_t s_fdSrc[2], s_fdDst[2];   // running addresses, 8.8 in the floating modes
 static bool s_fdBusy;
+static uint8_t s_radHi;
+static bool s_radFlip;
 
 static inline uint16_t fd16(const uint8_t* r, int o) { return (uint16_t)(r[o] | r[o + 1] << 8); }
 static inline uint32_t fd24(const uint8_t* r, int o) { return r[o] | (uint32_t)r[o + 1] << 8 | (uint32_t)r[o + 2] << 16; }
@@ -213,9 +215,9 @@ void remap() {
             const bool isLcu = (layout == LAYOUT_LCU0 && a == 0) || (layout == LAYOUT_LCU1 && a == 1);
             const bool isHg = layout == LAYOUT_HGFX || (layout == LAYOUT_HGFX1 && a == 1);
             uint8_t* p = isLcu ? lcuBlock()
-                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(s_z[z].page[a] * 0x2000u)
+                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(a * 0x2000u)
                        : uramPtr(s_z[z].page[a]);
-            if (isHg) { hg |= 1u << slot; s_slotPage[slot] = s_z[z].page[a]; }
+            if (isHg) { hg |= 1u << slot; s_slotPage[slot] = a; }   // no page: the window starts at OffsetY
             if (!p) { wp |= 1u << slot; p = (uint8_t*)MemESP::ram[0].direct(); }
             MemESP::ramCurrent[slot] = p;
             mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
@@ -230,7 +232,22 @@ void remap() {
     windowsRebuild();
 }
 
-void frameEnd() { Hgfx::frameEnd(); }
+// KeyLayer: the screen #7FFD bit 3 shows is on top, the other shines through its key
+// colour. g_zxi_002 bit 0 puts the first screen in page 6 instead of 5.
+void frameEnd() {
+    const uint8_t* a = MemESP::ram[(s_r->g[0x002] & 1) ? 6 : 5].direct();
+    const uint8_t* b = MemESP::ram[7].direct();
+    if (s_r->g[0x002] & 1) VIDEO::grmem = MemESP::videoLatch ? (uint8_t*)b : (uint8_t*)a;
+    const bool key = s_r->g[0x003] == 1;
+    Hgfx::keyTop = key ? (MemESP::videoLatch ? b : a) : nullptr;
+    Hgfx::keyBottom = key ? (MemESP::videoLatch ? a : b) : nullptr;
+    Hgfx::keyColour = s_r->g[0x004];
+    Hgfx::radastan = (s_r->u[0x40] & 3) == 3;
+    Hgfx::radOffset = (uint16_t)(s_r->u[0x41] | (s_radHi << 8));
+    Hgfx::radPad = s_r->u[0x42];
+    Hgfx::radBank = s_r->u[0x43] & 3;
+    Hgfx::frameEnd();
+}
 
 bool memWrite(uint16_t a, uint8_t v) {
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
@@ -373,6 +390,9 @@ static void gWrite(uint8_t r, uint8_t v) {
         windowsRebuild();
         if ((s_r->g[0x060] & 1)) lcu2Publish();
         return;
+    case 0x003: case 0x004:
+        s_r->g[r] = v;
+        return;
     case 0x002:
         s_r->g[r] = v;
         Hgfx::rgbOrder = v & 4;
@@ -476,10 +496,15 @@ bool portOut(uint16_t a, uint8_t v) {
         return true;
     case 0xFD3B:
         if (unoUart(s_uIdx)) ZiFi::unoUartWrite(true, v);
+        else if (s_uIdx == 0x41) {    // 14 bits: low byte, then high
+            if (s_radFlip) s_radHi = v & 0x3F; else s_r->u[0x41] = v;
+            s_radFlip = !s_radFlip;
+        }
         else if (s_uIdx != 0xFF) s_r->u[s_uIdx] = v;
         return true;
     }
     if ((a & 0xF8FF) == 0x703B) return true;
+    if (a == 0xEFF7) VIDEO::timexHiresRequest(v & 2);   // and on to the generic decode
     return false;
 }
 

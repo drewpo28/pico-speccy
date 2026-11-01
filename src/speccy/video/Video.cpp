@@ -1711,6 +1711,11 @@ void precalcborder32()
 // noinline: a flash function, but EndFrame (RAM) calls it on mode edges and GCC
 // would otherwise inline copies of it into SRAM.
 __attribute__((noinline)) void VIDEO::updateBorderBrd() {
+    if (sam_pair_live && Z80Ops::isElm) {
+        const uint8_t pi = Hgfx::pairBorder(borderColor);
+        brd = (uint32_t)profi_pair_lookup[pi][pi] * 0x01010101u;
+        return;
+    }
     if (timex_hires_live) {
         // Hi-res border = the PAPER colour, bright, as a solid pair slot.  The
         // 48K/128K (Update_Border_Pair) and Pentagon (Update_Border_XOR) border
@@ -2297,6 +2302,8 @@ void VIDEO::elmPaletteSet(uint8_t slot, uint32_t rgb) {
     graphics_set_palette(slot, c);
     if (!Config::vga_dither) vga_set_palette_entry_solid(slot, c);
 }
+
+uint32_t VIDEO::zxRgb(uint8_t i) { return paletteTransform(spectrum_rgb888[i & 15]) & 0x00FFFFFF; }
 
 static void epPaletteFlush() {
     if (VIDEO::sam_pair_live) return;   // 2-colour PIXEL frames: the pair tables own the slots
@@ -7347,7 +7354,9 @@ static void samPairOff() {
     profi_ds80_driver_set(false, nullptr, nullptr);
     Graphics8BitPalette::ds80_active = false;
     // the machine's own slots back (SAM: the CLUT; Enterprise: the 128 Nick colours)
-    if (Config::arch == A_ENT) epPaletteFlush(); else samPaletteFlush();
+    if (Config::arch == A_ENT) epPaletteFlush();
+    else if (Config::arch == A_ELM) Hgfx::paletteLost();
+    else samPaletteFlush();
     Debug::log("[VID] 512 px pair mode off");
 }
 

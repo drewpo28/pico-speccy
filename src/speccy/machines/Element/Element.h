@@ -24,7 +24,7 @@ extern uint8_t* wrKind;                       // per high address byte: 0 = plai
 static inline bool isPort(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     return lo == 0x3B || (lo & 0x9F) == 0x07 || (lo & 0xDF) == 0x53 ||
-           (address & 0xFEFF) == 0x9EFD;
+           (address & 0xFEFF) == 0x9EFD || address == 0xEFF7;
 }
 
 }

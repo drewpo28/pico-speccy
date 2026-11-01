@@ -194,6 +194,15 @@ HRC, HRXC, KeyLayer, Radastan, HAM, FILL, PlanarWorkingWindow, HGFX 2/3/6/7, Pen
 
 Проверка: HRCDEMO, KLAYTEST, RADASHOW, HGFXHAM8, HGFNICCC.
 
+**Сделано (хост):** HRC и HRXC парами (HRXC: 32 цвета на 16), KeyLayer над ZX и HRC, Radastan, FILL, HAM8 через
+куб 6x7x4 с дизерингом, HGFX 3 (через строку из 384), HGFX 4/5 (через строку, 720 только в режимах 360),
+HGFX 6/7, Pentagon hi-res, первый экран в странице 6 (по кадрам). HGFX 2: по 16 цветам парами, если они
+закрывают 97% пикселей, иначе 256 px. Проверено: HRCDEMO, KLAYTEST, RADASHOW, HGFXHAM8.
+Не сделано: ULA+ `Extra`, PlanarWorkingWindow для chunky, индексный бордюр, смена палитры HRXC по кадру точно.
+**HGFNICCC не работает:** видны только точки. Он пишет `#7700+24..28` (не регистры по документу, похоже на
+свои переменные), OffsetY на каждый байт, маски `#7F/#80`, а `h0D` оставляет 0. Причина не найдена.
+HGFX 3-7 и текст HGFX 2 тестовой программой не проверялись.
+
 ### Фаза 5. Звук и ввод
 SoundDMA 8 каналов (стерео, 16 бит на A, петли, разрешение источника в URAM; рендер рядом с
 MoonSplit), MonsterBlaster на Covox, SAA на ZXi-портах, зеркало TSFM. Сканкоды и прерывание от

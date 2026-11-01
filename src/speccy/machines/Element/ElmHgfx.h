@@ -23,6 +23,11 @@ extern uint8_t mode;          // g_zxi_001
 extern uint8_t g20;           // g_zxi_020: b0 linear, b1 indexed border, b2 no ZX under
                               // index 0, b7 windows off
 extern bool    rgbOrder;      // g_zxi_002 b2
+extern bool     radastan;     // u_zxi_040
+extern uint8_t  radBank, radPad, keyColour;
+extern uint16_t radOffset;
+extern const uint8_t* keyTop;     // KeyLayer: the screens, or nullptr
+extern const uint8_t* keyBottom;
 
 bool    ensure();             // the buffers (PSRAM), first use
 void    setMode(uint8_t m);   // g_zxi_001
@@ -39,5 +44,6 @@ void    chunkyWrite(uint32_t off, uint8_t v);
 void    frameEnd();           // EndFrame: mode change, palette, the picture
 void    repaint();            // the same, machine stopped
 void    paletteLost();        // applyPalette rewrote the slots
+uint8_t pairBorder(uint8_t zx);   // a ZX colour in the live pair frame
 
 }
