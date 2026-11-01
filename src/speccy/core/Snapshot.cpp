@@ -1336,7 +1336,7 @@ void FileZ80::loader128() {
             z80_array = (unsigned char *) loadzx81;
             dataLen = sizeof(loadzx81);
         }
-    } else if (Config::arch == A_PENT || Config::arch == A_P512  || Config::arch == A_P1024) {
+    } else if (Config::arch == A_PENT || Config::arch == A_P512  || Config::arch == A_P1024 || Config::arch == A_ELM) {
         z80_array = (unsigned char *) loadpentagon;
         dataLen = sizeof(loadpentagon);
     } else if (Config::arch == A_PROFI) {

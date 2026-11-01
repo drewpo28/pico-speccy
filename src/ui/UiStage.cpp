@@ -1031,6 +1031,7 @@ static bool stagedIsPlus3e() {
     if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
     return Config::isPlus3e();
 }
+static bool stagedIsElm() { return stagedArchIs(A_ELM); }
 static bool stagedIsSam() {
     const int32_t m = staged(SET_MACHINE);
     if (m >= 0) return (ArchIdx)(m >> 8) == A_SAM;
@@ -1216,6 +1217,15 @@ static void resolveConstraints(CommitReport& rep) {
         }
         // SAM Coupe: the Atom Lite is its card (drive 2's ports); the other schemes
         // decode ports the SAM does not have, and it decodes nothing elsewhere.
+        // eLeMeNt ZX: no FDC, esxDOS over the real card is the disk system (as the Next).
+        if (stagedIsElm()) {
+            if (staged(SET_BETADISK))
+                changed |= force(SET_BETADISK, 0, rep, "Betadisk is not available on eLeMeNt ZX");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on eLeMeNt ZX");
+            if (staged(SET_ESXDOS) != 3)
+                changed |= force(SET_ESXDOS, 3, rep, "DivSD is part of eLeMeNt ZX");
+        }
         if (stagedIsSam()) {
             if (staged(SET_IDE_SCHEME) != IDE::OFF && staged(SET_IDE_SCHEME) != IDE::ATOMLITE)
                 changed |= force(SET_IDE_SCHEME, IDE::ATOMLITE, rep, "IDE set to the Atom Lite");

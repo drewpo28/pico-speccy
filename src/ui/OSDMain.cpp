@@ -6665,6 +6665,7 @@ static uint32_t guestRamKB() {
         if (MEM_PG_CNT > 64) return MEM_PG_CNT * 16;
         return Config::arch == A_PENT ? 128 : Config::arch == A_P512 ? 512 : 1024;
     }
+    case A_ELM:   return 2048;
     case A_PROFI:
     case A_KARABAS: return 1024;
     case A_SCORP: {

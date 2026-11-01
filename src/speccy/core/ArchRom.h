@@ -32,7 +32,8 @@
     X(A_ATM,        "ATM")      \
     X(A_NEXT,       "Next")     \
     X(A_SAM,        "SAM")      \
-    X(A_ENT,        "EP")
+    X(A_ENT,        "EP")       \
+    X(A_ELM,        "Element")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -99,7 +100,8 @@
     X(R_QU1024,         "Quorum1024",       "Quorum 1024")  \
     X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)") \
     X(R_EP64,           "EP64",             "Enterprise 64")  \
-    X(R_EP128,          "EP128",            "Enterprise 128")
+    X(R_EP128,          "EP128",            "Enterprise 128") \
+    X(R_ELM,            "Element",          "eLeMeNt ZX")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -170,6 +172,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_NEXT:    return R_NEXT;
         case A_SAM:     return R_SAM512;
         case A_ENT:     return R_EP128;
+        case A_ELM:     return R_ELM;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }

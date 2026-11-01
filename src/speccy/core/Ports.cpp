@@ -81,6 +81,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Plus3/Plus3eIde.h"
 #include "speccy/devices/storage/DivideIde.h"
 #include "speccy/devices/zifi/ZiFi.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/devices/storage/Nvram24.h"
 #include "speccy/devices/disk/MB02.h"
@@ -1256,6 +1257,11 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // generic path below adds itself: without it each IN the machine claims was
     // 3 T short against the raster (Across the Edge on BaseConf, 2026-10-04).
     if (atmPortReadEarly(address, &atmData)) { VIDEO::Draw(3, false); return atmData; }
+  }
+  // eLeMeNt ZX: the ZXi register files (flash), with the same late 3 T.
+  if (__builtin_expect(Z80Ops::isElm, 0) && Elm::isPort(address)) {
+    uint8_t elmData;
+    if (Elm::portIn(address, &elmData)) { VIDEO::Draw(3, false); return elmData; }
   }
   // Quorum: #00 / #7E / #80-#85 / #1F and the partial #FE decode — cold flash
   // dispatch (machines/Quorum.cpp), ahead of the ULA and Beta-128 branches.
@@ -3162,6 +3168,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // + the late 3 T of the I/O cycle, as above: Across the Edge on BaseConf lost 3 T a
   // line through one such OUT, and every border change slid 6 px per line (hw 2026-10-04).
   if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) { VIDEO::Draw(3, false); return; }
+  if (__builtin_expect(Z80Ops::isElm, 0) && Elm::isPort(address) && Elm::portOut(address, data)) {
+    VIDEO::Draw(3, false);
+    return;
+  }
   // Quorum system ports (machines/Quorum.cpp): #00, #7FFD/#80FD on the 128, the
   // WD1793 on #80-#85; every even port but #FE is swallowed (the board decodes
   // 1xx11xx0 for the ULA), as are the Beta-128 ports it does not have.

@@ -16332,6 +16332,13 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
   quorum48.rom #0066 loads track 0 sector 1 to #8800 and runs it if #8820 = JP.
 - Gluk clock #EFF7/#DFF7/#BFF7 on every Quorum while Devices > CMOS + NVRAM (else #FF / swallowed).
 
+## eLeMeNt ZX (A_ELM, 2026-11-01, phase 0, hw-confirmed DVp2w: boots, owner "загрузилось", not itemised)
+
+Plan, sources and owner decisions: `docs/element-zx-plan.md`; Reference saved as
+`debug/element/ElementZX-ProgRef-20261101.txt`. Pentagon 1024 flags and timing (`Z80Ops::isPentagon/is1024`
+true + `isElm`), 128 pages, DivSD forced, no Beta, no MB-02+. All machine code in
+`src/speccy/machines/Element/`; one test + `Elm::isPort` in the RAM port paths, late 3 T as ATM. No RTL exists.
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

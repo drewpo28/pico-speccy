@@ -1162,6 +1162,8 @@ void ESPectrum::setup() {
         Config::romSet = Config::romSetSam;
       } else if (Config::arch == A_ENT) {
         Config::romSet = Config::romSetEp;
+      } else if (Config::arch == A_ELM) {
+        Config::romSet = R_ELM;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -1309,6 +1311,12 @@ void ESPectrum::setup() {
   // gracefully when no image is present.
   if (Config::arch == A_NEXT && Config::esxdos == 0)
     Config::esxdos = 1;
+  // eLeMeNt ZX: no FDC, esxDOS over the real card IS the disk system.
+  if (Config::arch == A_ELM) {
+    Config::betadisk = false;
+    Config::mb02 = false;
+    Config::esxdos = 3;
+  }
 
   //=======================================================================================
   // INIT PS/2 KEYBOARD
@@ -1511,7 +1519,7 @@ void ESPectrum::setup() {
 
   MemESP::plug16(0, MemESP::rom[MemESP::romInUse].direct(), false);
   MemESP::plug16(1, MemESP::ram[5].direct(),
-                 !(Config::arch == A_P1024 || Config::arch == A_P512 ||
+                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::arch == A_ELM ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
                    Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
@@ -2337,7 +2345,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   MemESP::plug16(0, MemESP::rom[romInUse].direct(), false);
   MemESP::plug16(1, MemESP::ram[5].direct(),
-                 !(Config::arch == A_P1024 || Config::arch == A_P512 ||
+                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::arch == A_ELM ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
                    Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait

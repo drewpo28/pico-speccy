@@ -634,6 +634,14 @@ static bool p_showEp() {
     return FlashRoms::romsUsable();
 #endif
 }
+// eLeMeNt ZX: 2 MB of URAM in butter PSRAM.
+static bool p_showElm() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return butter_psram_size() >= (4u << 20);
+#endif
+}
 // ZX Evolution BaseConf (ATM arch, R_EVO_BASE) running or staged.
 static bool p_evoBaseActive() {
     const int32_t m = Stage::get(SET_MACHINE);
@@ -860,6 +868,9 @@ static const Option opt_mach_ep[] = {
     { "64",   NM_MACH(A_ENT, R_EP64),  "64"  },
     { "128",  NM_MACH(A_ENT, R_EP128), "128" },
 };
+static const Option opt_mach_elm[] = {
+    { "Pentagon 1024", NM_MACH(A_ELM, R_ELM), "Pentagon 1024" },
+};
 static const Option opt_mach_sam[] = {
     { "256K",          NM_MACH(A_SAM, R_SAM256),    "256K"   },
     { "512K",          NM_MACH(A_SAM, R_SAM512),    "512K"   },
@@ -976,6 +987,7 @@ static const Node kMachine[] = {
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
     NM_RADIO(TXT_MACH_SAM,   SET_MACHINE, opt_mach_sam,   p_showSam),
     NM_RADIO(TXT_MACH_EP,    SET_MACHINE, opt_mach_ep,    p_showEp),
+    NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
@@ -1177,9 +1189,9 @@ static bool devPent()  {
     const ArchIdx a = devArch();
     return a == A_PENT || a == A_P512 || a == A_P1024;
 }
-static bool devOwnBus() {        // SAM, Enterprise, Next: no Spectrum interface on the bus
+static bool devOwnBus() {        // SAM, Enterprise, Next, eLeMeNt: no Spectrum interface on the bus
     const ArchIdx a = devArch();
-    return a == A_SAM || a == A_ENT || a == A_NEXT;
+    return a == A_SAM || a == A_ENT || a == A_NEXT || a == A_ELM;
 }
 static bool p_samOn()   { return devArch() == A_SAM; }
 static bool p_epOn()    { return devArch() == A_ENT; }
@@ -1214,7 +1226,7 @@ static bool p_zcRow() {
 static bool p_ideRow() {
     const ArchIdx a = devArch();
     const RomsetIdx r = devRomset();
-    if (!p_hasSD() || a == A_ENT || a == A_NEXT) return false;
+    if (!p_hasSD() || a == A_ENT || a == A_NEXT || a == A_ELM) return false;
     return a != A_ATM || atmHasIde(r) || isEvoBaseRomset(r);
 }
 // A clock chip answers on neither of these (Quorum's Gluk is a romset of the 48K arch).
@@ -1499,7 +1511,7 @@ static bool p_screenTop() {
         vm != Config::VM_720x576_169 && vm != Config::VM_1440x576_X3) return false;
     const int32_t m = Stage::get(SET_MACHINE);
     const int a = (m < 0) ? (int)Config::arch : ((m >> 8) & 0xFF);
-    if (a == A_PENT || a == A_P512 || a == A_P1024 || a == A_TSCONF) return true;
+    if (a == A_PENT || a == A_P512 || a == A_P1024 || a == A_ELM || a == A_TSCONF) return true;
     return (a == (int)Config::arch) && Config::isEvoPentRaster();   // BaseConf / ScorpEvo, live
 }
 

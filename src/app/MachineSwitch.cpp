@@ -156,6 +156,8 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             } else if (arch == A_ENT) {
                 Config::romSet = romset;
                 Config::romSetEp = romset;
+            } else if (arch == A_ELM) {
+                Config::romSet = romset;
             } else {
                 Config::romSet = romset;
             }
@@ -192,7 +194,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // romset the same way Byte's do.
         const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || isP3 || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || arch == A_ELM || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             Debug::log("[MACH switch] MB-02+ disabled: not available on %s (its SRAM took the top %d pages of the strip)",
@@ -246,7 +248,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // SAM Coupe: no Beta (its own disk controller comes in phase 2), and the SAA1099
         // is on the board.
         // Enterprise: no Beta either (EXDOS, its own disk card, is a later phase).
-        if (arch == A_ENT && Config::betadisk) { Config::betadisk = false; OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500); }
+        if ((arch == A_ENT || arch == A_ELM) && Config::betadisk) { Config::betadisk = false; OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500); }
         if (arch == A_SAM) {
             if (Config::betadisk) { Config::betadisk = false; OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500); }
             Config::SAA1099 = true;
@@ -385,7 +387,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // .mmc-image mode would point the OS at esxdos.mmc instead of the
         // card and DivIDE has no SD at all. Persisted by the save below;
         // the arch boundary hard-reset re-inits DivMMC in the new mode.
-        if (Config::arch == A_NEXT && Config::esxdos != 3) {
+        if ((Config::arch == A_NEXT || Config::arch == A_ELM) && Config::esxdos != 3) {
             Config::esxdos = 3;
             OSD::osdCenteredMsg("DivSD (raw SD) enabled", LEVEL_WARN, 1500);
         }

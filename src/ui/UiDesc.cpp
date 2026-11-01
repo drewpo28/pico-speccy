@@ -61,6 +61,7 @@ static const MachFx* machineFx(ArchIdx a, RomsetIdx r) {
                                     { "Timex, esxDOS, MB-02+", "16col, Murmuzavr" } };
     static const MachFx kZcBeta = { { "Z-Controller, Betadisk" }, { "MB-02+" } };
     static const MachFx kBeta   = { { "Betadisk" }, { "MB-02+" } };
+    static const MachFx kElm    = { { "esxDOS: DivSD" }, { "Betadisk, MB-02+" } };
     static const MachFx kGmx    = { { "Betadisk" }, { "MB-02+, Timex" } };
     // ZiFi NIC goes off on Profi/Karabas only on boards without butter PSRAM
     // (MachineSwitch): the guest pages are SRAM there.
@@ -82,6 +83,7 @@ static const MachFx* machineFx(ArchIdx a, RomsetIdx r) {
     static const MachFx kByte48 = { { nullptr }, { "Betadisk, Timex, MB-02+" } };
     static const MachFx kByte   = { { nullptr }, { "Timex, MB-02+" } };
 
+    if (a == A_ELM)                             return &kElm;
     if (a == A_TSCONF)                          return &kTsconf;
     if (a == A_ATM) return isEvoBaseRomset(r) ? &kEvo : &kAtm;
     if (a == A_KARABAS || (a == A_PROFI && isKarabasRomset(r)))

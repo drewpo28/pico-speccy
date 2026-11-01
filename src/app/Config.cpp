@@ -437,6 +437,11 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         OSD::bootNotice("SAM Coupe needs QSPI PSRAM - using Pentagon");
         newArch = A_PENT; newRomSet = R_NONE;
     }
+    // eLeMeNt ZX: 2 MB of URAM, every page a plain pointer (like SAM).
+    if (newArch == A_ELM && butter_psram_size() < (4u << 20)) {
+        OSD::bootNotice("eLeMeNt ZX needs QSPI PSRAM - using Pentagon");
+        newArch = A_PENT; newRomSet = R_NONE;
+    }
     // The memory fitted decides the page strip, so the slot must hold the new pick
     // before the boundary below compares (and before setup() re-reads it).
     if (newArch == A_ENT) {
@@ -935,6 +940,16 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         romSet = newRomSet;          // normalised above
         romSetEp = romSet;
         Ep::bindRoms();              // EXOS + BASIC (.psramroms)
+        break;
+    }
+    case A_ELM: {
+        // eLeMeNt ZX, Pentagon 1024 personality: the Pentagon ROM pair (no TR-DOS
+        // reachable: the board has no Beta, esxDOS comes from DivMMC's own ROM).
+        romSet = R_ELM;
+        MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+        MemESP::registerOverlay(gb_rom_0_pentagon_128k, nullptr);
+        MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+        MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
         break;
     }
     case A_NEXT: {

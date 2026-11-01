@@ -5436,7 +5436,7 @@ void VIDEO::quorumRasterSet() {
 bool VIDEO::snowAllowed() {
     // Leningrad: no ULA, the video address counter never sees the Z80's refresh
     // address — no snow (machines/Leningrad.h).
-    return Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT &&
+    return Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_ELM &&
            Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF &&
            Config::arch != A_ATM && Config::arch != A_NEXT && !Config::isPlus3() &&
            !Config::isLeningrad() && !Config::isQuorum64();
@@ -5543,7 +5543,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 ||
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 || Config::arch == A_ELM ||
                Config::isEvoPentRaster()) {    // (ZX Evolution BaseConf / ScorpEvo: the Pentagon raster)
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
@@ -8097,7 +8097,7 @@ int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin
 int VIDEO::screenTopRows() {
     if (!isFullBorder || isFullBorder240()) return 24;
     const bool pentRaster = Config::arch == A_PENT || Config::arch == A_P512 ||
-                            Config::arch == A_P1024 || Config::arch == A_TSCONF ||
+                            Config::arch == A_P1024 || Config::arch == A_ELM || Config::arch == A_TSCONF ||
                             Config::isEvoPentRaster();
     if (!pentRaster) return 48;
     static const uint8_t kTop[3] = { 48, 60, 64 };   // Even / Middle / Full top

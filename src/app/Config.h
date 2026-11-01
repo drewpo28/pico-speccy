@@ -248,6 +248,7 @@ public:
     // then calls requestMachine, which compares against this).
     static uint32_t wantedPages(ArchIdx a, RomsetIdx rs = R_NONE) {
         if (a == A_TSCONF) return TSCONF_PAGES;
+        if (a == A_ELM) return 128;   // 2 MB: the URAM space of the board
         // SAM Coupe: 32 internal 16K pages + the external megabytes (samExtPages),
         // never fewer than the 64 the rest of the firmware assumes exist.
         if (a == A_SAM) {
@@ -462,6 +463,7 @@ public:
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
     static bool isSam() { return arch == A_SAM; }
     static bool isEp() { return arch == A_ENT; }
+    static bool isElm() { return arch == A_ELM; }
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
     // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).

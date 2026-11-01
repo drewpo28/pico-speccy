@@ -35,6 +35,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "CPU.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Enterprise/EpFast.h"   // the EP accessor fast path (MEMGATES_EP)
 #include "app/ESPectrum.h"
@@ -145,6 +146,7 @@ bool g_timex_machine = false;
 bool Z80Ops::isNext = false;
 bool Z80Ops::isSam = false;
 bool Z80Ops::isEnt = false;
+bool Z80Ops::isElm = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -184,7 +186,7 @@ void CPU::updateStatesInFrame() {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
-    } else if (Config::arch == A_P1024) {
+    } else if (Config::arch == A_P1024 || Config::arch == A_ELM) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
@@ -314,6 +316,7 @@ void CPU::reset() {
     Z80Ops::isAtm = (Config::arch == A_ATM);
     Z80Ops::isSam = (Config::arch == A_SAM);
     Z80Ops::isEnt = (Config::arch == A_ENT);
+    Z80Ops::isElm = (Config::arch == A_ELM);
     if (!Z80Ops::isAtm && !Z80Ops::isSam && !Z80Ops::isEnt) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
@@ -372,7 +375,7 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
-    } else if (Config::arch == A_P1024) {
+    } else if (Config::arch == A_P1024 || Config::arch == A_ELM) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -511,7 +514,7 @@ void CPU::reset() {
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm ||
+    if (((Z80Ops::isPentagon && !Z80Ops::isElm) || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm ||
          Config::isQuorum64()) && !Config::betadisk) Config::betadisk = true;
 
     // ...and impossible on the +3, which has the uPD765 on #2FFD/#3FFD instead. Beta's
@@ -606,6 +609,13 @@ void CPU::reset() {
         Config::mb02 = false;
         Config::timex_video = false;
         Ep::reset();
+    }
+
+    // eLeMeNt ZX: no FDC, the disks are esxDOS over the SD card (backstop as above).
+    if (Z80Ops::isElm) {
+        Config::betadisk = false;
+        Config::mb02 = false;
+        Elm::reset();
     }
 
     // Interface 2 cartridge: esxDOS off the bus while it is in (its automap entry
