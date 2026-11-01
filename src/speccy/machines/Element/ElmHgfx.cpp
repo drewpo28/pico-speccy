@@ -32,8 +32,11 @@ static inline bool keyIs(uint8_t c) {
 static uint8_t* s_buf;              // 128K, PSRAM
 // HGFX 1 is two 49152-byte buffers and COPY walks them every frame: while the heap has
 // room they live in SRAM (the XIP port was the limit, core0's guest pages share it).
-// Off for the chunky windows, whose pointers assume the PSRAM layout.
-static uint8_t* s_sram[2];
+// Each is two blocks of 96 rows: the free heap comes in regions of ~50 KB and page
+// rounding keeps a whole buffer out of the second one. Off for the chunky windows,
+// whose pointers assume the PSRAM layout.
+enum { SRAM_ROWS = 96, SRAM_HALF = SRAM_ROWS * 256 };
+static uint8_t* s_sram[4];          // buffer * 2 + half
 static bool s_sramOn;
 // The hot path sits in the Z80 DMA window: always loaded on this machine.
 #define ELM_HOT __attribute__((section(".time_critical.dmaloop"), noinline))
@@ -62,7 +65,6 @@ static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
 static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH, s_bpp = 8;
 static uint32_t s_b1 = BUF1;
-enum { SRAM_BUF = 49152 };
 static void sramOff(bool keep);
 
 int vramPages() { return (s_w / 8) * s_h / 256; }
@@ -104,11 +106,15 @@ static inline void pxPlanar(uint8_t* row, int x, uint8_t v, uint8_t m) {
     }
 }
 
-static inline uint8_t* bufN(int n) { return s_sramOn ? s_sram[n] : s_buf + (n ? s_b1 : 0); }
+static inline uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
+static inline uint8_t* rowOf(int n, int y) {
+    if (s_sramOn) return y < SRAM_ROWS ? s_sram[n * 2] + y * 256 : s_sram[n * 2 + 1] + (y - SRAM_ROWS) * 256;
+    return bufN(n) + (uint32_t)y * s_stride;
+}
 static inline uint8_t* dstBuf() { return bufN((s_r[REG_VP] >> 1) & 1); }
 static inline uint8_t* srcBuf() { return bufN((s_r[REG_VP] >> 2) & 1); }
-static inline uint8_t* dstBufE() { return bufN((s_e[REG_VP] >> 1) & 1); }
-static inline uint8_t* srcBufE() { return bufN((s_e[REG_VP] >> 2) & 1); }
+static inline int dstE() { return (s_e[REG_VP] >> 1) & 1; }
+static inline int srcE() { return (s_e[REG_VP] >> 2) & 1; }
 static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
 bool ensure() {
@@ -138,22 +144,25 @@ static void sramOff(bool keep) {
     if (!s_sramOn) return;
     drain();
     s_sramOn = false;
-    if (keep) { memcpy(s_buf, s_sram[0], SRAM_BUF); memcpy(s_buf + BUF1, s_sram[1], SRAM_BUF); }
+    if (keep) for (int i = 0; i < 4; i++)
+        memcpy(s_buf + (i >> 1) * (uint32_t)BUF1 + (i & 1) * (uint32_t)SRAM_HALF, s_sram[i], SRAM_HALF);
 }
 static void sramOn() {
     if (s_sramOn || s_direct || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
     static bool s_refused;
     if (!s_sram[0] && !s_refused) {
-        for (int i = 0; i < 2; i++) s_sram[i] = (uint8_t*)tryMalloc(SRAM_BUF);
-        if (!s_sram[0] || !s_sram[1]) {
-            free(s_sram[0]); free(s_sram[1]); s_sram[0] = s_sram[1] = nullptr;
+        bool ok = true;
+        for (int i = 0; i < 4 && ok; i++) ok = (s_sram[i] = (uint8_t*)tryMalloc(SRAM_HALF)) != nullptr;
+        if (!ok) {
+            for (int i = 0; i < 4; i++) { free(s_sram[i]); s_sram[i] = nullptr; }
             s_refused = true;
         }
-        Debug::log("[ELM] HGFX buffers in %s", s_sram[0] ? "SRAM" : "PSRAM");
+        Debug::log("[ELM] HGFX buffers in %s", ok ? "SRAM" : "PSRAM");
     }
     if (!s_sram[0]) return;
     drain();
-    memcpy(s_sram[0], s_buf, SRAM_BUF); memcpy(s_sram[1], s_buf + BUF1, SRAM_BUF);
+    for (int i = 0; i < 4; i++)
+        memcpy(s_sram[i], s_buf + (i >> 1) * (uint32_t)BUF1 + (i & 1) * (uint32_t)SRAM_HALF, SRAM_HALF);
     s_sramOn = true;
 }
 
@@ -248,7 +257,7 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead) {
     const int y = row + e16(REG_OY);
     if (y < 0 || y >= s_h) return;
     int x = col + e16(REG_OX);
-    uint8_t* d = dstBufE() + (uint32_t)y * s_stride;
+    uint8_t* d = rowOf(dstE(), y);
     const uint8_t m = s_e[REG_MASK], pm = s_e[REG_MODE];
     const bool fast = s_bpp == 8 && x >= 0 && x + 8 <= s_w && !(s_e[REG_VP] & 8);
     // COPY moves the 8 pixels a read just cached, if the byte written is the byte read
@@ -257,7 +266,7 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead) {
         const int sy = row + e16(REG_SY);
         if (sy < 0 || sy >= s_h) return;
         int sx = col + e16(REG_SX);
-        const uint8_t* s = srcBufE() + (uint32_t)sy * s_stride;
+        const uint8_t* s = rowOf(srcE(), sy);
         if (fast && sx >= 0 && sx + 8 <= s_w) {
             put8(d + x, rd32(s + sx), rd32(s + sx + 4), ~0u, ~0u, m);
             return;
@@ -298,8 +307,8 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static voi
         const int px = (int)c * 8;
         if (s_bpp == 8 && !(s_e[REG_VP] & 8) && y >= 0 && y < s_h && sy >= 0 && sy < s_h &&
             x >= 0 && x + px <= s_w && sx >= 0 && sx + px <= s_w) {
-            uint8_t* d = dstBufE() + (uint32_t)y * s_stride + x;
-            const uint8_t* q = srcBufE() + (uint32_t)sy * s_stride + sx;
+            uint8_t* d = rowOf(dstE(), y) + x;
+            const uint8_t* q = rowOf(srcE(), sy) + sx;
             const uint8_t m = s_e[REG_MASK];
             if (m == 0xFF) for (int i = 0; i < px; i += 4) wr32(d + i, rd32(q + i));
             else {
@@ -328,17 +337,16 @@ ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead) {
 static void execCmd(uint8_t c) {
     if (!s_buf || (c != 1 && c != 2)) return;
     const uint8_t m = s_e[REG_MASK];
-    uint8_t* d = dstBufE();
-    const uint32_t n = (uint32_t)s_stride * s_h;
-    if (c == 1) {
-        const uint8_t* s = srcBufE();
-        if (s != d) {
-            if (m == 0xFF) memcpy(d, s, n);
-            else for (uint32_t i = 0; i < n; i++) d[i] = planar(d[i], s[i], m);
-        }
-    } else {
-        if (m == 0xFF) memset(d, 0, n);
-        else for (uint32_t i = 0; i < n; i++) d[i] &= (uint8_t)~m;
+    const int dn = dstE(), sn = srcE();
+    if (c == 1 && (dn == sn || !s_b1)) return;
+    for (int y = 0; y < s_h; y++) {
+        uint8_t* d = rowOf(dn, y);
+        if (c == 1) {
+            const uint8_t* q = rowOf(sn, y);
+            if (m == 0xFF) memcpy(d, q, (size_t)s_stride);
+            else for (int i = 0; i < s_stride; i++) d[i] = planar(d[i], q[i], m);
+        } else if (m == 0xFF) memset(d, 0, (size_t)s_stride);
+        else for (int i = 0; i < s_stride; i++) d[i] &= (uint8_t)~m;
     }
 }
 
@@ -630,7 +638,7 @@ static void renderFrame() {
         return;
     }
     for (int y = 0; y < HEIGHT; y++) {
-        const uint8_t* p = buf + (uint32_t)(s_h > HEIGHT ? y * 2 : y) * s_stride;
+        const uint8_t* p = rowOf(s_e[REG_VP] & 1, s_h > HEIGHT ? y * 2 : y);
         if (s_bpp != 8) {                // HGFX 3: 16 colours, every second row of 384
             if (s_pair) {
                 for (int x = 0; x < 512; x++) H->line[x] = H->pidx[pxGet(p, x)];
