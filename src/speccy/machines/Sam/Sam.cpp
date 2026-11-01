@@ -33,6 +33,9 @@
 #include "hardware/structs/watchdog.h"
 #include "hardware/watchdog.h"
 
+// Video.cpp: the LED strip's first fb row, -1 when it is off (or the panel is on).
+extern int led_strip_y0;
+
 namespace Sam {
 
 uint8_t lmpr, hmpr, vmpr, lepr, hepr, border, line = 0xFF, status = 0xFF, attr;
@@ -981,6 +984,11 @@ static void renderRow(int y) {
         const int x1 = cx[i][1] > xres ? xres : cx[i][1];
         if (x1 > x0) { memcpy(row + x0, keep + kn, x1 - x0); kn += x1 - x0; }
     }
+    // The LED strip is drawn at EndFrame, but these rows are repainted during the next
+    // frame, so its rows would stay bare until that EndFrame: stamp the glyphs here
+    // (NEXTVID::RenderLine's rule). Foreground pixels only: the picture stays live.
+    if (led_strip_y0 >= 0 && (unsigned)(y - led_strip_y0) < 8u)
+        LED::stampStripRow(y - led_strip_y0, row);
 }
 
 // Per-frame constants: geometry, the FLASH phase and the mode-3 pair decision.
