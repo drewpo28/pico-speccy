@@ -25,6 +25,8 @@
 #include "speccy/z80/CPU.h"
 #include "speccy/z80/z80.h"
 
+uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
+
 namespace Elm {
 
 // Core stamp 2026-10-12, the revision the Reference describes. Binary fields, the
@@ -255,6 +257,8 @@ void remap() {
     s_wpSlots = wp;
     s_lcuSlots = lcu;
     s_hgfxSlots = hg;
+    // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
+    g_elm_nodiv = (active & 1) && !(s_r->e[0x02D] & 0x80);
     windowsRebuild();
 }
 
@@ -289,6 +293,9 @@ bool memWrite(uint16_t a, uint8_t v) {
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
     switch (s_r->win[a >> 8]) {
     case W_VRAM:
+        // Plane mask 0 draws nothing and the store reaches RAM: HE2025 copies its start
+        // code to #4000 under the open window that way and jumps to it.
+        if (!Hgfx::reg(Hgfx::REG_MASK)) return false;
         // No read hook: a read before this write leaves the same byte in memory here.
         Hgfx::writeVram((uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8)), v, MemESP::readbyte(a) == v);
         return true;
@@ -482,6 +489,7 @@ static void eWrite(uint8_t r, uint8_t v) {
         if (!once) { once = true; Debug::log("[ELM] e_zxi_000 = %02X: personality switch not modelled yet", v); }
     }
     s_r->e[r] = v;
+    if (r == 0x2D) remap();
 }
 
 static uint8_t uRead(uint8_t r) {

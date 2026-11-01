@@ -275,6 +275,7 @@ __attribute__((always_inline)) inline uint8_t DivMMC::nextOpcode(uint16_t pc) {
 __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
     if (!opcodeTrapPage(pc)) return;
     pend_after = 0;
+    { extern uint8_t g_elm_nodiv; if (g_elm_nodiv && !automap) return; }   // eLeMeNt ZX: URAM on top
 
     // ZX Spectrum Next: the entry points are PROGRAMMABLE via nextreg
     // 0xB8-0xBB (NextZXOS reconfigures them right after its RAM check:
