@@ -357,7 +357,9 @@ void reset() {
     s_zone = 0;
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = 0;
+    g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
+    Hgfx::direct(false);
     g_atm_ro = 0;
     if (s_lcu) ElmLcu::reset(s_lcu);
     ElmLcu::reset(s_lcu2);

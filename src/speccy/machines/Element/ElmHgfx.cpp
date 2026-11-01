@@ -138,6 +138,9 @@ static inline void push(uint32_t e) {
 void reset() {
     const bool was = s_live;
     drain();
+    // The planes a program does not touch must not show the last program's picture
+    // (HGFXAGON after Tetris).
+    if (s_buf) memset(s_buf, 0, BUF_SIZE);
     mode = 0; g20 = 0; rgbOrder = false;
     memset(s_r, 0, sizeof(s_r));
     s_r[REG_MASK] = 0xFF;

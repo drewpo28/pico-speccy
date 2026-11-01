@@ -7004,11 +7004,12 @@ void VIDEO::tsFastMemRecalc() {
     // at the arming — pointer pages only, no DivMMC/MB-02, no overlay on rom[0..4].
     const bool nobp = Config::numMemReadBP == 0 && Config::numMemWriteBP == 0;
     // g_ts_fastmem: 2 = every address (TS-Conf / ATM / Pentagon 16col), 1 = Spectrum
-    // Next, 0x4000-0xFFFF only (TsFastMem.h) — the divMMC / NeoGS ZX-DMA windows,
+    // Next and eLeMeNt HGFX, 0x4000-0xFFFF only (TsFastMem.h) — the divMMC / NeoGS ZX-DMA windows,
     // both below 0x4000, do not gate it.
     // Next: off while ULA contention is live (NEXTVID::contend) — the fast path
     // never calls Draw, so it cannot charge the wait states.
     const uint8_t v = Z80Ops::isNext ? ((nobp && !NEXTVID::contend && !NextReg::l2MapHigh && !MemESP::next_stale_mask) ? 1 : 0)
+                    : Z80Ops::isElm ? ((nobp && paper_hold && ts_fast_armed) ? 1 : 0)   // level 1: the divSD window stays generic
                     : (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
                                             (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live) ||
                                             (col16_fast && ts_fast_armed && col16_memok))
@@ -10077,6 +10078,13 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         ts_row_idx = 0;
         Draw = &TsDraw;
         Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
+    } else if (paper_hold) {
+        // eLeMeNt HGFX owns the picture and draws it at frame end, so nothing needs the
+        // beam: Blank + the fast memory path, as VDAC2 on TS-Conf.
+        ts_line_t = 0xFFFFFFFFu;
+        Draw = &Blank;
+        Draw_Opcode = &Blank_Opcode;
         ts_fast_armed = true;
     } else if (mode16col_enabled && col16Arm()) {
         // Pentagon 16col: whole line at the end of its paper (col16DrawTick) and the
