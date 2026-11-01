@@ -18,14 +18,27 @@ bool rgbOrder;
 
 static uint8_t* s_buf;              // 128K, PSRAM
 static uint8_t* s_col;              // the colour table, PSRAM
-static struct Hot { uint8_t map[256], zx[WIDTH]; }* s_hot;   // read per pixel: heap
+static struct Hot { uint8_t map[256], zx[WIDTH], px[WIDTH]; }* s_hot;   // read per pixel: heap
 static uint8_t s_r[REG_COUNT];
 static bool s_live, s_palDirty, s_palAll;
 static uint64_t s_busyUntil;
+// The current mode's geometry. HGFX 1 has two buffers, HGFX 2 one 512-wide.
+static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH;
+static uint32_t s_b1 = BUF1;
+
+int vramPages() { return (s_w / 8) * s_h / 256; }
+
+void setMode(uint8_t m) {
+    mode = m;
+    const bool wide = m == 4;
+    s_w = s_stride = wide ? 512 : WIDTH;
+    s_h = HEIGHT;
+    s_b1 = wide ? 0 : BUF1;
+}
 
 static inline int16_t s16(uint8_t r) { return (int16_t)(s_r[r] | (s_r[r + 1] << 8)); }
-static inline uint8_t* dstBuf() { return s_buf + ((s_r[REG_VP] & 2) ? BUF1 : 0); }
-static inline uint8_t* srcBuf() { return s_buf + ((s_r[REG_VP] & 4) ? BUF1 : 0); }
+static inline uint8_t* dstBuf() { return s_buf + ((s_r[REG_VP] & 2) ? s_b1 : 0); }
+static inline uint8_t* srcBuf() { return s_buf + ((s_r[REG_VP] & 4) ? s_b1 : 0); }
 static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
 bool ensure() {
@@ -62,27 +75,31 @@ static inline bool inWindow(int x, int y) {
 
 void writeVram(uint16_t off, uint8_t v) {
     if (!s_buf) return;
-    const uint8_t row = (g20 & 1) ? (uint8_t)(off >> 5) : zxRow(off);
-    const int col = (off & 31) * 8;
+    // Bytes per line follow the mode's width (Nether Earth steps 64 in HGFX 2), and
+    // only HGFX 1 has the ZX layout.
+    const int bpl = s_w / 8;
+    const bool linear = (g20 & 1) || s_w != WIDTH;
+    const uint8_t row = linear ? (uint8_t)(off / bpl) : zxRow(off);
+    const int col = (off % bpl) * 8;
     const int y = row + s16(REG_OY);
-    if (y < 0 || y >= HEIGHT) return;
+    if (y < 0 || y >= s_h) return;
     int x = col + s16(REG_OX);
-    uint8_t* d = dstBuf() + (uint32_t)y * WIDTH;
+    uint8_t* d = dstBuf() + (uint32_t)y * s_stride;
     const uint8_t m = s_r[REG_MASK], pm = s_r[REG_MODE];
     if (pm == 1) {                       // COPY: the written value does not matter
         const int sy = row + s16(REG_SY);
-        if (sy < 0 || sy >= HEIGHT) return;
+        if (sy < 0 || sy >= s_h) return;
         int sx = col + s16(REG_SX);
-        const uint8_t* s = srcBuf() + (uint32_t)sy * WIDTH;
+        const uint8_t* s = srcBuf() + (uint32_t)sy * s_stride;
         for (int i = 0; i < 8; i++, x++, sx++) {
-            if (x < 0 || x >= WIDTH || sx < 0 || sx >= WIDTH || !inWindow(x, y)) continue;
+            if (x < 0 || x >= s_w || sx < 0 || sx >= s_w || !inWindow(x, y)) continue;
             d[x] = planar(d[x], s[sx], m);
         }
         return;
     }
     const uint8_t ink = s_r[REG_INDEX], paper = s_r[REG_PAPER];
     for (int i = 0; i < 8; i++, x++, v <<= 1) {
-        if (x < 0 || x >= WIDTH) continue;
+        if (x < 0 || x >= s_w) continue;
         const bool on = v & 0x80;
         if (!on && pm != 2) continue;
         if (!inWindow(x, y)) continue;
@@ -95,7 +112,7 @@ static void command(uint8_t c) {
     if (!s_buf || (c != 1 && c != 2)) return;
     const uint8_t m = s_r[REG_MASK];
     uint8_t* d = dstBuf();
-    const uint32_t n = WIDTH * HEIGHT;
+    const uint32_t n = (uint32_t)s_stride * s_h;
     if (c == 1) {
         const uint8_t* s = srcBuf();
         if (s != d) {
@@ -125,13 +142,13 @@ void writeColour(uint16_t off, uint8_t v) {
 uint8_t status() { return now() < s_busyUntil ? 1 : 0; }
 
 uint8_t* chunkyRead(uint32_t off) {
-    return s_buf ? srcBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * WIDTH) & (BUF1 - 1)) : nullptr;
+    return s_buf ? srcBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1)) : nullptr;
 }
 
 void chunkyWrite(uint32_t off, uint8_t v) {
     if (!s_buf) return;
     if ((s_r[REG_VP] & 0x10) && !v) return;
-    uint8_t* d = dstBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * WIDTH) & (BUF1 - 1));
+    uint8_t* d = dstBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1));
     *d = planar(*d, v, s_r[REG_MASK]);
 }
 
@@ -182,14 +199,20 @@ static void zxLine(int y, uint8_t* out) {
 }
 
 static void renderFrame() {
-    const uint8_t* buf = s_buf + ((s_r[REG_VP] & 1) ? BUF1 : 0);
+    const uint8_t* buf = s_buf + ((s_r[REG_VP] & 1) ? s_b1 : 0);
+    const bool wide = s_w > WIDTH;
     const bool under = !(g20 & 4);
     const int x0 = ((int)VIDEO::vga.xres - WIDTH) / 2, y0 = VIDEO::screenTopRows();
     const uint8_t* map = s_hot->map;
     for (int y = 0; y < HEIGHT; y++) {
         const int fy = y0 + y;
         uint8_t* row = VIDEO::vga.frameBuffer[fy];
-        const uint8_t* p = buf + (uint32_t)y * WIDTH;
+        const uint8_t* p = buf + (uint32_t)y * s_stride;
+        if (wide) {                      // 512 px on 256: the left pixel, or the right over 0
+            for (int x = 0; x < WIDTH; x++)
+                s_hot->px[x] = p[x * 2] ? p[x * 2] : p[x * 2 + 1];
+            p = s_hot->px;
+        }
         if (under) zxLine(y, s_hot->zx);
         int cx[8][2];
         const int nc = VIDEO::rowCarves(fy, cx);
@@ -219,7 +242,7 @@ static void renderFrame() {
 }
 
 void frameEnd() {
-    const bool want = mode == 3 && s_buf && s_hot;
+    const bool want = (mode == 3 || mode == 4) && s_buf && s_hot;
     if (want != s_live) {
         s_live = want;
         VIDEO::paper_hold = want;

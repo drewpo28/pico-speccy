@@ -182,6 +182,12 @@ FDMA: batch/skip, дробный skip, LDDR, fill, 24 бита, второй н�
 
 Проверка: FastDMA test, DMA Playfield Scroll, Another World.
 
+**Сделано (хост):** FastDMA (два набора, batch/skip, плавающий skip 8.8, LDDR, fill, 24 бита, URAM),
+LCU2 (результаты пишутся в RAM под окном, поэтому при бите 7 `g_zxi_060` чтение отдаёт RAM, а не регистры),
+HGFX 2 с окном 64 байта на строку (12288 байт) и выводом на 256 px. Nether Earth доходит до титульного
+экрана. Скорость FastDMA взята 0.5 T на байт: в документах числа нет. INT внутри передачи не откладывается
+точно: время идёт кусками через `VIDEO::Draw`.
+
 ### Фаза 4. Остальная графика
 HRC, HRXC, KeyLayer, Radastan, HAM, FILL, PlanarWorkingWindow, HGFX 2/3/6/7, Pentagon hi-res
 (`#EFF7` бит 1), страница 6 для экрана, ULA+ `Extra`.

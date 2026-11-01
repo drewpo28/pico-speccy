@@ -48,7 +48,7 @@ static uint16_t s_slotPage[8];        // HGFX Area: page per slot
 uint8_t* wrKind;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
-enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY };
+enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2 };
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void windowsRebuild() {
@@ -56,11 +56,13 @@ static void windowsRebuild() {
     memset(w, 0, 256);
     if (Hgfx::mode && !(Hgfx::g20 & 0x80)) {
         const uint8_t v = s_r->g[0x021];
-        for (int i = 0; i < 0x18; i++) w[(uint8_t)(v + i)] = W_VRAM;
+        for (int i = 0; i < Hgfx::vramPages(); i++) w[(uint8_t)(v + i)] = W_VRAM;
         const uint8_t c = s_r->g[0x023];
         for (int i = 0; i < 3; i++) w[(uint8_t)(c + i)] = W_COL;
         w[s_r->g[0x022]] = W_REG;
     }
+    if (s_r->g[0x040] & 1) w[s_r->g[0x041]] = W_FDMA;
+    if ((s_r->g[0x060] & 0x81) == 1) w[s_r->g[0x061]] = W_LCU2;
     for (int s = 0; s < 8; s++) {
         const uint8_t k = (s_lcuSlots >> s) & 1 ? W_LCU : (s_hgfxSlots >> s) & 1 ? W_CHUNKY
                         : (s_wpSlots >> s) & 1 ? W_PROTECT : W_NONE;
@@ -69,6 +71,95 @@ static void windowsRebuild() {
     bool any = false;
     for (int i = 0; i < 256 && !any; i++) any = w[i] != 0;
     if (any) g_atm_ro |= GM_ELM; else g_atm_ro &= (uint8_t)~GM_ELM;
+}
+
+// FastDMA: Programmer's Reference + FDMA-EN.TXT. Two register sets of 32 bytes. A
+// transfer stops the CPU and runs at memory speed, independent of the CPU clock:
+// taken as 7 MB/s, half a 3.5 MHz T a byte (the document gives no figure).
+static uint8_t s_fd[64];
+static uint32_t s_fdSrc[2], s_fdDst[2];   // running addresses, 8.8 in the floating modes
+static bool s_fdBusy;
+
+static inline uint16_t fd16(const uint8_t* r, int o) { return (uint16_t)(r[o] | r[o + 1] << 8); }
+static inline uint32_t fd24(const uint8_t* r, int o) { return r[o] | (uint32_t)r[o + 1] << 8 | (uint32_t)r[o + 2] << 16; }
+
+static uint8_t* uramPtr(uint16_t page);
+static inline uint8_t* uramByte(uint32_t a) {
+    uint8_t* p = uramPtr((uint16_t)(a >> 13));
+    return p ? p + (a & 0x1FFF) : nullptr;
+}
+static uint8_t fdRead(uint32_t a, bool uram) {
+    if (uram) { const uint8_t* p = uramByte(a); return p ? *p : 0xFF; }
+    return MemESP::readbyte((uint16_t)a);
+}
+static void fdWrite(uint32_t a, bool uram, uint8_t v) {
+    if (uram) { uint8_t* p = uramByte(a); if (p) *p = v; return; }
+    const uint16_t z = (uint16_t)a;
+    if (s_r->win[z >> 8] && memWrite(z, v)) return;
+    MemESP::writebyte(z, v);
+}
+
+static void fdmaRun(int set, bool wide24) {
+    if (s_fdBusy) return;
+    s_fdBusy = true;
+    const uint8_t* r = s_fd + set * 0x20;
+    const uint8_t par = r[0];
+    const uint8_t par2 = wide24 ? r[0x10] : 0;
+    const bool fill = par & 0x20, down = par & 4;
+    const bool sfl = par & 8, dfl = par & 0x10;
+    const bool suram = par2 & 2, duram = par2 & 4;
+    uint32_t len = wide24 ? fd24(r, 0x17) : fd16(r, 1);
+    if (!len) len = wide24 ? 0x400000u : 0x10000u;
+    const uint32_t sbatch = fd16(r, 5) ? fd16(r, 5) : 0x10000u, dbatch = fd16(r, 0x0B) ? fd16(r, 0x0B) : 0x10000u;
+    const uint32_t sskip = fd16(r, 7), dskip = fd16(r, 0x0D);
+    uint32_t s = (par & 1) ? s_fdSrc[set] : (wide24 ? fd24(r, 0x11) : fd16(r, 3)) << (sfl ? 8 : 0);
+    uint32_t d = (par & 2) ? s_fdDst[set] : (wide24 ? fd24(r, 0x14) : fd16(r, 9)) << (dfl ? 8 : 0);
+    const uint8_t fv = wide24 ? r[0x11] : r[3];
+    const uint32_t amask = wide24 ? 0xFFFFFFu : 0xFFFFu;
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_ELMLOG"))
+        Debug::log("[FDMA] par=%02X/%02X len=%X s=%X d=%X sb=%X ss=%X db=%X ds=%X fv=%02X hreg vp=%02X oy=%d", par, par2, len, s, d, sbatch, sskip, dbatch, dskip, fv, Hgfx::reg(0), Hgfx::reg(7) | Hgfx::reg(8) << 8);
+#endif
+    uint32_t sn = 0, dn = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        const uint8_t b = fill ? fv : fdRead((sfl ? s >> 8 : s) & amask, suram);
+        fdWrite((dfl ? d >> 8 : d) & amask, duram, b);
+        if (sfl) s = down ? s - sskip : s + sskip;
+        else {
+            s = down ? s - 1 : s + 1;
+            if (++sn == sbatch) { sn = 0; s = down ? s - sskip : s + sskip; }
+        }
+        if (dfl) d = down ? d - dskip : d + dskip;
+        else {
+            d = down ? d - 1 : d + 1;
+            if (++dn == dbatch) { dn = 0; d = down ? d - dskip : d + dskip; }
+        }
+    }
+    s_fdSrc[set] = s; s_fdDst[set] = d;
+    s_fdBusy = false;
+    // The CPU is held for the transfer; the machine's time moves on in pieces, which
+    // is what the raster machines want. An INT inside it waits (SaveINT).
+    uint32_t t = (len >> 1) << ESPectrum::multiplicator;
+    while (t) { const uint32_t n = t > 200 ? 200 : t; VIDEO::Draw(n, false); t -= n; }
+}
+
+static void fdmaWrite(uint8_t off, uint8_t v) {
+    if (off >= 0x40) return;
+    if (off >= 0x20 && !(s_r->g[0x040] & 2)) return;
+    s_fd[off] = v;
+    const int set = off >> 5;
+    const uint8_t o = off & 0x1F;
+    if (o == 3 || o == 4) s_fdSrc[set] = fd16(s_fd + set * 0x20, 3);
+    if (o == 9 || o == 10) s_fdDst[set] = fd16(s_fd + set * 0x20, 9);
+    if (o == 0) fdmaRun(set, false);
+    else if (o == 0x10 && (v & 1)) fdmaRun(set, true);
+}
+
+// LCU2: the block over RAM at g_zxi_061. Reads are plain, so the results go to memory.
+static uint8_t s_lcu2[ElmLcu::SIZE];
+static void lcu2Publish() {
+    const uint16_t base = (uint16_t)s_r->g[0x061] << 8;
+    for (int i = 0; i < ElmLcu::SIZE; i++) MemESP::writebyte((uint16_t)(base + i), s_lcu2[i]);
 }
 
 static uint8_t* uramPtr(uint16_t page) {
@@ -149,6 +240,9 @@ bool memWrite(uint16_t a, uint8_t v) {
         return false;
     case W_REG: {
         const uint8_t r = (uint8_t)a;
+#if HOST_BUILD
+        if (getenv("PICOSPECCY_ELMLOG")) Debug::log("[HREG] %02X=%02X pc=%04X", r, v, Z80::getRegPC());
+#endif
         Hgfx::writeReg(r, v);
         if (s_hgfxSlots && (r == Hgfx::REG_VP || r == Hgfx::REG_OY || r == Hgfx::REG_OY + 1)) remap();
         return false;
@@ -163,6 +257,13 @@ bool memWrite(uint16_t a, uint8_t v) {
         if (off < ElmLcu::SIZE) ElmLcu::write(s_lcu, (uint8_t)off, v);
         return true;
     }
+    case W_FDMA:
+        fdmaWrite((uint8_t)a, v);
+        return false;
+    case W_LCU2:
+        ElmLcu::write(s_lcu2, (uint8_t)a, v);
+        lcu2Publish();
+        return true;
     case W_CHUNKY:
         Hgfx::chunkyWrite(s_slotPage[a >> 13] * 0x2000u + (a & 0x1FFF), v);
         return true;
@@ -191,6 +292,8 @@ void reset() {
     Hgfx::reset();
     g_atm_ro = 0;
     if (s_lcu) ElmLcu::reset(s_lcu);
+    ElmLcu::reset(s_lcu2);
+    memset(s_fd, 0, sizeof(s_fd));
     s_r->g[0x000] = 0x01;   // the internal device, not an MB03+
     s_r->g[0x021] = 0x40;   // HGFX videoram
     s_r->g[0x022] = 0x5B;   // HGFX registers
@@ -256,11 +359,20 @@ static void gWrite(uint8_t r, uint8_t v) {
     case 0x001: {                     // extra graphics mode: the windows open
         s_r->g[r] = v;
         const uint8_t was = Hgfx::mode;
-        Hgfx::mode = v;
+        Hgfx::setMode(v);
         if (v && !was && Hgfx::ensure()) hgfxOpen();
         windowsRebuild();
         return;
     }
+    case 0x040: case 0x041:
+        s_r->g[r] = v;
+        windowsRebuild();
+        return;
+    case 0x060: case 0x061:
+        s_r->g[r] = v;
+        windowsRebuild();
+        if ((s_r->g[0x060] & 1)) lcu2Publish();
+        return;
     case 0x002:
         s_r->g[r] = v;
         Hgfx::rgbOrder = v & 4;

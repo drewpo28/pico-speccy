@@ -25,6 +25,8 @@ extern uint8_t g20;           // g_zxi_020: b0 linear, b1 indexed border, b2 no 
 extern bool    rgbOrder;      // g_zxi_002 b2
 
 bool    ensure();             // the buffers (PSRAM), first use
+void    setMode(uint8_t m);   // g_zxi_001
+int     vramPages();          // size of the VRAM window in 256-byte pages
 void    reset();
 void    loadState(const uint8_t* regs, const uint8_t* colours);   // at a mode switch
 void    writeVram(uint16_t off, uint8_t v);
