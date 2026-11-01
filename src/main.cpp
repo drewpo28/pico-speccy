@@ -1,5 +1,6 @@
 #pragma GCC optimize("Ofast")
 
+#include "speccy/machines/Element/ElmHgfx.h"
 #include "app/NxFrameProf.h"
 #include "sdcard.h"   // sdcard_reclock()
 #include "drivers/sound/PinSerialData_595.h"   // ay595_reclock()
@@ -1123,6 +1124,7 @@ void __not_in_flash_func(render_core)() {
         // The body lives in flash, not the TS overlay, so the gate is only a
         // fast exit — no jump-into-heap hazard here.
         if (g_ft_c1_live) ft812_render_core1_pump();
+        if (g_elm_c1_live) Hgfx::core1Pump();         // eLeMeNt ZX: HGFX engine + picture (flash body)
         if (g_next_c1_live) {                         // Spectrum Next scanlines (NextVideo.cpp)
 #if NEXT_TRACE
             static bool s_prof1 = false;              // the core1 PC sampler (NEXT hostpc1)

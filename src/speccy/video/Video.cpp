@@ -938,6 +938,7 @@ uint32_t VIDEO::tsTraceState() {
 
 void VIDEO::tsRenderDrain() {
     if (Z80Ops::isNext) NEXTVID::c1Drain();   // the Spectrum Next's own core1 line queue
+    if (g_elm_c1_live) Hgfx::drain();         // eLeMeNt ZX: HGFX on core1
     if (!tsC1Pending()) return;
     const uint64_t t0 = time_us_64();
     while (tsC1Pending()) {

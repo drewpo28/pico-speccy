@@ -21,6 +21,7 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
+#include "speccy/machines/Element/ElmHgfx.h"
 #include "host_posix.h"
 
 #include "pico_host.h"
@@ -136,6 +137,7 @@ static void core1_loop() {
         bool idle = true;
         if (g_ts_c1_live) { ts_render_core1_pump(); idle = false; }
         if (g_ft_c1_live) { ft812_render_core1_pump(); idle = false; }
+        if (g_elm_c1_live) { Hgfx::core1Pump(); idle = false; }
         if (g_next_c1_live) { next_render_core1_pump(); idle = false; }
         // GS::pump is NOT called here: the host runs the card on the emulator
         // thread in lockstep with the guest's clock (GS::pumpGuest, GS.cpp).

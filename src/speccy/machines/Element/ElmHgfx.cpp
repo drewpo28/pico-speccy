@@ -1,5 +1,7 @@
-// HGFX renderer and planar engine: see ElmHgfx.h. Flash, whole frame at EndFrame on
-// core0 (docs/element-zx-plan.md); only HGFX 1 is drawn so far.
+// HGFX renderer and planar engine: see ElmHgfx.h. Flash. core0 only queues what the guest
+// writes and core1 runs the engine and draws the frame, the way the TS-Conf and Next
+// renderers split the work; nothing reads the pixels back but the chunky windows, which
+// take the direct path (docs/element-zx-plan.md).
 #include "speccy/machines/Element/ElmHgfx.h"
 #include <string.h>
 
@@ -10,6 +12,8 @@
 #include "app/ESPectrum.h"
 #include "speccy/video/Video.h"
 #include "speccy/z80/CPU.h"
+
+volatile bool g_elm_c1_live;
 
 namespace Hgfx {
 
@@ -28,13 +32,21 @@ static uint8_t* s_buf;              // 128K, PSRAM
 static uint8_t* s_col;              // the colour table, PSRAM
 static struct Hot {                 // read per pixel: heap
     uint8_t map[256], pidx[256], zxp[16], line[720], line2[720], slots[720];
-    uint32_t pal[16];
+    uint32_t pal[16], nib[16];      // nib: a nibble of pixel bits as a byte mask, left pixel low
 }* s_hot;
 static uint8_t s_cube[168];
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
 static uint8_t s_pairHold;
-static uint8_t s_r[REG_COUNT];
+static uint8_t s_r[REG_COUNT];      // as the guest wrote them, core0
+static uint8_t s_e[REG_COUNT];      // as the engine has reached them in the queue
 static inline int16_t s16(uint8_t r) { return (int16_t)(s_r[r] | (s_r[r + 1] << 8)); }
+static inline int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
+// The core1 queue: core0 writes s_qw, core1 s_qr, both free-running. In PSRAM, one
+// frame of a heavy demo is ~8000 entries. Bits 31..29 kind, the rest as below.
+enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29 };
+static uint32_t* s_q;
+static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
+static bool s_direct;               // chunky windows are mapped: the engine stays on core0
 static bool s_live, s_palDirty, s_palAll;
 static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
@@ -44,6 +56,7 @@ static uint32_t s_b1 = BUF1;
 int vramPages() { return (s_w / 8) * s_h / 256; }
 
 void setMode(uint8_t m) {
+    drain();
     mode = m;
     static const struct { uint16_t w, h; uint8_t bpp; bool two; } k[10] = {
         { 256, 192, 8, true },  { 256, 192, 8, true },  { 256, 192, 8, true },
@@ -80,44 +93,88 @@ static inline void pxPlanar(uint8_t* row, int x, uint8_t v, uint8_t m) {
 
 static inline uint8_t* dstBuf() { return s_buf + ((s_r[REG_VP] & 2) ? s_b1 : 0); }
 static inline uint8_t* srcBuf() { return s_buf + ((s_r[REG_VP] & 4) ? s_b1 : 0); }
+static inline uint8_t* dstBufE() { return s_buf + ((s_e[REG_VP] & 2) ? s_b1 : 0); }
+static inline uint8_t* srcBufE() { return s_buf + ((s_e[REG_VP] & 4) ? s_b1 : 0); }
 static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
 bool ensure() {
-    if (!s_hot) s_hot = (Hot*)tryMalloc(sizeof(Hot));
+    if (!s_hot) {
+        s_hot = (Hot*)tryMalloc(sizeof(Hot));
+        if (s_hot) for (int n = 0; n < 16; n++)
+            s_hot->nib[n] = ((n & 8) ? 0xFFu : 0) | ((n & 4) ? 0xFF00u : 0) | ((n & 2) ? 0xFF0000u : 0) | ((n & 1) ? 0xFF000000u : 0);
+    }
     if (!s_buf) {
         s_buf = (uint8_t*)Buffer::palloc(BUF_SIZE + COLOURS, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (s_buf) { memset(s_buf, 0, BUF_SIZE + COLOURS); s_col = s_buf + BUF_SIZE; }
         else Debug::log("[ELM] no memory for the HGFX buffers");
     }
+    if (s_buf && !s_q) s_q = (uint32_t*)Buffer::palloc(Q_N * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     return s_buf && s_hot;
+}
+
+static inline bool queued() { return s_q && !s_direct && g_elm_c1_live; }
+
+// Everything queued has run and the last frame is on screen. Bounded: core1 never waits
+// for core0, so only a dead core1 ends here.
+void drain() {
+    if (!g_elm_c1_live) return;
+    const uint64_t t0 = time_us_64();
+    while (s_qr != s_qw || s_drawDone != s_drawPosted)
+        if (time_us_64() - t0 > 200000) {
+            Debug::log("[ELM] core1 queue stuck, back to core0");
+            g_elm_c1_live = false;
+            s_qr = s_qw; s_drawDone = s_drawPosted;
+            return;
+        }
+}
+
+static inline void push(uint32_t e) {
+    while (s_qw - s_qr >= Q_N) { }
+    s_q[s_qw & (Q_N - 1)] = e;
+    __sync_synchronize();
+    s_qw = s_qw + 1;
 }
 
 void reset() {
     const bool was = s_live;
+    drain();
     mode = 0; g20 = 0; rgbOrder = false;
     memset(s_r, 0, sizeof(s_r));
     s_r[REG_MASK] = 0xFF;
+    memcpy(s_e, s_r, sizeof(s_e));
     s_busyUntil = 0;
     if (was) { s_live = false; VIDEO::paper_hold = false; VIDEO::applyPalette(); }
 }
 
 void loadState(const uint8_t* regs, const uint8_t* colours) {
     if (!s_buf) return;
+    drain();
     memcpy(s_r, regs, REG_COUNT);
+    memcpy(s_e, regs, REG_COUNT);
     memcpy(s_col, colours, COLOURS);
     s_palDirty = true;
 }
 
 static inline bool inWindow(int x, int y) {
-    if (!(s_r[REG_VP] & 8)) return true;
-    const int wx = s16(REG_WX), wy = s16(REG_WY), ww = s16(REG_WW), wh = s16(REG_WH);
+    if (!(s_e[REG_VP] & 8)) return true;
+    const int wx = e16(REG_WX), wy = e16(REG_WY), ww = e16(REG_WW), wh = e16(REG_WH);
     // A window off the screen limits nothing: HGFXSPRI sets the bit with such values
     // every second frame and would blink (a guess, the Reference does not say).
     if (ww <= 0 || wh <= 0 || wx >= s_w || wy >= s_h || wx + ww <= 0 || wy + wh <= 0) return true;
     return x >= wx && y >= wy && x < wx + ww && y < wy + wh;
 }
 
-void writeVram(uint16_t off, uint8_t v, bool wasRead) {
+static inline uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+static inline void wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
+
+// The 8 pixels of a write at once, 8 bits per pixel, all on screen, no window.
+static inline void put8(uint8_t* d, uint32_t lo, uint32_t hi, uint32_t bl, uint32_t bh, uint8_t m) {
+    const uint32_t m8 = m * 0x01010101u, ml = bl & m8, mh = bh & m8;
+    if (ml == ~0u) wr32(d, lo); else if (ml) wr32(d, (rd32(d) & ~ml) | (lo & ml));
+    if (mh == ~0u) wr32(d + 4, hi); else if (mh) wr32(d + 4, (rd32(d + 4) & ~mh) | (hi & mh));
+}
+
+static void execVram(uint16_t off, uint8_t v, bool wasRead) {
     if (!s_buf) return;
     // Bytes per line follow the mode's width (Nether Earth steps 64 in HGFX 2), and
     // only HGFX 1 has the ZX layout.
@@ -125,25 +182,38 @@ void writeVram(uint16_t off, uint8_t v, bool wasRead) {
     const bool linear = (g20 & 1) || s_w != WIDTH;
     const int row = linear ? off / bpl : zxRow(off);
     const int col = (off % bpl) * 8;
-    const int y = row + s16(REG_OY);
+    const int y = row + e16(REG_OY);
     if (y < 0 || y >= s_h) return;
-    int x = col + s16(REG_OX);
-    uint8_t* d = dstBuf() + (uint32_t)y * s_stride;
-    const uint8_t m = s_r[REG_MASK], pm = s_r[REG_MODE];
+    int x = col + e16(REG_OX);
+    uint8_t* d = dstBufE() + (uint32_t)y * s_stride;
+    const uint8_t m = s_e[REG_MASK], pm = s_e[REG_MODE];
+    const bool fast = s_bpp == 8 && x >= 0 && x + 8 <= s_w && !(s_e[REG_VP] & 8);
     // COPY moves the 8 pixels a read just cached, if the byte written is the byte read
     // (the wiki, register 01). A write that follows no read draws like ATTR.
     if (pm == 1 && wasRead) {
-        const int sy = row + s16(REG_SY);
+        const int sy = row + e16(REG_SY);
         if (sy < 0 || sy >= s_h) return;
-        int sx = col + s16(REG_SX);
-        const uint8_t* s = srcBuf() + (uint32_t)sy * s_stride;
+        int sx = col + e16(REG_SX);
+        const uint8_t* s = srcBufE() + (uint32_t)sy * s_stride;
+        if (fast && sx >= 0 && sx + 8 <= s_w) {
+            put8(d + x, rd32(s + sx), rd32(s + sx + 4), ~0u, ~0u, m);
+            return;
+        }
         for (int i = 0; i < 8; i++, x++, sx++) {
             if (x < 0 || x >= s_w || sx < 0 || sx >= s_w || !inWindow(x, y)) continue;
             pxPlanar(d, x, pxGet(s, sx), m);
         }
         return;
     }
-    const uint8_t ink = s_r[REG_INDEX], paper = s_r[REG_PAPER];
+    const uint8_t ink = s_e[REG_INDEX], paper = s_e[REG_PAPER];
+    if (fast) {
+        const uint32_t bl = s_hot->nib[v >> 4], bh = s_hot->nib[v & 15];
+        const uint32_t i8 = ink * 0x01010101u;
+        if (pm == 0) { put8(d + x, i8, i8, bl, bh, m); return; }
+        const uint32_t p8 = paper * 0x01010101u;
+        put8(d + x, (i8 & bl) | (p8 & ~bl), (i8 & bh) | (p8 & ~bh), ~0u, ~0u, m);
+        return;
+    }
     for (int i = 0; i < 8; i++, x++, v <<= 1) {
         if (x < 0 || x >= s_w) continue;
         const bool on = v & 0x80;
@@ -153,30 +223,47 @@ void writeVram(uint16_t off, uint8_t v, bool wasRead) {
     }
 }
 
+void writeVram(uint16_t off, uint8_t v, bool wasRead) {
+    if (queued()) push(Q_VRAM | off | (uint32_t)v << 16 | (wasRead ? 1u << 24 : 0));
+    else execVram(off, v, wasRead);
+}
+
 // The whole-buffer commands: instant here, busy for their documented time.
-static void command(uint8_t c) {
+static void execCmd(uint8_t c) {
     if (!s_buf || (c != 1 && c != 2)) return;
-    const uint8_t m = s_r[REG_MASK];
-    uint8_t* d = dstBuf();
+    const uint8_t m = s_e[REG_MASK];
+    uint8_t* d = dstBufE();
     const uint32_t n = (uint32_t)s_stride * s_h;
     if (c == 1) {
-        const uint8_t* s = srcBuf();
+        const uint8_t* s = srcBufE();
         if (s != d) {
             if (m == 0xFF) memcpy(d, s, n);
             else for (uint32_t i = 0; i < n; i++) d[i] = planar(d[i], s[i], m);
         }
-        s_busyUntil = now() + ((uint64_t)6144 << ESPectrum::multiplicator);
     } else {
         if (m == 0xFF) memset(d, 0, n);
         else for (uint32_t i = 0; i < n; i++) d[i] &= (uint8_t)~m;
-        s_busyUntil = now() + ((uint64_t)3500 << ESPectrum::multiplicator);
     }
 }
 
 void writeReg(uint8_t r, uint8_t v) {
     if (r >= REG_COUNT) return;
     s_r[r] = v;
-    if (r == REG_CMD) command(v);
+    if (r == REG_CMD && (v == 1 || v == 2))
+        s_busyUntil = now() + ((uint64_t)(v == 1 ? 6144 : 3500) << ESPectrum::multiplicator);
+    if (queued()) {
+        push(Q_REG | (uint32_t)r << 8 | v);
+        if (r == REG_CMD) push(Q_CMD | v);
+    } else {
+        s_e[r] = v;
+        if (r == REG_CMD) execCmd(v);
+    }
+}
+
+void direct(bool on) {
+    if (on == s_direct) return;
+    if (on) drain();
+    s_direct = on;
 }
 
 uint8_t reg(uint8_t r) { return r < REG_COUNT ? s_r[r] : 0; }
@@ -416,8 +503,8 @@ static void renderFrame() {
         }
         return;
     }
-    const uint8_t* buf = s_buf + ((s_r[REG_VP] & 1) ? s_b1 : 0);
-    const uint8_t feature = s_r[REG_FEATURE];
+    const uint8_t* buf = s_buf + ((s_e[REG_VP] & 1) ? s_b1 : 0);
+    const uint8_t feature = s_e[REG_FEATURE];
     const bool under = !(g20 & 4) && s_w <= 512 && s_h == HEIGHT;
     const bool fullScreen = s_w >= 360 && s_w != 512;
     if (fullScreen) {
@@ -556,12 +643,31 @@ void frameEnd() {
     }
     if (!s_live) return;
     const bool was = s_pair;
+    if (s_pair || mode == 4) drain();       // the pair tables are rewritten under the frame
     frameSetup();
     if (was != s_pair) { VIDEO::updateBorderBrd(); VIDEO::brdChange = VIDEO::brdnextframe = true; }
-    renderFrame();
+    if (!s_q) { renderFrame(); return; }
+    g_elm_c1_live = true;
+    // core1 still on the last frame: this one is not drawn, its writes are.
+    if (s_drawDone == s_drawPosted) { s_drawPosted = s_drawPosted + 1; push(Q_DRAW); }
 }
 
-void repaint() { if (s_live) { frameSetup(); renderFrame(); } }
+void repaint() { if (s_live) { drain(); frameSetup(); renderFrame(); } }
+
+// core1: a bounded batch, then back to the loop for the other pumps.
+void core1Pump() {
+    for (int n = 0; n < 256 && s_qr != s_qw; n++) {
+        __sync_synchronize();
+        const uint32_t e = s_q[s_qr & (Q_N - 1)];
+        switch (e & (7u << 29)) {
+        case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24)); break;
+        case Q_REG:  s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
+        case Q_CMD:  execCmd((uint8_t)e); break;
+        default:     renderFrame(); s_drawDone = s_drawDone + 1; break;
+        }
+        s_qr = s_qr + 1;
+    }
+}
 void paletteLost() { s_palDirty = true; }
 
 }

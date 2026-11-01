@@ -4,6 +4,8 @@
 #pragma once
 #include <stdint.h>
 
+extern volatile bool g_elm_c1_live;
+
 namespace Hgfx {
 
 enum { REG_VP = 0, REG_MODE, REG_CMD, REG_INDEX, REG_MASK, REG_OX, REG_OY = 7, REG_SX = 9,
@@ -41,6 +43,9 @@ uint8_t status();             // g_zxi_02F
 uint8_t reg(uint8_t r);
 uint8_t* chunkyRead(uint32_t off);
 void    chunkyWrite(uint32_t off, uint8_t v);
+void    drain();              // core0: wait until core1 has run everything queued
+void    direct(bool on);      // chunky windows mapped: no queue, the guest reads the pixels
+void    core1Pump();          // core1 loop, while g_elm_c1_live
 void    frameEnd();           // EndFrame: mode change, palette, the picture
 void    repaint();            // the same, machine stopped
 void    paletteLost();        // applyPalette rewrote the slots

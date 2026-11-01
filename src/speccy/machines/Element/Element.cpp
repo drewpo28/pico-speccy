@@ -257,6 +257,7 @@ void remap() {
     s_wpSlots = wp;
     s_lcuSlots = lcu;
     s_hgfxSlots = hg;
+    Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
     g_elm_nodiv = (active & 1) && !(s_r->e[0x02D] & 0x80);
     windowsRebuild();
