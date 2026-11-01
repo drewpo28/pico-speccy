@@ -43,10 +43,12 @@ static inline int16_t s16(uint8_t r) { return (int16_t)(s_r[r] | (s_r[r + 1] << 
 static inline int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
 // The core1 queue: core0 writes s_qw, core1 s_qr, both free-running. In PSRAM, one
 // frame of a heavy demo is ~8000 entries. Bits 31..29 kind, the rest as below.
-enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29 };
+enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29 };
 static uint32_t* s_q;
 static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
 static bool s_direct;               // chunky windows are mapped: the engine stays on core0
+// Consecutive COPY writes are one queue entry: HGFXAGON's 7800 a frame are ~200 runs.
+static uint16_t s_runOff, s_runLen;
 static bool s_live, s_palDirty, s_palAll;
 static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
@@ -116,8 +118,10 @@ static inline bool queued() { return s_q && !s_direct && g_elm_c1_live; }
 
 // Everything queued has run and the last frame is on screen. Bounded: core1 never waits
 // for core0, so only a dead core1 ends here.
+static inline void pushRaw(uint32_t e);
 void drain() {
     if (!g_elm_c1_live) return;
+    if (s_runLen) { pushRaw(Q_RUN | s_runOff | (uint32_t)s_runLen << 16); s_runLen = 0; }
     const uint64_t t0 = time_us_64();
     while (s_qr != s_qw || s_drawDone != s_drawPosted)
         if (time_us_64() - t0 > 200000) {
@@ -133,7 +137,7 @@ static uint32_t s_pWaitUs, s_pPush, s_pDrop;          // core0
 static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN;   // core1
 #endif
 
-static inline void push(uint32_t e) {
+static inline void pushRaw(uint32_t e) {
 #if PERF_TRACE
     s_pPush++;
     if (s_qw - s_qr >= Q_N) {
@@ -147,6 +151,10 @@ static inline void push(uint32_t e) {
     __sync_synchronize();
     s_qw = s_qw + 1;
 }
+static inline void runFlush() {
+    if (s_runLen) { pushRaw(Q_RUN | s_runOff | (uint32_t)s_runLen << 16); s_runLen = 0; }
+}
+static inline void push(uint32_t e) { runFlush(); pushRaw(e); }
 
 void reset() {
     const bool was = s_live;
@@ -239,9 +247,42 @@ static void execVram(uint16_t off, uint8_t v, bool wasRead) {
     }
 }
 
+// A run of COPY writes: n bytes from off, the same rows. Word loop when it can be.
+static void execRun(uint16_t off, uint32_t n) {
+    const int bpl = s_w / 8;
+    const bool linear = (g20 & 1) || s_w != WIDTH;
+    while (n) {
+        const uint32_t room = (uint32_t)(bpl - off % bpl), c = !linear ? 1 : n < room ? n : room;
+        const int row = linear ? off / bpl : zxRow(off);
+        const int col = (off % bpl) * 8, y = row + e16(REG_OY), sy = row + e16(REG_SY);
+        int x = col + e16(REG_OX), sx = col + e16(REG_SX);
+        const int px = (int)c * 8;
+        if (s_bpp == 8 && !(s_e[REG_VP] & 8) && y >= 0 && y < s_h && sy >= 0 && sy < s_h &&
+            x >= 0 && x + px <= s_w && sx >= 0 && sx + px <= s_w) {
+            uint8_t* d = dstBufE() + (uint32_t)y * s_stride + x;
+            const uint8_t* q = srcBufE() + (uint32_t)sy * s_stride + sx;
+            const uint8_t m = s_e[REG_MASK];
+            if (m == 0xFF) memmove(d, q, (size_t)px);
+            else {
+                const uint32_t m8 = m * 0x01010101u;
+                for (int i = 0; i < px; i += 4)
+                    wr32(d + i, (rd32(d + i) & ~m8) | (rd32(q + i) & m8));
+            }
+        } else for (uint32_t i = 0; i < c; i++) execVram((uint16_t)(off + i), 0, true);
+        off = (uint16_t)(off + c); n -= c;
+    }
+}
+
 void writeVram(uint16_t off, uint8_t v, bool wasRead) {
-    if (queued()) push(Q_VRAM | off | (uint32_t)v << 16 | (wasRead ? 1u << 24 : 0));
-    else execVram(off, v, wasRead);
+    if (queued()) {
+        if (wasRead && s_r[REG_MODE] == 1) {        // the byte does not matter, COPY takes the cache
+            if (s_runLen && s_runLen < 0x1FFF && off == (uint16_t)(s_runOff + s_runLen)) { s_runLen++; return; }
+            runFlush();
+            s_runOff = off; s_runLen = 1;
+            return;
+        }
+        push(Q_VRAM | off | (uint32_t)v << 16 | (wasRead ? 1u << 24 : 0));
+    } else execVram(off, v, wasRead);
 }
 
 // The whole-buffer commands: instant here, busy for their documented time.
@@ -694,6 +735,7 @@ void core1Pump() {
         case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24)); break;
         case Q_REG:  s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
         case Q_CMD:  execCmd((uint8_t)e); break;
+        case Q_RUN:  execRun((uint16_t)e, (e >> 16) & 0x1FFF); break;
         default: {
 #if PERF_TRACE
             const uint32_t d0 = time_us_32();
