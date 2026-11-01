@@ -15,6 +15,7 @@
 #include "speccy/z80/CPU.h"
 
 volatile bool g_elm_c1_live;
+size_t getFreeHeap(void);
 
 namespace Hgfx {
 
@@ -32,11 +33,12 @@ static inline bool keyIs(uint8_t c) {
 static uint8_t* s_buf;              // 128K, PSRAM
 // HGFX 1 is two 49152-byte buffers and COPY walks them every frame: while the heap has
 // room they live in SRAM (the XIP port was the limit, core0's guest pages share it).
-// Each is two blocks of 96 rows: the free heap comes in regions of ~50 KB and page
-// rounding keeps a whole buffer out of the second one. Off for the chunky windows,
-// whose pointers assume the PSRAM layout.
-enum { SRAM_ROWS = 96, SRAM_HALF = SRAM_ROWS * 256 };
-static uint8_t* s_sram[4];          // buffer * 2 + half
+// Each is six blocks of 32 rows: 136 KB are free on this machine, but in regions and
+// between small blocks, and neither 49 nor 24 KB in one piece got through on hardware.
+// Off for the chunky windows, whose pointers assume the PSRAM layout.
+enum { SRAM_SHIFT = 5, SRAM_ROWS = 1 << SRAM_SHIFT, SRAM_BLOCK = SRAM_ROWS * 256, SRAM_PER = HEIGHT / SRAM_ROWS,
+       SRAM_N = SRAM_PER * 2, SRAM_KEEP = 16384 };
+static uint8_t* s_sram[SRAM_N];     // buffer * SRAM_PER + y / SRAM_ROWS
 static bool s_sramOn;
 // The hot path sits in the Z80 DMA window: always loaded on this machine.
 #define ELM_HOT __attribute__((section(".time_critical.dmaloop"), noinline))
@@ -108,7 +110,7 @@ static inline void pxPlanar(uint8_t* row, int x, uint8_t v, uint8_t m) {
 
 static inline uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
 static inline uint8_t* rowOf(int n, int y) {
-    if (s_sramOn) return y < SRAM_ROWS ? s_sram[n * 2] + y * 256 : s_sram[n * 2 + 1] + (y - SRAM_ROWS) * 256;
+    if (s_sramOn) return s_sram[n * SRAM_PER + (y >> SRAM_SHIFT)] + (y & (SRAM_ROWS - 1)) * 256;
     return bufN(n) + (uint32_t)y * s_stride;
 }
 static inline uint8_t* dstBuf() { return bufN((s_r[REG_VP] >> 1) & 1); }
@@ -144,25 +146,28 @@ static void sramOff(bool keep) {
     if (!s_sramOn) return;
     drain();
     s_sramOn = false;
-    if (keep) for (int i = 0; i < 4; i++)
-        memcpy(s_buf + (i >> 1) * (uint32_t)BUF1 + (i & 1) * (uint32_t)SRAM_HALF, s_sram[i], SRAM_HALF);
+    if (keep) for (int i = 0; i < SRAM_N; i++)
+        memcpy(s_buf + (i / SRAM_PER) * (uint32_t)BUF1 + (i % SRAM_PER) * (uint32_t)SRAM_BLOCK, s_sram[i], SRAM_BLOCK);
 }
 static void sramOn() {
     if (s_sramOn || s_direct || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
     static bool s_refused;
     if (!s_sram[0] && !s_refused) {
-        bool ok = true;
-        for (int i = 0; i < 4 && ok; i++) ok = (s_sram[i] = (uint8_t*)tryMalloc(SRAM_HALF)) != nullptr;
-        if (!ok) {
-            for (int i = 0; i < 4; i++) { free(s_sram[i]); s_sram[i] = nullptr; }
+        const size_t free0 = getFreeHeap();
+        int got = 0;
+        while (got < SRAM_N && getFreeHeap() >= SRAM_BLOCK + SRAM_KEEP &&
+               (s_sram[got] = (uint8_t*)tryMalloc(SRAM_BLOCK)) != nullptr) got++;
+        if (got < SRAM_N) {
+            for (int i = 0; i < got; i++) { free(s_sram[i]); s_sram[i] = nullptr; }
             s_refused = true;
         }
-        Debug::log("[ELM] HGFX buffers in %s", ok ? "SRAM" : "PSRAM");
+        Debug::log("[ELM] HGFX buffers in %s: %d of %d blocks, heap free %u -> %u", got == SRAM_N ? "SRAM" : "PSRAM",
+                   got, SRAM_N, (unsigned)free0, (unsigned)getFreeHeap());
     }
     if (!s_sram[0]) return;
     drain();
-    for (int i = 0; i < 4; i++)
-        memcpy(s_sram[i], s_buf + (i >> 1) * (uint32_t)BUF1 + (i & 1) * (uint32_t)SRAM_HALF, SRAM_HALF);
+    for (int i = 0; i < SRAM_N; i++)
+        memcpy(s_sram[i], s_buf + (i / SRAM_PER) * (uint32_t)BUF1 + (i % SRAM_PER) * (uint32_t)SRAM_BLOCK, SRAM_BLOCK);
     s_sramOn = true;
 }
 
