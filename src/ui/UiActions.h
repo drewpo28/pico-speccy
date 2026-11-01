@@ -66,18 +66,6 @@ void hotkeys_key(int32_t idx, uint8_t key);
 void midi_buildBanks(DynRows& d);
 void midi_keyBanks(int32_t tag, uint8_t key);
 void act_ideCreate();
-// Devices > IDE / HDD > "SD card (raw)": each slot's source (off / read-only / write),
-// its window and the "from MBR" picker. They are ACTION rows, not a radio over a stored
-// setting, because picking a source also releases the slot's image and re-inits the
-// controller — the same shape ideEditChs has.
-void act_ideSrc0();  void act_ideSrc1();
-void act_ideWin0();  void act_ideWin1();
-void act_ideMbr0();  void act_ideMbr1();
-const char* vl_ideSrc0();  const char* vl_ideSrc1();
-const char* vl_ideWin0();  const char* vl_ideWin1();
-// "hd0" / "hd1" / "hd0+hd1" beside the level's row, nullptr when neither slot is raw.
-const char* vl_ideRaw();
-bool p_ideRaw0();  bool p_ideRaw1();
 // The 40 persist slots are LEVELS of the new menu (like the disk slots): build
 // fills the pool, rowkey runs Enter / F6 rename / F8 remove on the focused slot.
 // Fast snapshots: one K_PICK list (the config-profile shape). `persist_foot` is the
