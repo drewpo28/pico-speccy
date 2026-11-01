@@ -33,6 +33,11 @@
 #if PERF_TRACE && PERF_HIST
 extern void pcprof_dump();   // PcProf.cpp (global: a declaration inside namespace Ep would not link)
 #endif
+// Video.cpp: the LED strip's first fb row, -1 when it is off (or the panel is on).
+// LED::draw() paints it once a frame from VIDEO::EndFrame; this machine's renderer
+// repaints every fb row at its own raster time, so the glyphs have to be stamped
+// onto the row as it is produced — see lineRun().
+extern int led_strip_y0;
 
 namespace Ep {
 
@@ -289,6 +294,15 @@ static void lineRun() {
         const int nc = VIDEO::rowCarves(y, cx);
         EPT_BEGIN(t1); lineOutSlow(row, y, s_px, nc, cx); EPT_ADD(out, t1);
     }
+    // The LED strip lives in rows this renderer owns, and it is drawn at EndFrame
+    // — but a line here is produced one line BEHIND the beam, so the last write to
+    // a strip row before the scanout is either that EndFrame painting or this
+    // frame's own row, depending on how the emulated frame drifts against the
+    // display's: the indicators blinked and vanished on hardware. Stamp the
+    // glyphs onto the row that was just produced (NEXTVID::RenderLine's rule) —
+    // foreground pixels only, so the EP picture under them stays live.
+    if (row && led_strip_y0 >= 0 && (unsigned)(y - led_strip_y0) < 8u)
+        LED::stampStripRow(y - led_strip_y0, row);
     const int fl = s_lFlags;
     s_lFlags = 0; s_lSlot = 0;
     if (fl & EpCore::Nick::L_HIRES) s_hiSeen = true;
