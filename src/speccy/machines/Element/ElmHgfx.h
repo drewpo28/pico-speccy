@@ -34,7 +34,7 @@ void    setMode(uint8_t m);   // g_zxi_001
 int     vramPages();          // size of the VRAM window in 256-byte pages
 void    reset();
 void    loadState(const uint8_t* regs, const uint8_t* colours);   // at a mode switch
-void    writeVram(uint16_t off, uint8_t v);
+void    writeVram(uint16_t off, uint8_t v, bool wasRead = true);
 void    writeReg(uint8_t reg, uint8_t v);
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F

@@ -289,8 +289,9 @@ bool memWrite(uint16_t a, uint8_t v) {
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
     switch (s_r->win[a >> 8]) {
     case W_VRAM:
-        Hgfx::writeVram((uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8)), v);
-        return false;
+        // No read hook: a read before this write leaves the same byte in memory here.
+        Hgfx::writeVram((uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8)), v, MemESP::readbyte(a) == v);
+        return true;
     case W_REG: {
         const uint8_t r = (uint8_t)a;
 #if HOST_BUILD

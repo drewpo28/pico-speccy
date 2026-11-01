@@ -110,11 +110,14 @@ void loadState(const uint8_t* regs, const uint8_t* colours) {
 
 static inline bool inWindow(int x, int y) {
     if (!(s_r[REG_VP] & 8)) return true;
-    const int wx = s16(REG_WX), wy = s16(REG_WY);
-    return x >= wx && y >= wy && x < wx + s16(REG_WW) && y < wy + s16(REG_WH);
+    const int wx = s16(REG_WX), wy = s16(REG_WY), ww = s16(REG_WW), wh = s16(REG_WH);
+    // A window off the screen limits nothing: HGFXSPRI sets the bit with such values
+    // every second frame and would blink (a guess, the Reference does not say).
+    if (ww <= 0 || wh <= 0 || wx >= s_w || wy >= s_h || wx + ww <= 0 || wy + wh <= 0) return true;
+    return x >= wx && y >= wy && x < wx + ww && y < wy + wh;
 }
 
-void writeVram(uint16_t off, uint8_t v) {
+void writeVram(uint16_t off, uint8_t v, bool wasRead) {
     if (!s_buf) return;
     // Bytes per line follow the mode's width (Nether Earth steps 64 in HGFX 2), and
     // only HGFX 1 has the ZX layout.
@@ -127,7 +130,9 @@ void writeVram(uint16_t off, uint8_t v) {
     int x = col + s16(REG_OX);
     uint8_t* d = dstBuf() + (uint32_t)y * s_stride;
     const uint8_t m = s_r[REG_MASK], pm = s_r[REG_MODE];
-    if (pm == 1) {                       // COPY: the written value does not matter
+    // COPY moves the 8 pixels a read just cached, if the byte written is the byte read
+    // (the wiki, register 01). A write that follows no read draws like ATTR.
+    if (pm == 1 && wasRead) {
         const int sy = row + s16(REG_SY);
         if (sy < 0 || sy >= s_h) return;
         int sx = col + s16(REG_SX);
@@ -142,7 +147,7 @@ void writeVram(uint16_t off, uint8_t v) {
     for (int i = 0; i < 8; i++, x++, v <<= 1) {
         if (x < 0 || x >= s_w) continue;
         const bool on = v & 0x80;
-        if (!on && pm != 2) continue;
+        if (!on && pm == 0) continue;
         if (!inWindow(x, y)) continue;
         pxPlanar(d, x, on ? ink : paper, m);
     }
