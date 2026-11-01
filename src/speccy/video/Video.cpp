@@ -39,6 +39,8 @@ visit https://zxespectrum.speccy.org/contacto
 #endif
 #include "Video.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Element/Element.h"
+#include "speccy/machines/Element/ElmHgfx.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "app/PerfScope.h"
@@ -1616,6 +1618,7 @@ static void applyDS80BorderGeometry(bool on) {
 uint32_t VIDEO::lastBrdTstate;
 bool VIDEO::brdChange = false;
 bool VIDEO::paper_off = false;
+bool VIDEO::paper_hold = false;
 bool VIDEO::brdnextframe = true;
 bool VIDEO::brdGigascreenChange = true;
 bool VIDEO::gigascreen_enabled = false;
@@ -2289,6 +2292,12 @@ static void samPaletteFlush() {
 
 // Enterprise: the 128 colours of Ep::slotRgb own hardware slots 16..143 (the line
 // renderer writes Ep::PAL_SLOT0 + colour). Programmed at Reset and on every rebuild.
+void VIDEO::elmPaletteSet(uint8_t slot, uint32_t rgb) {
+    const uint32_t c = snapTransform(crtTransform(rgb));
+    graphics_set_palette(slot, c);
+    if (!Config::vga_dither) vga_set_palette_entry_solid(slot, c);
+}
+
 static void epPaletteFlush() {
     if (VIDEO::sam_pair_live) return;   // 2-colour PIXEL frames: the pair tables own the slots
     for (int i = 0; i < 128; i++) {
@@ -2335,6 +2344,7 @@ void VIDEO::applyPalette() {
     graphics_set_palette(16, paletteFinal(0xFF7F00));
     if (Config::arch == A_SAM) samPaletteFlush();
     if (Config::arch == A_ENT) epPaletteFlush();
+    if (Config::arch == A_ELM) Hgfx::paletteLost();
 
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
@@ -4994,6 +5004,7 @@ bool VIDEO::gigascreenModeIncompatible() {
         || gmx_ext_live                 // Scorpion GMX 640x200x16 (pair slots)
         || ts_render_live != 0          // TS-Conf TEXT/16c/256c/NOGFX, or the TSU
         || ft_live                      // TS-Conf VDAC2: the FT812 owns the whole framebuffer
+        || paper_hold                   // eLeMeNt HGFX
         || bl_live                      // Borderless: the prev-FB is laid out for the bordered row
         // Pentagon 16col (#EFF7 D0, turned on by the GUEST): its renderer branch sits
         // ahead of the Gigascreen one, so the paper is never blended, while the border
@@ -6014,7 +6025,7 @@ IRAM_ATTR __attribute__((noinline)) void VIDEO::MainScreen_Blank(unsigned int st
 
         if (brdChange) DrawBorder(); // Needed to avoid tearing in demos like Gabba (Pentagon)
 
-        if (paper_off && !bl_live) {
+        if ((paper_off || paper_hold) && !bl_live) {
             // Debug "Paper off": keep the exact T-state/contention flow but write
             // nothing — MiddleBorder paints through the paper columns instead.
             coldraw_cnt = 0;
@@ -6095,7 +6106,7 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
 
         if (brdChange) DrawBorder();
 
-        if (paper_off && !bl_live) {
+        if ((paper_off || paper_hold) && !bl_live) {
             coldraw_cnt = 0;
             Draw = &MainScreen_NoPaper;
             Draw_Opcode = &MainScreen_Opcode;
@@ -6171,7 +6182,7 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow_Opcode(bool contended) {
 
         if (brdChange) DrawBorder();
 
-        if (paper_off && !bl_live) {
+        if ((paper_off || paper_hold) && !bl_live) {
             coldraw_cnt = 0;
             Draw = &MainScreen_NoPaper;
             Draw_Opcode = &MainScreen_Opcode;
@@ -9345,6 +9356,8 @@ IRAM_ATTR void VIDEO::EndFrame() {
     // PERF window comfortably carries the ~600 bytes those lines write.
     Debug::pumpUart();
 
+    if (__builtin_expect(Z80Ops::isElm, 0)) Elm::frameEnd();   // HGFX: mode change, the picture
+
     if (Z80Ops::isEnt) {
         Ep::frameEnd();                          // lines up to the frame end; rebase the line clock
         gigascreenModeGate();
@@ -10250,6 +10263,7 @@ void VIDEO::RedrawPausedFrame() {
     // SAM Coupe: no beam walk — redraw the frame from the current state.
     if (Z80Ops::isSam) { Sam::renderFrame(); return; }
     if (Z80Ops::isEnt) { Ep::renderFrame(); return; }
+    if (paper_hold) Hgfx::repaint();
 
     // A TS-Conf palette change still waiting for the beam has to be applied
     // NOW: the beam rule is meaningless once the machine is stopped — nothing

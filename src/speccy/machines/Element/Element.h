@@ -14,8 +14,10 @@ void reset();                                 // from CPU::reset
 bool portIn(uint16_t address, uint8_t* out);  // true = claimed
 bool portOut(uint16_t address, uint8_t data);
 
+void frameEnd();                              // EndFrame
 void remap();                                 // URAM back over the legacy paging
-bool memWrite(uint16_t address, uint8_t v);   // gate bit 5: true = the store is consumed
+bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
+extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM
 
 // The ports the machine claims ahead of the generic decode, tested in the RAM path:
 // #xx3B, #9EFD/#9FFD, and the URAM ports #07 #27 #47 #67 #53 #73 (low byte only).

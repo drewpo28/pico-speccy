@@ -1446,7 +1446,7 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
     if (__builtin_expect(g_atm_ro != 0, 0)) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
-        if ((g_atm_ro & 0x20) && Elm::memWrite(address, value)) return;  // eLeMeNt: Area protect, LCU
+        if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;  // eLeMeNt windows
         if ((g_atm_ro >> (address >> 14)) & 1) return;
     }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
@@ -1712,7 +1712,7 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     // a window showing ROM drops it (gsDmaPoke8's twin).
     if (g_atm_ro) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
-        if ((g_atm_ro & 0x20) && Elm::memWrite(address, value)) return;
+        if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;
         if ((g_atm_ro >> (address >> 14)) & 1) return;
     }
     tsPoke8Store(address, value);
