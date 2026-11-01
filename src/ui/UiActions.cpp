@@ -1143,14 +1143,12 @@ static void ideEditChs(uint8_t slot) {
 // ── IDE slot served off the SD card's own sectors ──────────────────────────────
 // IDE::openRaw turns Config::ide_raw[slot] into a drive: the guest's LBA 0 is
 // Config::ide_raw_lba[slot] on the card and the drive is ide_raw_len sectors after it
-// (the same idea DivSD applies to esxDOS). Three decisions live here:
-//   * the source is an ACTION that CYCLES, not a stored radio, because picking it also
-//     releases the slot's image file and re-inits the controller — the shape ideEditChs
-//     has — and because Write must not be a value you land on by Tab-ing through a row;
-//   * Write is the third press and says out loud what it means: a raw write lands in the
-//     card's own sectors, past FatFs;
-//   * the window is the ONLY thing between the guest and this card's filesystem, so the
-//     menu shows the RESOLVED window (after clamping) and an empty entry changes nothing.
+// (the same idea DivSD applies to esxDOS). It is one source of the slot, next to an
+// image: Enter on the slot lists both. Two decisions live here:
+//   * picking the card ALWAYS lands on read-only. Write is a separate key (F6) with its
+//     own confirmation, because a raw write lands in the card's own sectors, past FatFs;
+//   * the partition list saves the TYPING, which is where a raw window actually goes
+//     wrong (a transposed digit hands the guest the card's own FAT).
 
 static void ideRawToast(const char* what, uint8_t slot, bool warn) {
     char b[64];
@@ -1162,25 +1160,31 @@ static void ideRawToast(const char* what, uint8_t slot, bool warn) {
     uiToast(b, warn, 2500);
 }
 
-static void ideCycleRaw(uint8_t slot) {
-    const uint8_t v = (uint8_t)(Config::ide_raw[slot] >= 2 ? 0 : Config::ide_raw[slot] + 1);
-    // A raw write bypasses the file system, so this is the one step that can destroy the
-    // card. Default No (Enter must not destroy); declining stays on read-only.
-    if (v == 2 && !uiConfirm(TXT_IDE_RAW_WARN, TXT_IDE_RAW_WARN_T)) return;
-    Config::ide_raw[slot] = v;
-    // The image path stays in Config under a raw window (IDE::init prefers the window):
-    // cycling back to off gives the slot its image again. Mounting an image drops the
-    // window (DiskSlots::slotMount), eject clears both.
+// The image path stays in Config under a raw window (IDE::init prefers the window);
+// mounting an image drops the window (DiskSlots::slotMount), eject clears both.
+static void ideSetRaw(uint8_t slot, uint32_t lba, uint32_t len) {
+    Config::ide_raw[slot] = 1;
+    Config::ide_raw_lba[slot] = lba;
+    Config::ide_raw_len[slot] = len;     // IDE::openRaw clamps it to the CHS ceiling
     IDE::init();
     Config::save();
-    if (v == 2)      uiToast("Raw SD: writes go to the card!", true, 3000);
-    else if (v == 1) ideRawToast("Raw SD read-only", slot, !IDE::isRaw(slot));
-    else             uiToast(Config::ide_image[slot].empty() ? "Raw SD: slot empty"
-                                                             : "Raw SD off: image back", false, 1500);
+    ideRawToast("SD card read-only", slot, !IDE::isRaw(slot));
 }
 
-static void ideEditRawWin(uint8_t slot) {
+static void ideToggleWrite(uint8_t slot) {
     if (!Config::ide_raw[slot]) return;
+    const uint8_t v = Config::ide_raw[slot] == 1 ? 2 : 1;
+    // The one step that can destroy the card. Default No: Enter must not destroy.
+    if (v == 2 && !uiConfirm(TXT_IDE_RAW_WARN, TXT_IDE_RAW_WARN_T)) return;
+    Config::ide_raw[slot] = v;
+    IDE::init();
+    Config::save();
+    if (v == 2) uiToast("SD card: writes go to the card!", true, 3000);
+    else        ideRawToast("SD card read-only", slot, !IDE::isRaw(slot));
+}
+
+// Typed window: from the source list, or F2 on a raw slot (which keeps its mode).
+static void ideEditRawWin(uint8_t slot) {
     char cur[32];
     if (Config::ide_raw_len[slot])
         snprintf(cur, sizeof cur, "%u/%u", (unsigned)Config::ide_raw_lba[slot],
@@ -1195,81 +1199,79 @@ static void ideEditRawWin(uint8_t slot) {
         uiToast("Format: start/len", true, 2000);
         return;
     }
+    if (!Config::ide_raw[slot]) Config::ide_raw[slot] = 1;
     Config::ide_raw_lba[slot] = v[0];
     Config::ide_raw_len[slot] = v[1];        // 0 = from `start` to the end of the card
     IDE::init();
     Config::save();
-    ideRawToast("Raw SD window", slot, !IDE::isRaw(slot));
+    ideRawToast("SD card window", slot, !IDE::isRaw(slot));
 }
 
-// "from MBR": read the card's partition table and fill the window with one entry — the
-// same two numbers the user would otherwise look up on a PC. It saves the TYPING, which
-// is where a raw window actually goes wrong (a transposed digit hands the guest the
-// card's own FAT).
-static void idePickFromMbr(uint8_t slot) {
-    if (!Config::ide_raw[slot]) return;
+// What a window is, for the row and the list's cursor: 0 = the whole card, 1..4 = that
+// MBR entry, -1 = typed numbers. p may be nullptr when n <= 0.
+static int ideRawPartOf(uint8_t slot, const IDE::MbrPart* p, int n) {
+    const uint32_t lba = Config::ide_raw_lba[slot], len = Config::ide_raw_len[slot];
+    if (!lba && !len) return 0;
+    if (n > 0)
+        for (int i = 0; i < 4; i++)
+            if (p[i].type && p[i].lba == lba && p[i].sectors == len) return i + 1;
+    return -1;
+}
+
+static const char* idePartType(uint8_t t) {
+    switch (t) {
+        case 0x0B: case 0x0C: return "FAT32";
+        case 0x04: case 0x06: case 0x0E: return "FAT16";
+        case 0x01: return "FAT12";
+        case 0x07: return "exFAT";
+        case 0x83: return "Linux";
+        default:   return nullptr;
+    }
+}
+
+// Enter on an IDE slot. True = the user wants an image file (the caller browses).
+static bool ideSourcePick(uint8_t slot) {
+    enum { SRC_IMAGE = -1, SRC_WHOLE = -2, SRC_WINDOW = -3 };
     IDE::MbrPart p[4];
     const int n = IDE::mbrParts(p);
-    if (n < 0) { uiToast("Cannot read the SD card", true, 2500); return; }
-    // A super-floppy card has FAT at LBA 0 and no table: nothing to pick from, and the
-    // window has to be typed in (0/0 = the whole card is then the right answer).
-    if (n == 0) { uiToast("No MBR here - type the window", true, 3000); return; }
+    if (n < 0) return true;              // no card: an image is the only source
     static char rows[4][40];
-    const char* items[4];
-    int tags[4], m = 0;
-    for (int i = 0; i < 4; i++) {
-        if (!p[i].type || !p[i].sectors) continue;      // empty slot of the table
-        snprintf(rows[m], sizeof rows[0], "Part %d  %02X  %uMB", i + 1, (unsigned)p[i].type,
-                 (unsigned)(((uint64_t)p[i].sectors) / 2048u));
-        tags[m] = i;
-        items[m] = rows[m];
-        m++;
+    const char* items[7];
+    int tags[7], m = 0, np = 0, initial = 0;
+    const int cur = Config::ide_raw[slot] ? ideRawPartOf(slot, p, n) : -2;
+    items[m] = TXT_IDE_SRC_IMAGE; tags[m++] = SRC_IMAGE;
+    if (cur == 0) initial = m;
+    items[m] = TXT_IDE_SRC_WHOLE; tags[m++] = SRC_WHOLE;
+    // A super-floppy card has FAT at LBA 0 and no table: there is nothing to list.
+    if (n > 0)
+        for (int i = 0; i < 4; i++) {
+            if (!p[i].type || !p[i].sectors) continue;      // empty slot of the table
+            const uint32_t mb = p[i].sectors / 2048u;
+            const char* ty = idePartType(p[i].type);
+            char t[8];
+            if (!ty) { snprintf(t, sizeof t, "%02X", (unsigned)p[i].type); ty = t; }
+            if (mb >= 1024)
+                snprintf(rows[np], sizeof rows[0], "SD card: part %d  %s %u.%u GB", i + 1, ty,
+                         (unsigned)(mb / 1024), (unsigned)((mb % 1024) * 10 / 1024));
+            else
+                snprintf(rows[np], sizeof rows[0], "SD card: part %d  %s %u MB", i + 1, ty,
+                         (unsigned)mb);
+            if (cur == i + 1) initial = m;
+            items[m] = rows[np++]; tags[m++] = i;
+        }
+    if (cur == -1) initial = m;
+    items[m] = TXT_IDE_SRC_WINDOW; tags[m++] = SRC_WINDOW;
+
+    const int pick = uiPickList(TXT_IDE_SRC_TITLE, items, m, initial);
+    if (pick < 0 || pick >= m) return false;
+    switch (tags[pick]) {
+        case SRC_IMAGE:  return true;
+        case SRC_WHOLE:  ideSetRaw(slot, 0, 0); break;
+        case SRC_WINDOW: ideEditRawWin(slot); break;
+        default:         ideSetRaw(slot, p[tags[pick]].lba, p[tags[pick]].sectors); break;
     }
-    const int pick = uiPickList("Window from MBR", items, m, 0);
-    if (pick < 0 || pick >= m) return;
-    const IDE::MbrPart& q = p[tags[pick]];
-    Config::ide_raw_lba[slot] = q.lba;
-    Config::ide_raw_len[slot] = q.sectors;   // IDE::openRaw clamps it to the CHS ceiling
-    IDE::init();
-    Config::save();
-    ideRawToast("Raw SD window", slot, !IDE::isRaw(slot));
+    return false;
 }
-
-static const char* ideSrcText(uint8_t slot) {
-    if (!Config::ide_raw[slot]) return "off";
-    return Config::ide_raw[slot] == 1 ? "read-only" : "write";
-}
-static void ideWinText(uint8_t slot, char* b, size_t n) {
-    // The live window once the slot really serves the card (i.e. after clamping), the
-    // configured numbers otherwise — 0 length reads as "to the end of the card".
-    if (IDE::isRaw(slot))
-        snprintf(b, n, "%u+%u", (unsigned)IDE::rawStart(slot), (unsigned)IDE::rawSectors(slot));
-    else if (Config::ide_raw_len[slot])
-        snprintf(b, n, "%u+%u", (unsigned)Config::ide_raw_lba[slot],
-                 (unsigned)Config::ide_raw_len[slot]);
-    else
-        snprintf(b, n, "%u+end", (unsigned)Config::ide_raw_lba[slot]);
-}
-// Short label beside "SD card (raw)": which slots serve the card, so the level can be
-// read without opening it.
-const char* vl_ideRaw() {
-    const bool a = Config::ide_raw[0] != 0, b = Config::ide_raw[1] != 0;
-    if (!a && !b) return nullptr;
-    return (a && b) ? "hd0+hd1" : (a ? "hd0" : "hd1");
-}
-const char* vl_ideSrc0() { return ideSrcText(0); }
-const char* vl_ideSrc1() { return ideSrcText(1); }
-const char* vl_ideWin0() { static char b[20]; ideWinText(0, b, sizeof b); return b; }
-const char* vl_ideWin1() { static char b[20]; ideWinText(1, b, sizeof b); return b; }
-bool p_ideRaw0() { return Config::ide_raw[0] != 0; }
-bool p_ideRaw1() { return Config::ide_raw[1] != 0; }
-
-void act_ideSrc0() { ideCycleRaw(0); }
-void act_ideSrc1() { ideCycleRaw(1); }
-void act_ideWin0() { ideEditRawWin(0); }
-void act_ideWin1() { ideEditRawWin(1); }
-void act_ideMbr0() { idePickFromMbr(0); }
-void act_ideMbr1() { idePickFromMbr(1); }
 
 static void buildSlots(DynRows& d, DiskIface iface) {
     const uint8_t n = (iface == IFACE_ESX) ? esxStagedSlots()
@@ -1290,7 +1292,12 @@ static void buildSlots(DynRows& d, DiskIface iface) {
             if (Config::ide_raw[i]) {
                 // No file to name: the medium IS the card's window, and whether the
                 // guest may write to it is the one thing to see at a glance.
-                nm_ += "  SD card";
+                // One sector read, and only for a raw slot: this level builds on entry.
+                IDE::MbrPart pt[4];
+                const int pn = IDE::mbrParts(pt);
+                const int part = ideRawPartOf(i, pt, pn);
+                if (part > 0) { nm_ += "  SD part "; nm_ += (char)('0' + part); }
+                else          nm_ += part == 0 ? "  SD card" : "  SD window";
                 d.add(nm_.c_str(), ideGeoText(i).c_str(), i, false);
                 d.badgeLast("RO", Config::ide_raw[i] == 1);
                 continue;
@@ -1333,6 +1340,10 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
             if (!DiskSlots::slotHasWP(iface)) return;
             DiskSlots::slotToggleWP(iface, idx);
             break;
+        case 6:
+            if (iface != IFACE_IDE) return;
+            ideToggleWrite(idx);                // saves by itself
+            return;
         case 8: {
             // A raw slot has no file name, so the usual "empty slot" test would
             // swallow the eject that turns it off.
@@ -1349,6 +1360,7 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
             // the classic popup, where every Enter mounts `fname` into the focused slot.
             string fname = s_armedFile;
             if (fname.empty()) {
+                if (iface == IFACE_IDE && !ideSourcePick(idx)) return;  // saves by itself
                 const bool img = (iface == IFACE_ESX || iface == IFACE_IDE);
                 const uint8_t ftype = img ? DISK_IMGFILE : DISK_DSKFILE;
                 string& dir = img ? FileUtils::IMG_Path : FileUtils::DSK_Path;

@@ -16000,6 +16000,23 @@ EXDOS, SNAKE1K and HERO run from it; `PICOSPECCY_EPLOG=1` logs FDC commands + EX
 `PICOSPECCY_EP_NOFILE=1` lets a typed LOAD go to A:. Not exercised: writes, drive B:,
 disk change, EP64 + EXDOS, EXDOS.INI auto-start.
 
+**The LED strip is stamped onto each row (`Ep::lineRun`, owner: "LED indicators sometimes
+blink and disappear", fixed 2026-11-01, hw verdict owed).** EP paints whole lines at their
+own raster time and one line BEHIND the beam, so the glyphs drawn once a frame from
+`VIDEO::EndFrame` (`LED::draw`) are overwritten by the frame's own render of those rows
+just before — or just after — the display reads them, depending on how the emulated frame
+drifts against the display sweep: the strip is there on some frames and gone on others.
+`Ep::lineRun` now calls `LED::stampStripRow(y - led_strip_y0, row)` on every row it
+produces inside the strip's 8 rows, which is exactly what `NEXTVID::RenderLine` does (and
+a CARVE was rejected there because it froze the border underneath). Foreground pixels
+only, so the EP picture under the glyphs stays live, and the row render itself erases a
+glyph whose indicator went away. **The panel variant needs nothing** (`stampStripRow`
+returns early while `Config::led_panel`; the panel is an `osdBarRange` rect the EP
+renderer already honours through `VIDEO::rowCarves` → `lineOutSlow`), and neither does the
+notify banner (`OSD::notify` has an `isSam || isEnt` carve branch). `Sam::renderRow` has
+the same renderer shape and would show the same flicker, but its framebuffer byte is
+`PAL_SLOT0 + colour`, so the ZX-index glyphs there need their own mapping first.
+
 **Tape (2026-10-31; hw-confirmed DVp2w on `debug/DVp2w-ep-tape4-1.1.1` — owner: Amaurote + Boulder Dash
 from ep128emu .tap with a disk mounted, "работает", not itemised; plan Phase 5).** `src/speccy/devices/tape/Tape_EPTE.cpp` =
 ep128emu's EPTE format (magic at 128, 128-entry chunk table, 24 kHz samples = 145.83 T) as
@@ -16965,7 +16982,9 @@ disk/interface rows (DivSD forced); Byte 48K no Beta; CMOS row hidden on 48K/128
 (Quorum 64 keeps it) and EP. `slotNodeFor` searches the new arrays by builder. Hw owed: disk hot keys and
 the F5 "which slot" path on each machine, a machine switch from inside the session.
 
-- **Review fixes the same day (host-checked; hw on `debug/DVp2w-profi-ide3-1.1.1`, owner: "работает", not itemised, raw WRITES not tested yet):**
+- **The raw window moved into the slot list (2026-11-01, owner's pick of 3 variants, NOT hw-tested, `debug/DVp2w-ide-source-1.1.1`):** the `SD card (raw)` submenu and its `act_ideSrc/Win/Mbr` rows are gone; the bullets above that name them are history. Enter on an IDE slot = `ideSourcePick` (UiActions.cpp): Image file / whole card / each MBR entry (type + size) / manual window, cursor on the current source; no readable card goes straight to the browser, an armed file mounts as before. Any card pick lands on read-only (`ideSetRaw`), F6 toggles Write with the default-No confirmation, F2 edits the window on a raw slot, F8 ejects. The row reads `SD card` / `SD part N` / `SD window`; that costs one MBR read per raw slot when the level is built. The image path still survives under a window, but nothing returns to it now: "Image file..." browses again.
+- **Raw write, hw 2026-11-01 (owner, NEMO scheme, Write mode, window = FAT32 partition 2): the guest sees the partition and writes work.** WDC's "make bootable" then destroyed that FAT32 (`can't read superblock`, kernel `invalid access to FAT`): sector 0 and FSInfo intact, backup boot sector 6 and the head of FAT1 (sector 32) overwritten with high-entropy data. A guest sees a window as a disk with no MBR, so disk tools may write their own structures at its start; that is the tool, not an addressing bug (owner: no fault without the bootable step). Do not run such a tool on a window over a FAT partition you need. Whether FAT2 survived was not checked.
+- **Review fixes the same day (host-checked; hw on `debug/DVp2w-profi-ide3-1.1.1`, owner: "работает", not itemised; raw writes confirmed later, line above):**
   `openRaw`/`mbrParts` passed a `DWORD` to `GET_SECTOR_COUNT`, which stores a full `LBA_t`
   (FF_LBA64 = 8 B): stack smash on the host and through the USB driver, harmless only on the SD
   driver. The image path now survives the window: turning raw on no longer clears

@@ -196,23 +196,18 @@
 #define TXT_HW_IDE          "IDE / HDD"
 #define TXT_IDE_IMAGES      "Images hd0 / hd1"
 #define TXT_IDE_CREATE      "Create image"
-// Devices > IDE / HDD > "SD card (raw)": an IDE slot served straight off the card's own
-// sectors instead of from an .hdf — the DivSD idea, one level up. The window rows exist
-// because a raw drive IS a window: a wrong length would hand the guest the card's own
-// filesystem, which is why "source" is Off by default and Write needs an explicit pick.
-#define TXT_IDE_RAW         "SD card (raw)"
-#define TXT_IDE_SRC0        "hd0 source"
-#define TXT_IDE_SRC1        "hd1 source"
+// Enter on an IDE slot: its source, an image or the card's own sectors (the DivSD idea,
+// one level up). Picking the card lands on read-only; Write needs an explicit F6.
+#define TXT_IDE_SRC_TITLE   "Disk source"
+#define TXT_IDE_SRC_IMAGE   "Image file..."
+#define TXT_IDE_SRC_WHOLE   "SD card: whole card"
+#define TXT_IDE_SRC_WINDOW  "SD card: manual window..."
 #define TXT_IDE_RAW_WARN_T  "Raw SD write"
 #define TXT_IDE_RAW_WARN    "The guest will write straight to\n" \
                             "the SD card, past the file system.\n" \
                             "A wrong window or a bad write can\n" \
                             "damage the card and lose its files.\n" \
                             "Enable writes?"
-#define TXT_IDE_WIN0        "hd0 window"
-#define TXT_IDE_WIN1        "hd1 window"
-#define TXT_IDE_PART0       "hd0 from MBR"
-#define TXT_IDE_PART1       "hd1 from MBR"
 #define TXT_HW_LED          "LED indicators"
 #define TXT_HW_LEGEND       "LED legend"
 // Indicators on their own panel beside the F8 stats box instead of bare glyphs
