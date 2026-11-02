@@ -31,6 +31,12 @@ static inline void memPoke(uint16_t a, uint8_t v) {
     if (__builtin_expect(Z80Ops::isElm, 0)) Elm::busWrite(a, v);
     else MemESP::writebyte(a, v);
 }
+// ...and its reads: a DMA read of the HGFX VRAM window arms the COPY latch like the
+// CPU's (HGFXAGON copies the screen by DMA in COPY mode).
+static inline uint8_t memPeek(uint16_t a) {
+    if (__builtin_expect(Z80Ops::isElm, 0)) return Elm::busRead(a);
+    return MemESP::readbyte(a);
+}
 
 #undef IRAM_ATTR
 #define IRAM_ATTR __not_in_flash("z80dma")
@@ -600,13 +606,13 @@ void Z80DMA::nxOneByte() {
     uint8_t val;
     if (transfer_dir) {
         VIDEO::Draw(port_a_cycles, false);
-        val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
+        val = port_a_is_io ? Ports::dmaInput(cur_port_a) : memPeek(cur_port_a);
         VIDEO::Draw(port_b_cycles, false);
         if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
         else memPoke(cur_port_b, val);
     } else {
         VIDEO::Draw(port_b_cycles, false);
-        val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
+        val = port_b_is_io ? Ports::dmaInput(cur_port_b) : memPeek(cur_port_b);
         VIDEO::Draw(port_a_cycles, false);
         if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
         else memPoke(cur_port_a, val);
@@ -626,13 +632,13 @@ inline __attribute__((always_inline)) void Z80DMA::nxByteNoDraw(uint8_t ca, uint
     uint8_t val;
     if (transfer_dir) {
         CPU::tstates += ca;
-        val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
+        val = port_a_is_io ? Ports::dmaInput(cur_port_a) : memPeek(cur_port_a);
         CPU::tstates += cb;
         if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
         else memPoke(cur_port_b, val);
     } else {
         CPU::tstates += cb;
-        val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
+        val = port_b_is_io ? Ports::dmaInput(cur_port_b) : memPeek(cur_port_b);
         CPU::tstates += ca;
         if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
         else memPoke(cur_port_a, val);
@@ -808,7 +814,7 @@ __attribute__((section(".nxdma_hot"), noinline)) bool Z80DMA::nxBatch(uint32_t s
         // has no room for.
         if (dstIo && !srcIo) {
             CPU::tstates += cyc;
-            Ports::dmaOutput(dst, MemESP::readbyte(src));
+            Ports::dmaOutput(dst, memPeek(src));
             src = (uint16_t)(src + srcInc);
             dst = (uint16_t)(dst + dstInc);
             nx_counter++;
@@ -1150,14 +1156,14 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
         if (transfer_dir) {
             // A → B: read A, write B
             VIDEO::Draw(port_a_cycles, false);
-            val = port_a_is_io ? Ports::dmaInput(cur_port_a) : MemESP::readbyte(cur_port_a);
+            val = port_a_is_io ? Ports::dmaInput(cur_port_a) : memPeek(cur_port_a);
             VIDEO::Draw(port_b_cycles, false);
             if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
             else memPoke(cur_port_b, val);
         } else {
             // B → A: read B, write A
             VIDEO::Draw(port_b_cycles, false);
-            val = port_b_is_io ? Ports::dmaInput(cur_port_b) : MemESP::readbyte(cur_port_b);
+            val = port_b_is_io ? Ports::dmaInput(cur_port_b) : memPeek(cur_port_b);
             VIDEO::Draw(port_a_cycles, false);
             if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
             else memPoke(cur_port_a, val);
@@ -1208,7 +1214,7 @@ DMA_LOOP_ATTR void Z80DMA::transferOneByte() {
             val = Ports::input(cur_port_a);
             if (__builtin_expect(Rzx::mode != 0, 0)) val = Rzx::onIn(val);
         } else {
-            val = MemESP::readbyte(cur_port_a);
+            val = memPeek(cur_port_a);
         }
         if (port_b_is_io) {
             Ports::output(cur_port_b, val);
@@ -1221,7 +1227,7 @@ DMA_LOOP_ATTR void Z80DMA::transferOneByte() {
             val = Ports::input(cur_port_b);
             if (__builtin_expect(Rzx::mode != 0, 0)) val = Rzx::onIn(val);
         } else {
-            val = MemESP::readbyte(cur_port_b);
+            val = memPeek(cur_port_b);
         }
         if (port_a_is_io) {
             Ports::output(cur_port_a, val);

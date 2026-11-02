@@ -7009,7 +7009,7 @@ void VIDEO::tsFastMemRecalc() {
     // Next: off while ULA contention is live (NEXTVID::contend) — the fast path
     // never calls Draw, so it cannot charge the wait states.
     const uint8_t v = Z80Ops::isNext ? ((nobp && !NEXTVID::contend && !NextReg::l2MapHigh && !MemESP::next_stale_mask) ? 1 : 0)
-                    : Z80Ops::isElm ? ((nobp && paper_hold && ts_fast_armed) ? 1 : 0)   // level 1: the divSD window stays generic
+                    : Z80Ops::isElm ? ((nobp && paper_hold && ts_fast_armed && Elm::fastReadOk()) ? 1 : 0)   // level 1: the divSD window stays generic; the COPY read hook needs a window at #4000+ generic
                     : (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
                                             (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live) ||
                                             (col16_fast && ts_fast_armed && col16_memok))

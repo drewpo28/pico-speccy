@@ -17,7 +17,11 @@ bool portOut(uint16_t address, uint8_t data);
 void frameEnd();                              // EndFrame
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
+void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY
+extern volatile uint8_t g_elm_vram_rd;        // non-zero while memRead is wanted (COPY mode)
+bool fastReadOk();                            // the fast read path may bypass memRead
 void busWrite(uint16_t address, uint8_t v);   // a DMA write, windows included
+uint8_t busRead(uint16_t address);            // a DMA read: arms the HGFX COPY latch too
 bool nmiBlocked();                            // SafeNMI: the button is locked
 void nmiTaken(uint16_t pc);                   // SafeNMI: the return address
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM

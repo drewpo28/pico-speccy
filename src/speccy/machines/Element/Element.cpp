@@ -59,6 +59,7 @@ uint8_t* wrKind;
 enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA };
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
+static void readHookUpdate();
 static void windowsRebuild() {
     uint8_t* w = s_r->win;
     memset(w, 0, 256);
@@ -80,6 +81,30 @@ static void windowsRebuild() {
     bool any = false;
     for (int i = 0; i < 256 && !any; i++) any = w[i] != 0;
     if (any) g_atm_ro |= GM_ELM; else g_atm_ro &= (uint8_t)~GM_ELM;
+    readHookUpdate();
+}
+
+// The HGFX COPY read latch: on while the VRAM window is mapped and the mode is COPY,
+// tested once per generic guest read (CPU.cpp gsDmaPeek8). A window at #4000 or
+// above also needs the fast read path off (Video.cpp tsFastMemRecalc), a window
+// below it (HE2025: #2300) costs nothing there.
+volatile uint8_t g_elm_vram_rd;
+static uint16_t s_rdOff;
+static bool s_rdArmed, s_rdFast = true;
+static void readHookUpdate() {
+    const bool on = s_r && Hgfx::mode && !(Hgfx::g20 & 0x80) && Hgfx::reg(Hgfx::REG_MODE) == 1;
+    const bool fast = !on;   // COPY: every read of a window at #4000+ must reach memRead
+    const bool was = g_elm_vram_rd != 0, wasFast = s_rdFast;
+    g_elm_vram_rd = on;
+    s_rdFast = fast;
+    if (!on) s_rdArmed = false;
+    if (was != on || wasFast != fast) VIDEO::tsFastMemRecalc();
+}
+bool fastReadOk() { return s_rdFast; }
+void memRead(uint16_t a) {
+    if (s_r->win[a >> 8] != W_VRAM) return;
+    s_rdOff = (uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8));
+    s_rdArmed = true;
 }
 
 // FastDMA: Programmer's Reference + FDMA-EN.TXT. Two register sets of 32 bytes. A
@@ -110,7 +135,13 @@ static inline uint8_t* uramByte(uint32_t a) {
 }
 static uint8_t fdRead(uint32_t a, bool uram) {
     if (uram) { const uint8_t* p = uramByte(a); return p ? *p : 0xFF; }
-    return MemESP::readbyte((uint16_t)a);
+    return busRead((uint16_t)a);
+}
+// A DMA / FastDMA read: the wiki says both scroll HGFX in COPY mode, so their reads of
+// the window arm the latch exactly like the CPU's.
+uint8_t busRead(uint16_t a) {
+    if (g_elm_vram_rd) memRead(a);
+    return MemESP::readbyte(a);
 }
 void busWrite(uint16_t a, uint8_t v) {
     if (s_r && s_r->win[a >> 8] && memWrite(a, v)) return;
@@ -291,14 +322,27 @@ void nmiTaken(uint16_t pc) {
 }
 
 bool memWrite(uint16_t a, uint8_t v) {
+    // A write elsewhere (a CALL's return address, a PUSH) leaves the latch armed: clearing
+    // it there turned HE2025's sprite blits into ATTR dots on hardware (2026-11-02).
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
     switch (s_r->win[a >> 8]) {
     case W_VRAM:
         // Plane mask 0 draws nothing and the store reaches RAM: HE2025 copies its start
         // code to #4000 under the open window that way and jumps to it.
         if (!Hgfx::reg(Hgfx::REG_MASK)) return false;
-        // No read hook: a read before this write leaves the same byte in memory here.
-        Hgfx::writeVram((uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8)), v, MemESP::readbyte(a) == v);
+        // COPY takes its 8 pixels from the position the Z80 READ in the window (plus
+        // the source offsets), one read per write (the wiki: the ROM scroll copies a
+        // line up with LDIR, HE2025 replicates a pattern with an overlapping LDIR and
+        // blits sprites with LD A,(HL) / LD (DE),A a row apart). The read hook
+        // (memRead, from the generic read funnel while g_elm_vram_rd) arms the latch;
+        // a write with nothing armed draws like ATTR.
+        {
+            const uint16_t off = (uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8));
+            bool wasRead = false;
+            uint16_t src = 0xFFFF;
+            if (Hgfx::reg(Hgfx::REG_MODE) == 1) { wasRead = s_rdArmed; src = s_rdOff; s_rdArmed = false; }
+            Hgfx::writeVram(off, v, wasRead, src);
+        }
         return true;
     case W_REG: {
         const uint8_t r = (uint8_t)a;
@@ -307,6 +351,7 @@ bool memWrite(uint16_t a, uint8_t v) {
 #endif
         Hgfx::writeReg(r, v);
         if (s_hgfxSlots && (r == Hgfx::REG_VP || r == Hgfx::REG_OY || r == Hgfx::REG_OY + 1)) remap();
+        if (r == Hgfx::REG_MODE) readHookUpdate();
         return false;
     }
     case W_COL:
@@ -359,6 +404,7 @@ void reset() {
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = 0;
     g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
+    s_rdArmed = false;
     Hgfx::direct(false);
     g_atm_ro = 0;
     if (s_lcu) ElmLcu::reset(s_lcu);
@@ -420,6 +466,7 @@ static void hgfxOpen() {
     if (!cols) return;
     for (int i = 0; i < Hgfx::COLOURS; i++) cols[i] = MemESP::readbyte((uint16_t)(cb + i));
     Hgfx::loadState(regs, cols);
+    readHookUpdate();
 }
 
 static void gWrite(uint8_t r, uint8_t v) {
@@ -471,7 +518,7 @@ static void gWrite(uint8_t r, uint8_t v) {
         return;
     case 0x020:
         s_r->g[r] = v;
-        Hgfx::g20 = v;
+        Hgfx::setG20(v);
         windowsRebuild();
         return;
     case 0x021: case 0x022: case 0x023:

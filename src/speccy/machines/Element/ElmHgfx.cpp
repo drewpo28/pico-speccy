@@ -20,6 +20,7 @@ size_t getFreeHeap(void);
 namespace Hgfx {
 
 uint8_t mode, g20;
+static uint8_t s_e20;               // g20 as the engine has reached it in the queue (core1)
 bool rgbOrder, radastan;
 uint8_t radBank, radPad, keyColour;
 uint16_t radOffset;
@@ -39,13 +40,25 @@ static uint8_t* s_buf;              // 128K, PSRAM
 enum { SRAM_SHIFT = 5, SRAM_ROWS = 1 << SRAM_SHIFT, SRAM_BLOCK = SRAM_ROWS * 256, SRAM_PER = HEIGHT / SRAM_ROWS,
        SRAM_N = SRAM_PER * 2, SRAM_KEEP = 16384 };
 static uint8_t* s_sram[SRAM_N];     // buffer * SRAM_PER + y / SRAM_ROWS
-static bool s_sramOn;
+static bool s_sramOn[2];
+// Only what needs it pays, and at most ONE buffer (48 KB): a buffer moves when core1
+// keeps falling behind, the one that costs more PSRAM transactions first. HGFXAGON
+// copies a whole screen a frame: with both buffers in PSRAM that is ~30k line fills and
+// write-backs = ~18 ms of core1, so 50 FPS needs the destination in SRAM; the source
+// reads it then still takes from PSRAM are a third of that.
+enum { SRAM_MAX = 1 };
+static volatile uint32_t s_use[2];  // PSRAM transactions a buffer would cost: writes x2
+static uint8_t s_lagFrames, s_lagWindow;
+static uint8_t s_sramRetry;         // half-second windows before a refused move is tried again
 // The hot path sits in the Z80 DMA window: always loaded on this machine.
 #define ELM_HOT __attribute__((section(".time_critical.dmaloop"), noinline))
 static uint8_t* s_col;              // the colour table, PSRAM
 static struct Hot {                 // read per pixel: heap
     uint8_t map[256], pidx[256], zxp[16], line[720], line2[720], slots[720];
     uint32_t pal[16], nib[16];      // nib: a nibble of pixel bits as a byte mask, left pixel low
+    // core0 scratch for frameSetup / pairPalette: as locals they were 4 KB on top of the
+    // pair driver's 2 KB, past the 8 KB core0 stack (HGFX 2 hung the board, 2026-11-01).
+    uint32_t rgb[256], hist[256], h[256];
 }* s_hot;
 static uint8_t s_cube[168];
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
@@ -61,7 +74,10 @@ static uint32_t* s_q;
 static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
 static bool s_direct;               // chunky windows are mapped: the engine stays on core0
 // Consecutive COPY writes are one queue entry: HGFXAGON's 7800 a frame are ~200 runs.
-static uint16_t s_runOff, s_runLen;
+// Two words: the run, then the offset the Z80 read from — HE2025 replicates a 2-byte
+// pattern along a row with an overlapping LDIR (read at HL, write at HL+2), and the
+// ROM's scroll copies a line up the same way; the pixels come from the READ's position.
+static uint16_t s_runOff, s_runLen, s_runSrc;
 static bool s_live, s_palDirty, s_palAll;
 static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
@@ -110,7 +126,7 @@ static inline void pxPlanar(uint8_t* row, int x, uint8_t v, uint8_t m) {
 
 static inline uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
 static inline uint8_t* rowOf(int n, int y) {
-    if (s_sramOn) return s_sram[n * SRAM_PER + (y >> SRAM_SHIFT)] + (y & (SRAM_ROWS - 1)) * 256;
+    if (s_sramOn[n]) return s_sram[n * SRAM_PER + (y >> SRAM_SHIFT)] + (y & (SRAM_ROWS - 1)) * 256;
     return bufN(n) + (uint32_t)y * s_stride;
 }
 static inline uint8_t* dstBuf() { return bufN((s_r[REG_VP] >> 1) & 1); }
@@ -143,37 +159,47 @@ void drain();
 
 // In and out of SRAM: the pixels travel. Only with the queue empty.
 static void sramOff(bool keep) {
-    if (!s_sramOn) return;
+    if (!s_sramOn[0] && !s_sramOn[1]) return;
     drain();
-    s_sramOn = false;
-    if (keep) for (int i = 0; i < SRAM_N; i++)
-        memcpy(s_buf + (i / SRAM_PER) * (uint32_t)BUF1 + (i % SRAM_PER) * (uint32_t)SRAM_BLOCK, s_sram[i], SRAM_BLOCK);
-}
-static void sramOn() {
-    if (s_sramOn || s_direct || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
-    static bool s_refused;
-    if (!s_sram[0] && !s_refused) {
-        const size_t free0 = getFreeHeap();
-        int got = 0;
-        while (got < SRAM_N && getFreeHeap() >= SRAM_BLOCK + SRAM_KEEP &&
-               (s_sram[got] = (uint8_t*)tryMalloc(SRAM_BLOCK)) != nullptr) got++;
-        if (got < SRAM_N) {
-            for (int i = 0; i < got; i++) { free(s_sram[i]); s_sram[i] = nullptr; }
-            s_refused = true;
+    for (int n = 0; n < 2; n++) {
+        if (!s_sramOn[n]) continue;
+        s_sramOn[n] = false;
+        for (int i = 0; i < SRAM_PER; i++) {
+            uint8_t*& b = s_sram[n * SRAM_PER + i];
+            if (keep) memcpy(s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK, b, SRAM_BLOCK);
+            free(b); b = nullptr;
         }
-        Debug::log("[ELM] HGFX buffers in %s: %d of %d blocks, heap free %u -> %u", got == SRAM_N ? "SRAM" : "PSRAM",
-                   got, SRAM_N, (unsigned)free0, (unsigned)getFreeHeap());
+        Debug::log("[ELM] HGFX buffer %d back to the heap, free %u", n, (unsigned)getFreeHeap());
     }
-    if (!s_sram[0]) return;
-    drain();
-    for (int i = 0; i < SRAM_N; i++)
-        memcpy(s_sram[i], s_buf + (i / SRAM_PER) * (uint32_t)BUF1 + (i % SRAM_PER) * (uint32_t)SRAM_BLOCK, SRAM_BLOCK);
-    s_sramOn = true;
+}
+static void sramPromote() {
+    if (s_direct || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
+    if (s_sramRetry) { s_sramRetry--; return; }
+    if ((int)s_sramOn[0] + (int)s_sramOn[1] >= SRAM_MAX) return;
+    const int n = s_sramOn[0] ? 1 : s_sramOn[1] ? 0 : s_use[1] > s_use[0];
+    if (s_sramOn[n]) return;
+    const size_t free0 = getFreeHeap();
+    uint8_t** b = s_sram + n * SRAM_PER;
+    int got = 0;
+    while (got < SRAM_PER && getFreeHeap() >= SRAM_BLOCK + SRAM_KEEP &&
+           (b[got] = (uint8_t*)tryMalloc(SRAM_BLOCK)) != nullptr) got++;
+    if (got < SRAM_PER) {
+        for (int i = 0; i < got; i++) { free(b[i]); b[i] = nullptr; }
+        s_sramRetry = 20;                   // the heap may have room in ten seconds
+    } else {
+        drain();
+        for (int i = 0; i < SRAM_PER; i++)
+            memcpy(b[i], s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK, SRAM_BLOCK);
+        s_sramOn[n] = true;
+    }
+    Debug::log("[ELM] HGFX buffer %d %s: %d of %d blocks, heap free %u -> %u", n, got == SRAM_PER ? "in SRAM" : "stays in PSRAM",
+               got, SRAM_PER, (unsigned)free0, (unsigned)getFreeHeap());
 }
 
+static inline void runFlush();
 void drain() {
     if (!g_elm_c1_live) return;
-    if (s_runLen) { pushRaw(Q_RUN | s_runOff | (uint32_t)s_runLen << 16); s_runLen = 0; }
+    runFlush();
     const uint64_t t0 = time_us_64();
     while (s_qr != s_qw || s_drawDone != s_drawPosted)
         if (time_us_64() - t0 > 200000) {
@@ -203,8 +229,19 @@ static inline void pushRaw(uint32_t e) {
     __sync_synchronize();
     s_qw = s_qw + 1;
 }
+// A two-word entry lands whole: core1 sees s_qw move once.
+static inline void pushRaw2(uint32_t e, uint32_t e2) {
+#if PERF_TRACE
+    s_pPush++;
+#endif
+    while (s_qw - s_qr >= Q_N - 1) { }
+    s_q[s_qw & (Q_N - 1)] = e;
+    s_q[(s_qw + 1) & (Q_N - 1)] = e2;
+    __sync_synchronize();
+    s_qw = s_qw + 2;
+}
 static inline void runFlush() {
-    if (s_runLen) { pushRaw(Q_RUN | s_runOff | (uint32_t)s_runLen << 16); s_runLen = 0; }
+    if (s_runLen) { pushRaw2(Q_RUN | s_runOff | (uint32_t)s_runLen << 16, s_runSrc); s_runLen = 0; }
 }
 static inline void push(uint32_t e) { runFlush(); pushRaw(e); }
 
@@ -214,8 +251,9 @@ void reset() {
     // The planes a program does not touch must not show the last program's picture
     // (HGFXAGON after Tetris).
     sramOff(false);
+    s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
     if (s_buf) memset(s_buf, 0, BUF_SIZE);
-    mode = 0; g20 = 0; rgbOrder = false;
+    mode = 0; g20 = 0; s_e20 = 0; rgbOrder = false;
     memset(s_r, 0, sizeof(s_r));
     s_r[REG_MASK] = 0xFF;
     memcpy(s_e, s_r, sizeof(s_e));
@@ -227,7 +265,7 @@ void loadState(const uint8_t* regs, const uint8_t* colours) {
     if (!s_buf) return;
     drain();
     memcpy(s_r, regs, REG_COUNT);
-    memcpy(s_e, regs, REG_COUNT);
+    memcpy(s_e, regs, REG_COUNT); s_e20 = g20;
     memcpy(s_col, colours, COLOURS);
     s_palDirty = true;
 }
@@ -251,12 +289,12 @@ static inline void put8(uint8_t* d, uint32_t lo, uint32_t hi, uint32_t bl, uint3
     if (mh == ~0u) wr32(d + 4, hi); else if (mh) wr32(d + 4, (rd32(d + 4) & ~mh) | (hi & mh));
 }
 
-ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead) {
+ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src) {
     if (!s_buf) return;
     // Bytes per line follow the mode's width (Nether Earth steps 64 in HGFX 2), and
     // only HGFX 1 has the ZX layout.
     const int bpl = s_w / 8;
-    const bool linear = (g20 & 1) || s_w != WIDTH;
+    const bool linear = (s_e20 & 1) || s_w != WIDTH;
     const int row = linear ? off / bpl : zxRow(off);
     const int col = (off % bpl) * 8;
     const int y = row + e16(REG_OY);
@@ -265,12 +303,15 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead) {
     uint8_t* d = rowOf(dstE(), y);
     const uint8_t m = s_e[REG_MASK], pm = s_e[REG_MODE];
     const bool fast = s_bpp == 8 && x >= 0 && x + 8 <= s_w && !(s_e[REG_VP] & 8);
-    // COPY moves the 8 pixels a read just cached, if the byte written is the byte read
-    // (the wiki, register 01). A write that follows no read draws like ATTR.
+    if (fast) s_use[dstE()] = s_use[dstE()] + 16;
+    // COPY moves the 8 pixels the Z80's read latched: from the READ's position plus the
+    // source offsets (the wiki, register 01). A write that follows no read draws like ATTR.
     if (pm == 1 && wasRead) {
-        const int sy = row + e16(REG_SY);
+        if (src == 0xFFFF) src = off;
+        const int srow = linear ? src / bpl : zxRow(src);
+        const int sy = srow + e16(REG_SY);
         if (sy < 0 || sy >= s_h) return;
-        int sx = col + e16(REG_SX);
+        int sx = (src % bpl) * 8 + e16(REG_SX);
         const uint8_t* s = rowOf(srcE(), sy);
         if (fast && sx >= 0 && sx + 8 <= s_w) {
             put8(d + x, rd32(s + sx), rd32(s + sx + 4), ~0u, ~0u, m);
@@ -300,18 +341,33 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead) {
     }
 }
 
-// A run of COPY writes: n bytes from off, the same rows. Word loop when it can be.
-__attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static void execRun(uint16_t off, uint32_t n) {
+#if PERF_TRACE
+static volatile uint32_t s_pRuns, s_pRunBytes;         // core1
+#endif
+
+// A run of COPY writes: n bytes from off, a row at a time. In the ZX layout too: the
+// 32 bytes of an aligned group share the row (zxRow keeps bits 5+), so the per-byte
+// path, 7800 iterations a frame on HGFXAGON, was 9 ms of core1 for the same bytes.
+__attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static void execRun(uint16_t off, uint32_t n, uint16_t src) {
     const int bpl = s_w / 8;
-    const bool linear = (g20 & 1) || s_w != WIDTH;
+    const bool linear = (s_e20 & 1) || s_w != WIDTH;
+#if PERF_TRACE
+    s_pRuns = s_pRuns + 1; s_pRunBytes = s_pRunBytes + n;
+#endif
     while (n) {
-        const uint32_t room = (uint32_t)(bpl - off % bpl), c = !linear ? 1 : n < room ? n : room;
-        const int row = linear ? off / bpl : zxRow(off);
-        const int col = (off % bpl) * 8, y = row + e16(REG_OY), sy = row + e16(REG_SY);
-        int x = col + e16(REG_OX), sx = col + e16(REG_SX);
+        // A chunk stays inside one row at both ends. An overlapping copy (HE2025: the
+        // source two bytes behind the destination) is right word by word, forward, as
+        // the chip does it 8 pixels at a time: a step is never shorter than 8 bytes here.
+        const uint32_t room = (uint32_t)(bpl - off % bpl), sroom = (uint32_t)(bpl - src % bpl);
+        const uint32_t c = n < room ? (n < sroom ? n : sroom) : (room < sroom ? room : sroom);
+        const int row = linear ? off / bpl : zxRow(off), srow = linear ? src / bpl : zxRow(src);
+        const int col = (off % bpl) * 8, y = row + e16(REG_OY), sy = srow + e16(REG_SY);
+        int x = col + e16(REG_OX), sx = (src % bpl) * 8 + e16(REG_SX);
         const int px = (int)c * 8;
         if (s_bpp == 8 && !(s_e[REG_VP] & 8) && y >= 0 && y < s_h && sy >= 0 && sy < s_h &&
             x >= 0 && x + px <= s_w && sx >= 0 && sx + px <= s_w) {
+            s_use[dstE()] = s_use[dstE()] + px * 2;    // a write = the fill and the write-back
+            s_use[srcE()] = s_use[srcE()] + px;
             uint8_t* d = rowOf(dstE(), y) + x;
             const uint8_t* q = rowOf(srcE(), sy) + sx;
             const uint8_t m = s_e[REG_MASK];
@@ -321,21 +377,23 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static voi
                 for (int i = 0; i < px; i += 4)
                     wr32(d + i, (rd32(d + i) & ~m8) | (rd32(q + i) & m8));
             }
-        } else for (uint32_t i = 0; i < c; i++) execVram((uint16_t)(off + i), 0, true);
-        off = (uint16_t)(off + c); n -= c;
+        } else for (uint32_t i = 0; i < c; i++) execVram((uint16_t)(off + i), 0, true, (uint16_t)(src + i));
+        off = (uint16_t)(off + c); src = (uint16_t)(src + c); n -= c;
     }
 }
 
-ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead) {
+ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src) {
+    if (src == 0xFFFF) src = off;
     if (queued()) {
         if (wasRead && s_r[REG_MODE] == 1) {        // the byte does not matter, COPY takes the cache
-            if (s_runLen && s_runLen < 0x1FFF && off == (uint16_t)(s_runOff + s_runLen)) { s_runLen++; return; }
+            if (s_runLen && s_runLen < 0x1FFF && off == (uint16_t)(s_runOff + s_runLen) &&
+                src == (uint16_t)(s_runSrc + s_runLen)) { s_runLen++; return; }
             runFlush();
-            s_runOff = off; s_runLen = 1;
+            s_runOff = off; s_runSrc = src; s_runLen = 1;
             return;
         }
         push(Q_VRAM | off | (uint32_t)v << 16 | (wasRead ? 1u << 24 : 0));
-    } else execVram(off, v, wasRead);
+    } else execVram(off, v, wasRead, src);
 }
 
 // The whole-buffer commands: instant here, busy for their documented time.
@@ -344,6 +402,8 @@ static void execCmd(uint8_t c) {
     const uint8_t m = s_e[REG_MASK];
     const int dn = dstE(), sn = srcE();
     if (c == 1 && (dn == sn || !s_b1)) return;
+    s_use[dn] = s_use[dn] + (uint32_t)s_stride * s_h * 2;
+    if (c == 1) s_use[sn] = s_use[sn] + (uint32_t)s_stride * s_h;
     for (int y = 0; y < s_h; y++) {
         uint8_t* d = rowOf(dn, y);
         if (c == 1) {
@@ -353,6 +413,14 @@ static void execCmd(uint8_t c) {
         } else if (m == 0xFF) memset(d, 0, (size_t)s_stride);
         else for (int i = 0; i < s_stride; i++) d[i] &= (uint8_t)~m;
     }
+}
+
+// g_zxi_020 travels the queue like a register: HE2025 flips its layout bit (ZX / linear
+// rows) between drawing phases thousands of times a run, and core1 executing the
+// previous phase's writes under the new layout put 8-pixel dashes on wrong rows.
+void setG20(uint8_t v) {
+    g20 = v;
+    if (queued()) push(Q_REG | (uint32_t)REG_COUNT << 8 | v); else s_e20 = v;
 }
 
 void writeReg(uint8_t r, uint8_t v) {
@@ -472,7 +540,7 @@ static inline uint32_t dist(uint32_t a, uint32_t b) {
 // The pair frame has 16 colours, four of them the ZX 12..15. `hist` picks the other
 // twelve, `rgbOf` maps every source index to the nearest.
 static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
-    uint32_t pal[16], h[256];
+    uint32_t pal[16]; uint32_t* h = s_hot->h;
     memcpy(h, hist, n * sizeof(uint32_t));
     for (int i = 0; i < 12; i++) {
         int best = 0;
@@ -558,7 +626,7 @@ static void cubeProgram() {
 }
 
 static bool wantPairFor2() {             // HGFX 2: text or a picture (owner's rule)
-    uint32_t hist[256]; memset(hist, 0, sizeof(hist));
+    uint32_t* hist = s_hot->hist; memset(hist, 0, 256 * sizeof(uint32_t));
     const uint8_t* buf = bufN(s_r[REG_VP] & 1);
     uint32_t total = 0;
     for (int y = 0; y < s_h; y += 8) {
@@ -615,7 +683,7 @@ static void renderFrame() {
     }
     const uint8_t* buf = bufN(s_e[REG_VP] & 1);
     const uint8_t feature = s_e[REG_FEATURE];
-    const bool under = !(g20 & 4) && s_w <= 512 && s_h == HEIGHT;
+    const bool under = !(s_e20 & 4) && s_w <= 512 && s_h == HEIGHT;
     const bool fullScreen = s_w >= 360 && s_w != 512;
     if (fullScreen) {
         // 360x288 and the PAL modes fill the framebuffer; a smaller one shows the middle.
@@ -683,7 +751,7 @@ static void renderFrame() {
 
 // The palette a frame needs, or a change of output.
 static void frameSetup() {
-    uint32_t rgb[256], hist[256];
+    uint32_t* rgb = s_hot->rgb; uint32_t* hist = s_hot->hist;   // wantPairFor2 uses hist first, done by then
     const bool hr = mode == 1 || mode == 2;
     bool wantPair = hr || mode == 5 || mode == 6 || mode == 7;
     if (mode == 4) {
@@ -701,7 +769,7 @@ static void frameSetup() {
     s_zxPair = false;
     if (wantPair) {
         int n = 256;
-        memset(hist, 0, sizeof(hist));
+        memset(hist, 0, 256 * sizeof(uint32_t));
         if (mode == 2) {
             n = 32;
             const uint8_t* ct = VIDEO::grmem + 0x3C00;
@@ -713,7 +781,7 @@ static void frameSetup() {
             for (int i = 0; i < n; i++) { rgb[i] = tableRgb(s_col + i * 3); hist[i] = (uint32_t)(n - i); }
             if (mode == 4) {
                 const uint8_t* buf = bufN(s_r[REG_VP] & 1);
-                memset(hist, 0, sizeof(hist));
+                memset(hist, 0, 256 * sizeof(uint32_t));
                 for (int y = 0; y < s_h; y += 8) for (int x = 0; x < s_w; x += 3) hist[buf[(uint32_t)y * s_stride + x]]++;
             }
         }
@@ -745,6 +813,10 @@ void frameEnd() {
         VIDEO::paper_hold = want;
         s_palDirty = true; s_palValid = false;
         if (!want) {
+            // The 48 KB go back to the heap the moment the program leaves the extra
+            // video; a return to it earns them again through the lag rule.
+            sramOff(true);
+            s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
             if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); }
             VIDEO::applyPalette();
             VIDEO::brdChange = VIDEO::brdnextframe = true;
@@ -758,7 +830,16 @@ void frameEnd() {
     if (was != s_pair) { VIDEO::updateBorderBrd(); VIDEO::brdChange = VIDEO::brdnextframe = true; }
     if (!s_q) { renderFrame(); return; }
     g_elm_c1_live = true;
-    sramOn();
+    if (s_drawDone != s_drawPosted) s_lagFrames++;
+    if (++s_lagWindow == 30) {              // half a second, most of it behind
+#if HOST_BUILD
+        static const bool forceSram = getenv("PICOSPECCY_ELM_SRAM") != nullptr;   // bench: the hw lag rule never fires here
+        if (forceSram) s_lagFrames = 15;
+#endif
+        if (s_lagFrames >= 15) sramPromote();
+        s_lagWindow = s_lagFrames = 0;
+        s_use[0] = s_use[1] = 0;
+    }
     // core1 still on the last frame: the machine waits for it. Dropping the frame instead
     // let core0 run ten frames ahead and showed one in ten (HGFXAGON: 5 of 60, in jerks).
     if (s_drawDone != s_drawPosted) {
@@ -778,11 +859,12 @@ void frameEnd() {
     static uint32_t n;
     if (++n == 60) {
         n = 0;
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u) draw %uus x%u fill=%u",
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u) draw %uus x%u fill=%u | runs %u/fr %uB sram=%u%u",
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60,
-                   s_pDraws ? s_pDrawUs / s_pDraws : 0, s_pDraws, s_qw - s_qr);
+                   s_pDraws ? s_pDrawUs / s_pDraws : 0, s_pDraws, s_qw - s_qr,
+                   s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1]);
         s_pPush = s_pWaitUs = s_pDrop = 0;
-        s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = 0;
+        s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = 0;
     }
 #endif
 }
@@ -811,15 +893,20 @@ ELM_HOT void core1Pump() {
             s_waitT = 0;
         }
         switch (e & (7u << 29)) {
-        case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24)); break;
-        case Q_REG:  s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
+        case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24), 0xFFFF); break;
+        case Q_REG:  if ((uint8_t)(e >> 8) == REG_COUNT) s_e20 = (uint8_t)e; else s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
         case Q_CMD:  execCmd((uint8_t)e); break;
-        case Q_RUN:  execRun((uint16_t)e, (e >> 16) & 0x1FFF); break;
+        case Q_RUN:  {                       // two words: the second is the read offset
+            s_qr = s_qr + 1;
+            execRun((uint16_t)e, (e >> 16) & 0x1FFF, (uint16_t)s_q[s_qr & (Q_N - 1)]);
+            break;
+        }
         default: {
 #if PERF_TRACE
             const uint32_t d0 = time_us_32();
 #endif
             renderFrame();
+            s_use[s_e[REG_VP] & 1] = s_use[s_e[REG_VP] & 1] + WIDTH * HEIGHT;
 #if PERF_TRACE
             draw += time_us_32() - d0;
             s_pDraws = s_pDraws + 1;

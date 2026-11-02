@@ -22,7 +22,8 @@ static inline uint8_t zxRow(uint16_t off) {     // offset in a 6144-byte ZX layo
 }
 
 extern uint8_t mode;          // g_zxi_001
-extern uint8_t g20;           // g_zxi_020: b0 linear, b1 indexed border, b2 no ZX under
+extern uint8_t g20;           // g_zxi_020: b0 linear, b1 indexed border, b2 no ZX under (core0 view)
+void setG20(uint8_t v);       // the only writer: it travels the queue to the engine
                               // index 0, b7 windows off
 extern bool    rgbOrder;      // g_zxi_002 b2
 extern bool     radastan;     // u_zxi_040
@@ -36,7 +37,9 @@ void    setMode(uint8_t m);   // g_zxi_001
 int     vramPages();          // size of the VRAM window in 256-byte pages
 void    reset();
 void    loadState(const uint8_t* regs, const uint8_t* colours);   // at a mode switch
-void    writeVram(uint16_t off, uint8_t v, bool wasRead = true);
+// src: the window offset the Z80 READ before this write (COPY takes its pixels from
+// there), 0xFFFF = the write's own offset.
+void    writeVram(uint16_t off, uint8_t v, bool wasRead = true, uint16_t src = 0xFFFF);
 void    writeReg(uint8_t reg, uint8_t v);
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F
