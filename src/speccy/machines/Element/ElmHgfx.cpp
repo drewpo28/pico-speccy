@@ -90,7 +90,10 @@ static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH, s_bpp = 8;
 static uint32_t s_b1 = BUF1;
 static void sramOff(bool keep);
 
-int vramPages() { return (s_w / 8) * s_h / 256; }
+// 6144 bytes in every mode (HGFX-4EN: "enough for half of the HiRes screen only ... we
+// help ourselves with an offset"). Sized by the mode it covered #4000-#9FFF in HGFX 3,
+// and SHRTEXT's stack, code and text buffer drew as dots.
+int vramPages() { return 6144 / 256; }
 
 void setMode(uint8_t m) {
     drain();

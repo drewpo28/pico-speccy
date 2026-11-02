@@ -371,6 +371,9 @@ bool memWrite(uint16_t a, uint8_t v) {
             bool wasRead = false;
             uint16_t src = 0xFFFF;
             if (Hgfx::reg(Hgfx::REG_MODE) == 1) { wasRead = s_rdArmed; src = s_rdOff; s_rdArmed = false; }
+#if HOST_BUILD
+            if (getenv("PICOSPECCY_ELMVLOG")) Debug::log("[VRAM] %04X=%02X g20=%02X m=%u", off, v, Hgfx::g20, Hgfx::reg(1));
+#endif
             Hgfx::writeVram(off, v, wasRead, src);
         }
         // The store lands in RAM too: a read of the window returns what was written.
