@@ -59,6 +59,10 @@ static struct Hot {                 // read per pixel: heap
     // core0 scratch for frameSetup / pairPalette: as locals they were 4 KB on top of the
     // pair driver's 2 KB, past the 8 KB core0 stack (HGFX 2 hung the board, 2026-11-01).
     uint32_t rgb[256], hist[256], h[256];
+    // paletteProgram: which of the 168 slots an index holds (0xFF none), the colour each
+    // slot was given, and which indices sit on a nearest colour rather than their own.
+    uint32_t slotCol[168];
+    uint8_t mapK[256], approx[256], claim[168];
 }* s_hot;
 static uint8_t s_cube[168];
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
@@ -138,6 +142,7 @@ static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 bool ensure() {
     if (!s_hot) {
         s_hot = (Hot*)tryMalloc(sizeof(Hot));
+        if (s_hot) memset(s_hot->mapK, 0xFF, sizeof s_hot->mapK);
         if (s_hot) for (int n = 0; n < 16; n++)
             s_hot->nib[n] = ((n & 8) ? 0xFFu : 0) | ((n & 4) ? 0xFF00u : 0) | ((n & 2) ? 0xFF0000u : 0) | ((n & 1) ? 0xFF000000u : 0);
     }
@@ -317,9 +322,12 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src
             put8(d + x, rd32(s + sx), rd32(s + sx + 4), ~0u, ~0u, m);
             return;
         }
+        // A source pixel past either end of the line reads 0: Nether Earth's title scroller
+        // (COPY with source X +3) clears its right edge that way; skipping the pixel left the
+        // bits the INK column had set there, and the scroll smeared them over the whole band.
         for (int i = 0; i < 8; i++, x++, sx++) {
-            if (x < 0 || x >= s_w || sx < 0 || sx >= s_w || !inWindow(x, y)) continue;
-            pxPlanar(d, x, pxGet(s, sx), m);
+            if (x < 0 || x >= s_w || !inWindow(x, y)) continue;
+            pxPlanar(d, x, sx >= 0 && sx < s_w ? pxGet(s, sx) : 0, m);
         }
         return;
     }
@@ -467,31 +475,61 @@ void chunkyWrite(uint32_t off, uint8_t v) {
 // and the HDMI Data Island words are out, the rest takes the table's colours.
 static uint8_t kSlots(int i) { return (uint8_t)(i < 136 ? 16 + i : i < 152 ? 168 + i - 136 : 200 + i - 152); }
 
-static void paletteProgram() {
-    uint8_t slots[168]; uint32_t cols[168]; int cap = 0, used = 0;
-    while (cap < 168) { slots[cap] = kSlots(cap); cap++; }
+static inline uint32_t tableRgb(const uint8_t* c) {
+    return rgbOrder ? ((uint32_t)c[0] << 16 | c[1] << 8 | c[2]) : ((uint32_t)c[2] << 16 | c[1] << 8 | c[0]);
+}
+static inline uint32_t dist(uint32_t a, uint32_t b) {
+    const int dr = (int)(a >> 16) - (int)(b >> 16), dg = (int)((a >> 8) & 255) - (int)((b >> 8) & 255),
+              db = (int)(a & 255) - (int)(b & 255);
+    return (uint32_t)(dr * dr + dg * dg + db * db);
+}
+
+// The 256 indices on 168 slots. An index keeps its slot while it can: a colour change is
+// written into that slot, so the picture already in the framebuffer takes the new colour
+// at once, as on the real HGFX, where the table is applied at display time. Handing the
+// slots out again in the order the colours first appear (the old rule) renumbered them
+// on every step of a fade: core1 draws the next frame later, and until then the old
+// pixels showed under the new numbers (Nether Earth's title fade, "negative" frames).
+// all: the slots were rewritten under us (cube, pair frame, applyPalette).
+static void paletteProgram(bool all) {
+    Hot* H = s_hot;
+    uint32_t* rgb = H->rgb;
+    for (int i = 0; i < 256; i++) rgb[i] = tableRgb(s_col + i * 3);
+    memset(H->claim, 0, sizeof H->claim);
+    auto take = [&](int k, uint32_t c) {
+        H->claim[k] = 1;
+        if (all || H->slotCol[k] != c) { H->slotCol[k] = c; VIDEO::elmPaletteSet(kSlots(k), c); }
+    };
+    // An index on its own colour keeps the slot; a second index on that slot shares it if
+    // the colours still match, otherwise it moves.
     for (int i = 0; i < 256; i++) {
-        const uint8_t* c = s_col + i * 3;
-        const uint32_t rgb = rgbOrder ? (c[0] << 16 | c[1] << 8 | c[2])
-                                      : (c[2] << 16 | c[1] << 8 | c[0]);
+        const uint8_t k = H->mapK[i];
+        if (k == 0xFF || H->approx[i]) { H->mapK[i] = 0xFF; continue; }
+        if (!H->claim[k]) take(k, rgb[i]);
+        else if (H->slotCol[k] != rgb[i]) H->mapK[i] = 0xFF;
+    }
+    int freeK = 0;
+    for (int i = 0; i < 256; i++) {
+        if (H->mapK[i] != 0xFF) { H->approx[i] = 0; continue; }
         int hit = -1;
-        for (int k = 0; k < used; k++) if (cols[k] == rgb) { hit = k; break; }
-        if (hit < 0 && used < cap) {
-            hit = used; cols[used++] = rgb;
-            VIDEO::elmPaletteSet(slots[hit], rgb);
+        for (int k = 0; k < 168 && hit < 0; k++) if (H->claim[k] && H->slotCol[k] == rgb[i]) hit = k;
+        if (hit < 0) {
+            while (freeK < 168 && H->claim[freeK]) freeK++;
+            if (freeK < 168) { hit = freeK; take(hit, rgb[i]); }
         }
+        H->approx[i] = 0;
         if (hit < 0) {                   // more colours than slots: the nearest
             uint32_t best = ~0u;
-            for (int k = 0; k < used; k++) {
-                const int dr = (int)(cols[k] >> 16) - (int)(rgb >> 16);
-                const int dg = (int)((cols[k] >> 8) & 255) - (int)((rgb >> 8) & 255);
-                const int db = (int)(cols[k] & 255) - (int)(rgb & 255);
-                const uint32_t d = dr * dr + dg * dg + db * db;
+            for (int k = 0; k < 168; k++) {
+                if (!H->claim[k]) continue;
+                const uint32_t d = dist(H->slotCol[k], rgb[i]);
                 if (d < best) { best = d; hit = k; }
             }
+            H->approx[i] = 1;
         }
-        s_hot->map[i] = slots[hit];
+        H->mapK[i] = (uint8_t)hit;
     }
+    for (int i = 0; i < 256; i++) H->map[i] = kSlots(H->mapK[i]);
 }
 
 // The ZX layer of one row, colours 0..15.
@@ -526,15 +564,6 @@ static void hrLine(const uint8_t* scr, int y, bool indexed, uint8_t* out) {
         }
         for (int i = 0; i < 8; i++, bits <<= 1) *out++ = (bits & 0x80) ? ink : pap;
     }
-}
-
-static inline uint32_t tableRgb(const uint8_t* c) {
-    return rgbOrder ? ((uint32_t)c[0] << 16 | c[1] << 8 | c[2]) : ((uint32_t)c[2] << 16 | c[1] << 8 | c[0]);
-}
-static inline uint32_t dist(uint32_t a, uint32_t b) {
-    const int dr = (int)(a >> 16) - (int)(b >> 16), dg = (int)((a >> 8) & 255) - (int)((b >> 8) & 255),
-              db = (int)(a & 255) - (int)(b & 255);
-    return (uint32_t)(dr * dr + dg * dg + db * db);
 }
 
 // The pair frame has 16 colours, four of them the ZX 12..15. `hist` picks the other
@@ -617,6 +646,7 @@ static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
 }
 
 static void cubeProgram() {
+    s_palAll = true;                     // the slots are the cube's now
     int k = 0;
     for (int r = 0; r < 6; r++) for (int g = 0; g < 7; g++) for (int b = 0; b < 4; b++, k++) {
         const uint8_t s = kSlots(k);
@@ -791,7 +821,7 @@ static void frameSetup() {
             for (int k = 0; k < 16; k++) { const uint32_t d = dist(s_hot->pal[k], z); if (d < bd) { bd = d; s_hot->zxp[i] = (uint8_t)k; } }
         } return; }
     }
-    if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); s_palDirty = true; }
+    if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); s_palDirty = true; s_palAll = true; }
     if (radastan && !mode) {
         for (int i = 0; i < 16; i++) {
             const uint8_t g = VIDEO::ulaplus_palette[radBank * 16 + i];
@@ -802,7 +832,8 @@ static void frameSetup() {
     }
     if (s_palDirty || !s_palValid) {
         s_palDirty = false; s_palValid = true;
-        if (s_r[REG_FEATURE] == 2) cubeProgram(); else if (mode) paletteProgram();
+        if (s_r[REG_FEATURE] == 2) cubeProgram();
+        else if (mode) { paletteProgram(s_palAll); s_palAll = false; }
     }
 }
 
@@ -811,7 +842,7 @@ void frameEnd() {
     if (want != s_live) {
         s_live = want;
         VIDEO::paper_hold = want;
-        s_palDirty = true; s_palValid = false;
+        s_palDirty = true; s_palValid = false; s_palAll = true;
         if (!want) {
             // The 48 KB go back to the heap the moment the program leaves the extra
             // video; a return to it earns them again through the lag rule.
@@ -928,6 +959,6 @@ ELM_HOT void core1Pump() {
     }
 #endif
 }
-void paletteLost() { s_palDirty = true; }
+void paletteLost() { s_palDirty = true; s_palAll = true; }
 
 }

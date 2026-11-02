@@ -204,7 +204,9 @@ static void fdmaWrite(uint8_t off, uint8_t v) {
     const uint8_t o = off & 0x1F;
     if (o == 3 || o == 4) s_fdSrc[set] = fd16(s_fd + set * 0x20, 3);
     if (o == 9 || o == 10) s_fdDst[set] = fd16(s_fd + set * 0x20, 9);
-    if (o == 0) fdmaRun(set, false);
+    // h00 also starts a transfer while h10 bit 0 holds the 24-bit mode: TETRIS (Zirin
+    // 2026) writes h10 = 3 once, then starts each 32-row band of its photo by h00.
+    if (o == 0) fdmaRun(set, s_fd[set * 0x20 + 0x10] & 1);
     else if (o == 0x10 && (v & 1)) fdmaRun(set, true);
 }
 
@@ -273,10 +275,14 @@ void remap() {
             const uint8_t slot = z * 2 + a;
             const bool isLcu = (layout == LAYOUT_LCU0 && a == 0) || (layout == LAYOUT_LCU1 && a == 1);
             const bool isHg = layout == LAYOUT_HGFX || (layout == LAYOUT_HGFX1 && a == 1);
+            // No page: the window starts at OffsetY. Layout 8 shows the buffer from there
+            // over both Areas; layout 9 has one HGFX Area, and it starts at OffsetY too
+            // (TETRIS writes each 32-row band of its photo to #2000 with OffsetY = row).
+            const uint8_t hgStep = layout == LAYOUT_HGFX ? a : 0;
             uint8_t* p = isLcu ? lcuBlock()
-                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(a * 0x2000u)
+                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(hgStep * 0x2000u)
                        : uramPtr(s_z[z].page[a]);
-            if (isHg) { hg |= 1u << slot; s_slotPage[slot] = a; }   // no page: the window starts at OffsetY
+            if (isHg) { hg |= 1u << slot; s_slotPage[slot] = hgStep; }
             if (!p) { wp |= 1u << slot; p = (uint8_t*)MemESP::ram[0].direct(); }
             MemESP::ramCurrent[slot] = p;
             mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
