@@ -5,6 +5,7 @@
 #include "speccy/machines/Element/ElmHgfx.h"
 #include <string.h>
 #include <stdlib.h>
+#include <algorithm>
 
 #include "app/Buffer.h"
 #include "app/Debug.h"
@@ -66,6 +67,21 @@ static struct Hot {                 // read per pixel: heap
     uint8_t mapK[256], approx[256], claim[168];
 }* s_hot;
 static uint8_t s_cube[168];
+// HAM8 colours (owner's choice 2, 2026-11-02): a median-cut palette of the picture on
+// the 168 slots plus a light 4x4 ordered dither; the fixed 6x7x4 cube with a strong
+// 2x2 dither stays as the fallback. The histogram (RGB 4:4:4 bins, every fourth row)
+// is taken on core0 twice a second; the bin -> slot table fills on core1 as bins turn
+// up (0xFF = not yet), so a new palette costs no full nearest-colour pass.
+enum { HAM_BINS = 4096, HAM_DITHER = 10, HAM_MAX_MSE = 300 };
+static struct Ham {
+    uint8_t lut[HAM_BINS];
+    uint32_t rgb[168];                  // the colour of each slot
+    uint8_t n;                          // slots in use, 0 = the cube
+}* s_ham;
+struct HamBox { uint16_t lo, hi; uint32_t w; uint8_t mn[3], mx[3]; };
+static uint16_t* s_hamTmp;              // counts + bin order, then the boxes: PSRAM
+static uint8_t s_hamHold;
+static bool s_hamCubeOn;                // the slots hold the cube
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
 static uint8_t s_pairHold;
 static uint8_t s_r[REG_COUNT];      // as the guest wrote them, core0
@@ -261,6 +277,8 @@ void reset() {
     // (HGFXAGON after Tetris).
     sramOff(false);
     s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
+    free(s_ham); s_ham = nullptr;          // 4.8 KB of heap only while a program uses HAM
+    s_hamHold = 0; s_hamCubeOn = false;
     if (s_buf) memset(s_buf, 0, BUF_SIZE);
     mode = 0; g20 = 0; s_e20 = 0; rgbOrder = false;
     memset(s_r, 0, sizeof(s_r));
@@ -652,13 +670,16 @@ static void fillLine(uint8_t* p, int n) {
 
 // HAM8, as on the Amiga: the top two bits say what the low six do: 00 a colour of the
 // first 64, 01 blue, 10 red, 11 green. The result goes through the fixed colour cube.
+// The cube's dither: 4x4 ordered, a threshold in 1/16 of a level on every channel
+// (the old 2x2 at a fixed +-18 left steps on the 85-wide blue levels, owner 2026-11-02).
+static const uint8_t kBayer4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
 static inline uint8_t cubeSlot(uint32_t rgb, int x, int y) {
-    static const int8_t bay[4] = { -18, 6, 18, -6 };
-    const int t = bay[(x & 1) | ((y & 1) << 1)];
-    const auto lvl = [t](int v, int n) { v += t; v = v < 0 ? 0 : v > 255 ? 255 : v; return (v * (n - 1) + 127) / 255; };
-    return s_cube[lvl(rgb >> 16, 6) * 28 + lvl((rgb >> 8) & 255, 7) * 4 + lvl(rgb & 255, 4)];
+    const int t = kBayer4[(y & 3) * 4 + (x & 3)] * 2 + 1;          // (0..15 + 0.5) / 16, in 1/32
+    const auto lvl = [t](int v, int n) { const int l = (v * (n - 1) * 32 + t * 255) / (255 * 32); return l < n - 1 ? l : n - 1; };
+    return s_cube[lvl((int)(rgb >> 16), 6) * 28 + lvl((int)((rgb >> 8) & 255), 7) * 4 + lvl((int)(rgb & 255), 4)];
 }
-static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
+// One row of HAM to RGB.
+template <typename F> static inline void hamWalk(const uint8_t* p, int n, F f) {
     uint32_t c = 0;
     for (int x = 0; x < n; x++) {
         const uint8_t b = p[x], v = (uint8_t)((b & 0x3F) << 2);
@@ -668,8 +689,122 @@ static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
         case 2: c = (c & 0x03FFFF) | ((uint32_t)v << 16);  break;
         case 3: c = (c & 0xFF03FF) | ((uint32_t)v << 8);   break;
         }
-        slots[x] = cubeSlot(c, x, y);
+        f(x, c);
     }
+}
+static inline uint32_t rgbBin(int r, int g, int b) { return (uint32_t)((r >> 4) << 8 | (g >> 4) << 4 | (b >> 4)); }
+static uint8_t hamNearest(uint32_t bin) {
+    const uint32_t c = ((bin >> 8) * 17) << 16 | (((bin >> 4) & 15) * 17) << 8 | ((bin & 15) * 17);
+    uint32_t bd = ~0u; int best = 0;
+    for (int k = 0; k < s_ham->n; k++) {
+        const uint32_t d = dist(s_ham->rgb[k], c);
+        if (d < bd) { bd = d; best = k; }
+    }
+    return kSlots(best);
+}
+static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
+    if (!s_ham || !s_ham->n) { hamWalk(p, n, [&](int x, uint32_t c) { slots[x] = cubeSlot(c, x, y); }); return; }
+    static const int8_t bay[16] = { -8, 0, -6, 2, 4, -4, 6, -2, -5, 3, -7, 1, 7, -1, 5, -3 };   // 4x4 Bayer, x HAM_DITHER/8
+    const int8_t* row = bay + (y & 3) * 4;
+    uint8_t* lut = s_ham->lut;
+    hamWalk(p, n, [&](int x, uint32_t c) {
+        const int t = row[x & 3] * HAM_DITHER / 8;
+        const auto cl = [t](int v) { v += t; return v < 0 ? 0 : v > 255 ? 255 : v; };
+        const uint32_t b = rgbBin(cl((int)(c >> 16)), cl((int)((c >> 8) & 255)), cl((int)(c & 255)));
+        uint8_t v = lut[b];
+        if (v == 0xFF) v = lut[b] = hamNearest(b);
+        slots[x] = v;
+    });
+}
+
+// Median cut over the picture's bins: split the box with the most weight x extent
+// along its longest axis at the weighted median, 168 boxes, each slot the box's
+// weighted mean. false: no memory (the cube then).
+static bool hamProgram(bool force) {
+    if (!s_ham && (s_ham = (Ham*)tryMalloc(sizeof(Ham))) != nullptr) s_ham->n = 0;
+    if (s_ham && !s_hamTmp)
+        s_hamTmp = (uint16_t*)Buffer::palloc(HAM_BINS * 2 * sizeof(uint16_t) + 168 * sizeof(HamBox),
+                                             Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!s_ham || !s_hamTmp) { drain(); free(s_ham); s_ham = nullptr; return false; }
+    uint16_t* h = s_hamTmp;
+    uint16_t* idx = h + HAM_BINS;
+    HamBox* box = (HamBox*)(idx + HAM_BINS);
+    memset(h, 0, HAM_BINS * sizeof(uint16_t));
+    const int n0 = s_r[REG_VP] & 1;
+    for (int y = 0; y < s_h; y += 4)
+        hamWalk(rowOf(n0, y), WIDTH, [h](int, uint32_t c) {
+            uint16_t& v = h[rgbBin((int)(c >> 16), (int)((c >> 8) & 255), (int)(c & 255))];
+            if (v != 0xFFFF) v++;
+        });
+    int n = 0;
+    for (int b = 0; b < HAM_BINS; b++) if (h[b]) idx[n++] = (uint16_t)b;
+    if (!n) return false;
+    const auto ch = [](uint16_t b, int a) { return a == 0 ? b >> 8 : a == 1 ? (b >> 4) & 15 : b & 15; };
+    const auto fit = [&](HamBox& x) {
+        x.w = 0;
+        for (int a = 0; a < 3; a++) { x.mn[a] = 15; x.mx[a] = 0; }
+        for (int i = x.lo; i < x.hi; i++) {
+            x.w += h[idx[i]];
+            for (int a = 0; a < 3; a++) {
+                const uint8_t v = (uint8_t)ch(idx[i], a);
+                if (v < x.mn[a]) x.mn[a] = v;
+                if (v > x.mx[a]) x.mx[a] = v;
+            }
+        }
+    };
+    int nb = 1;
+    box[0].lo = 0; box[0].hi = (uint16_t)n; fit(box[0]);
+    while (nb < 168) {
+        int pick = -1; uint32_t score = 0; int axis = 0;
+        for (int k = 0; k < nb; k++) {
+            if (box[k].hi - box[k].lo < 2) continue;
+            for (int a = 0; a < 3; a++) {
+                const uint32_t sc = box[k].w * (uint32_t)(box[k].mx[a] - box[k].mn[a]);
+                if (sc > score) { score = sc; pick = k; axis = a; }
+            }
+        }
+        if (pick < 0) break;
+        HamBox& b = box[pick];
+        std::sort(idx + b.lo, idx + b.hi, [&](uint16_t p, uint16_t q) { return ch(p, axis) < ch(q, axis); });
+        uint32_t acc = 0; int cut = b.lo;
+        while (cut < b.hi - 1 && (acc += h[idx[cut]]) * 2 < b.w) cut++;
+        cut++;                           // [lo, cut) and [cut, hi), both non-empty
+        if (cut >= b.hi) cut = b.hi - 1;
+        HamBox& c = box[nb++];
+        c.lo = (uint16_t)cut; c.hi = b.hi; b.hi = (uint16_t)cut;
+        fit(b); fit(c);
+    }
+    uint32_t pal[168];
+    uint64_t err = 0, tw = 0;
+    for (int k = 0; k < nb; k++) {
+        uint32_t s3[3] = { 0, 0, 0 }, w = 0;
+        for (int i = box[k].lo; i < box[k].hi; i++) {
+            const uint32_t wt = h[idx[i]];
+            for (int a = 0; a < 3; a++) s3[a] += wt * (uint32_t)(ch(idx[i], a) * 17);
+            w += wt;
+        }
+        pal[k] = (s3[0] / w) << 16 | (s3[1] / w) << 8 | (s3[2] / w);
+        for (int i = box[k].lo; i < box[k].hi; i++) {
+            const uint16_t b = idx[i];
+            err += (uint64_t)h[b] * dist(pal[k], (uint32_t)(ch(b, 0) * 17) << 16 | (uint32_t)(ch(b, 1) * 17) << 8 | (uint32_t)(ch(b, 2) * 17));
+        }
+        tw += w;
+    }
+    // A picture the 168 colours do not hold (a smooth HAM gradient) keeps the cube: its
+    // steps show as bands without a full dither. Mean squared error per pixel, RGB.
+    const uint32_t mse = tw ? (uint32_t)(err / tw) : 0;
+    const bool useCube = mse > HAM_MAX_MSE;
+    static int8_t s_said = -1;
+    if (s_said != (int8_t)useCube) { s_said = (int8_t)useCube; Debug::log("[ELM] HAM: %s (mse %u, %d bins)", useCube ? "dithered cube" : "picture palette", (unsigned)mse, n); }
+    if (useCube) { if (s_ham->n) { drain(); s_ham->n = 0; } return false; }
+    if (!force && nb == s_ham->n && !memcmp(pal, s_ham->rgb, nb * sizeof(uint32_t))) return true;
+    drain();                             // core1 maps through the table being rewritten
+    memcpy(s_ham->rgb, pal, nb * sizeof(uint32_t));
+    s_ham->n = (uint8_t)nb;
+    for (int k = 0; k < nb; k++) VIDEO::elmPaletteSet(kSlots(k), pal[k]);
+    memset(s_ham->lut, 0xFF, sizeof s_ham->lut);
+    s_palAll = true;                     // the slots are HAM's now
+    return true;
 }
 
 static void cubeProgram() {
@@ -860,10 +995,19 @@ static void frameSetup() {
         }
         return;
     }
+    if (s_r[REG_FEATURE] == 2) {         // HAM: its own palette, refreshed twice a second
+        const bool need = s_palDirty || !s_palValid;
+        if (need || !s_hamHold) {
+            s_hamHold = 25;
+            s_palDirty = false; s_palValid = true;
+            if (hamProgram(need)) s_hamCubeOn = false;
+            else if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; }
+        } else s_hamHold--;
+        return;
+    }
     if (s_palDirty || !s_palValid) {
         s_palDirty = false; s_palValid = true;
-        if (s_r[REG_FEATURE] == 2) cubeProgram();
-        else if (mode) { paletteProgram(s_palAll); s_palAll = false; }
+        if (mode) { paletteProgram(s_palAll); s_palAll = false; }
     }
 }
 
