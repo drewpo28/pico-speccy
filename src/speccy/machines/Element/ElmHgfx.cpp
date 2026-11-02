@@ -114,6 +114,12 @@ int vramPages() { return 6144 / 256; }
 void setMode(uint8_t m) {
     drain();
     sramOff(true);
+    // Selecting a mode clears both buffers. The Reference does not say so; SAM2HGFX
+    // is the evidence: it re-selects HGFX 1 before every picture and draws only
+    // planes 0-3 (PlanarMask 0F), and its intro text in planes 2-7 is gone on the
+    // owner's screenshots (2026-11-02). Every other program selects the mode once,
+    // before it draws.
+    if (m && s_buf) memset(s_buf, 0, BUF_SIZE);
     mode = m;
     static const struct { uint16_t w, h; uint8_t bpp; bool two; } k[10] = {
         { 256, 192, 8, true },  { 256, 192, 8, true },  { 256, 192, 8, true },
