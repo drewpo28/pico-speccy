@@ -53,5 +53,6 @@ void    frameEnd();           // EndFrame: mode change, palette, the picture
 void    repaint();            // the same, machine stopped
 void    paletteLost();        // applyPalette rewrote the slots
 uint8_t pairBorder(uint8_t zx);   // a ZX colour in the live pair frame
+int     borderSlot(uint8_t zx);   // the indexed border's palette slot, -1 = the ZX colour
 
 }

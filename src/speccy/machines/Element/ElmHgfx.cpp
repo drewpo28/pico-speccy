@@ -587,10 +587,32 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
     }
 }
 
+// g_zxi_020 bit 1: the border shows HGFX colour index 0..7 (the #FE value) instead of
+// the ZX colour. HGFX 4/5 fill the frame and have no border; the 4-colour pair frames
+// know only their own indices.
+static inline bool indexedBorder() { return s_live && s_hot && mode >= 3 && (g20 & 2); }
+
 uint8_t pairBorder(uint8_t zx) {
     if (!s_hot) return zx;
+    if (indexedBorder() && !s_zxPair) return s_hot->pidx[(zx & 7) & (mode >= 6 && mode <= 7 ? 3 : 7)];
     if (!s_zxPair) return s_hot->zxp[zx & 15];
     return zx & 15;
+}
+
+int borderSlot(uint8_t zx) {
+    return indexedBorder() && !s_pair ? s_hot->map[zx & 7] : -1;
+}
+
+// The border word follows the palette: a colour change of index 0..7 moves no slot,
+// but a full reprogram or a pair switch can.
+static void borderFollow() {
+    static bool s_was;
+    const bool on = indexedBorder();
+    if (!on && !s_was) return;
+    s_was = on;
+    const uint32_t old = VIDEO::brd;
+    if (!on && VIDEO::ulaplus_enabled) VIDEO::ulaPlusUpdateBorder(); else VIDEO::updateBorderBrd();
+    if (VIDEO::brd != old) VIDEO::brdChange = VIDEO::brdnextframe = true;
 }
 
 static inline void putCarved(uint8_t* row, int fx, uint8_t v, int nc, int (*cx)[2]) {
@@ -813,6 +835,9 @@ static void frameSetup() {
                 const uint8_t* buf = bufN(s_r[REG_VP] & 1);
                 memset(hist, 0, 256 * sizeof(uint32_t));
                 for (int y = 0; y < s_h; y += 8) for (int x = 0; x < s_w; x += 3) hist[buf[(uint32_t)y * s_stride + x]]++;
+                // The indexed border is a third of the picture's area and needs its own
+                // colour among the 12 (the samples above are 4104).
+                if (indexedBorder()) hist[VIDEO::borderColor & 7] += 2000;
             }
         }
         pairPalette(hist, rgb, n);
@@ -851,6 +876,7 @@ void frameEnd() {
             if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); }
             VIDEO::applyPalette();
             VIDEO::brdChange = VIDEO::brdnextframe = true;
+            borderFollow();
         }
         Debug::log("[ELM] extra video %s (mode %u key %d rad %d)", want ? "on" : "off", mode, keyBottom != nullptr, (int)radastan);
     }
@@ -859,6 +885,7 @@ void frameEnd() {
     if (s_pair || mode == 4) drain();       // the pair tables are rewritten under the frame
     frameSetup();
     if (was != s_pair) { VIDEO::updateBorderBrd(); VIDEO::brdChange = VIDEO::brdnextframe = true; }
+    borderFollow();
     if (!s_q) { renderFrame(); return; }
     g_elm_c1_live = true;
     if (s_drawDone != s_drawPosted) s_lagFrames++;

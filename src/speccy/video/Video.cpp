@@ -1717,6 +1717,10 @@ __attribute__((noinline)) void VIDEO::updateBorderBrd() {
         brd = (uint32_t)profi_pair_lookup[pi][pi] * 0x01010101u;
         return;
     }
+    if (Z80Ops::isElm) {               // HGFX indexed border (g_zxi_020 bit 1)
+        const int s = Hgfx::borderSlot(borderColor);
+        if (s >= 0) { brd = (uint32_t)s * 0x01010101u; return; }
+    }
     if (timex_hires_live) {
         // Hi-res border = the PAPER colour, bright, as a solid pair slot.  The
         // 48K/128K (Update_Border_Pair) and Pentagon (Update_Border_XOR) border
@@ -2182,7 +2186,7 @@ void VIDEO::ulaPlusUpdateBorder() {
     // Timex hi-res owns the framebuffer as packed pairs — a raw ULA+ CLUT index
     // there is not a colour at all.  (A nonsense combination, but reachable: the
     // two features have separate switches.)
-    if (timex_hires_live) { updateBorderBrd(); brdChange = true; return; }
+    if (timex_hires_live || (Z80Ops::isElm && Hgfx::borderSlot(borderColor) >= 0)) { updateBorderBrd(); brdChange = true; return; }
     // ULA+ border = paper color from CLUT 0 for current borderColor
     // CLUT 0 paper entries are at indices 8-15, so index = 8 + borderColor
     uint8_t brd_color = 8 + borderColor;
