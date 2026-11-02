@@ -49,7 +49,13 @@ static Regs* s_r;
 // keeps the ZX pages of the Pentagon 1024 out, Full (1) addresses the whole 2 MB.
 enum { GM_ELM = 0x20 };               // g_atm_ro bit: Elm::memWrite wants the store
 enum { LAYOUT_OFF = 0, LAYOUT_RAM = 2, LAYOUT_HGFX = 8, LAYOUT_HGFX1 = 9, LAYOUT_LCU0 = 0xA, LAYOUT_LCU1 = 0xC };
-enum { PROTECT_PAGES = 64, PROTECT_BASE = 128, FULL_PAGES = 256 };
+enum { PROTECT_BASE = 128, FULL_PAGES = 256 };
+// Protect mode leaves URAM what the ZX memory of the personality (e_zxi_000) does not
+// take: 128 pages up to 512 KB, 64 on the Pentagon 1024 (the Reference's table).
+// HGFNICCC sets Pentagon 128 and streams 120 pages; with 64 its stream wrapped onto
+// itself and the player waited for frame #820D. The ZX side stays a Pentagon 1024
+// here, so the upper 64 pages sit in ram[96..127], which only divRAM would take.
+static uint32_t protectPages() { return s_r->e[0x000] == 7 || s_r->e[0x000] == 8 ? 64 : 128; }
 struct Zone { uint16_t page[2]; uint8_t par; };
 static Zone s_z[4];
 static uint8_t s_zone;
@@ -231,7 +237,7 @@ static void lcu2Publish() {
 static uint8_t* uramPtr(uint16_t page) {
     const uint8_t mode = s_r->g[0x010];
     const uint32_t idx = mode == 1 ? (page & (FULL_PAGES - 1))
-                                   : PROTECT_BASE + (page & (PROTECT_PAGES - 1));
+                                   : PROTECT_BASE + (page & (protectPages() - 1));
     uint8_t* p = MemESP::ram[idx >> 1].direct();
     return p ? p + (idx & 1) * 0x2000 : nullptr;
 }
@@ -239,14 +245,14 @@ static uint8_t* uramPtr(uint16_t page) {
 // SoundDMA reads protected URAM whatever the mode (the Reference: "works with protected
 // URAM only"); the address counts from its first page.
 static const uint8_t* sdPage(uint32_t page) {
-    const uint32_t idx = PROTECT_BASE + (page & (PROTECT_PAGES - 1));
+    const uint32_t idx = PROTECT_BASE + (page & (protectPages() - 1));
     const uint8_t* p = MemESP::ram[idx >> 1].direct();
     return p ? p + (idx & 1) * 0x2000 : nullptr;
 }
 
 static uint16_t freePages() {
     const uint8_t mode = s_r->g[0x010];
-    return mode == 1 ? FULL_PAGES : mode == 2 ? PROTECT_PAGES : 0;
+    return mode == 1 ? FULL_PAGES : mode == 2 ? protectPages() : 0;
 }
 
 static uint8_t* lcuBlock() {
@@ -573,9 +579,10 @@ static void eWrite(uint8_t r, uint8_t v) {
     if (r == 0x30) { s_r->e[r] = v; cpuSpeed(v); return; }
     if (r == 0x00 && v != s_r->e[0]) {
         static bool once;
-        if (!once) { once = true; Debug::log("[ELM] e_zxi_000 = %02X: personality switch not modelled yet", v); }
+        if (!once) { once = true; Debug::log("[ELM] e_zxi_000 = %02X: only the URAM Protect size follows it", v); }
     }
     s_r->e[r] = v;
+    if (r == 0x00) remap();
     if (r == 0x2D) remap();
     if (r == 0x02) ElmSid::mute(!(v & 8));
     if (r == 0x19) { ElmSid::renderTo(audioPos()); ElmSid::setParams(v & 3); }
