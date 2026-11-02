@@ -61,6 +61,10 @@ public:
     static bool cardSelected() { return mmc_cs_active; }   // SD CS asserted (Z80::zcInirBatch)
 
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
+    // eLeMeNt ZX: the esxDOS ROM from its FlashRAM (block 4 of the ROM Area) while
+    // e_zxi_02D bit 0 is set; nullptr = the built-in image again. Live: a mapped ROM
+    // half is re-pointed at once.
+    static void setRom(const uint8_t* rom);
     static void reset();          // Reset state
     static void applyMapping();   // Update page0 pointers based on state
     // .pss (src/speccy/core/Pss.cpp, SZX DMMC/DMRP layout): bank b's 8 KB brought in

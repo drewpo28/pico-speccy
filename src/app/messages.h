@@ -133,6 +133,8 @@ visit https://zxespectrum.speccy.org/contacto
 #define MENU_RESETTO_P3 "Reset to\n" "+3\n" "48 BASIC\n"
 
 #define MENU_RESETTO_DIVMMC "Reset\n" "Soft Reset\n" "Hard Reset\n"
+// eLeMeNt ZX: the board's long reset (1.5 s) boots its SetUp firmware from the ROM Area.
+#define MENU_RESETTO_ELM "Reset to\n" "SetUp (firmware)\n" "Soft Reset\n" "Hard Reset\n"
 
 #define MENU_RESETTO_PENT "Reset to\n" "TR-DOS\n" "128K\n" "48K\n"
 // Quorum 128/128+: the SYS ROM's own menu first; the 64 has no SYS ROM.

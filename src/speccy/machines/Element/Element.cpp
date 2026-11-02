@@ -12,6 +12,8 @@
 #include "speccy/machines/Element/ElmHgfx.h"
 #include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/machines/Element/ElmSid.h"
+#include "speccy/machines/Element/ElmFlash.h"
+#include "speccy/devices/storage/DivMMC.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/devices/sound/SAASound.h"
 #include "ui/LEDIndicators.h"
@@ -27,6 +29,7 @@
 #include "speccy/z80/z80.h"
 
 uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
+const uint8_t* g_elm_divrom;          // DivMMC.cpp: esxDOS from block 4 of the ROM Area (e_zxi_02D bit 0)
 
 namespace Elm {
 
@@ -48,7 +51,7 @@ static Regs* s_r;
 // the other ports act on. Backed by the 128-page strip: Protect mode (g_zxi_010 = 2)
 // keeps the ZX pages of the Pentagon 1024 out, Full (1) addresses the whole 2 MB.
 enum { GM_ELM = 0x20 };               // g_atm_ro bit: Elm::memWrite wants the store
-enum { LAYOUT_OFF = 0, LAYOUT_RAM = 2, LAYOUT_HGFX = 8, LAYOUT_HGFX1 = 9, LAYOUT_LCU0 = 0xA, LAYOUT_LCU1 = 0xC };
+enum { LAYOUT_OFF = 0, LAYOUT_RAM = 2, LAYOUT_FLASH = 6, LAYOUT_HGFX = 8, LAYOUT_HGFX1 = 9, LAYOUT_LCU0 = 0xA, LAYOUT_LCU1 = 0xC, LAYOUT_FRAM = 0xE };
 enum { PROTECT_BASE = 128, FULL_PAGES = 256 };
 // Protect mode leaves URAM what the ZX memory of the personality (e_zxi_000) does not
 // take: 128 pages up to 512 KB, 64 on the Pentagon 1024 (the Reference's table).
@@ -56,16 +59,39 @@ enum { PROTECT_BASE = 128, FULL_PAGES = 256 };
 // itself and the player waited for frame #820D. The ZX side stays a Pentagon 1024
 // here, so the upper 64 pages sit in ram[96..127], which only divRAM would take.
 static uint32_t protectPages() { return s_r->e[0x000] == 7 || s_r->e[0x000] == 8 ? 64 : 128; }
+// g_zxi_010, or the obsolete e_zxi_001 = #FF ("former Ultimate mode"): FLASH6 of 2024 and the
+// SetUp open their layout-6 / E windows with only that, so it counts as Full.
+static uint8_t uramMode() { return s_r->g[0x010] ? s_r->g[0x010] : (s_r->e[0x001] == 0xFF ? 1 : 0); }
 struct Zone { uint16_t page[2]; uint8_t par; };
 static Zone s_z[4];
 static uint8_t s_zone;
 static uint8_t s_active;              // Zones currently over the legacy mapping
-static uint8_t s_wpSlots, s_lcuSlots, s_hgfxSlots; // 8K slot masks
+static uint8_t s_wpSlots, s_lcuSlots, s_hgfxSlots, s_flashSlots, s_framSlots; // 8K slot masks
+static bool s_flashOpen;              // zone 0 shows the flash (layout 6)
+// The SetUp: a long reset on the board maps block 7 of the ROM Area at #0000; its stub
+// copies the code to #C000 and the first OUT of the relocated code (#7FFD, then
+// e_zxi_030) is when the ROM is wanted no more - the block stays until the first port
+// write after the reset, which the stub never makes.
+static bool s_setupBoot, s_setupRom, s_setupOnce;
+static bool s_powered;                // the first reset of the session is the power-up
+static uint8_t s_keep[0x40];          // e_zxi_000..03F across a warm reset
+static uint32_t s_onFrames;
+// The FRAM's system counters (#3FEC PowerUp, #3FF0 Extra, #3FF4 Reset, #3FF8 Nmi,
+// #3FFC OnTime, 32-bit LE): the SetUp's first screen and its "User level".
+static void framCount(uint16_t off) {
+    uint8_t* f = ElmFlash::fram();
+    if (!f) return;
+    uint32_t v = (uint32_t)f[off] | (uint32_t)f[off + 1] << 8 | (uint32_t)f[off + 2] << 16 | (uint32_t)f[off + 3] << 24;
+    if (v == 0xFFFFFFFFu) return;
+    v++;
+    f[off] = (uint8_t)v; f[off + 1] = (uint8_t)(v >> 8); f[off + 2] = (uint8_t)(v >> 16); f[off + 3] = (uint8_t)(v >> 24);
+    ElmFlash::framDirty();
+}
 static uint16_t s_slotPage[8];        // HGFX Area: its 8K step in the Zone
 uint8_t* wrKind;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
-enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC };
+enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC, W_FLASH, W_FRAM };
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void readHookUpdate();
@@ -89,7 +115,8 @@ static void windowsRebuild() {
     if ((s_r->g[0x048] & 0x81) == 1) w[s_r->g[0x049]] = W_SDMA;
     for (int s = 0; s < 8; s++) {
         const uint8_t k = (s_lcuSlots >> s) & 1 ? W_LCU : (s_hgfxSlots >> s) & 1 ? W_CHUNKY
-                        : (s_wpSlots >> s) & 1 ? W_PROTECT : W_NONE;
+                        : (s_wpSlots >> s) & 1 ? W_PROTECT
+                        : (s_flashSlots >> s) & 1 ? W_FLASH : (s_framSlots >> s) & 1 ? W_FRAM : W_NONE;
         if (k) memset(w + s * 32, k, 32);
     }
     bool any = false;
@@ -237,7 +264,7 @@ static void lcu2Publish() {
 }
 
 static uint8_t* uramPtr(uint16_t page) {
-    const uint8_t mode = s_r->g[0x010];
+    const uint8_t mode = uramMode();
     const uint32_t idx = mode == 1 ? (page & (FULL_PAGES - 1))
                                    : PROTECT_BASE + (page & (protectPages() - 1));
     uint8_t* p = MemESP::ram[idx >> 1].direct();
@@ -253,7 +280,7 @@ static const uint8_t* sdPage(uint32_t page) {
 }
 
 static uint16_t freePages() {
-    const uint8_t mode = s_r->g[0x010];
+    const uint8_t mode = uramMode();
     return mode == 1 ? FULL_PAGES : mode == 2 ? protectPages() : 0;
 }
 
@@ -274,16 +301,18 @@ static void legacyZone(uint8_t z) {
     }
 }
 
-// The one writer of a URAM slot. Layouts of later phases (FLASH, HGFX, FRAM) and the
-// reserved ones leave the Zone on the legacy mapping for now.
+// The one writer of a URAM slot. The reserved layouts leave the Zone on the legacy
+// mapping. Layout 6 (zone 0) shows the FlashRAM of the ROM Area in 8 KB pages, its
+// writes are the JEDEC commands (ElmFlash); layout E shows the FRAM in Area1.
 void remap() {
     if (!s_r) return;
-    const bool on = (s_r->g[0x000] & 1) && s_r->g[0x010];
-    uint8_t active = 0, wp = 0, lcu = 0, hg = 0;
+    const bool on = (s_r->g[0x000] & 1) && uramMode();
+    uint8_t active = 0, wp = 0, lcu = 0, hg = 0, fl = 0, fr = 0;
     for (uint8_t z = 0; z < 4; z++) {
         const uint8_t layout = on ? s_z[z].par >> 4 : LAYOUT_OFF;
         const bool mapped = layout == LAYOUT_RAM || layout == LAYOUT_HGFX || layout == LAYOUT_HGFX1 ||
-                            (z == 0 && (layout == LAYOUT_LCU0 || layout == LAYOUT_LCU1));
+                            (z == 0 && (layout == LAYOUT_LCU0 || layout == LAYOUT_LCU1 ||
+                                        layout == LAYOUT_FLASH || layout == LAYOUT_FRAM));
         if (!mapped) {
             if (s_active & (1u << z)) legacyZone(z);
             continue;
@@ -294,12 +323,15 @@ void remap() {
             const uint8_t slot = z * 2 + a;
             const bool isLcu = (layout == LAYOUT_LCU0 && a == 0) || (layout == LAYOUT_LCU1 && a == 1);
             const bool isHg = layout == LAYOUT_HGFX || (layout == LAYOUT_HGFX1 && a == 1);
+            const bool isFl = layout == LAYOUT_FLASH, isFr = layout == LAYOUT_FRAM && a == 1;
             // No page: the window starts at OffsetY. Layout 8 shows the buffer from there
             // over both Areas; layout 9 has one HGFX Area, and it starts at OffsetY too
             // (TETRIS writes each 32-row band of its photo to #2000 with OffsetY = row).
             const uint8_t hgStep = layout == LAYOUT_HGFX ? a : 0;
             uint8_t* p = isLcu ? lcuBlock()
                        : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(hgStep * 0x2000u)
+                       : isFl ? (ElmFlash::ensure() ? ElmFlash::page(s_r->e[0x00F], s_z[z].page[a]) : nullptr)
+                       : isFr ? (ElmFlash::ensure() ? ElmFlash::fram() : nullptr)
                        : uramPtr(s_z[z].page[a]);
             if (isHg) { hg |= 1u << slot; s_slotPage[slot] = hgStep; }
             if (!p) { wp |= 1u << slot; p = (uint8_t*)MemESP::ram[0].direct(); }
@@ -307,12 +339,19 @@ void remap() {
             mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
             if (isLcu) lcu |= 1u << slot;
             else if (!(s_z[z].par & (1u << a))) wp |= 1u << slot;
+            else if (isFl) fl |= 1u << slot;
+            else if (isFr) fr |= 1u << slot;
         }
     }
+    const bool flashOpen = (active & 1) && (s_z[0].par >> 4) == LAYOUT_FLASH;
+    if (s_flashOpen && !flashOpen) ElmFlash::windowClosed();   // FLASH6 is done: to the file now
+    s_flashOpen = flashOpen;
     s_active = active;
     s_wpSlots = wp;
     s_lcuSlots = lcu;
     s_hgfxSlots = hg;
+    s_flashSlots = fl;
+    s_framSlots = fr;
     Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
     g_elm_nodiv = (active & 1) && !(s_r->e[0x02D] & 0x80);
@@ -349,6 +388,7 @@ void frameEnd() {
 bool nmiBlocked() { return s_r && (s_r->g[0x080] & 0x80); }
 void nmiTaken(uint16_t pc) {
     if (!s_r) return;
+    framCount(0x1FF8);
     s_r->g[0x081] = (uint8_t)pc;
     s_r->g[0x082] = (uint8_t)(pc >> 8);
 }
@@ -402,6 +442,13 @@ bool memWrite(uint16_t a, uint8_t v) {
         return false;
     case W_PROTECT:
         return true;
+    case W_FLASH:                     // a JEDEC command byte; the store never lands as data
+        ElmFlash::write((uint32_t)(s_r->e[0x00F] & 3) * ElmFlash::AREA +
+                        (uint32_t)(s_z[0].page[(a >> 13) & 1] & 15) * ElmFlash::PAGE + (a & 0x1FFF), v);
+        return true;
+    case W_FRAM:
+        ElmFlash::framDirty();
+        return false;                 // the store goes to the FRAM under the window
     case W_LCU: {
         const uint16_t off = a & 0x1FFF;
         if (off < ElmLcu::SIZE) ElmLcu::write(s_lcu, (uint8_t)off, v);
@@ -434,6 +481,44 @@ bool memWrite(uint16_t a, uint8_t v) {
     return false;
 }
 
+// The ZX ROMs come from the ROM Area e_zxi_00F selects: ROM0-3 = its blocks 0-3, so
+// #7FFD bit 4 picks block 0/1 (FLASH128 lays ROM0/ROM1 in 0/2 and 1/3) and a +2A
+// personality adds #1FFD bit 2 as the high bit. Without the image the Pentagon pair
+// bound by Config::requestMachine stays.
+static void romsBind() {
+    if (!ElmFlash::ensure()) return;
+    const uint8_t area = s_r->e[0x00F] & 3;
+    for (uint8_t b = 0; b < 4; b++) {
+        const uint8_t* p = ElmFlash::block(area, s_setupRom ? ElmFlash::BLOCK_SETUP : b);
+        MemESP::registerOverlay(p, nullptr);          // a flat page, nothing to materialise
+        MemESP::rom[b].assign_rom(p);
+    }
+    MemESP::recoverPage0();
+}
+
+// esxDOS: e_zxi_02D bit 0 = 1 takes the ROM from block 4 of the Area (the first 8 KB,
+// FLASHESX writes an 8 KB image there), 0 = the "FPGA rescue" copy, our built-in one.
+static void divRomApply() {
+    const uint8_t area = s_r->e[0x00F] & 3;
+    const bool fromFlash = (s_r->e[0x02D] & 1) && ElmFlash::ensure() && !ElmFlash::blockBlank(area, ElmFlash::BLOCK_ESXDOS);
+    g_elm_divrom = fromFlash ? ElmFlash::block(area, ElmFlash::BLOCK_ESXDOS) : nullptr;
+    DivMMC::setRom(g_elm_divrom);
+}
+
+void flush(bool force) {
+    if (++s_onFrames >= 3000) { s_onFrames = 0; framCount(0x1FFC); }   // OnTime, minutes
+    ElmFlash::flush(force);
+}
+
+// Machine > eLeMeNt ZX > SetUp (the board: reset held 1.5 s). Takes effect at the
+// reset that follows; a blank block 7 shows what to flash.
+bool enterSetup() {
+    if (!ElmFlash::ensure()) return false;
+    if (ElmFlash::blockBlank(s_r ? s_r->e[0x00F] & 3 : 0, ElmFlash::BLOCK_SETUP)) return false;
+    s_setupBoot = true;
+    return true;
+}
+
 static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again
     static const char kId[] = "eLeMeNt ZX";
     const uint8_t c = (uint8_t)kId[*pos];
@@ -446,12 +531,14 @@ void reset() {
     s_corePos = 0;
     if (!s_r) s_r = (Regs*)tryMalloc(sizeof(Regs));
     if (!s_r) { Debug::log("[ELM] no heap for the ZXi registers"); return; }
+    if (s_powered) memcpy(s_keep, s_r->e, sizeof s_keep);
     memset(s_r, 0, sizeof(Regs));
     wrKind = s_r->win;
     // Memory-register windows at their documented defaults.
     s_zone = 0;
     memset(s_z, 0, sizeof(s_z));
-    s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = 0;
+    s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
+    if (s_flashOpen) { s_flashOpen = false; ElmFlash::windowClosed(); }
     g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
     s_rdArmed = false;
@@ -477,20 +564,51 @@ void reset() {
     s_r->g[0x049] = 0x5E;   // SoundDMA
     s_r->g[0x051] = 0x5F;   // eINT
     s_r->g[0x061] = 0x60;   // LCU2
-    // What this emulation actually is, not what a Setup might have left.
-    s_r->e[0x000] = 0x07;   // Pentagon 1024 v2.2
-    s_r->e[0x001] = 0x01;   // DivSD
-    s_r->e[0x002] = 0x3F;   // beeper, TSFM, MonsterBlaster, SID, SAA, tape
-    s_r->e[0x003] = 0x01;   // Kempston
-    s_r->e[0x004] = 0x04;   // external keyboard + Kempston mouse
-    s_r->e[0x02B] = 0x01;   // RTC
-    s_r->e[0x02D] = 0x01;   // esxDOS from flash
-    s_r->e[0x02E] = 0x01;   // Z80 DMA
-    s_r->e[0x039] = 0x01;   // UART MB03+
+    // The SetUp's own "Load defaults" table (setup-20260406, D3ED), two of ours on top:
+    // e_000 = Pentagon 1024 (the owner's base personality, the table says 128/+2) and
+    // e_02D bit 0 = esxDOS from the flash block when one is flashed (the table boots the
+    // FPGA copy). LIFO and DMA on: the MB03+SD esxDOS build keeps its divMMC control
+    // byte in the LIFO (IN A,(#2B) before OUT (#E3)) and hangs without it.
+    static const uint8_t kDefaults[0x40] = {
+        0x07, 0x01, 0x3F, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
+        0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 };
+    memcpy(s_r->e, kDefaults, sizeof kDefaults);
+    // The FRAM's SetUp area (#2000 + N = e_zxi_N, 64 bytes) is what the board loads at
+    // power-up; a blank FRAM (no file yet, or defaults never saved) keeps the table.
+    // Power-up (the first reset of the session) loads the FRAM; a reset keeps the
+    // registers as the programs left them, like the board (the SetUp exits by RST 0
+    // and the Area / machine it saved are seen at the next power-up or F11 here).
+    if (!s_powered) {
+        if (ElmFlash::ensure()) {
+            uint8_t* f = ElmFlash::fram();
+            if (f[0x000] <= 9 && f[0x001] != 0xFF) memcpy(s_r->e, f, 0x40);
+            else {                    // a fresh FRAM: our table as the saved settings, counters at 0
+                memcpy(f, kDefaults, sizeof kDefaults);
+                memset(f + 0x1C00, 0, 0x400);
+                ElmFlash::framDirty();
+            }
+            framCount(0x1FEC);        // PowerUp
+        }
+        s_powered = true;
+    } else {
+        memcpy(s_r->e, s_keep, sizeof s_keep);
+        framCount(0x1FF4);            // Reset
+    }
+    if (s_setupBoot) { s_setupBoot = false; s_setupRom = true; }
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_ELM_SETUP") && !s_setupOnce) { s_setupOnce = true; s_setupRom = true; }
+#endif
+    if (s_setupRom) g_elm_nodiv = 1;   // esxDOS stays off the bus until the SetUp runs from RAM
+    cpuSpeed(s_r->e[0x030]);
+    ElmSid::mute(!(s_r->e[0x002] & 8));
     s_r->e[0x0FC] = kStampDay;
     s_r->e[0x0FD] = kStampMonth;
     s_r->e[0x0FE] = kStampYear;
     s_r->e[0x0FF] = kInterfaceId;
+    romsBind();
+    divRomApply();
 }
 
 static uint8_t gRead(uint8_t r) {
@@ -595,8 +713,9 @@ static void eWrite(uint8_t r, uint8_t v) {
         if (!once) { once = true; Debug::log("[ELM] e_zxi_000 = %02X: only the URAM Protect size follows it", v); }
     }
     s_r->e[r] = v;
-    if (r == 0x00) remap();
-    if (r == 0x2D) remap();
+    if (r == 0x00 || r == 0x01) remap();
+    if (r == 0x2D) { remap(); divRomApply(); }
+    if (r == 0x0F && s_flashOpen) remap();   // the flash window follows the Area at once; the ROMs at the next reset (FLASH2A returns to BASIC between blocks)
     if (r == 0x02) ElmSid::mute(!(v & 8));
     if (r == 0x19) { ElmSid::renderTo(audioPos()); ElmSid::setParams(v & 3); }
 }
@@ -755,6 +874,7 @@ bool portIn(uint16_t a, uint8_t* out) {
 
 bool portOut(uint16_t a, uint8_t v) {
     if (!s_r) return false;
+    if (s_setupRom) { s_setupRom = false; romsBind(); remap(); }   // the SetUp runs from RAM now; divSD back
 #if HOST_BUILD
     if (getenv("PICOSPECCY_ELMLOG"))
         Debug::log("[ELM] out %04X=%02X pc=%04X sp=%04X z=%u idx=%02X/%02X", a, v, Z80::getRegPC(), Z80::getRegSP(), s_zone, s_gIdx, s_eIdx);

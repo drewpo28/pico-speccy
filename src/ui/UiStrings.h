@@ -272,6 +272,10 @@
 #define TXT_MACH_ATM         "ATM-Turbo"
 #define TXT_MACH_EP          "Enterprise"
 #define TXT_MACH_ELM         "eLeMeNt ZX"
+// The board's own SetUp firmware (reset held 1.5 s there): block 7 of the ROM Area,
+// put there by FlashSetUp_V2.tap exactly as on the hardware (docs/element-setup-plan.md).
+#define TXT_MACH_ELM_SETUP   "SetUp (firmware)"
+#define TXT_ELM_NO_SETUP     "SetUp not flashed: run FlashSetUp_V2.tap"
 #define TXT_MACH_SAM         "SAM Coup\x87"   // \x87 = e-acute in the UI font (UiFont.h)
 #define TXT_MACH_OPTS        "Options"
 #define TXT_MACH_EVO_OPTS    "BaseConf options"

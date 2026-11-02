@@ -14,6 +14,7 @@
 #include "OSDMain.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/If2.h"
+#include "speccy/machines/Element/Element.h"
 #include "app/Config.h"
 #include "app/ESPectrum.h"
 #include "speccy/core/Snapshot.h"
@@ -867,6 +868,14 @@ void act_if2Eject() {
     if (!If2::present()) { uiToast(TXT_DCK_NONE, false, 1200); return; }
     If2::eject(true);        // the 48K ROM back, machine restarted
     uiToast(TXT_DCK_EJECTED, false, 1200);
+    requestClose();
+}
+
+// eLeMeNt ZX: the next reset boots the SetUp firmware from block 7 of the ROM Area
+// (the board: reset held for 1.5 s). Nothing flashed there yet -> say what to run.
+void act_elmSetup() {
+    if (!Elm::enterSetup()) { uiToast(TXT_ELM_NO_SETUP, true, 2500); return; }
+    ESPectrum::reset();
     requestClose();
 }
 

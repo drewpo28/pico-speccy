@@ -15,6 +15,8 @@ bool portIn(uint16_t address, uint8_t* out);  // true = claimed
 bool portOut(uint16_t address, uint8_t data);
 
 void frameEnd();                              // EndFrame
+void flush(bool force = false);               // flash image / FRAM write-back (main loop; force on reboot)
+bool enterSetup();                            // next reset boots the SetUp ROM (block 7); false = not flashed
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY

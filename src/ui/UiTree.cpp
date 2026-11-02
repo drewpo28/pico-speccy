@@ -661,6 +661,13 @@ static bool p_tsconfActive() {
 // Quorum 64 — have no IF2 slot to offer. `If2::live()` makes the same test, so the
 // row is shown exactly where the cartridge can be plugged in; the row follows the
 // staged machine, like DOCK.
+// eLeMeNt ZX running or staged: its SetUp row.
+static bool p_elmActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    const uint8_t arch = (m < 0) ? Config::arch : (uint8_t)((m >> 8) & 0xFF);
+    return arch == A_ELM;
+}
+
 static bool p_if2Active() {
     const int32_t m = Stage::get(SET_MACHINE);
     const uint8_t arch = (m < 0) ? Config::arch   : (uint8_t)((m >> 8) & 0xFF);
@@ -988,6 +995,7 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_SAM,   SET_MACHINE, opt_mach_sam,   p_showSam),
     NM_RADIO(TXT_MACH_EP,    SET_MACHINE, opt_mach_ep,    p_showEp),
     NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
+    NM_ACTION(NM_IND TXT_MACH_ELM_SETUP, act_elmSetup, p_elmActive),
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),

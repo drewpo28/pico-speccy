@@ -80,6 +80,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Ports.h"
 #include "speccy/core/Snapshot.h"
 #include "speccy/machines/Next/NexLaunch.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/machines/Element/ElmSid.h"
 #include "speccy/devices/tape/Tape.h"
@@ -4682,6 +4683,7 @@ void ESPectrum::loop() {
 #endif
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     if (Z80Ops::isSam) SamClock::flush();   // the Dallas clock's user RAM, same contract
+    if (Z80Ops::isElm) Elm::flush();        // eLeMeNt FlashRAM sectors + FRAM, same contract
 #if NEXT_TRACE
     wf_bg_mark(3);
 #endif

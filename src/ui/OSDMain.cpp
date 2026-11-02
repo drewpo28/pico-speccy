@@ -441,6 +441,7 @@ void OSD::esp_hard_reset() {
     // it has to happen before close_all() and long before IRQs go off.
     RTC::flushNVRAM(true);
     Nvram24::flush(true);
+    if (Config::arch == A_ELM) Elm::flush(true);   // the eLeMeNt FlashRAM image and FRAM
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
     // PARK CORE1 BEFORE close_all(). close_all() zeroes the whole butter arena
     // through the CACHED XIP alias and then takes the QSPI CS1 pin away from the
@@ -2555,6 +2556,24 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
         else
         if (hkIdx == Config::HK_RESET_TO) { // Reset to...
+            if (Z80Ops::isElm) {
+                // The board: reset held 1.5 s = its SetUp firmware (block 7 of the ROM
+                // Area); the other two rows are the divMMC resets below.
+                uint8_t opt = hotkeyChooser(MENU_RESETTO_ELM);
+                if (opt == 1) {
+                    if (!Elm::enterSetup()) osdCenteredMsg(TXT_ELM_NO_SETUP, LEVEL_WARN, 2000);
+                    else {
+                        if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+                        Config::last_ram_file = NO_RAM_FILE;
+                        ESPectrum::reset();
+                    }
+                } else if (opt == 2 || opt == 3) {
+                    if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+                    Config::last_ram_file = NO_RAM_FILE;
+                    if (opt == 2) DivMMC::reset(); else DivMMC::init();
+                    ESPectrum::reset();
+                }
+            } else
             if (DivMMC::enabled) {
                 uint8_t opt = hotkeyChooser(MENU_RESETTO_DIVMMC);
                 if (opt == 1) {

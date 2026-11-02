@@ -597,6 +597,15 @@ SID (2026-11-02, host-tested, NOT hw-tested): `ElmSid` (firmware-free, `tools/el
 TSFM mirror (fixed 2026-11-02, hw-confirmed DVp2w 2026-11-02 on debug/DVp2w-elm-sid2-1.1.1: TSFM.TAP plays): #7F3B = #FFFD (select + BUSY status), #7E3B = #BFFD (data). The Reference lists only the two numbers; Lanex's TFM player for MB03+ (Sound/TSFM.TAP) polls BUSY with IN at #7F3B, and the old reverse mapping left it silent (owner: "не играет даже с включенным TSFM").
 HGFX runs on core1: `Hgfx::push` queue (PSRAM, 16K entries) + `core1Pump`, `s_r` = guest view on core0, `s_e` = engine view; chunky windows force `direct`; `tsRenderDrain` drains it.
 e_zxi_02D bit 7 clear = no divSD entry traps while URAM sits in Zone 0 (`g_elm_nodiv`, Paradise jumps to #0000 there); PlanarMask 0 lets a VRAM-window write through to RAM (HE2025 start code at #4000).
+**FlashRAM, FRAM, SetUp (2026-11-02, bench + hw-confirmed DVp2w by the owner's UART log, not itemised; `docs/element-setup-plan.md` §8):** `ElmFlash` = the 512 KB
+image (4 Areas x 8 blocks) in butter PSRAM + `/pico-speccy/roms/element/flash.bin`, built from the firmware ROMs
+when absent; URAM layout 6 (zone 0, pages relative to `e_zxi_00F`) writes = SST39SF040 JEDEC commands (`W_FLASH`), layout E
+Area1 = the 8 KB FRAM (`fram.bin`). ROMs `rom[0..3]` = blocks 0-3 of the Area, esxDOS from block 4 when `e_02D` bit 0
+(`DivMMC::setRom`), both bound at RESET only (FLASH2A returns to BASIC between blocks). FRAM `#2000+N` -> `e_zxi_N` at
+power-up only. URAM also on with `e_001 = #FF` (old FLASH6, SetUp). The MB03+SD esxDOS build needs the LIFO (`IN (#2B)` ->
+`OUT (#E3)`): defaults = the SetUp's table + Pentagon 1024. SetUp entry = block 7 as ROM + `g_elm_nodiv` until the first
+Element port write (Alt+F11 Reset to... > SetUp (firmware), or Machine > eLeMeNt ZX > SetUp; bench `PICOSPECCY_ELM_SETUP=1`). FLASHESX/FLASHZXD/FlashSetUp_V2,
+the flashed esxDOS, Area 3 boot, SetUp menu/R/L and ElCoreUp's graceful failure all ran on the bench. `tools/elm_flash_test.cpp`.
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)

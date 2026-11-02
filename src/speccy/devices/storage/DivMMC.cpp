@@ -330,6 +330,8 @@ void DivMMC::init() {
         esxdos_rom = (uint8_t *)gb_rom_esxdos;
         mode_name = divsd_mode ? "DivSD" : "DivMMC";
     }
+    { extern const uint8_t* g_elm_divrom;      // eLeMeNt ZX: esxDOS from its FlashRAM (Element.cpp)
+      if (Config::arch == A_ELM && g_elm_divrom) { esxdos_rom = (uint8_t*)g_elm_divrom; mode_name = "DivSD (eLeMeNt flash)"; } }
     rom_loaded = true;
     Debug::log("%s ROM verify: %02X %02X %02X %02X %02X %02X %02X @ %p",
         mode_name, esxdos_rom[0], esxdos_rom[1], esxdos_rom[2], esxdos_rom[3],
@@ -621,6 +623,14 @@ void DivMMC::reset() {
     ide_data_write = false;
 
     applyMapping();
+}
+
+void DivMMC::setRom(const uint8_t* rom) {
+    if (!enabled) return;
+    uint8_t* want = rom ? (uint8_t*)rom : (uint8_t*)(divide_mode ? gb_rom_esxide : gb_rom_esxdos);
+    if (want == esxdos_rom) return;
+    esxdos_rom = want;
+    if ((conmem || automap) && !mapram) applyMapping();
 }
 
 void DivMMC::applyMapping() {
