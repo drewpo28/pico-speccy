@@ -81,6 +81,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Snapshot.h"
 #include "speccy/machines/Next/NexLaunch.h"
 #include "speccy/machines/Element/ElmSdma.h"
+#include "speccy/machines/Element/ElmSid.h"
 #include "speccy/devices/tape/Tape.h"
 #include "speccy/video/Video.h"
 #if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
@@ -5040,6 +5041,7 @@ void ESPectrum::loop() {
         // eLeMeNt ZX SoundDMA: already re-centred.
         const int16_t* elmL = Z80Ops::isElm ? ElmSdma::mixL() : nullptr;
         const int16_t* elmR = Z80Ops::isElm ? ElmSdma::mixR() : nullptr;
+        const int16_t* elmSid = Z80Ops::isElm ? ElmSid::mix() : nullptr;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
@@ -5053,6 +5055,7 @@ void ESPectrum::loop() {
           int beeper_R = beeper_L;
           if (epL) { beeper_L += epL[i]; beeper_R += epR[i]; }
           if (elmL) { beeper_L += elmL[i]; beeper_R += elmR[i]; }
+          if (elmSid) { beeper_L += elmSid[i]; beeper_R += elmSid[i]; }
           if (mix_covox) {
             beeper_L += audioBufferCovoxL[i];
             beeper_R += audioBufferCovoxR[i];

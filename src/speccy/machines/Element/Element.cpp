@@ -11,6 +11,7 @@
 #include "speccy/machines/Element/ElmLcu.h"
 #include "speccy/machines/Element/ElmHgfx.h"
 #include "speccy/machines/Element/ElmSdma.h"
+#include "speccy/machines/Element/ElmSid.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/devices/sound/SAASound.h"
 #include "ui/LEDIndicators.h"
@@ -126,9 +127,9 @@ static inline uint16_t fd16(const uint8_t* r, int o) { return (uint16_t)(r[o] | 
 static inline uint32_t fd24(const uint8_t* r, int o) { return r[o] | (uint32_t)r[o + 1] << 8 | (uint32_t)r[o + 2] << 16; }
 
 static uint8_t* uramPtr(uint16_t page);
-static void sdCatch() {
-    ElmSdma::renderTo((int)((CPU::tstates / ESPectrum::audioCOVOXDivider) >> ESPectrum::multiplicator));
-}
+static int audioPos() { return (int)((CPU::tstates / ESPectrum::audioCOVOXDivider) >> ESPectrum::multiplicator); }
+static void sdCatch() { ElmSdma::renderTo(audioPos()); }
+static uint8_t s_sidIdx;
 static inline uint8_t* uramByte(uint32_t a) {
     uint8_t* p = uramPtr((uint16_t)(a >> 13));
     return p ? p + (a & 0x1FFF) : nullptr;
@@ -316,6 +317,7 @@ void frameEnd() {
     Hgfx::radBank = s_r->u[0x43] & 3;
     Hgfx::frameEnd();
     ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
+    ElmSid::frameEnd(ESPectrum::samplesPerFrame);
 }
 
 // SafeNMI: the return address of the last NMI is readable, bit 7 locks the button.
@@ -417,6 +419,10 @@ void reset() {
     ElmLcu::reset(s_lcu2);
     memset(s_fd, 0, sizeof(s_fd));
     if (!ElmSdma::init(sdPage, ESPectrum::Audio_freq)) Debug::log("[ELM] no heap for SoundDMA");
+    if (!ElmSid::init(ESPectrum::Audio_freq)) Debug::log("[ELM] no heap for the SID");
+    ElmSid::setParams(0);   // e_zxi_019 = 0: 6581, PAL
+    ElmSid::mute(false);
+    s_sidIdx = 0;
     s_scan = 0; s_scanHeld = false;
     s_lifoTop = 0;
     memset(s_dac, 0, sizeof(s_dac)); s_dacUsed = 0;
@@ -546,6 +552,8 @@ static void eWrite(uint8_t r, uint8_t v) {
     }
     s_r->e[r] = v;
     if (r == 0x2D) remap();
+    if (r == 0x02) ElmSid::mute(!(v & 8));
+    if (r == 0x19) { ElmSid::renderTo(audioPos()); ElmSid::setParams(v & 3); }
 }
 
 static uint8_t uRead(uint8_t r) {
@@ -673,7 +681,11 @@ bool portIn(uint16_t a, uint8_t* out) {
     case 0x9FFD: *out = VIDEO::timex_port_ff;        return true;   // #FF, readable
     case 0x133B: *out = uartStatus();                return true;
     case 0x143B: *out = Config::zifi_enabled ? ZiFi::uart16550Read(0xF8) : 0xFF; return true;
-    case 0x7E3B: *out = Ports::input(0xFFFD);        return true;   // TSFM mirror
+    case 0x6C3B: *out = s_sidIdx;                    return true;
+    case 0x6D3B: ElmSid::renderTo(audioPos()); *out = ElmSid::read(s_sidIdx); return true;
+    // TSFM mirror: #7F3B = #FFFD (select, status), #7E3B = #BFFD (data). The Reference
+    // gives only the two numbers; Lanex's TFM player for MB03+ (TSFM.TAP) polls BUSY at #7F3B.
+    case 0x7F3B: *out = Ports::input(0xFFFD);        return true;
     case 0x7C3B: *out = s_gIdx;                      return true;
     case 0x7D3B: *out = gRead(s_gIdx);               return true;
     case 0x783B: *out = s_eIdx;                      return true;
@@ -722,8 +734,10 @@ bool portOut(uint16_t a, uint8_t v) {
             if (a & 0x0100) saaChip->selectRegister(v); else saaChip->setRegisterData(v);
         }
         return true;
-    case 0x7E3B: Ports::output(0xFFFD, v);           return true;   // TSFM mirror
-    case 0x7F3B: Ports::output(0xBFFD, v);           return true;
+    case 0x6C3B: s_sidIdx = v;                       return true;
+    case 0x6D3B: ElmSid::renderTo(audioPos()); ElmSid::write(s_sidIdx, v); return true;
+    case 0x7F3B: Ports::output(0xFFFD, v);           return true;   // TSFM mirror
+    case 0x7E3B: Ports::output(0xBFFD, v);           return true;
     case 0x7C3B: s_gIdx = v;                         return true;
     case 0x7D3B: gWrite(s_gIdx, v);                  return true;
     case 0x783B: s_eIdx = v;                         return true;
