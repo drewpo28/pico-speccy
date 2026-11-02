@@ -837,6 +837,12 @@ a UI page needs those offsets).
 
 ## The Devices menu shows the staged machine, one level per interface (2026-10-31, host-checked, NOT hw-tested)
 
+- **2026-11-02, owner: what the machine lacks stays HIDDEN (no grey rows — a greyed
+  variant was tried and rejected the same day), what it has is ALWAYS shown.** The
+  gap was esxDOS on Next / eLeMeNt: hidden although both have a divMMC. `p_esxRow`
+  now shows it there; DivSD is set only on ENTRY (MachineSwitch, `prevArch != arch`),
+  the two setup() clamps are gone (`next.md`). Compiled on the host, NOT hw-tested.
+
 `kHardware` (UiTree.cpp) = Tape / <the machine's disk controller> / esxDOS / MB-02+ / Z-Controller / IDE / HDD /
 CMOS + NVRAM / Mouse (an "Other interfaces" level was tried and dropped the same day, owner).
 The controller row is four mutually exclusive nodes by predicate, each under its own

@@ -112,8 +112,15 @@ pkg/next/wire.go = разжёванный zxnext.vhd — читать ПЕРЕД
   automap выключен. Hard reset перевзводит bootrom, soft — нет. **.NEX-лоадер
   принудительно гасит окно** — путь ram_file (ребут с другой машины) грузит
   .NEX сразу после setup(), где bootrom взведён.
-- **DivSD обязателен на Next** (esxdos=3, реальная карта): форс в
-  MachineSwitch + clamp в setup. .mmc-режим указал бы ОС на esxdos.mmc.
+- **DivSD на Next — умолчание, не форс** (esxdos=3, реальная карта): MachineSwitch
+  ставит его только при ВХОДЕ в Next (и eLeMeNt); clamp'ы в setup сняты 2026-11-02
+  (владелец: Devices > esxDOS должен перенастраиваться на этой машине). Off / DivMMC /
+  DivIDE — выбор пользователя, переживает перезагрузку. В .mmc-режиме гость видит
+  образ вместо карты: NextZXOS загрузится, если в образе всё, что ему нужно.
+  Хост при этом всё равно читает РЕАЛЬНУЮ карту: `/roms/next/*.rom` (MemESP::loadNextRoms)
+  и `f_stat /TBBLUE.FW`, который взводит bootrom (setup). Запуск .nex/.bas из F5
+  (NexLaunch::start) требует divsd_mode — пути образа не обязаны совпадать с картой.
+  Next с образом не запускался ни разу. NOT hw-tested.
 - **Порт 0xFF** (Timex/SCLD, полный декод lo-байта на Next): bit6 = запрет ULA
   frame INT (`Z80Ops::isActiveINT`, рядом с NR 0x22 bit2 — гэп из матрицы
   zx_go), биты 5:0 ↔ NR 0x69 биты 5:0; чтение gated NR 0x08 bit2.

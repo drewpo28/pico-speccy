@@ -1311,17 +1311,13 @@ void ESPectrum::setup() {
     Config::romSet = R_128K;
     Config::romSet128 = R_128K;
   }
-  // On real Next the divMMC is part of the machine — NextZXOS cannot boot
-  // without the automap. Default it on for the session (mode 1: MMC image,
-  // Config::esxdos_hdf_image[0] or /esxdos.mmc); DivMMC::init self-disables
-  // gracefully when no image is present.
-  if (Config::arch == A_NEXT && Config::esxdos == 0)
-    Config::esxdos = 1;
+  // Next / eLeMeNt ZX: esxDOS is whatever Devices > esxDOS holds. MachineSwitch sets
+  // DivSD (raw card) on ENTRY, the mode NextZXOS boots from; a later Off / DivMMC /
+  // DivIDE is the user's pick and survives the reboot (owner, 2026-11-02).
   // eLeMeNt ZX: no FDC, esxDOS over the real card IS the disk system.
   if (Config::arch == A_ELM) {
     Config::betadisk = false;
     Config::mb02 = false;
-    Config::esxdos = 3;
   }
 
   //=======================================================================================
@@ -1394,15 +1390,7 @@ void ESPectrum::setup() {
       // Next mode: 8K page table over static SRAM (banks 0-7) + butter PSRAM
       // carve-out (banks 8-111 + the 72K ROM region). Legacy extended pages
       // are not allocated; Murmuzavr stays clamped to 64 above.
-      //
-      // NextZXOS boots from the REAL SD card: force DivSD (raw card, ==3)
-      // over the .mmc-image / DivIDE modes. Boot-time twin of the
-      // MachineSwitch rule — covers configs that never went through the menu.
-      if (Config::esxdos != 3) {
-          Debug::log2SD("setup: Next forces DivSD (esxdos %u -> 3)",
-                        (unsigned)Config::esxdos);
-          Config::esxdos = 3;
-      }
+      // (esxDOS is not forced here any more: see the Next / eLeMeNt note above.)
       if (MemESP::buildNextRam()) {
         bool roms = MemESP::loadNextRoms();
         Debug::log("setup: Next RAM carved, ROMs %s",

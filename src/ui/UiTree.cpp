@@ -1172,7 +1172,8 @@ static const Option opt_ide_slot_hints[] = {
 };
 
 // Devices shows what the STAGED machine has: a row of another machine is not greyed,
-// it is not there. These mirror resolveConstraints / MachineSwitch / the CPU::reset
+// it is not there, and a row the machine has is always there (owner, 2026-11-02:
+// esxDOS on the Next). These mirror resolveConstraints / MachineSwitch / the CPU::reset
 // backstops, which stay the authority; a value left set by an NVS from elsewhere is
 // still cleared by them. Inside an interface's submenu the options keep the generic
 // grey-until-on gate (NM_*_EN).
@@ -1208,9 +1209,12 @@ static bool p_diskBeta() {
     return !devOwnBus() && !p_plus3On() && devRomset() != R_48K_BY;
 }
 static bool p_betaOn()  { return p_betaBuiltIn() || Stage::get(SET_BETADISK) != 0; }
+// Next and eLeMeNt have a divMMC of their own: DivSD on entry, the user may change it.
 static bool p_esxRow() {
     const ArchIdx a = devArch();
-    return p_hasSD() && !devOwnBus() && !devProfi() && !p_plus3On() &&
+    if (!p_hasSD()) return false;
+    if (a == A_NEXT || a == A_ELM) return true;
+    return !devOwnBus() && !devProfi() && !p_plus3On() &&
            a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
 }
 static bool p_mb02Row() {
