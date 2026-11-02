@@ -373,7 +373,11 @@ bool memWrite(uint16_t a, uint8_t v) {
             if (Hgfx::reg(Hgfx::REG_MODE) == 1) { wasRead = s_rdArmed; src = s_rdOff; s_rdArmed = false; }
             Hgfx::writeVram(off, v, wasRead, src);
         }
-        return true;
+        // The store lands in RAM too: a read of the window returns what was written.
+        // HGFXCUBE clears its buffer with #FF at #E000 and a Z80 DMA copy #E000 ->
+        // #E001; swallowed, the copy spread the old 0 and drew nothing (HGFX-6EN: the
+        // ROM's scroll reads back the bytes it wrote to the screen).
+        return false;
     case W_REG: {
         const uint8_t r = (uint8_t)a;
 #if HOST_BUILD
