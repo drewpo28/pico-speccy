@@ -104,6 +104,7 @@ static void windowsRebuild() {
 // below it (HE2025: #2300) costs nothing there.
 volatile uint8_t g_elm_vram_rd;
 static uint16_t s_rdOff;
+static uint8_t s_rdVal;              // the byte that read returned
 static bool s_rdArmed, s_rdFast = true;
 static void readHookUpdate() {
     const bool on = s_r && Hgfx::mode >= 3 && !(Hgfx::g20 & 0x80) && Hgfx::reg(Hgfx::REG_MODE) == 1;
@@ -118,6 +119,7 @@ bool fastReadOk() { return s_rdFast; }
 void memRead(uint16_t a) {
     if (s_r->win[a >> 8] != W_VRAM) return;
     s_rdOff = (uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8));
+    s_rdVal = MemESP::readbyte(a);
     s_rdArmed = true;
 }
 
@@ -370,7 +372,11 @@ bool memWrite(uint16_t a, uint8_t v) {
             const uint16_t off = (uint16_t)(a - ((uint16_t)s_r->g[0x021] << 8));
             bool wasRead = false;
             uint16_t src = 0xFFFF;
-            if (Hgfx::reg(Hgfx::REG_MODE) == 1) { wasRead = s_rdArmed; src = s_rdOff; s_rdArmed = false; }
+            // The copy needs the written byte to be the one read (HGFX-6EN: "The read value
+            // must match the subsequently written value", else the write-only method). The
+            // ROM's PRINT reads the screen byte and writes the new character row: HGFXTEXT's
+            // INVERSE " COLOR " in random colours came out as a copy of the old grey.
+            if (Hgfx::reg(Hgfx::REG_MODE) == 1) { wasRead = s_rdArmed && v == s_rdVal; src = s_rdOff; s_rdArmed = false; }
 #if HOST_BUILD
             if (getenv("PICOSPECCY_ELMVLOG")) Debug::log("[VRAM] %04X=%02X g20=%02X m=%u rd=%d src=%04X pc=%04X oxy=%d,%d sxy=%d,%d vp=%02X", off, v, Hgfx::g20, Hgfx::reg(1), (int)wasRead, src, Z80::getRegPC(), (int16_t)(Hgfx::reg(5) | Hgfx::reg(6) << 8), (int16_t)(Hgfx::reg(7) | Hgfx::reg(8) << 8), (int16_t)(Hgfx::reg(9) | Hgfx::reg(10) << 8), (int16_t)(Hgfx::reg(11) | Hgfx::reg(12) << 8), Hgfx::reg(0));
 #endif
