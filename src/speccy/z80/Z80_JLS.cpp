@@ -867,7 +867,35 @@ static inline __attribute__((always_inline)) void nextIdleNote() {
 }
 
 // noinline: called from ~30 handlers, which Z80::exec_nocheck_next inlines.
+#if ZC_PORT_TRACE
+// esxDOS calls from RAM (RST 8 + function byte) and what they returned: with the
+// SPI command lines above this shows which call lost the card (PF2026 streaming,
+// 2026-11-02). F_READ (#9D) is only counted: a load makes thousands of them.
+static uint16_t s_esxRet, s_esxReads;
+static uint8_t s_esxFn;
+static uint16_t s_esxN;
+static Z80_COLD void esxCallNote(uint16_t pc, uint8_t fn) {
+    s_esxFn = fn; s_esxRet = (uint16_t)(pc + 2);
+    if (fn == 0x9D) { s_esxReads++; return; }
+    if (s_esxN >= 400) return;
+    s_esxN++;
+    Debug::log("[ESX] %04X fn %02X A=%02X BC=%04X DE=%04X HL=%04X IX=%04X reads=%u", pc, fn, Z80::getRegA(),
+               Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL(), Z80::getRegIX(), (unsigned)s_esxReads);
+}
+static Z80_COLD void esxRetNote() {
+    const bool cf = Z80::isCarryFlag();
+    s_esxRet = 0;
+    if (s_esxFn == 0x9D && !cf) return;
+    if (s_esxN >= 400) return;
+    s_esxN++;
+    Debug::log("[ESX]   <- %02X cf=%d A=%02X BC=%04X DE=%04X HL=%04X", s_esxFn, (int)cf, Z80::getRegA(),
+               Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL());
+}
+#endif
 IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
+#if ZC_PORT_TRACE
+    if (__builtin_expect(s_esxRet != 0, 0) && REG_PC == s_esxRet) esxRetNote();
+#endif
 
     // TS-Conf owns its window-0 mapping (Page0/MemConfig) — the generic code
     // below writes ramCurrent[0]/romInUse directly and calls recoverPage0(),
@@ -3271,6 +3299,9 @@ Z80_COLD void nxErrPoll() {
 #endif
 
 void Z80::decodeRST() {    /* RST p */
+#if ZC_PORT_TRACE
+    if (opCode == 0xCF && REG_PC >= 0x4000) esxCallNote((uint16_t)(REG_PC - 1), Z80Ops::peek8(REG_PC));
+#endif
 #if NEXT_TRACE
     // Every RST 8 on the Next goes into a ring for nxErrPoll() (error M hunt,
     // 2026-10-07: NextZXOS's TAP loader ends in "M RAMTOP no good").
