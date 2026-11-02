@@ -12,6 +12,7 @@ enum { REG_VP = 0, REG_MODE, REG_CMD, REG_INDEX, REG_MASK, REG_OX, REG_OY = 7, R
        REG_SY = 0x0B, REG_FEATURE = 0x0D, REG_PAPER, REG_FILLMASK, REG_WX, REG_WY = 0x12,
        REG_WW = 0x14, REG_WH = 0x16, REG_COUNT = 0x18 };
 enum { WIDTH = 256, HEIGHT = 192, BUF1 = 0x10000, BUF_SIZE = 0x20000, COLOURS = 768 };
+enum { HRXC_TABLE = 0x3C00, HRXC_BYTES = 96 };   // HRXC: 32 colours at #7C00 of the screen
 
 // The bit-level rules, firmware-free for tools/elm_hgfx_test.cpp.
 static inline uint8_t planar(uint8_t oldPix, uint8_t newPix, uint8_t mask) {
@@ -31,6 +32,7 @@ extern uint8_t  radBank, radPad, keyColour;
 extern uint16_t radOffset;
 extern const uint8_t* keyTop;     // KeyLayer: the screens, or nullptr
 extern const uint8_t* keyBottom;
+extern const uint8_t* hrxcTable;  // HRXC: the colour table latched at the frame start
 
 bool    ensure();             // the buffers (PSRAM), first use
 void    setMode(uint8_t m);   // g_zxi_001

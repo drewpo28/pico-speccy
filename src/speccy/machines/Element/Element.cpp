@@ -39,7 +39,9 @@ static const uint8_t kInterfaceId = 0xE1;     // "hE1 for eLeMeNt ZX, board v1.x
 static uint8_t s_gIdx, s_eIdx, s_uIdx;
 static uint8_t s_corePos;
 // 1 KB, on the heap: only this machine pays for them.
-struct Regs { uint8_t g[256], e[256], u[256], win[256]; };
+// hrxc: the HRXC colour table as this frame's picture uses it (the Reference: the
+// palette is taken at the start of the frame, a change during the display waits).
+struct Regs { uint8_t g[256], e[256], u[256], win[256], hrxc[Hgfx::HRXC_BYTES]; };
 static Regs* s_r;
 
 // URAM. Four Zones of two 8K Areas, each with its own 16-bit page; #73 picks the Zone
@@ -57,20 +59,25 @@ static uint16_t s_slotPage[8];        // HGFX Area: its 8K step in the Zone
 uint8_t* wrKind;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
-enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA };
+enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC };
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void readHookUpdate();
 static void windowsRebuild() {
     uint8_t* w = s_r->win;
     memset(w, 0, 256);
-    if (Hgfx::mode && !(Hgfx::g20 & 0x80)) {
+    // HGFX modes only: under HRC / HRXC #4000-#7BFF is their screen, plain RAM, and the
+    // HGFX register page #5B sits in its pixels.
+    if (Hgfx::mode >= 3 && !(Hgfx::g20 & 0x80)) {
         const uint8_t v = s_r->g[0x021];
         for (int i = 0; i < Hgfx::vramPages(); i++) w[(uint8_t)(v + i)] = W_VRAM;
         const uint8_t c = s_r->g[0x023];
         for (int i = 0; i < 3; i++) w[(uint8_t)(c + i)] = W_COL;
         w[s_r->g[0x022]] = W_REG;
     }
+    // HRXC: its colour table sits at #7C00 of the shown screen, plain RAM; a write
+    // before the picture starts still reaches this frame's palette.
+    if (Hgfx::mode == 2) for (const uint8_t h : { 0x7C, 0xFC }) if (!w[h]) w[h] = W_HRXC;
     if (s_r->g[0x040] & 1) w[s_r->g[0x041]] = W_FDMA;
     if ((s_r->g[0x060] & 0x81) == 1) w[s_r->g[0x061]] = W_LCU2;
     if ((s_r->g[0x048] & 0x81) == 1) w[s_r->g[0x049]] = W_SDMA;
@@ -93,7 +100,7 @@ volatile uint8_t g_elm_vram_rd;
 static uint16_t s_rdOff;
 static bool s_rdArmed, s_rdFast = true;
 static void readHookUpdate() {
-    const bool on = s_r && Hgfx::mode && !(Hgfx::g20 & 0x80) && Hgfx::reg(Hgfx::REG_MODE) == 1;
+    const bool on = s_r && Hgfx::mode >= 3 && !(Hgfx::g20 & 0x80) && Hgfx::reg(Hgfx::REG_MODE) == 1;
     const bool fast = !on;   // COPY: every read of a window at #4000+ must reach memRead
     const bool was = g_elm_vram_rd != 0, wasFast = s_rdFast;
     g_elm_vram_rd = on;
@@ -304,6 +311,10 @@ void remap() {
     windowsRebuild();
 }
 
+static void hrxcLatch() {
+    if (Hgfx::mode == 2) memcpy(s_r->hrxc, VIDEO::grmem + Hgfx::HRXC_TABLE, Hgfx::HRXC_BYTES);
+}
+
 // KeyLayer: the screen #7FFD bit 3 shows is on top, the other shines through its key
 // colour. g_zxi_002 bit 0 puts the first screen in page 6 instead of 5.
 void frameEnd() {
@@ -318,7 +329,9 @@ void frameEnd() {
     Hgfx::radOffset = (uint16_t)(s_r->u[0x41] | (s_radHi << 8));
     Hgfx::radPad = s_r->u[0x42];
     Hgfx::radBank = s_r->u[0x43] & 3;
+    Hgfx::hrxcTable = s_r->hrxc;
     Hgfx::frameEnd();
+    hrxcLatch();                          // the next frame starts with the table as it is now
     ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
     ElmSid::frameEnd(ESPectrum::samplesPerFrame);
 }
@@ -384,6 +397,13 @@ bool memWrite(uint16_t a, uint8_t v) {
 #endif
         if ((uint8_t)a < ElmSdma::REG_BYTES) { sdCatch(); ElmSdma::write((uint8_t)a, v); }
         return false;
+    case W_HRXC: {
+        const uint8_t* p = MemESP::ramCurrent[a >> 13] + (a & 0x1FFF);
+        const uint8_t* t = VIDEO::grmem + Hgfx::HRXC_TABLE;
+        if (p >= t && p < t + Hgfx::HRXC_BYTES && (int)(CPU::tstates >> ESPectrum::multiplicator) < VIDEO::tStatesScreen)
+            s_r->hrxc[p - t] = v;
+        return false;
+    }
     case W_LCU2:
         ElmLcu::write(s_lcu2, (uint8_t)a, v);
         lcu2Publish();
@@ -500,7 +520,8 @@ static void gWrite(uint8_t r, uint8_t v) {
         s_r->g[r] = v;
         const uint8_t was = Hgfx::mode;
         Hgfx::setMode(v);
-        if (v && !was && Hgfx::ensure()) hgfxOpen();
+        if (v >= 3 && was < 3 && Hgfx::ensure()) hgfxOpen();
+        hrxcLatch();
         windowsRebuild();
         return;
     }

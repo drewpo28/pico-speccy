@@ -26,6 +26,7 @@ uint8_t radBank, radPad, keyColour;
 uint16_t radOffset;
 const uint8_t* keyTop;
 const uint8_t* keyBottom;
+const uint8_t* hrxcTable;
 
 static inline bool keyIs(uint8_t c) {
     return c == keyColour || (!(keyColour & 7) && !(c & 7));   // black has no bright
@@ -825,7 +826,7 @@ static void frameSetup() {
         memset(hist, 0, 256 * sizeof(uint32_t));
         if (mode == 2) {
             n = 32;
-            const uint8_t* ct = VIDEO::grmem + 0x3C00;
+            const uint8_t* ct = hrxcTable ? hrxcTable : VIDEO::grmem + HRXC_TABLE;
             for (int i = 0; i < 32; i++) rgb[i] = tableRgb(ct + i * 3);
             const uint8_t* at = VIDEO::grmem + 0x3000;
             for (int i = 0; i < 3072; i += 3) { hist[at[i] & 15]++; hist[16 | (at[i] >> 4)]++; }

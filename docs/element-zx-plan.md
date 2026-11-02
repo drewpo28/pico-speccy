@@ -206,7 +206,18 @@ HGFX 6/7, Pentagon hi-res, первый экран в странице 6 (по �
 Локалы frameSetup / wantPairFor2 / pairPalette (3 КБ) теперь в блоке `Hot` (куча, только Element); остаток пути
 общий с SAM/Profi/GMX, где он hw-proven. perf12 hw-confirmed DVp2w: HGFXBIRD и Nether Earth запускаются. Правило: в `frameEnd`-пути HGFX больше ни одного
 массива на стеке — драйвер пар под ним берёт 2 КБ.
-Не сделано: PlanarWorkingWindow для chunky, смена палитры HRXC по кадру точно.
+Все пункты фазы 4 закрыты 2026-11-02 (ниже). **PlanarWorkingWindow для chunky — не применяется по Reference:** chunky-доступ
+«reflects OffsetY, PlanarMask, bit1 and bit2 of register 0» (плюс бит 4, прозрачность), окна в списке нет; `chunkyWrite` так и
+делает. Вики (`hgfx:porty_registry`) описывает старую версию без `h10-h17`.
+**Палитра HRXC по кадру** (2026-11-02, стенд, NOT hw-tested): Reference — «palette is always updated at the beginning of the frame,
+changing it during the display process has no effect». Таблица (`#7C00` показываемого экрана, 96 B) защёлкивается в конце кадра
+(`Regs::hrxc`, куча), запись в неё до `tStatesScreen` ещё попадает в этот кадр (окно `W_HRXC` на `#7C`/`#FC`, только в режиме 2),
+после — ждёт следующего. Пара строится из защёлки. Тест `tools/elm_tests/hrxcpal.asm`: красный в начале кадра, зелёный после
+начала картинки -> PAPER красный.
+**Окна HGFX открывались и в HRC/HRXC** (найдено тем же тестом): `windowsRebuild` ставил VRAM `#40-#57`, регистры `#5B` и цвета `#5C`
+при любом `mode != 0`, а в HRC/HRXC это пиксели их экрана. Байт в `#5B04` становился PlanarMask, и дальше запись пикселей съедал
+движок HGFX. Теперь окна, хук чтения COPY и `hgfxOpen` только при `mode >= 3`. HRXCIMGS заметно чище (раньше блочные пятна
+чужих цветов в небе и листве), KLAYTEST и TOCHIHRC покадрово те же, HRCDEMO отличается одной клеткой шума.
 **ULA+ `Extra`** (2026-11-02, стенд, NOT hw-tested): группа `10` порта `#BF3B` (в Reference «proposal, not approved yet») — данные
 `#FF3B` = `g_zxi_001`, чтение отдаёт его же; группы 00/01 идут в общий ULA+. Свой регистр группы (`s_ulapReg`): общий ULA+ хранит
 его только при `Config::ulaplus`. Тест `tools/elm_tests/ulaextra.asm`. По пути: после выхода из HRC/HRXC (парный кадр) бордюр
