@@ -626,110 +626,115 @@ void FileUtils::reopenMedia() {
     if (IDE::scheme != IDE::OFF) IDE::init();  // reopen IDE images after remount
 }
 
+// The last n characters, "" for a shorter name: `substr(size() - n)` on a name of
+// one to three characters threw out_of_range (= abort on the board) from every
+// extension test below, i.e. any such file in a listing, or a remembered tape name.
+static inline string tailOf(const string& s, size_t n) { return s.size() >= n ? s.substr(s.size() - n, n) : string(); }
+
 bool FileUtils::hasSNAextension(const string& filename)
 {
 
-    if (filename.substr(filename.size()-4,4) == ".sna") return true;
-    if (filename.substr(filename.size()-4,4) == ".SNA") return true;
+    if (tailOf(filename, 4) == ".sna") return true;
+    if (tailOf(filename, 4) == ".SNA") return true;
     return false;
 }
 
 bool FileUtils::hasZ80extension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".z80") return true;
-    if (filename.substr(filename.size()-4,4) == ".Z80") return true;
+    if (tailOf(filename, 4) == ".z80") return true;
+    if (tailOf(filename, 4) == ".Z80") return true;
     return false;
 }
 
 bool FileUtils::hasNEXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".nex") return true;
-    if (filename.substr(filename.size()-4,4) == ".NEX") return true;
+    if (tailOf(filename, 4) == ".nex") return true;
+    if (tailOf(filename, 4) == ".NEX") return true;
     return false;
 }
 
 bool FileUtils::hasPextension(const string& filename)
 {
-    if (filename.substr(filename.size()-2,2) == ".p") return true;
-    if (filename.substr(filename.size()-2,2) == ".P") return true;
+    if (tailOf(filename, 2) == ".p") return true;
+    if (tailOf(filename, 2) == ".P") return true;
     return false;
 }
 
 bool FileUtils::hasSPGextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".spg" || e == ".SPG";
 }
 
 bool FileUtils::hasPSSextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".pss" || e == ".PSS";
 }
 
 bool FileUtils::hasRZXextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".rzx" || e == ".RZX";
 }
 
 bool FileUtils::hasTAPextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".tap") return true;
-    if (filename.substr(filename.size()-4,4) == ".TAP") return true;
+    if (tailOf(filename, 4) == ".tap") return true;
+    if (tailOf(filename, 4) == ".TAP") return true;
     return false;
 }
 
 bool FileUtils::hasTZXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".tzx") return true;
-    if (filename.substr(filename.size()-4,4) == ".TZX") return true;
+    if (tailOf(filename, 4) == ".tzx") return true;
+    if (tailOf(filename, 4) == ".TZX") return true;
     return false;
 }
 
 bool FileUtils::hasPZXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".pzx") return true;
-    if (filename.substr(filename.size()-4,4) == ".PZX") return true;
+    if (tailOf(filename, 4) == ".pzx") return true;
+    if (tailOf(filename, 4) == ".PZX") return true;
     return false;
 }
 
 bool FileUtils::hasCSWextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".csw" || e == ".CSW";
 }
 
 bool FileUtils::hasEPTextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".ept" || e == ".EPT";
 }
 
 bool FileUtils::hasWAVextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".wav") return true;
-    if (filename.substr(filename.size()-4,4) == ".WAV") return true;
+    if (tailOf(filename, 4) == ".wav") return true;
+    if (tailOf(filename, 4) == ".WAV") return true;
     return false;
 }
 
 bool FileUtils::hasMP3extension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".mp3") return true;
-    if (filename.substr(filename.size()-4,4) == ".MP3") return true;
+    if (tailOf(filename, 4) == ".mp3") return true;
+    if (tailOf(filename, 4) == ".MP3") return true;
     return false;
 }
 
 bool FileUtils::hasZIPextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    if (filename.substr(filename.size()-4,4) == ".zip") return true;
-    if (filename.substr(filename.size()-4,4) == ".ZIP") return true;
+    if (tailOf(filename, 4) == ".zip") return true;
+    if (tailOf(filename, 4) == ".ZIP") return true;
     return false;
 }
 
