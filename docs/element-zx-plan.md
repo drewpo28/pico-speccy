@@ -206,7 +206,11 @@ HGFX 6/7, Pentagon hi-res, первый экран в странице 6 (по �
 Локалы frameSetup / wantPairFor2 / pairPalette (3 КБ) теперь в блоке `Hot` (куча, только Element); остаток пути
 общий с SAM/Profi/GMX, где он hw-proven. perf12 hw-confirmed DVp2w: HGFXBIRD и Nether Earth запускаются. Правило: в `frameEnd`-пути HGFX больше ни одного
 массива на стеке — драйвер пар под ним берёт 2 КБ.
-Не сделано: ULA+ `Extra`, PlanarWorkingWindow для chunky, смена палитры HRXC по кадру точно.
+Не сделано: PlanarWorkingWindow для chunky, смена палитры HRXC по кадру точно.
+**ULA+ `Extra`** (2026-11-02, стенд, NOT hw-tested): группа `10` порта `#BF3B` (в Reference «proposal, not approved yet») — данные
+`#FF3B` = `g_zxi_001`, чтение отдаёт его же; группы 00/01 идут в общий ULA+. Свой регистр группы (`s_ulapReg`): общий ULA+ хранит
+его только при `Config::ulaplus`. Тест `tools/elm_tests/ulaextra.asm`. По пути: после выхода из HRC/HRXC (парный кадр) бордюр
+оставался значением парной таблицы (коричневый) — выход из extra video теперь пересчитывает бордюр всегда.
 **Индексный бордюр** (2026-11-02, стенд, NOT hw-tested): `g_zxi_020` бит 1 при HGFX 1-7 — бордюр `#FE` 0..7 = индекс таблицы
 HGFX (`Hgfx::borderSlot` в `updateBorderBrd`, и поверх ULA+). Слот бордюра сверяется в конце кадра (`borderFollow`): смена цвета,
 перепрограммирование, пара. В парном кадре HGFX 2 индекс бордюра добавлен в гистограмму с весом 2000 (из 4104 выборок), иначе

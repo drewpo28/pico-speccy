@@ -604,11 +604,12 @@ int borderSlot(uint8_t zx) {
 }
 
 // The border word follows the palette: a colour change of index 0..7 moves no slot,
-// but a full reprogram or a pair switch can.
-static void borderFollow() {
+// but a full reprogram or a pair switch can. force: the extra video just ended, and a
+// pair frame (HRC) left brd on a pair-table entry (a brown border after HRC).
+static void borderFollow(bool force = false) {
     static bool s_was;
     const bool on = indexedBorder();
-    if (!on && !s_was) return;
+    if (!on && !s_was && !force) return;
     s_was = on;
     const uint32_t old = VIDEO::brd;
     if (!on && VIDEO::ulaplus_enabled) VIDEO::ulaPlusUpdateBorder(); else VIDEO::updateBorderBrd();
@@ -876,7 +877,7 @@ void frameEnd() {
             if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); }
             VIDEO::applyPalette();
             VIDEO::brdChange = VIDEO::brdnextframe = true;
-            borderFollow();
+            borderFollow(true);
         }
         Debug::log("[ELM] extra video %s (mode %u key %d rad %d)", want ? "on" : "off", mode, keyBottom != nullptr, (int)radastan);
     }

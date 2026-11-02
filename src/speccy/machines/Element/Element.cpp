@@ -130,6 +130,9 @@ static uint8_t* uramPtr(uint16_t page);
 static int audioPos() { return (int)((CPU::tstates / ESPectrum::audioCOVOXDivider) >> ESPectrum::multiplicator); }
 static void sdCatch() { ElmSdma::renderTo(audioPos()); }
 static uint8_t s_sidIdx;
+// ULA+ register port as the Extra group sees it: the generic ULA+ keeps its own copy
+// only while Config::ulaplus is on.
+static uint8_t s_ulapReg;
 static inline uint8_t* uramByte(uint32_t a) {
     uint8_t* p = uramPtr((uint16_t)(a >> 13));
     return p ? p + (a & 0x1FFF) : nullptr;
@@ -423,6 +426,7 @@ void reset() {
     ElmSid::setParams(0);   // e_zxi_019 = 0: 6581, PAL
     ElmSid::mute(false);
     s_sidIdx = 0;
+    s_ulapReg = 0;
     s_scan = 0; s_scanHeld = false;
     s_lifoTop = 0;
     memset(s_dac, 0, sizeof(s_dac)); s_dacUsed = 0;
@@ -681,6 +685,10 @@ bool portIn(uint16_t a, uint8_t* out) {
     case 0x9FFD: *out = VIDEO::timex_port_ff;        return true;   // #FF, readable
     case 0x133B: *out = uartStatus();                return true;
     case 0x143B: *out = Config::zifi_enabled ? ZiFi::uart16550Read(0xF8) : 0xFF; return true;
+    case 0xFF3B:                                     // ULA+ Extra group: g_zxi_001
+        if ((s_ulapReg & 0xC0) != 0x80) return false;
+        *out = s_r->g[0x001];
+        return true;
     case 0x6C3B: *out = s_sidIdx;                    return true;
     case 0x6D3B: ElmSid::renderTo(audioPos()); *out = ElmSid::read(s_sidIdx); return true;
     // TSFM mirror: #7F3B = #FFFD (select, status), #7E3B = #BFFD (data). The Reference
@@ -733,6 +741,13 @@ bool portOut(uint16_t a, uint8_t v) {
             ESPectrum::SAAGetSample();
             if (a & 0x0100) saaChip->selectRegister(v); else saaChip->setRegisterData(v);
         }
+        return true;
+    // ULA+ Extra group (10): the data byte is g_zxi_001, the extra graphics mode. A
+    // proposal in the Reference ("not approved yet"); groups 00 and 01 stay generic.
+    case 0xBF3B: s_ulapReg = v;                      return false;
+    case 0xFF3B:
+        if ((s_ulapReg & 0xC0) != 0x80) return false;
+        gWrite(0x001, v & 0x3F);
         return true;
     case 0x6C3B: s_sidIdx = v;                       return true;
     case 0x6D3B: ElmSid::renderTo(audioPos()); ElmSid::write(s_sidIdx, v); return true;
