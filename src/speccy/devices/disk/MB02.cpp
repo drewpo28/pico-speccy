@@ -10,6 +10,7 @@
 #include "wd1793.h"
 #include "speccy/devices/Z80DMA.h"
 #include "speccy/roms/mb02boot.h"
+#include "speccy/devices/storage/DivMMC.h"   // page 0 arbitration with the divMMC window
 #include "app/CodeOverlay.h"   // claimForDma: the DMA code window must be resident before dma_mode is set
 
 bool MB02::enabled = false;
@@ -36,9 +37,14 @@ void MB02::init() {
     MemESP::mb02_page_dirty = nullptr;
     Z80DMA::mb02_deferred = false;
 
-    // Unmap SRAM/EPROM when disabling
-    MemESP::divmmc_mapped = false;
+    // Unmap SRAM/EPROM when disabling — unless the divMMC window is mapped right
+    // now (a toggle from the menu while the guest sits in esxDOS): page 0 is its.
+    if (DivMMC::enabled && (DivMMC::automap || DivMMC::conmem)) {
+        MemESP::mb02_write_gate = true;
+        MemESP::mb02_page_dirty = nullptr;
+    } else
     if (Config::arch == A_NEXT && MemESP::nextRamReady) {
+        MemESP::divmmc_mapped = false;
         // Next: page 0 belongs to the MMU / TBBLUE config window —
         // recoverPage0() would plug the legacy fallback ROM over slots 0/1.
         // Found the hard way (hw 2026-08-09): setup() arms the TBBLUE bootrom
@@ -51,6 +57,7 @@ void MB02::init() {
         MemESP::applyMMU(1, MemESP::mmu[1]);
         MemESP::applyNextConfigWindow();
     } else {
+        MemESP::divmmc_mapped = false;
         MemESP::recoverPage0();
     }
 
@@ -168,6 +175,11 @@ void MB02::applyMapping() {
     bool eprom_en = paging_reg & MB02_EPROM_ENABLE;
 
     write_enabled = (paging_reg & MB02_WRITE_ENABLE) != 0;
+    // Beside esxDOS (allowed since 2026-11-03, the eLeMeNt's "divSD + MB02+" shape):
+    // while the divMMC window is mapped it owns page 0 and its write gate; the
+    // register written here is kept and applied when that window drops
+    // (DivMMC::applyMapping calls back).
+    if (DivMMC::enabled && (DivMMC::automap || DivMMC::conmem)) return;
     MemESP::mb02_write_gate = write_enabled || !enabled;
 
     MemESP::mb02_page_dirty = nullptr;  // set below only when an SRAM page is mapped

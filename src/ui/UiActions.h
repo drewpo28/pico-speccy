@@ -28,7 +28,6 @@ void act_dckInsert();
 void act_if2Insert();
 void act_if2Eject();
 void act_dckEject();
-void act_elmSetup();      // eLeMeNt ZX: restart into the SetUp ROM
 void act_tapePlayStop();
 void act_tapeBrowser();
 // The slot editors are LEVELS of the new menu, not modals: build fills the row pool,
@@ -40,6 +39,8 @@ void slots_buildSam(DynRows& d);
 void slots_buildEp(DynRows& d);
 void slots_buildEsx(DynRows& d);
 void slots_buildIde(DynRows& d);
+void slots_buildZc(DynRows& d);
+void slots_keyZc(int32_t slot, uint8_t key);
 void slots_keyBeta(int32_t slot, uint8_t key);
 void slots_keyMb02(int32_t slot, uint8_t key);
 void slots_keyP3(int32_t slot, uint8_t key);

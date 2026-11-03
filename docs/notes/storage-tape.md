@@ -1191,7 +1191,7 @@ Owner's ask (eLeMeNt session, but machine-independent): the Z-Controller back in
 eLeMeNt's Devices, esxDOS + Z-Controller and esxDOS + MB-02+ no longer mutually
 exclusive, a partition of the SD card (or an image) for the ZC / DivSD / DivIDE the way
 an IDE slot is served "straight off the SD" (IdeMbr.h, above). Test ELF
-`debug/DVp2w-elm-zc2-1.1.1` (build 2026-11-03 21:43). Bench: 48K + esxDOS DivSD on
+`debug/DVp2w-elm-zc2-1.1.1` (build 2026-11-03 22:15). Bench: 48K + esxDOS DivSD on
 partition 1 + ZC on partition 2 of one `--sd card.img` — esxDOS `.tapein` loads the test
 tape off partition 1 and the BASIC program driving #77/#57 prints partition 2's label
 ("ZCPART2"), the same with the ZC on an image file, and with the ZC on a LOGICAL
@@ -1268,6 +1268,33 @@ only without `zc_img`; 0/0 = the whole card overlaps everything); the rows carry
 prints "Z-Controller: window a+b shares sectors with esxDOS's c+d" at boot for a config
 that already overlaps (both default to the whole card). Host: 48K + DivSD 2048/65536 + ZC
 2048/65536 prints the line, ZC 67584/32768 does not. Flash +720 B, SRAM 0.
+
+Right-pane verbs (owner, hw 2026-11-03 22:55: the esxDOS Disks level said "F2 Write
+protect" while F2 opened the window prompt — the generic dynamic-level list, which was
+already wrong for esxDOS's .mmc rows, where F2 does nothing): `esxInfo` / `zcInfo` in
+UiActions.cpp give every row its own verb list through `DynRows::info` (the Bluetooth
+panel's mechanism): DivSD = Pick / F2 Type start-length / F8 The whole card; DivIDE hd0
+on the card = Image or SD card / F2 SD window / F6 SD read-write / F8 Eject; hd0 image
+or hd1 and the .mmc rows = Mount a file / F8 Eject; ZC on the card = Image or SD card /
+F2 SD window / F8 The whole card, on an image = Image or SD card / F8 Eject.
+
+**F2 = write protect, F9 = the window (owner, 2026-11-03 23:xx; bench-tested, NOT
+hw-tested).** The owner wanted F2 to mean the same on IDE / esxDOS / ZC rows as on a
+Beta drive, and the CHS / SD-window prompt moved to F9 (UiNav.cpp now decodes VK_F9 as
+a per-row verb). State: `Config::ide_wp` / `esx_wp` (bit = slot; DivSD = bit 0),
+`Config::zc_wp` (NVS `ide_wp`, `esx_wp`, `zc_wp`). A card WINDOW keeps `ide_raw` /
+`esx_raw` 1-2 as its write side: F2 there is the old raw-write confirmation
+(`ideToggleWrite` / `esxToggleWrite`, Default No); F6 is gone. Enforcement: IDE.cpp
+`writeProtected(slot)` refuses WRITE SECTOR with ABRT (plus the belt-and-braces test in
+`write_sector_done`); DivIDE `DivMMC::ideWriteProtected(d)` the same; DivSD / .mmc / the
+ZC set `Medium::ro` from the bit at open time, `storeSector` drops the block (one log
+line "SD wr: refused, the medium is write-protected") and `mmcWriteResponse` answers
+0x0D "data rejected" instead of 0x05, so the SD driver sees the write fail. The rows all
+carry a WP badge (the raw IDE / hd0 rows' RO badge became WP; "shared" moved into the
+value text). The F2 toggle re-runs `IDE::init()` / `DivMMC::init()` / `zcMedium()`.
+Host: 48K + ZC on partition 2, scratchpad `ZCWR.TAP` (CMD0, CMD24 to sector 30000 of
+the medium, 512 x 'A', prints the data-response token): `zc_wp=true` -> RESP=13 and the
+log line, `zc_wp=false` -> RESP=5 and `ZC/DivSD wr sec=97584 res=0`.
 
 F5 (the firmware's browser) shows only partition 1: FatFs with `FF_MULTI_PARTITION 0`
 mounts the first FAT partition of the card and nothing else, so a ZC/IDE partition is the

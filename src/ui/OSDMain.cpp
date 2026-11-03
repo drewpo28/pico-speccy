@@ -7260,10 +7260,19 @@ static void buildEmulatorInfoText() {
             }
         }
 
-        // Z-Controller (mutually exclusive with esxDOS/MB-02+, hence its own row)
-        if (Config::zcontroller)
-            pos += infoAppend(buf, pos, bufsz,
-                " Z-Controller   : On (#77/#57)\n");
+        // Z-Controller: its own card (DivMMC.h)
+        if (Config::zcontroller) {
+            const DivMMC::Medium& m = DivMMC::medium(DivMMC::CARD_ZC);
+            char zl[64];
+            if (!Config::zc_image.empty())
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) image\n");
+            else if (m.present)
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) SD %u+%u\n",
+                         (unsigned)m.base, (unsigned)m.sectors);
+            else
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) no card\n");
+            pos += infoAppend(buf, pos, bufsz, zl);
+        }
 
         // IDE/HDD (NEMO/PROFI/SMUC/IDEDOS/DivIDE) — indexed by IDE::Scheme
         if (Config::ide_scheme != 0) {

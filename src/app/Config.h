@@ -586,7 +586,24 @@ public:
     // Transfers normally take the real 32 us per byte, which is what lights the drive
     // lamp and keeps timed loaders honest. This collapses that for the impatient.
     static bool p3_fastdisk;
-    static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (mutually exclusive with esxDOS/MB-02+)
+    static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (its own card beside esxDOS: DivMMC.h)
+    // The media of the two SD interfaces, the way an IDE slot is served off the card
+    // (ide_raw below): esxDOS's card is the window esx_raw_lba/len of the real card
+    // (DivSD always; DivIDE hd0 when esx_raw != 0: 1 = read-only, 2 = writable, 0 =
+    // the hd0 image), the Z-Controller's is the image zc_image, or the window
+    // zc_raw_lba/len when that is empty. A length of 0 = to the end of the card, 0/0 =
+    // the whole card (what both did before the windows existed).
+    static uint8_t  esx_raw;
+    static uint32_t esx_raw_lba, esx_raw_len;
+    static string   zc_image;
+    static uint32_t zc_raw_lba, zc_raw_len;
+    // Write protect of the IDE / esxDOS / Z-Controller media, F2 on their rows the
+    // way a Beta drive has it: bit s of ide_wp / esx_wp = slot s (DivSD: bit 0 = the
+    // card), zc_wp = the ZC's image or window. A card window served to an IDE slot or
+    // DivIDE hd0 keeps its own ide_raw / esx_raw (1 = read-only, 2 = writable): that
+    // one starts read-only and its F2 goes through the raw-write confirmation.
+    static uint8_t  ide_wp, esx_wp;
+    static bool     zc_wp;
     static bool elm_aasram;  // eLeMeNt ZX: the AA-SRAM 2 MB expansion is fitted (e_zxi_038 bit 0, read at boot for the page strip)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)

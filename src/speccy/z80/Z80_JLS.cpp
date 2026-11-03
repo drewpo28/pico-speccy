@@ -4779,7 +4779,7 @@ Z80_COLD void Z80::zcInirBatch() {
         if (T < 16 || T > 40) break;
         if (!z80_in_nocheck || Config::numPcBP > 0 || Config::numPortReadBP > 0 ||
             Config::numMemWriteBP > 0 || Rzx::mode) break;
-        if (!DivMMC::cardSelected() || Z80Ops::isProfi || Z80Ops::isNext) break;
+        if (!DivMMC::cardSelected(DivMMC::CARD_ZC) || Z80Ops::isProfi || Z80Ops::isNext) break;
         if (g_ts_memcyc || g_scorp_even_m1 || g_len_m1 || g_timex_mmu || (g_tsconf_wr & 0x10)) break;
         bool cont = false;
         for (int i = 0; i < 8; i++) cont |= MemESP::ramContended[i];
@@ -4804,9 +4804,9 @@ Z80_COLD void Z80::zcInirBatch() {
         *mem_desc_t::bank_dirty[ds] = true;
         uint32_t o = hl & 0x1FFF;
         for (uint32_t i = 0; i < n; ) {           // data bytes in runs, the protocol bytes one by one
-            const uint32_t k = DivMMC::mmc_read_bulk(dp + o, n - i);
+            const uint32_t k = DivMMC::zc_read_bulk(dp + o, n - i);
             if (k) { o += k; i += k; }
-            else { dp[o++] = DivMMC::mmc_read(); i++; }
+            else { dp[o++] = DivMMC::zc_read_byte(); i++; }
         }
         DivMMC::zc_in_bytes += n;
         REG_HL = (uint16_t)(hl + n);

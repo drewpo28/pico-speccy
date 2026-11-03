@@ -380,11 +380,17 @@ boot»; FE (rescue режим флешеров) и FF ничего не меня
 DVp2w: после 4 МБ страниц в арене butter остаётся ~3.9 МБ (образ флеша 512 КБ, divMMC 512 КБ,
 HGFX, LCU, read-ahead) — смотреть строку `Buffer::initPools` в логе платы.
 
-**Идея владельца — ZC на втором разделе карты (как IDE через `IdeMbr`):** технически то же
-самое, что IDE «straight off the SD»: ZC получает свой SPI-автомат и базовый LBA второго
-раздела, DivSD остаётся на первом (там же FatFs хоста). Нужны: отдельный буфер сектора (512 Б
-SRAM), база/размер раздела в raw-путь ZC, снятие взаимоисключения esxDOS/ZC для этого случая
-и пункт в меню (раздел). Отдельная задача после hw-проверки AA-SRAM.
+**ZC на втором разделе карты — сделано 2026-11-03 (стенд, hw не проверено, `debug/DVp2w-elm-zc2-1.1.1`):**
+один SPI-автомат DivMMC и два носителя (`DivMMC::Medium`, `selectCard`): карта esxDOS (#E7/#EB)
+и карта ZC (#77/#57), у каждой своё окно реальной карты (раздел, primary или логический из цепочки
+EBR, либо вручную start/len) или файл-образ; буфер сектора общий (Z80 не может перемежать две
+SD-транзакции внутри блока). Меню: Devices > Z-Controller (вкл + «SD card / image»), Devices >
+esxDOS > «Disks hd0 / hd1» (для DivSD — строка «SD card: whole card / part N / window»; для DivIDE
+hd0 — образ или карта с RO/F6 как у IDE). Взаимоисключение esxDOS / MB-02+ / ZC снято; `e_02C`
+ставит ZC без оглядки на esxDOS. На стенде: 48K + esxDOS на разделе 1 + ZC на разделе 2 (и на
+логическом 5, и на образе) — esxDOS грузит ленту с раздела 1, BASIC-тест через #77/#57 читает
+метку раздела ZC. MB-02+ на eLeMeNt по-прежнему выключен (его 32 страницы легли бы на URAM), так что
+`e_001 = 02` всё ещё «= 01». Подробности: docs/notes/storage-tape.md, раздел «Two cards on one SPI machine».
 
 ## 5. Риски и решения владельца
 
@@ -402,8 +408,8 @@ SRAM), база/размер раздела в raw-путь ZC, снятие в�
 Код: `src/speccy/machines/Element/ElmFlash.{h,cpp}` (образ, автомат SST39SF040, FRAM, файлы),
 правки `Element.cpp` (раскладки 6 и E, `W_FLASH`/`W_FRAM`, `romsBind`, `divRomApply`, вход в SetUp,
 умолчания, FRAM при включении, счётчики), `DivMMC::setRom` + `g_elm_divrom`, `Elm::flush` в главном
-цикле и на пути перезагрузки (OSDMain), пункт Machine → eLeMeNt ZX → «SetUp (firmware)»
-(`act_elmSetup`). Тест `tools/elm_flash_test.cpp` (модель без прошивки) зелёный.
+цикле и на пути перезагрузки (OSDMain), вход в SetUp из Alt+F11 «Reset to…» (пункт
+Machine → eLeMeNt ZX → «SetUp (firmware)» владелец убрал 2026-11-03). Тест `tools/elm_flash_test.cpp` (модель без прошивки) зелёный.
 
 Проверено на стенде:
 
@@ -434,8 +440,8 @@ SRAM), база/размер раздела в raw-путь ZC, снятие в�
 - **Включение vs сброс**: FRAM `#2000+N → e_zxi_N` только при первом сбросе сессии (включение);
   F11 сохраняет регистры как есть (как плата). Пустой FRAM получает таблицу умолчаний и
   нулевые счётчики; PowerUp/Reset/Nmi/OnTime ведутся (`framCount`).
-- **Вход в SetUp**: Alt+F11 («Reset to…» → «SetUp (firmware)», аналог долгого reset на плате) или
-  Machine → eLeMeNt ZX → «SetUp (firmware)». Блок 7 как `rom[0..3]` + `g_elm_nodiv` (esxDOS не трапит #0000) до первого
+- **Вход в SetUp**: Alt+F11 («Reset to…» → «SetUp (firmware)», аналог долгого reset на плате;
+  пункт в меню Machine убран 2026-11-03). Блок 7 как `rom[0..3]` + `g_elm_nodiv` (esxDOS не трапит #0000) до первого
   OUT в порт eLeMeNt после сброса (SetUp начинает с `#7FFD`, затем `e_zxi_030`); заглушка на
   `#0000` портов не трогает. Пустой блок 7 → тост «SetUp not flashed: run FlashSetUp_V2.tap».
   На стенде вход — `PICOSPECCY_ELM_SETUP=1`.
@@ -443,5 +449,5 @@ SRAM), база/размер раздела в raw-путь ZC, снятие в�
 
 Проверка на DVp2w (владелец): esxDOS грузится как раньше; `.cd` в папку FLASHROM/FLASHESX,
 `LOAD *"FLASHESX.BAS"`, area 0 → «All successfully done», F12 → заставка esxDOS `MB03+SD`; `FlashSetUp_V2.tap` (с ленты или
-`.tapein`); Alt+F11 → SetUp (firmware) (или Machine → eLeMeNt ZX → SetUp) → первый экран; F12 → SetUp на месте; в логе
+`.tapein`); Alt+F11 → SetUp (firmware) → первый экран; F12 → SetUp на месте; в логе
 UART `[ELM] flash image …` без «no PSRAM for the 512 KB flash image».

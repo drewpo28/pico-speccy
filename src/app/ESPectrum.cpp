@@ -1560,8 +1560,9 @@ void ESPectrum::setup() {
   MB02::init();
   Debug::log2SD("setup: MB02::init done, enabled=%d freeHeap=%u",
                 (int)MB02::enabled, (unsigned)getFreeHeap());
-  // Z-Controller raw SD on ports 0x77/0x57 (mutually exclusive with esxDOS)
-  if (Config::zcontroller && !Config::esxdos && !Config::mb02) {
+  // Z-Controller raw SD on ports 0x77/0x57: its own card (a window of the SD card or
+  // an image) on DivMMC's SPI machine, beside esxDOS and MB-02+ (DivMMC.h)
+  if (Config::zcontroller) {
     Debug::log2SD("setup: DivMMC::zc_init");
     DivMMC::zc_init();
   }

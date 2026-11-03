@@ -695,11 +695,10 @@ static void applyRegs(const uint8_t* e, bool live) {
     if ((Config::tsfm != 0) != tsfm) { Config::tsfm = tsfm ? 1 : 0; subsys = true; note(tsfm ? "tsfm" : "tsfm-off"); }
     const bool saa = e[0x002] & 0x10;
     if (Config::SAA1099 != saa) { Config::SAA1099 = saa; subsys = true; note(saa ? "saa" : "saa-off"); }
-    // Z-Controller: on the board a second SD interface beside the divSD; here one card
-    // and the SD ports shared with esxDOS (the settings menu's esxDOS / MB-02+ / ZC
-    // exclusion), so the SetUp's ZC takes effect only while esxDOS is off.
-    const bool zc = e[0x02C] != 0 && Config::esxdos == 0;
-    if (e[0x02C] != 0 && Config::esxdos != 0) note("zc-held-by-esxdos");
+    // Z-Controller: on the board a second SD interface beside the divSD; here its own
+    // card (a window of the one SD card, or an image — Devices > Z-Controller) on
+    // DivMMC's SPI machine, so it runs beside esxDOS (DivMMC.h, since 2026-11-03).
+    const bool zc = e[0x02C] != 0;
     if (Config::zcontroller != zc) {
         Config::zcontroller = zc; note(zc ? "zc" : "zc-off");
         if (live) { if (zc) DivMMC::zc_init(); else DivMMC::zc_shutdown(); }

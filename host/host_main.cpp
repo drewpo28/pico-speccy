@@ -35,6 +35,7 @@
 #include "net/HttpsGet.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/gs/GS.h"
+#include "speccy/devices/storage/IDE.h"
 
 extern "C" {
 #include "drivers/graphics/graphics.h"
@@ -526,6 +527,18 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
                 }
             }
         }
+    }
+    // PICOSPECCY_MBR=1 lists the card's partitions the way the menu's source picker
+    // sees them (IDE::mbrParts: the four MBR entries and the EBR chain), once.
+    static bool mbrDone = false;
+    if (!mbrDone && presented == 10 && getenv("PICOSPECCY_MBR")) {
+        mbrDone = true;
+        IDE::MbrPart p[IDE::MBR_PARTS];
+        const int n = IDE::mbrParts(p);
+        fprintf(stderr, "host: mbr %d usable, card %u sectors\n", n, (unsigned)p[0].card);
+        for (int i = 0; i < IDE::MBR_PARTS; i++)
+            if (p[i].type) fprintf(stderr, "host: mbr part %d type %02X lba %u sectors %u\n",
+                                   i + 1, (unsigned)p[i].type, (unsigned)p[i].lba, (unsigned)p[i].sectors);
     }
     std::string base;
     if (shot && presented == parse(shot, base)) save(base);

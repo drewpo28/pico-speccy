@@ -604,7 +604,7 @@ Area1 = the 8 KB FRAM (`fram.bin`). ROMs `rom[0..3]` = blocks 0-3 of the Area, e
 (`DivMMC::setRom`), both bound at RESET only (FLASH2A returns to BASIC between blocks). FRAM `#2000+N` -> `e_zxi_N` at
 power-up only. URAM also on with `e_001 = #FF` (old FLASH6, SetUp). The MB03+SD esxDOS build needs the LIFO (`IN (#2B)` ->
 `OUT (#E3)`): defaults = the SetUp's table + Pentagon 1024. SetUp entry = block 7 as ROM + `g_elm_nodiv` until the first
-Element port write (Alt+F11 Reset to... > SetUp (firmware), or Machine > eLeMeNt ZX > SetUp; bench `PICOSPECCY_ELM_SETUP=1`). FLASHESX/FLASHZXD/FlashSetUp_V2,
+Element port write (Alt+F11 Reset to... > SetUp (firmware); the Machine-menu row was removed 2026-11-03; bench `PICOSPECCY_ELM_SETUP=1`). FLASHESX/FLASHZXD/FlashSetUp_V2,
 the flashed esxDOS, Area 3 boot, SetUp menu/R/L and ElCoreUp's graceful failure all ran on the bench. `tools/elm_flash_test.cpp`.
 **Personalities (2026-11-03, hw-confirmed DVp2w, committed ef5a1d58):** `e_zxi_000` is armed at reset only (`Elm::armPersonality`, FRAM at
 power-up, the live register after) into `g_elm_personality`; `Config::isElm48Raster/isElm128Raster/isElmPentRaster/isElmPlus3`
@@ -649,15 +649,18 @@ apply during setup() (Elm::reset runs twice there) ran the reconcile before the 
 on the mount state of the previous personality / ROM pick: after Shift+L (FRAM defaults: 07 -> 01, e_02D 1 -> 0) the SPI
 trace had no sector 0 read, two root sectors, two SYS sectors and a stray cluster, then "No such FILE or DIR". Now
 `DivMMC::init()` (the menu's Hard Reset). AWORLD (LnxPckg APP) wants 384 free 8 KB URAM pages in Protect mode = the
-AA-SRAM 4 MB machine (e_038 = 01); on 2 MB it says "Out of Memory" on every personality, not emulated. Z-Controller: one
-card here, the menu's esxDOS / MB-02+ / ZC exclusion, so the SetUp's ZC applies only with esxDOS off.
+AA-SRAM 4 MB machine (e_038 = 01); on 2 MB it says "Out of Memory" on every personality, not emulated. Z-Controller
+(2026-11-03, bench): its own card beside the divSD — a partition (primary or logical) of the one SD card, or an image,
+Devices > Z-Controller — on DivMMC's shared SPI machine (storage-tape.md "Two cards on one SPI machine"); the SetUp's
+e_zxi_02C now simply sets it. MB-02+ stays off on the eLeMeNt (it would take the URAM strip's last 32 pages), so
+e_zxi_001 = 02 (divSD + MB02+) is still = 01 here.
 **AA-SRAM (e_zxi_038, 2026-11-03, hw-confirmed DVp2w, AWORLD loads):** `Config::elm_aasram` (NVS) makes `wantedPages(A_ELM)` 256 (4 MB,
 512 URAM pages); the Protect pool follows the Reference table (ZX <= 512 KB: 128 / 384 pages at base 128; P1024: 64 at 128 /
 256 at 256; 4096: the whole URAM - "no Protect mode" - AWORLD's loader checks g_011/012 before it writes e_000 = 06
 itself, hw 2026-11-03), `poolIndex` wraps modulo for the 384. The 4096K bit (#7FFD bit 5, #DFFD/#FDFD bit 2) becomes
 #AFF7 extra bit 2 with the pack. e_zxi_001 00/03 -> esxdos 0, 01/02 -> 3 (NVS, boot-class; FE/FF untouched). Both are
 reboot-class: `Elm::rebootWanted()` makes the SetUp restart `esp_hard_reset` like a machine switch. AWORLD (needs 384
-pages) reaches its menu on the bench with the pack. Owner's idea for ZC: second card partition like IdeMbr, open.
+pages) reaches its menu on the bench with the pack. ZC on a second card partition: done 2026-11-03 (above).
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)

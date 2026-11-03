@@ -190,7 +190,8 @@
 #define TXT_MB02_DRIVES     "Drives 1-4"
 #define TXT_MB02_SNDLED     "Sound and LED"
 #define TXT_ESX_INTERFACE   "Interface"
-#define TXT_HW_ESX_IMAGES   "Images hd0 / hd1"
+#define TXT_HW_ESX_IMAGES   "Disks hd0 / hd1"
+#define TXT_ZC_CARD         "SD card / image"
 #define TXT_HW_ESXDOS       "esxDOS"
 #define TXT_HW_ZC           "Z-Controller"
 #define TXT_HW_IDE          "IDE / HDD"
@@ -208,6 +209,13 @@
                             "A wrong window or a bad write can\n" \
                             "damage the card and lose its files.\n" \
                             "Enable writes?"
+// esxDOS's card window and the Z-Controller's share sectors of the one SD card.
+#define TXT_CARD_SHARED_T   "One card, two guests"
+#define TXT_CARD_SHARED     "esxDOS and the Z-Controller would\n" \
+                            "see the same sectors of the card.\n" \
+                            "Reading is fine; two guests writing\n" \
+                            "one volume corrupt it.\n" \
+                            "Use this window anyway?"
 #define TXT_HW_LED          "LED indicators"
 #define TXT_HW_LEGEND       "LED legend"
 // Indicators on their own panel beside the F8 stats box instead of bare glyphs
@@ -274,7 +282,7 @@
 #define TXT_MACH_ELM         "eLeMeNt ZX"
 // The board's own SetUp firmware (reset held 1.5 s there): block 7 of the ROM Area,
 // put there by FlashSetUp_V2.tap exactly as on the hardware (docs/element-setup-plan.md).
-#define TXT_MACH_ELM_SETUP   "SetUp (firmware)"
+// Entered from Alt+F11 "Reset to..." (OSDMain); the Machine-menu row was removed 2026-11-03.
 #define TXT_ELM_NO_SETUP     "SetUp not flashed: run FlashSetUp_V2.tap"
 #define TXT_MACH_SAM         "SAM Coup\x87"   // \x87 = e-acute in the UI font (UiFont.h)
 #define TXT_MACH_OPTS        "Options"
