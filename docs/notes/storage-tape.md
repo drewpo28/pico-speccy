@@ -1185,7 +1185,7 @@ and `-sdcut2-perf-` (PERF_TRACE, PERF_HIST OFF: [SD] line). Can damage the card 
   longer), `iff=1` + large `seen` = we ran past the pulse. Read it first on any "raster split /
   parallax glitches every N frames" report on the Next.
 
-## Two cards on one SPI machine: esxDOS + Z-Controller side by side, card windows, MB-02+ with esxDOS (2026-11-03, bench-tested, NOT hw-tested)
+## Two cards on one SPI machine: esxDOS + Z-Controller side by side, card windows, MB-02+ with esxDOS (2026-11-03, hw-confirmed DVp2w: DivSD + ZC on one card, F2/F9; MB-02+ with esxDOS bench only; committed 87175710)
 
 Owner's ask (eLeMeNt session, but machine-independent): the Z-Controller back in the
 eLeMeNt's Devices, esxDOS + Z-Controller and esxDOS + MB-02+ no longer mutually
@@ -1255,7 +1255,7 @@ partition 5 inside an extended container.
 - Rule confirmed by the bench on the way: the BASIC tape builder's `TO` token (0xCC) was
   missing — "Nonsense in BASIC" at `FOR i=1 TO 10`, not an emulator bug.
 
-### Shared windows: the same sectors for esxDOS and the ZC (2026-11-03, bench-tested, NOT hw-tested)
+### Shared windows: the same sectors for esxDOS and the ZC (2026-11-03, hw-confirmed DVp2w)
 
 The owner picked partition 1 for DivSD and the whole card, then partition 1 again, for
 the ZC: nothing stopped it. It works for reads (the ZC guest sees the MBR card, esxDOS
@@ -1278,8 +1278,8 @@ on the card = Image or SD card / F2 SD window / F6 SD read-write / F8 Eject; hd0
 or hd1 and the .mmc rows = Mount a file / F8 Eject; ZC on the card = Image or SD card /
 F2 SD window / F8 The whole card, on an image = Image or SD card / F8 Eject.
 
-**F2 = write protect, F9 = the window (owner, 2026-11-03 23:xx; bench-tested, NOT
-hw-tested).** The owner wanted F2 to mean the same on IDE / esxDOS / ZC rows as on a
+**F2 = write protect, F9 = the window (owner, 2026-11-03; hw-confirmed DVp2w, commit
+87175710).** The owner wanted F2 to mean the same on IDE / esxDOS / ZC rows as on a
 Beta drive, and the CHS / SD-window prompt moved to F9 (UiNav.cpp now decodes VK_F9 as
 a per-row verb). State: `Config::ide_wp` / `esx_wp` (bit = slot; DivSD = bit 0),
 `Config::zc_wp` (NVS `ide_wp`, `esx_wp`, `zc_wp`). A card WINDOW keeps `ide_raw` /
