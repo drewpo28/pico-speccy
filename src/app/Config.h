@@ -608,6 +608,10 @@ public:
     // none. Set from the F5 locations level, remembered so an "SD2:/..." tape or
     // disk image reopens at the next boot (fs/SdVolumes).
     static uint8_t  sd2_part;
+    // eLeMeNt ZX: the personality picked in Machine > eLeMeNt ZX while ANOTHER machine
+    // was running (the FRAM is not loaded then); Elm::bootSettings writes it into the
+    // FRAM e_zxi_000 at the next eLeMeNt boot and clears it. 0xFF = none.
+    static uint8_t  elm_pers_req;
     static bool elm_aasram;  // eLeMeNt ZX: the AA-SRAM 2 MB expansion is fitted (e_zxi_038 bit 0, read at boot for the page strip)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)

@@ -17,6 +17,7 @@
 #include "speccy/roms/plus3/romPlus3.h"
 #include "speccy/roms/plus3/plus3_overlays.h"
 #include "speccy/core/roms.h"           // gb_rom_esxdos
+#include "speccy/roms/element/elm_roms.h"   // the SetUp + MB03+SD esxDOS, 16 MB images
 #endif
 
 namespace ElmFlash {
@@ -131,6 +132,7 @@ static bool writeRange(FIL* f, const uint8_t* src, uint32_t off, uint32_t len) {
     return true;
 }
 
+static void installBuiltin(bool existing);
 static void put16k(uint32_t off, const uint8_t* base, const uint8_t* ov) {
     if (ov) rom_overlay_flatten(ov, base, s_img + off);
     else memcpy(s_img + off, base, BLOCK);
@@ -150,6 +152,34 @@ static void build() {
     put16k(1 * AREA + 3 * BLOCK, gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
     for (int b = 0; b < 4; b++) put16k(2 * AREA + b * BLOCK, gb_rom_0_sinclair_48k, nullptr);
     for (int a = 0; a < 3; a++) memcpy(s_img + a * AREA + BLOCK_ESXDOS * BLOCK, gb_rom_esxdos, 8192);
+    installBuiltin(false);
+}
+
+// The board's own firmware pieces (elm_roms.h), where a block is still blank: the SetUp
+// into block 7 and the MB03+SD esxDOS into block 4 of the three ROM Areas — a fresh
+// image has them from the start, an older card's image gets them on the first mount
+// (owner, 2026-11-04: no flasher tapes to run). Block 4 of a built image holds the
+// generic esxDOS, so there the MB03+SD build replaces it outright (`fresh`).
+static void installBuiltin(bool existing) {
+#if ELM_ROMS_BUILTIN
+    for (int a = 0; a < 3; a++) {
+        const uint32_t off7 = a * AREA + BLOCK_SETUP * BLOCK, off4 = a * AREA + BLOCK_ESXDOS * BLOCK;
+        if (blockBlank((uint8_t)a, BLOCK_SETUP)) {
+            memset(s_img + off7, 0xFF, BLOCK);
+            memcpy(s_img + off7, gb_rom_elm_setup, sizeof gb_rom_elm_setup);
+            for (uint32_t o = off7; o < off7 + BLOCK; o += SECTOR) markDirty(existing ? s_dirty : nullptr, o);
+            if (existing) Debug::log("[ELM] SetUp installed into block 7 of Area %d", a);
+        }
+        if (!existing || blockBlank((uint8_t)a, BLOCK_ESXDOS)) {
+            memset(s_img + off4, 0xFF, BLOCK);
+            memcpy(s_img + off4, gb_rom_esxdos_elm, sizeof gb_rom_esxdos_elm);
+            for (uint32_t o = off4; o < off4 + BLOCK; o += SECTOR) markDirty(existing ? s_dirty : nullptr, o);
+            if (existing) Debug::log("[ELM] esxDOS MB03+SD installed into block 4 of Area %d", a);
+        }
+    }
+#else
+    (void)existing;
+#endif
 }
 
 bool ensure() {
@@ -171,6 +201,7 @@ bool ensure() {
     s_fileMissing = false;
     if (readFile(ELM_FLASH_PATH, s_img, SIZE)) {
         Debug::log("[ELM] flash image from " ELM_FLASH_PATH);
+        installBuiltin(true);
     } else {
         build();
         s_fileMissing = true;        // written whole on the first flush

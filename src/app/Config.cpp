@@ -212,6 +212,7 @@ uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
 uint8_t  Config::ide_wp = 0, Config::esx_wp = 0;
 bool     Config::zc_wp = false;
 uint8_t  Config::sd2_part = 0;
+uint8_t  Config::elm_pers_req = 0xFF;
 uint8_t  Config::ide_raw[2] = {0, 0};
 uint32_t Config::ide_raw_lba[2] = {0, 0};
 uint32_t Config::ide_raw_len[2] = {0, 0};
@@ -1727,6 +1728,8 @@ void Config::load() {
             nvs_get_u8("sd2_part", sd2_part, sts);
         }
         nvs_get_b("elm_aasram", elm_aasram, sts);
+        elm_pers_req = 0xFF;
+        nvs_get_u8("elm_pers_req", elm_pers_req, sts);
         nvs_get_u8("zifi_enabled", zifi_enabled, sts);
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
         nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
@@ -2191,6 +2194,7 @@ void Config::writeKeys(NvsWriter& buf) {
         nvs_set_u8(buf, "sd2_part", sd2_part);
     }
     nvs_set_str(buf,"elm_aasram", elm_aasram ? "true" : "false");
+    nvs_set_u8(buf,"elm_pers_req", elm_pers_req);
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
     nvs_set_str(buf,"snap_exp",snap_export_dir.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());

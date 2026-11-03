@@ -26,6 +26,7 @@
 #include "drivers/sound/pwm_audio.h"
 #include "speccy/devices/tape/Tape.h"       // Tape::Stop for the Real sound input hook
 #include "app/MachineSwitch.h"
+#include "speccy/machines/Element/Element.h"   // the eLeMeNt's personality + SetUp register sync
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
@@ -260,6 +261,7 @@ static int32_t get_machine() {
     // maps a running Profi with a Karabas romset onto the UI's "Karabas" row, whose
     // option table spells A_KARABAS (Config itself only ever holds A_PROFI).
     if (Config::arch >= ARCH_COUNT || Config::romSet >= ROMSET_COUNT) return -1;
+    if (Config::arch == A_ELM) return NM_MACH_P(A_ELM, Config::romSet, Elm::personality());
     return NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
 }
 static void put_machine(int32_t v) { s_machinePick = v; }
@@ -1034,7 +1036,7 @@ static bool stagedIsPlus3e() {
 static bool stagedIsElm() { return stagedArchIs(A_ELM); }
 static bool stagedIsSam() {
     const int32_t m = staged(SET_MACHINE);
-    if (m >= 0) return (ArchIdx)(m >> 8) == A_SAM;
+    if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_SAM;
     return Config::arch == A_SAM;
 }
 static bool stagedIsPlus3Div() {
@@ -2021,10 +2023,21 @@ void commit(CommitReport& rep) {
     // or refuse: everything else has to be persisted and applied before it runs. It saves
     // Config itself, which is why a machine change costs a second write — that save is
     // load-bearing (it is what makes the Profi-boundary reboot land on the new machine).
+    // eLeMeNt ZX: the settings this menu shares with the board's SetUp go into its
+    // registers and FRAM now, so the SetUp shows them and the next power-up keeps them.
+    if (Config::arch == A_ELM && rep.changed) Elm::syncFromSettings();
+
     if (bmGet(g_dirty, SET_MACHINE) && s_machinePick >= 0) {
         const int a = (s_machinePick >> 8) & 0xFF;
         const int r = s_machinePick & 0xFF;
-        if (a < ARCH_COUNT && r < ROMSET_COUNT) {
+        const uint8_t pers = (uint8_t)((s_machinePick >> 16) & 0xFF);
+        if (a == A_ELM && Config::arch == A_ELM && r == Config::romSet) {
+            // Another personality of the running eLeMeNt: e_zxi_000 + FRAM, then the
+            // board's restart (Elm::takeReset in the main loop), no machine switch.
+            Elm::setPersonality(pers);
+            rep.machineSwitched = true;      // the restart is the one Z80 reset
+        } else if (a < ARCH_COUNT && r < ROMSET_COUNT) {
+            if (a == A_ELM) { Config::elm_pers_req = pers; }   // applied at the eLeMeNt boot
             // It warns through osdCenteredMsg and may open the budget-gate dialog. Under
             // DS80 those draw with zxColor() indices that we have replaced with our own
             // 16 colours, so hand the palette back for the duration.

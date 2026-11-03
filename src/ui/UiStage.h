@@ -94,6 +94,9 @@ enum SettingFlags : uint16_t {
 // which is a legitimate state (a snapshot can request any romset) and simply shows no
 // marked radio anywhere.
 #define NM_MACH(a, r) (int32_t)(((int32_t)(a) << 8) | (int32_t)(r))
+// eLeMeNt ZX: the machine PERSONALITY (e_zxi_000: 48 / 128 / +2A / Pentagon ... / Gama 80)
+// rides in bits 16-23 of the composite; every decoder masks the arch with 0xFF.
+#define NM_MACH_P(a, r, p) (NM_MACH(a, r) | ((int32_t)(p) << 16))
 
 const char* archName(int32_t composite);     // nullptr if composite < 0
 const char* romsetName(int32_t composite);

@@ -868,8 +868,16 @@ static const Option opt_mach_ep[] = {
     { "64",   NM_MACH(A_ENT, R_EP64),  "64"  },
     { "128",  NM_MACH(A_ENT, R_EP128), "128" },
 };
+// eLeMeNt ZX: the board's personalities (SetUp "Machine", e_zxi_000), one machine.
 static const Option opt_mach_elm[] = {
-    { "Pentagon 1024", NM_MACH(A_ELM, R_ELM), "Pentagon 1024" },
+    { "ZX Spectrum 48",     NM_MACH_P(A_ELM, R_ELM, 0), "48"        },
+    { "ZX Spectrum 128/+2", NM_MACH_P(A_ELM, R_ELM, 1), "128/+2"    },
+    { "ZX Spectrum +2A",    NM_MACH_P(A_ELM, R_ELM, 3), "+2A"       },
+    { "Pentagon 128",       NM_MACH_P(A_ELM, R_ELM, 5), "P128"      },
+    { "Pentagon 512",       NM_MACH_P(A_ELM, R_ELM, 6), "P512"      },
+    { "Pentagon 1024",      NM_MACH_P(A_ELM, R_ELM, 7), "P1024"     },
+    { "Pentagon 4096",      NM_MACH_P(A_ELM, R_ELM, 8), "P4096"     },
+    { "Didaktik Gama 80",   NM_MACH_P(A_ELM, R_ELM, 9), "Gama 80"   },
 };
 static const Option opt_mach_sam[] = {
     { "256K",          NM_MACH(A_SAM, R_SAM256),    "256K"   },

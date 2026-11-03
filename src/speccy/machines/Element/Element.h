@@ -28,6 +28,16 @@ int takeReset();                              // 0 = none, 1 = restart (esxDOS c
 // and video come up (the FRAM, so the boot allocates what the SetUp says); every
 // later reset re-applies the live registers with the hooks and a quiet reconcile.
 void bootSettings();
+// The machine personality (e_zxi_000) as the menu sees it: the live register, or the
+// FRAM's before the machine ran. setPersonality = Machine > eLeMeNt ZX: the register,
+// the FRAM and the board's restart (the SetUp's own way).
+uint8_t personality();
+void    setPersonality(uint8_t p);
+// Settings > registers: after the menu commits, every SetUp option this emulator
+// shares (joystick, Timex, ULAplus, GigaScreen, TSFM, SAA, Covox, Z-Controller, esxDOS,
+// AA-SRAM, AY stereo, scan lines, DMA, time zone, UART) is written into its e_zxi
+// register and the FRAM, so the SetUp shows it and the power-up keeps it.
+void    syncFromSettings();
 // The two buttons of the board on the PC keyboard. EXTRA = Win+F11 ("ZX + F11" in the
 // User Manual): a short press does what e_zxi_020 says, holding it 1.5 s with
 // e_zxi_021 = 01 opens the "Spectrum menu" (rainbow in the border) where 1-8 pick the

@@ -28,6 +28,7 @@
 #include "speccy/video/Video.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/z80/z80.h"
+#include "drivers/graphics/graphics.h"   // graphics_set_scanlines: the SetUp's CRT effect applied live
 
 uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
 const uint8_t* g_elm_divrom;          // DivMMC.cpp: esxDOS from block 4 of the ROM Area (e_zxi_02D bit 0)
@@ -96,6 +97,12 @@ static const uint8_t kDefaults[0x40] = {
 
 static bool s_setupBoot, s_setupRom, s_setupOnce;
 static bool s_setupLive, s_resetWanted;   // a SetUp session is running / its RST 0 asked for a reset
+static bool s_fromSetup;                  // the reset that follows is the SetUp's exit: validate its registers
+static uint8_t s_preSetup[0x40];          // the registers before the SetUp session, for the revert
+static bool s_preValid;
+static bool s_dmaBoot, s_zifiBoot;        // what this boot came up with (reboot-class SetUp items)
+static char s_pendingNote[200];           // a toast raised inside a reset would be wiped: shown a little later
+static uint8_t s_pendingFrames;           // ... after the " CPU: x MHz " clock toast of the same reset has gone
 static bool s_running;                    // frames have run: a reset now is a live one, not the boot
 // Pentagon 4096 (personality 08, rdacomp's combined paging): the latches of the three
 // extension ports and a guard for the #7FFD re-entry into the generic decode.
@@ -196,6 +203,7 @@ static uint8_t s_scan;
 static uint8_t s_lifo[32], s_lifoTop;     // #2B, 32 bytes, circular
 static uint64_t s_clkLatch;               // e_zxi_0F3..0F8, latched by reading 0F3
 static void cpuSpeed(uint8_t sel);
+static void eWrite(uint8_t r, uint8_t v);
 static void extraTick();
 static uint8_t s_dac[5], s_dacUsed;
 static bool s_scanHeld;
@@ -482,6 +490,7 @@ void frameEnd() {
     ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
     ElmSid::frameEnd(ESPectrum::samplesPerFrame);
     extraTick();
+    if (s_pendingNote[0] && !--s_pendingFrames) { OSD::notify(s_pendingNote, LEVEL_WARN, 5000); s_pendingNote[0] = 0; }
 }
 
 // SafeNMI: the return address of the last NMI is readable, bit 7 locks the button.
@@ -649,6 +658,7 @@ void cpuFlags() {
 bool enterSetup() {
     if (!ElmFlash::ensure()) return false;
     if (ElmFlash::blockBlank(s_r ? s_r->e[0x00F] & 3 : 0, ElmFlash::BLOCK_SETUP)) return false;
+    if (s_r) { memcpy(s_preSetup, s_r->e, sizeof s_preSetup); s_preValid = true; }
     s_setupBoot = true;
     return true;
 }
@@ -660,6 +670,7 @@ bool enterSetup() {
 void rst0(uint16_t pc) {
     if (!s_setupLive || !s_r) return;
     s_setupLive = false;
+    s_fromSetup = true;
     s_resetWanted = true;
     g_elm_nodiv = 1;                    // the rest of this frame: the ROM alone at #0000
     Debug::log("[ELM] SetUp RST 0 at %04X: e_000=%02X e_001=%02X e_00F=%02X e_02D=%02X divmmc map=%d con=%d -> machine reset",
@@ -708,14 +719,93 @@ static void applyRegs(const uint8_t* e, bool live) {
         Config::zcontroller = zc; note(zc ? "zc" : "zc-off");
         if (live) { if (zc) DivMMC::zc_init(); else DivMMC::zc_shutdown(); }
     }
+    // MonsterBlaster (bit 2) = the DAC ports here (#0F..#5F, dacWrite) AND the Covox
+    // subsystem of the emulator; the SetUp's bit decides both.
+    const bool covox = e[0x002] & 4;
+    if ((Config::covox != 0) != covox) { Config::covox = covox ? 1 : 0; subsys = true; note(covox ? "covox" : "covox-off"); }
+    // TSFM stereo: bit 1 = 0 ACB, 1 ABC (our ayConfig 1 / 0); the other layouts stay.
+    if (Config::ayConfig == 0 || Config::ayConfig == 1) {
+        const uint8_t ayc = (e[0x018] & 2) ? 0 : 1;
+        if (Config::ayConfig != ayc) { Config::ayConfig = ayc; note(ayc ? "acb" : "abc"); }
+    }
+    // CRT/TV effect 1/2 .. 1/128 -> our four scan-line strengths (1/2 = darkest).
+    const uint8_t sl = e[0x01E] == 0 ? 0 : e[0x01E] > 4 ? 4 : e[0x01E];
+    if (Config::scanlines != sl) {
+        Config::scanlines = sl; note("scanlines");
+        if (live) graphics_set_scanlines(sl);
+    }
+    // RTC time zone: GMT+N, two's complement for the west.
+    const signed char tz = (signed char)e[0x03E];
+    if (tz >= -12 && tz <= 14 && Config::wifi_tz != tz) { Config::wifi_tz = tz; note("tz"); }
     if (n) Debug::log("[ELM] SetUp -> settings%s: %s", live ? "" : " (boot)", what);
     if (live && subsys) nm::Stage::reconcileQuiet();
+    // Reboot-class: the DMA window and the ZiFi NIC are laid out at boot (the SetUp's
+    // restart reboots the board when either changed - rebootWanted()).
+    const bool dma = e[0x02E] & 1;
+    if ((Config::dma_mode != 0) != dma) { Config::dma_mode = dma ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_02E: DMA %s at the next boot", dma ? "on" : "off"); }
+    const bool uart = e[0x039] != 3;
+    if ((Config::zifi_enabled != 0) != uart) { Config::zifi_enabled = uart ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_039 = %02X: UART/ZiFi %s at the next boot", e[0x039], uart ? "on" : "off"); }
+}
+
+// What the emulator cannot do that the SetUp offers: told once at the SetUp's exit, and
+// the register (and FRAM) goes back to what it was before the session, so the SetUp
+// keeps showing the truth rather than a wish (owner, 2026-11-04).
+static void framPut(uint8_t i, uint8_t v) {
+    uint8_t* f = ElmFlash::ensure() ? ElmFlash::fram() : nullptr;
+    if (!f || f[i] == v) return;
+    f[i] = v;
+    ElmFlash::framDirty();
+}
+static void validateRegs() {
+    const uint8_t* prev = s_preValid ? s_preSetup : kDefaults;
+    char what[160]; int n = 0;
+    auto revert = [&](uint8_t i, uint8_t v, const char* why) {
+        if (s_r->e[i] == v) return;
+        s_r->e[i] = v; framPut(i, v);
+        if (n < (int)sizeof(what) - 24) n += snprintf(what + n, sizeof(what) - n, "%s%s", n ? ", " : "", why);
+    };
+    uint8_t* e = s_r->e;
+    if (e[0x000] == 2 || e[0x000] == 4 || e[0x000] > 9) revert(0x000, prev[0x000] <= 9 && prev[0x000] != 2 && prev[0x000] != 4 ? prev[0x000] : kDefaults[0], "machine");
+    if (e[0x001] == 2) revert(0x001, 1, "MB-02+");                 // its pages overlap the URAM here
+    if (!(e[0x002] & 1)) revert(0x002, (uint8_t)(e[0x002] | 1), "ULA audio off");
+    if (e[0x01A] != 0) revert(0x01A, 0, e[0x01A] == 1 ? "Sega pad" : "DE9 UART");
+    if (e[0x01F] != 0) revert(0x01F, 0, "DVI");
+    if (e[0x02C] == 2) revert(0x02C, 1, "SD slot 2");             // the Z-Controller's card is set in Devices
+    if (e[0x02D] & 2) revert(0x02D, (uint8_t)(e[0x02D] & ~2), "SD swap");
+    if (e[0x030] >= 3) revert(0x030, 2, "20 MHz+");      // 14 MHz is the ceiling
+    if (e[0x031] & 1) revert(0x031, 0, "OverClock");
+    if (e[0x03F] != 0) revert(0x03F, 0, "Diag");
+    if (!n) return;
+    Debug::log("[ELM] SetUp: not supported here, kept as before: %s", what);
+    snprintf(s_pendingNote, sizeof s_pendingNote, "SetUp: not here: %s", what);
+    s_pendingFrames = 75;
 }
 
 void bootSettings() {
     if (Config::arch != A_ELM) return;
     if (!ElmFlash::ensure()) { Debug::log("[ELM] boot settings: no flash image / FRAM"); return; }
-    const uint8_t* f = ElmFlash::fram();
+    uint8_t* f = ElmFlash::fram();
+    if (Config::elm_pers_req <= 9 && f[0x001] != 0xFF) {   // Machine > eLeMeNt ZX picked while another machine ran
+        Debug::log("[ELM] boot: personality %02X from the menu -> FRAM", Config::elm_pers_req);
+        f[0x000] = Config::elm_pers_req;
+        ElmFlash::framDirty();
+    }
+    if (Config::elm_pers_req != 0xFF) { Config::elm_pers_req = 0xFF; Config::save(); }
+    // The options this firmware started sharing with the SetUp on 2026-11-04 (Covox, AY
+    // stereo, scan lines, DMA, time zone, UART) come from the NVS the first time a FRAM
+    // is seen: a SetUp table nobody edited must not switch the NIC on or move the clock.
+    // Marked in the FRAM's counter area; from then on the FRAM is the one source.
+    if (f[0x001] != 0xFF && f[0x1FE8] != 0xA5) {
+        f[0x002] = (uint8_t)((f[0x002] & ~4) | (Config::covox ? 4 : 0));
+        if (Config::ayConfig == 0 || Config::ayConfig == 1) f[0x018] = (uint8_t)((f[0x018] & ~2) | (Config::ayConfig == 0 ? 2 : 0));
+        f[0x01E] = Config::scanlines > 4 ? 4 : Config::scanlines;
+        f[0x02E] = (uint8_t)((f[0x02E] & ~1) | (Config::dma_mode ? 1 : 0));
+        f[0x03E] = (uint8_t)Config::wifi_tz;
+        f[0x039] = Config::zifi_enabled ? (f[0x039] == 3 ? 0 : f[0x039]) : 3;
+        f[0x1FE8] = 0xA5;
+        ElmFlash::framDirty();
+        Debug::log("[ELM] FRAM seeded from the settings once (covox/ay/scanlines/dma/tz/uart)");
+    }
     const uint8_t* e = f[0x001] != 0xFF ? f : kDefaults;
     Debug::log("[ELM] boot settings from %s: e_002=%02X e_003=%02X e_010=%02X e_011=%02X e_01D=%02X e_02C=%02X (config: joy %u timex %d ulap %d gs %u tsfm %u saa %d zc %d)",
                e == f ? "FRAM" : "defaults", e[0x002], e[0x003], e[0x010], e[0x011], e[0x01D], e[0x02C],
@@ -723,6 +813,8 @@ void bootSettings() {
     applyRegs(e, false);
     aasramWanted(e[0x038] & 1, "FRAM e_zxi_038");
     divsdWanted(e[0x001], "FRAM e_zxi_001");
+    s_dmaBoot = Config::dma_mode != 0;
+    s_zifiBoot = Config::zifi_enabled != 0;
     Debug::log("[ELM] URAM %u MB (%s)", (unsigned)(MEM_PG_CNT / 64), aasram() ? "AA-SRAM" : "no AA-SRAM");
 }
 
@@ -749,7 +841,62 @@ static void divsdWanted(uint8_t e001, const char* who) {
     Debug::log("[ELM] %s = %02X: esxDOS (divSD) %s at the next boot", who, e001, want ? "on" : "off");
 }
 bool rebootWanted() {
-    return Config::wantedPages(A_ELM) != MEM_PG_CNT || (Config::esxdos != 0) != DivMMC::enabled;
+    return Config::wantedPages(A_ELM) != MEM_PG_CNT || (Config::esxdos != 0) != DivMMC::enabled ||
+           (Config::dma_mode != 0) != s_dmaBoot || (Config::zifi_enabled != 0) != s_zifiBoot;
+}
+
+uint8_t personality() {
+    if (s_r) return s_r->e[0x000];
+    if (ElmFlash::ensure()) { const uint8_t* f = ElmFlash::fram(); if (f[0x001] != 0xFF && f[0x000] <= 9) return f[0x000]; }
+    return kDefaults[0];
+}
+
+void setPersonality(uint8_t p) {
+    if (!s_r || p > 9 || p == 2 || p == 4) return;
+    Debug::log("[ELM] menu: personality %02X -> e_zxi_000 + FRAM, restart", p);
+    eWrite(0x00, p);
+    framPut(0x000, p);
+    s_resetKind = 1; s_resetWanted = true;
+}
+
+void syncFromSettings() {
+    if (!s_r) return;
+    uint8_t w[0x40];
+    memcpy(w, s_r->e, sizeof w);
+    switch (Config::joystick) {                        // 04 (keys) covers Cursor; Fuller/custom stay
+        case JOY_NONE:      w[0x003] = 0; break;
+        case JOY_KEMPSTON:  w[0x003] = 1; break;
+        case JOY_SINCLAIR2: w[0x003] = 2; break;
+        case JOY_SINCLAIR1: w[0x003] = 3; break;
+        case JOY_CURSOR:    w[0x003] = 4; break;
+        default: break;
+    }
+    w[0x010] = (uint8_t)((w[0x010] & ~1) | (Config::timex_video ? 1 : 0));
+    w[0x011] = (uint8_t)((w[0x011] & ~1) | (Config::ulaplus ? 1 : 0));
+    w[0x01D] = Config::gigascreen_onoff == 0 ? 0 : Config::gigascreen_onoff == 2 ? 3 : (w[0x01D] == 1 || w[0x01D] == 2 ? w[0x01D] : 1);
+    uint8_t a = w[0x002];
+    a = (uint8_t)((a & ~2) | (Config::tsfm ? 2 : 0));
+    a = (uint8_t)((a & ~4) | (Config::covox ? 4 : 0));
+    a = (uint8_t)((a & ~0x10) | (Config::SAA1099 ? 0x10 : 0));
+    w[0x002] = a;
+    w[0x02C] = Config::zcontroller ? (w[0x02C] ? w[0x02C] : 1) : 0;
+    if (Config::esxdos == 0) { if (w[0x001] == 1 || w[0x001] == 2) w[0x001] = 0; }
+    else if (w[0x001] == 0 || w[0x001] == 3) w[0x001] = 1;
+    w[0x038] = (uint8_t)((w[0x038] & ~1) | (Config::elm_aasram ? 1 : 0));
+    if (Config::ayConfig == 0 || Config::ayConfig == 1)
+        w[0x018] = (uint8_t)((w[0x018] & ~2) | (Config::ayConfig == 0 ? 2 : 0));
+    if (Config::scanlines == 0 || w[0x01E] <= 4) w[0x01E] = Config::scanlines > 4 ? 4 : Config::scanlines;
+    w[0x02E] = (uint8_t)((w[0x02E] & ~1) | (Config::dma_mode ? 1 : 0));
+    w[0x03E] = (uint8_t)Config::wifi_tz;
+    w[0x039] = Config::zifi_enabled ? (w[0x039] == 3 ? 0 : w[0x039]) : 3;
+    char what[120]; int n = 0;
+    for (int i = 0; i < 0x40; i++) {
+        if (w[i] == s_r->e[i]) continue;
+        if (n < (int)sizeof(what) - 12) n += snprintf(what + n, sizeof(what) - n, "e_%03X=%02X ", i, w[i]);
+        eWrite((uint8_t)i, w[i]);
+        framPut((uint8_t)i, w[i]);
+    }
+    if (n) Debug::log("[ELM] settings -> SetUp: %s", what);
 }
 
 static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again
@@ -836,6 +983,7 @@ void reset() {
     if (s_setupRom) Debug::log("[ELM] SetUp ROM (block 7 of Area %u) boots at this reset", s_r->e[0x00F] & 3);
     cpuSpeed(s_r->e[0x030]);
     ElmSid::mute(!(s_r->e[0x002] & 8));
+    if (s_fromSetup) { s_fromSetup = false; if (s_running) validateRegs(); }
     if (s_running) applyRegs(s_r->e, true);   // the power-up values went in through bootSettings()
     s_r->e[0x0FC] = kStampDay;
     s_r->e[0x0FD] = kStampMonth;

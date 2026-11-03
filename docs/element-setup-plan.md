@@ -102,8 +102,17 @@ g_zxi_010 = 1 (Ultimate Full), OUT (#53),#63        ; тип 6 = FLASH Area0+Are
   обычный ROM. Standalone `setup.tap` (тот же код с `#C000`) заканчивается так же. Клавиша `r`
   — перезапуск меню, `D` — диагностика, CS+L — defaults.
 
-Следствие для нас: образ SetUp **не надо вшивать** — его ставит `FlashSetUp_V2.tap` из пакета
-владельца, как на железе, а `setup.tap` работает без прошивки вообще. Лицензионный вопрос снят.
+Следствие для нас (2026-11-02): образ SetUp не вшивать — его ставит `FlashSetUp_V2.tap`.
+**Пересмотрено 2026-11-04 (владелец: «можно сделать автоматическую установку SetUp, сохранив их во
+флеше?»):** SetUp 20260406 (15695 Б, payload FlashSetUp_V2.tap) и `ESX-SD.ROM` (esxDOS 0.8.9
+MB03+SD, 8 КБ, пакет FLASHESX; отличается от нашего `gb_rom_esxdos` в 810 байтах) вшиты в прошивку
+(`src/speccy/roms/element/elm_setup.c`, `elm_esxdos.c`, `elm_roms.h`, только 16 МБ образы —
+`ELM_ROMS_BUILTIN`). `ElmFlash::installBuiltin`: свежий образ строится с ними (блок 7 и блок 4
+областей 0–2), существующий `flash.bin` получает их в пустые блоки при первом монтировании (лог
+«SetUp installed into block 7 of Area N» / «esxDOS MB03+SD installed into block 4 of Area N»,
+секторы помечаются грязными и пишутся на карту). Флешеры нужны только для обновлений. hw-confirmed DVp2w 2026-11-04. Стенд: оба
+случая, байты блоков равны исходникам, SetUp стартует с Alt+F11 без ленты. Это распространение
+прошивки LMN128 внутри нашего образа — решение владельца.
 
 ### 2.4 Личности `e_zxi_000`
 
@@ -329,6 +338,45 @@ FRAM `#3FF0` растёт на каждое нажатие.
   SetUp», «SetUp ROM (block 7 of Area 0) boots at this reset»; скриншоты: радуга в правом нижнем
   углу бордюра, первый экран SetUp.
 - Не сделано: «CPU speed» в диагностике (цветная рамка по скорости).
+
+### Фаза F. SetUp ↔ настройки: личности в меню, двусторонняя синхронизация, откат неподдерживаемого (2026-11-04, hw-confirmed DVp2w «работает», `debug/DVp2w-elm-setup3-1.1.1`)
+
+Владелец (2026-11-04): «1 добавить все машины в меню eLeMeNt; 2 все опции меняются синхронно в
+роме и наших настройках; 3 максимально закрыть настройки SetUp vs мы — где не поддерживается,
+показывать сообщение и возвращать предыдущее значение».
+- **Личности в меню.** Machine → eLeMeNt ZX теперь 8 строк (48, 128/+2, +2A, Pentagon 128/512/
+  1024/4096, Gama 80) = `NM_MACH_P(A_ELM, R_ELM, e_000)`: личность в битах 16–23 композита
+  SET_MACHINE (все декодеры и так маскируют арку `& 0xFF`; один в `stagedIsSam` поправлен).
+  `get_machine` отдаёт `Elm::personality()` (живой регистр или FRAM). Выбор на работающем
+  eLeMeNt → `Elm::setPersonality`: `e_000` + FRAM + рестарт платы (как RST 0 SetUp, холодный
+  esxDOS), без смены машины. Выбор с другой машины → `Config::elm_pers_req` (NVS), который
+  `Elm::bootSettings` пишет в FRAM `e_000` при следующем старте eLeMeNt и стирает.
+- **Наши настройки → SetUp** (`Elm::syncFromSettings`, в конце `Stage::commit` при A_ELM): джойстик
+  (`e_003`: none/Kempston/Sinclair 2→02/Sinclair 1→03/Cursor→04), Timex `e_010`.0, ULAplus
+  `e_011`.0, GigaScreen `e_01D` (0/1-2/3), TSFM `e_002`.1, Covox `e_002`.2, SAA `e_002`.4,
+  Z-Controller `e_02C`, esxDOS `e_001` (0↔1, 02/03 сохраняются), AA-SRAM `e_038`.0, AY-стерео
+  `e_018`.1 (ABC=1/ACB=0, другие раскладки не трогают), scan lines `e_01E` (0–4), DMA `e_02E`.0,
+  пояс `e_03E` = `wifi_tz`, UART `e_039` (ZiFi off = 03). Отличия пишутся `eWrite` + FRAM, лог
+  `[ELM] settings -> SetUp: e_xxx=..`.
+- **SetUp → наши** (`applyRegs`, при старте и при выходе из SetUp): к прежним добавлены Covox,
+  AY-стерео, scan lines (`graphics_set_scanlines` живьём), пояс; DMA и UART — reboot-класс:
+  `Config::save` + перезагрузка платы при рестарте SetUp (`rebootWanted` сравнивает с тем, с чем
+  загрузились). **Засев один раз:** первый раз, когда прошивка видит FRAM без метки `#3FE8 = A5`,
+  эти шесть опций пишутся из NVS в FRAM (иначе нетронутая таблица SetUp включила бы UART/DMA и
+  сбила пояс); дальше FRAM — единственный источник, как и для прежней группы.
+- **Неподдерживаемое → сообщение + откат** (`validateRegs` при RST 0 SetUp, снимок регистров
+  `s_preSetup` берётся в `enterSetup`): `e_000` 02/04/>09; `e_001 = 02` (MB-02+: страницы на
+  URAM) → 01; `e_002`.0 = 0 (ULA audio off) → 1; `e_01A` ≠ 0 (Sega / DE9 UART) → 0; `e_01F` DVI →
+  0; `e_02C = 02` (второй слот) → 01; `e_02D`.1 swap SD → 0; `e_030 ≥ 3` (20 МГц/OverClock) → 02;
+  `e_031`.0 → 0; `e_03F` Diagnostic → 0. Регистр и FRAM возвращаются, тост «SetUp: not here: …»
+  поднимается на первом кадре после сброса (внутри сброса его стирала перерисовка), лог «[ELM]
+  SetUp: not supported here, kept as before: …». Хранятся без сообщений: `e_004` мышь/клавиатура,
+  `e_002`.5 tape input, `e_010`.1, `e_011`.1, `e_019` SID, `e_02B` RTC (он уже гейтит RTC72421),
+  `e_02D`.0/.7, `e_032`, `e_020/021`.
+- Стенд: FRAM с `e_01F=01, e_030=03, e_031=01`, `PICOSPECCY_ELM_SETUP=1`, Shift+R
+  (`900:Left Shift:14,904:R`) → лог «SetUp RST 0», «not supported here, kept as before: DVI,
+  20 MHz / OverClock, OverClock», засев «FRAM seeded from the settings once». Меню личностей и
+  `syncFromSettings` на стенде не прогонялись (навигация меню клавишами), только сборка.
 
 ### Фаза E. Хвосты §3.7, счётчики, (опц.) `roms/plus2a`, импорт полного дампа flash.
 
