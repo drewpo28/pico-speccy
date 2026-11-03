@@ -190,14 +190,16 @@
 /---------------------------------------------------------------------------*/
 
 // Volume 0 = SD card (default drive: paths without a prefix), volume 1 = USB
-// mass-storage stick ("USB:/..." paths, RP2350 only). Physical drive mapping
-// lives in drivers/sdcard/sdcard.c (drv 0 = SD SPI, drv 1 = TinyUSB MSC).
-#define FF_VOLUMES		2
+// mass-storage stick ("USB:/..." paths, RP2350 only), volume 2 = another partition
+// of the SD card ("SD2:/..."; src/fs/SdVolumes.cpp mounts it on demand from the F5
+// locations level). Physical drive mapping lives in drivers/sdcard/sdcard.c (drv 0 =
+// SD SPI, drv 1 = TinyUSB MSC); VolToPart[] in SdVolumes.cpp binds the volumes.
+#define FF_VOLUMES		3
 /* Number of volumes (logical drives) to be used. (1-10) */
 
 
 #define FF_STR_VOLUME_ID	1
-#define FF_VOLUME_STRS		"SD","USB"
+#define FF_VOLUME_STRS		"SD","USB","SD2"
 /* FF_STR_VOLUME_ID switches support for volume ID in arbitrary strings.
 /  When FF_STR_VOLUME_ID is set to 1 or 2, arbitrary strings can be used as drive
 /  number in the path name. FF_VOLUME_STRS defines the volume ID strings for each
@@ -210,8 +212,13 @@
 */
 
 
-#define FF_MULTI_PARTITION	0
-/* This option switches support for multiple volumes on the physical drive.
+#define FF_MULTI_PARTITION	1
+/* pico-speccy: 1 so "SD2:" can be bound to a partition other than the one the auto
+/  search picks for "SD:". VolToPart[].pt 0 = auto (SD:, USB:), and the local
+/  `lba` field (ff.h) pins a volume to an absolute sector — that is how a logical
+/  partition out of the EBR chain, which stock FatFs refuses, gets mounted.
+/
+/  This option switches support for multiple volumes on the physical drive.
 /  By default (0), each logical drive number is bound to the same physical drive
 /  number and only an FAT volume found on the physical drive will be mounted.
 /  When this function is enabled (1), each logical drive number can be bound to

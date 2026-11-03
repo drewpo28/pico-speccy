@@ -211,6 +211,7 @@ string   Config::ide_image[2] = {"", ""};
 uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
 uint8_t  Config::ide_wp = 0, Config::esx_wp = 0;
 bool     Config::zc_wp = false;
+uint8_t  Config::sd2_part = 0;
 uint8_t  Config::ide_raw[2] = {0, 0};
 uint32_t Config::ide_raw_lba[2] = {0, 0};
 uint32_t Config::ide_raw_len[2] = {0, 0};
@@ -1722,6 +1723,8 @@ void Config::load() {
             nvs_get_u8("ide_wp", ide_wp, sts);
             nvs_get_u8("esx_wp", esx_wp, sts);
             nvs_get_b("zc_wp", zc_wp, sts);
+            sd2_part = 0;
+            nvs_get_u8("sd2_part", sd2_part, sts);
         }
         nvs_get_b("elm_aasram", elm_aasram, sts);
         nvs_get_u8("zifi_enabled", zifi_enabled, sts);
@@ -2185,6 +2188,7 @@ void Config::writeKeys(NvsWriter& buf) {
         nvs_set_u8(buf, "ide_wp", ide_wp);
         nvs_set_u8(buf, "esx_wp", esx_wp);
         nvs_set_str(buf, "zc_wp", zc_wp ? "true" : "false");
+        nvs_set_u8(buf, "sd2_part", sd2_part);
     }
     nvs_set_str(buf,"elm_aasram", elm_aasram ? "true" : "false");
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());

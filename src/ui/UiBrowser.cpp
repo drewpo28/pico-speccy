@@ -37,6 +37,9 @@
 #include "OSDMain.h"
 #include "UiRender.h"        // SYM_* glyph names
 #include "fs/FileUtils.h"
+#include "fs/SdVolumes.h"
+#include "drivers/usbhost/UsbMsc.h"
+#include "app/messages.h"
 #include "fs/FileInfo.h"
 #include "fs/ZipExtract.h"
 #include "app/Config.h"
@@ -208,6 +211,11 @@ static string visName(int v) {
 // ── small helpers ──────────────────────────────────────────────────────────────
 
 static string displayPath(const string& fdir) {
+    if (fdir.compare(0, 4, "SD2:") == 0) {       // the mounted partition by its label
+        char b[160];
+        SdVolumes::displayPath(fdir.c_str(), b, sizeof(b));
+        return b;
+    }
     if (fdir.find(':') != string::npos) return fdir;
     return (FileUtils::usbRoot ? "USB:" : "SD:") + fdir;
 }
@@ -522,6 +530,14 @@ static void frameFix() {
     roundRectBorder(L.margin, L.iy - 1, Sf.w - 2 * L.margin, L.ih + 2, 4, C_SEP, C_BG);
 }
 
+// A per-type dialog (no session root, no locations level above) at a volume root
+// of a card with more than one partition: ".." opens the partition level.
+static bool partitionsAbove() {
+    return s_root.empty() && !OSD::fd_root_parent && !FileUtils::usbRoot &&
+           SdVolumes::count() > 1;
+}
+static int partitionsLoop(int* ioCursor, bool canBack, bool withUsb, const char* title = nullptr);
+
 static void drawAll() {
     drawChrome();
     drawHeader();
@@ -568,7 +584,7 @@ static bool indexCurrent() {
 
     status("Scanning...", -1);
     size_t crc = SORT_VERSION;
-    const bool withUp = s_dir.size() > 1 || OSD::fd_root_parent;
+    const bool withUp = s_dir.size() > 1 || OSD::fd_root_parent || partitionsAbove();
     if (withUp) { s_ndirs++; crc += sf_name_crc(string(2, DIR_MARKER) + ".."); }
 
     FRESULT frd;
@@ -1056,12 +1072,34 @@ static string runLoop() {
                 OSD::clickNoPause();
                 // The ceiling is the session root when one was given, the volume
                 // root otherwise.
-                const bool atTop = s_root.empty() ? (s_dir == "/" || s_dir == "USB:/")
+                const bool atTop = s_root.empty() ? (s_dir == "/" || s_dir == "USB:/" || s_dir == "SD2:/")
                                                   : (s_dir == s_root);
                 if (atTop) {
                     if (OSD::fd_root_parent) return leave("\x02UP");
-                    if (!s_root.empty() || s_dir == "/") continue;   // nowhere higher
-                    // Out of the stick to the SD root (per-type dialog case).
+                    if (!s_root.empty()) continue;                 // nowhere higher
+                    if (partitionsAbove()) {
+                        // The partition level, in place of the locations level the
+                        // F5 browser has. The level borrows the header state.
+                        const string title = s_title;
+                        const int sel = s_sel, top = s_top, vt = s_visTotal;
+                        static int cursor = 0;
+                        const int r = partitionsLoop(&cursor, true, true, title.c_str());
+                        s_title = title; s_sel = sel; s_top = top; s_visTotal = vt;
+                        string to;
+                        if (r == PART_USB) to = "USB:/";
+                        else if (r > 0)   to = enterPartition((uint8_t)r);
+                        // Always rescan: "SD2:/" is the same path for every partition
+                        // mounted there, and the listing is the other partition's now
+                        // (hw 2026-11-03: SD3 picked, SD2's files stayed on screen).
+                        if (to.empty()) { drawAll(); continue; }
+                        s_dir = to;
+                        s_stack_top = 0;
+                        s_top = s_sel = 0;
+                        Debug::log("UiBrowser: partition -> '%s'\n", s_dir.c_str());
+                        break;                        // rescan the new volume
+                    }
+                    if (s_dir == "/") continue;
+                    // Out of the stick / the SD2: partition to the SD root (per-type dialog case).
                     s_dir = "/";
                 } else {
                     s_dir.pop_back();
@@ -1334,11 +1372,13 @@ void uiProgressStatus(const char* title, const char* msg, int percent, int actio
 // Same chrome as the file browser: this is the level ABOVE the volume roots, so
 // it must look like part of the browser, not a modal on top of it.
 
-int browseLocations(const char* const* items, const char* const* hints, int n, int initial,
-                    const char* title, const char* bar) {
-    if (n <= 0) return -1;
-    gfxBegin();
+static int locationsLoop(const char* const* items, const char* const* hints, int n, int initial,
+                         const char* title, const char* bar, bool canBack) {
     computeBL();
+    // This level does not scroll (the three fixed rows never needed it); the card's
+    // partition rows can push it past the body on a small display — clip rather
+    // than draw into the footer.
+    if (n > L.rows) n = L.rows;
 
     int sel = (initial >= 0 && initial < n) ? initial : 0;
     const int lh = UI_FONT_H + 2;
@@ -1358,15 +1398,24 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
         int y = L.body_y + 2;
         const int tx = L.rx + L.pad, tw = L.rw - 2 * L.pad;
         if (hints && hints[sel] && hints[sel][0]) {
-            // Wrap the hint over a few lines (same fixed-width wrap as the name box).
+            // Wrap the hint over a few lines, at spaces where there is one (the
+            // partition hints are sentences; a word cut in two reads badly).
             const int fits = tw / glyphW();
             const char* h = hints[sel];
-            const int len = (int)strlen(h);
-            for (int ln = 0; ln < 4 && ln * fits < len; ln++) {
+            int len = (int)strlen(h), pos = 0;
+            for (int ln = 0; ln < 4 && pos < len; ln++) {
+                int take = len - pos;
+                if (take > fits) {
+                    take = fits;
+                    for (int i = fits; i > fits / 2; i--)
+                        if (h[pos + i] == ' ') { take = i; break; }
+                }
                 char buf[48];
-                snprintf(buf, sizeof(buf), "%.*s", fits, h + ln * fits);
+                snprintf(buf, sizeof(buf), "%.*s", take, h + pos);
                 text(tx, y, buf, C_TEXT_DIM);
                 y += lh;
+                pos += take;
+                while (pos < len && h[pos] == ' ') pos++;
             }
             y += 3;
         }
@@ -1388,7 +1437,8 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
         fill(L.ix, fy, L.iw, L.foot_h, C_FOOT_BG);
         hline(L.ix, fy, L.iw, C_SEP);
         text(L.ix + L.pad, fy + 3,
-             SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  Esc Close", C_TEXT_DIM);
+             canBack ? SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  " SYM_LEFT " Back  Esc Close"
+                     : SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  Esc Close", C_TEXT_DIM);
         frameFix();
     };
 
@@ -1425,9 +1475,11 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
                 ret = -1;
                 goto out;
             case fabgl::VK_MENU_LEFT: case fabgl::VK_MENU_BS:
-                // This is the top level — there is nothing to back out to, and Back
-                // must never close the OSD (Esc/F1 only, as the footer says).
+                // At the top level there is nothing to back out to, and Back must
+                // never close the OSD (Esc/F1 only, as the footer says); a sub-level
+                // goes up one.
                 OSD::clickNoPause();
+                if (canBack) { ret = -2; goto out; }
                 break;
             default: break;
         }
@@ -1445,8 +1497,73 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
         }
     }
 out:
-    gfxEnd();
     return ret;
+}
+
+int browseLocations(const char* const* items, const char* const* hints, int n, int initial,
+                    const char* title, const char* bar, bool canBack) {
+    if (n <= 0) return -1;
+    gfxBegin();
+    const int r = locationsLoop(items, hints, n, initial, title, bar, canBack);
+    gfxEnd();
+    return r;
+}
+
+// The partition level. Rows are built here so F5's Local (SD) and the per-type
+// dialogs show the same thing; the hint names the volume ("SD: - ", "SD2: - "),
+// the file system and size, and the guest whose card window covers it.
+static int partitionsLoop(int* ioCursor, bool canBack, bool withUsb, const char* title) {
+    const int nparts = SdVolumes::count();
+    const char* items[SdVolumes::MAX + 1];
+    const char* hints[SdVolumes::MAX + 1];
+    char text[SdVolumes::MAX][32], hint[SdVolumes::MAX][96];
+    int n = 0;
+    for (int i = 0; i < nparts; i++) {
+        const SdVolumes::Part& p = SdVolumes::at(i);
+        snprintf(text[i], sizeof(text[i]), MSG_F5_PART "%s%s", (unsigned)p.no,
+                 p.label[0] ? " - " : "", p.label);
+        char d[80];
+        SdVolumes::describe(p, d, sizeof(d));
+        // "SD:" is the firmware's own volume; the one mounted on demand is just "Mounted"
+        // (its FatFs name, SD2:, is not what the user called it).
+        const char* vol = p.sd ? "SD: - " : (SdVolumes::mounted() == p.no ? "Mounted - " : "");
+        snprintf(hint[i], sizeof(hint[i]), "%s%s", vol, d);
+        items[n] = text[i];
+        hints[n] = hint[i];
+        n++;
+    }
+    const bool usb = withUsb && UsbMsc::ready() && !FileUtils::usbRoot;
+    if (usb) { items[n] = MSG_F5_USB; hints[n] = "USB mass-storage stick"; n++; }
+    const int initial = (ioCursor && *ioCursor >= 0 && *ioCursor < n) ? *ioCursor : 0;
+    const int r = locationsLoop(items, hints, n, initial, title, MSG_F5_LOCAL, canBack);
+    if (r < 0) return r;
+    if (ioCursor) *ioCursor = r;
+    if (usb && r == n - 1) return PART_USB;
+    return SdVolumes::at(r).no;
+}
+
+int browsePartitions(int* ioCursor, bool canBack, bool withUsb) {
+    if (SdVolumes::count() <= 0) return -1;
+    gfxBegin();
+    const int r = partitionsLoop(ioCursor, canBack, withUsb);
+    gfxEnd();
+    return r;
+}
+
+std::string enterPartition(uint8_t no) {
+    const SdVolumes::Part* p = SdVolumes::find(no);
+    if (!p) return "";
+    if (p->sd) return "/";
+    if (SdVolumes::mounted() != no) {
+        if (!SdVolumes::mount(no)) {
+            char m[64];
+            snprintf(m, sizeof(m), MSG_F5_PART_FAIL, (unsigned)no);
+            uiToast(m, true);
+            return "";
+        }
+        Config::save();                       // sd2_part: the volume comes back at boot
+    }
+    return "SD2:/";
 }
 
 // ── new-chrome renderer for the classic index (remote / web lists) ─────────────

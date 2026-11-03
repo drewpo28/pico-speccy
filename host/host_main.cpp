@@ -59,6 +59,7 @@ void repeat_handler(void);
 
 extern const char* host_sd_path;
 extern std::string host_root;
+extern std::string host_root2;
 extern char** host_argv;
 
 input_bits_t gamepad1_bits = {};
@@ -649,9 +650,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--sd") && i + 1 < argc) host_sd_path = argv[++i];
         else if (!strcmp(argv[i], "--root") && i + 1 < argc) host_root = argv[++i];
+        else if (!strcmp(argv[i], "--sd2") && i + 1 < argc) host_root2 = argv[++i];
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-            printf("usage: %s [--root DIR] [--sd card.img]\n"
+            printf("usage: %s [--root DIR] [--sd card.img] [--sd2 DIR2]\n"
                    "  DIR:      the folder the emulator sees as its SD card (default ~/pico-speccy)\n"
+                   "  DIR2:     the folder behind the \"SD2:\" volume (another partition of the card,\n"
+                   "            F5 > SD partition N; the partition list itself comes from card.img)\n"
                    "  card.img: optional raw card image for the devices that read the card by\n"
                    "            sector (Next DivSD, Z-Controller, NeoGS SD)\n",
                    argv[0]);

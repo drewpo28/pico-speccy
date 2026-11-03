@@ -64,6 +64,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "NxFrameProf.h"
 #include "LastRun.h"
 #include "fs/FileUtils.h"
+#include "fs/SdVolumes.h"
 #include "drivers/usbhost/UsbMsc.h"
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/core/MemESP.h"
@@ -980,8 +981,10 @@ void ESPectrum::setup() {
   // LOAD CONFIG
   //=======================================================================================
   Config::initHotkeys(); // fill hotkey defaults even without SD
-  if (FileUtils::fsMount)
+  if (FileUtils::fsMount) {
     Config::load();
+    SdVolumes::restore();   // the remembered SD2: partition, before any "SD2:/..." path is opened
+  }
   // Runtime PSRAM kill-switch (Debug > PSRAM = Off). Applied HERE, in the window
   // between load() and the first consumer: the boot probe has run (so the menu knows
   // the chip is there) and nothing has placed a page or a pool in PSRAM yet — every

@@ -116,6 +116,7 @@ typedef char TCHAR;
 typedef struct {
 	BYTE pd;	/* Associated physical drive */
 	BYTE pt;	/* Associated partition (0:Auto detect, 1-4:Forced partition) */
+	LBA_t lba;	/* pico-speccy: != 0 pins the volume to this absolute sector (pt is then only a label) */
 } PARTITION;
 extern PARTITION VolToPart[];	/* Volume to partition mapping table */
 #endif

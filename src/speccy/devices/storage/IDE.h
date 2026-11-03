@@ -83,9 +83,11 @@ public:
     // length have to be typed in; -1 means the card could not be read at all.
     // `out[i].card` is the card's size in sectors, so a caller can show a length as
     // "the rest of the card".
+    // `pdrv` -1 = the medium's drive (rawDevice()); fs/SdVolumes passes the SD card
+    // (0) explicitly, because it scans before usbRoot has been cleared.
     struct MbrPart { uint8_t type; uint32_t lba; uint32_t sectors; uint32_t card; };
     static constexpr int MBR_PARTS = 8;
-    static int mbrParts(MbrPart out[MBR_PARTS]);
+    static int mbrParts(MbrPart out[MBR_PARTS], int pdrv = -1);
 
     // True if the slot holds an ATAPI CD-ROM (.iso). Used by the OSD menu/info.
     static bool isCD(int slot);

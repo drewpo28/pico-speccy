@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Enterprise/EpFdc.h"
 #include <stdio.h>
 #include "app/TryAlloc.h"
+#include "fs/SdVolumes.h"
 #include <stdlib.h>
 #include <string>
 #include <vector>
@@ -306,6 +307,7 @@ static bool sdStillThere() {
 // directory state, and writing THAT onto a different card put in next is the
 // one way this ends in destroyed data rather than a failed operation.
 static FileUtils::StorageEvent storageLost() {
+    SdVolumes::drop();
     f_mount(NULL, "SD:", 0);
     disk_invalidate();
     FileUtils::fsMount = false;
@@ -426,6 +428,7 @@ FileUtils::StorageEvent FileUtils::storageTick() {
         // a USB stick here: every path this session holds names the card, and
         // swapping the root volume under open files would be worse than waiting.
         const DWORD was = s_sd_vsn;
+        SdVolumes::drop();
         f_mount(NULL, "SD:", 0);
         disk_invalidate();
         if (!mountSDCard()) return StorageEvent::None;
@@ -498,11 +501,19 @@ bool FileUtils::mountSDCard() {
     // "SD:" with the colon — with FF_FS_RPATH a bare "SD" parses as "no volume
     // prefix" and would target the CURRENT volume instead.
     fsMount = f_mount(&fs, "SD:", 1) == FR_OK;
-    if (fsMount) s_sd_vsn = sdVolumeSerial();
+    if (fsMount) {
+        s_sd_vsn = sdVolumeSerial();
+        // The card's other partitions (SD2:). At the boot mount Config is not loaded
+        // yet, so restore() is a no-op there; ESPectrum::setup calls it again after
+        // Config::load(). Every later mount (automount, card back) has the setting.
+        SdVolumes::scan((uint32_t)fs.volbase);
+        SdVolumes::restore();
+    }
     return fsMount;
 }
 
 void FileUtils::unmountSDCard() {
+    if (!usbRoot) SdVolumes::drop();
     f_unmount(usbRoot ? "USB:" : "SD:");
 }
 
@@ -571,6 +582,7 @@ bool FileUtils::remountSD() {
     } else
     {
         // Unmount FatFS and force full SD card reinit
+        SdVolumes::drop();
         f_mount(NULL, "SD:", 0);
         disk_invalidate();
         if (!mountSDCard()) return false;

@@ -44,6 +44,7 @@ using namespace std;
 #include "OSDMain.h"
 #include "speccy/machines/Timex.h"
 #include "fs/FileUtils.h"
+#include "fs/SdVolumes.h"
 #include "drivers/usbhost/UsbMsc.h"
 #include "speccy/machines/Alf.h"
 #include "speccy/machines/If2.h"
@@ -272,23 +273,68 @@ static int rfd_scroll(const string& title, sorted_files& idx,
     // showing around a shorter list (uiPickListCb saves no background). Width is
     // constant already — the title is clipped to the same WCH the rows use.
     constexpr int WCH = 36, VIS = 16;
-    string t = title;
+    char tb[160];
+    SdVolumes::displayPath(title.c_str(), tb, sizeof(tb));   // "SD2:/" by the partition's label
+    string t = tb;
     if ((int)t.size() > WCH) t = "..." + t.substr(t.size() - (WCH - 3));
     return nm::uiPickListCb(t.c_str(), total, rfd_rowCb, initial, WCH, nullptr, VIS);
 }
 
 // Volume helpers for the local pickers. When both the SD card and a USB stick
 // are present the pickers can cross between them ("USB:/..." paths; unprefixed
-// = SD). In usbRoot mode the stick IS the only volume — no switching.
+// = SD), and a card with more than one partition offers the others ("SD2:/...",
+// fs/SdVolumes — the same rows the F5 browser has under Local (SD)). In usbRoot
+// mode the stick IS the only volume — no switching.
 #define MSG_RFD_TO_USB "[USB Drive]"
 #define MSG_RFD_TO_SD "[SD Card]"
 static bool rfd_on_usb(const string& p) { return p.compare(0, 4, "USB:") == 0; }
+static bool rfd_on_sd2(const string& p) { return p.compare(0, 4, "SD2:") == 0; }
 static bool rfd_can_switch() { return UsbMsc::ready() && !FileUtils::usbRoot; }
-// One level up; stays at the volume root ("/" or "USB:/").
+// One level up; stays at the volume root ("/", "USB:/", "SD2:/").
 static string rfd_parent(const string& cur) {
-    size_t s = cur.find_last_of('/');
-    if (rfd_on_usb(cur)) return (s == string::npos || s <= 4) ? "USB:/" : cur.substr(0, s);
-    return (s == 0 || s == string::npos) ? "/" : cur.substr(0, s);
+    const size_t s = cur.find_last_of('/');
+    const size_t colon = cur.find(':');
+    const size_t root = (colon != string::npos && colon < s) ? colon + 1 : 0;   // index of the root '/'
+    if (s == string::npos || s <= root) return cur.substr(0, root + 1);
+    return cur.substr(0, s);
+}
+// The volume rows after the fixed synthetic ones: [USB Drive] / [SD Card] and one
+// [Partition N - LABEL] per partition other than the one `cur` is on. `part[i]` =
+// the partition number of row i (0 = the stick / SD toggle). Returns the new count.
+static int rfd_vol_rows(const string& cur, const char** synth, uint8_t* part, int ns) {
+    static char text[SdVolumes::MAX][40];
+    if (rfd_can_switch()) {
+        part[ns] = 0;
+        synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD : MSG_RFD_TO_USB;
+    }
+    if (FileUtils::usbRoot || SdVolumes::count() < 2) return ns;
+    for (int i = 0; i < SdVolumes::count(); i++) {
+        const SdVolumes::Part& p = SdVolumes::at(i);
+        const bool here = rfd_on_sd2(cur) ? SdVolumes::mounted() == p.no : (!rfd_on_usb(cur) && p.sd);
+        if (here) continue;
+        snprintf(text[i], sizeof(text[i]), "[" MSG_F5_PART "%s%s]", (unsigned)p.no,
+                 p.label[0] ? " - " : "", p.label);
+        part[ns] = p.no;
+        synth[ns++] = text[i];
+    }
+    return ns;
+}
+// A volume row was chosen: the new current dir, "" = the mount failed (toasted).
+static string rfd_vol_go(const string& cur, uint8_t partNo) {
+    if (!partNo) return rfd_on_usb(cur) ? "/" : "USB:/";
+    const SdVolumes::Part* p = SdVolumes::find(partNo);
+    if (!p) return "";
+    if (p->sd) return "/";
+    if (SdVolumes::mounted() != partNo) {
+        if (!SdVolumes::mount(partNo)) {
+            char m[64];
+            snprintf(m, sizeof(m), MSG_F5_PART_FAIL, (unsigned)partNo);
+            nm::uiToast(m, true);
+            return "";
+        }
+        Config::save();                              // sd2_part: the volume comes back at boot
+    }
+    return "SD2:/";
 }
 // A remembered start dir can be stale (e.g. "USB:/..." with the stick gone).
 static string rfd_start_dir(const string& start) {
@@ -318,10 +364,9 @@ static string rfd_choose_folder(const string& start) {
             f_closedir(&dp);
         }
         idx.sort();
-        const char* synth[3] = { "[Select this folder]", "..", nullptr };
-        int ns = 2;
-        if (rfd_can_switch())
-            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD : MSG_RFD_TO_USB;
+        const char* synth[2 + 1 + SdVolumes::MAX] = { "[Select this folder]", ".." };
+        uint8_t part[2 + 1 + SdVolumes::MAX] = { 0, 0 };
+        const int ns = rfd_vol_rows(cur, synth, part, 2);
         int sel = rfd_scroll(cur, idx, synth, ns);
         if (sel < 0)  { idx.unlink(); return ""; }   // cancel
         if (sel == 0) { idx.unlink(); return cur; }  // choose current
@@ -331,8 +376,9 @@ static string rfd_choose_folder(const string& start) {
             cur = up;
             continue;
         }
-        if (sel == 2 && ns == 3) {                   // volume switch
-            cur = rfd_on_usb(cur) ? "/" : "USB:/";
+        if (sel < ns) {                              // volume / partition switch
+            const string to = rfd_vol_go(cur, part[sel]);
+            if (!to.empty()) cur = to;
             continue;
         }
         string rec = idx.get(sel - ns);
@@ -362,10 +408,9 @@ static string rfd_choose_file(const string& start) {
             f_closedir(&dp);
         }
         idx.sort();
-        const char* synth[2] = { "..", nullptr };
-        int ns = 1;
-        if (rfd_can_switch())
-            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD : MSG_RFD_TO_USB;
+        const char* synth[1 + 1 + SdVolumes::MAX] = { ".." };
+        uint8_t part[1 + 1 + SdVolumes::MAX] = { 0 };
+        const int ns = rfd_vol_rows(cur, synth, part, 1);
         int sel = rfd_scroll(cur, idx, synth, ns);
         if (sel < 0)  { idx.unlink(); return ""; }   // cancel
         if (sel == 0) {                              // parent
@@ -374,8 +419,9 @@ static string rfd_choose_file(const string& start) {
             cur = up;
             continue;
         }
-        if (sel == 1 && ns == 2) {                   // volume switch
-            cur = rfd_on_usb(cur) ? "/" : "USB:/";
+        if (sel < ns) {                              // volume / partition switch
+            const string to = rfd_vol_go(cur, part[sel]);
+            if (!to.empty()) cur = to;
             continue;
         }
         string rec = idx.get(sel - ns);

@@ -38,6 +38,8 @@ void hd_close(void* h);
 }
 
 std::string host_root;   // set by main(); empty = ~/pico-speccy
+std::string host_root2;  // --sd2 DIR: what "SD2:" (another partition of the card) maps to; empty = none
+static bool s_sd2_mounted = false;   // f_mount(fs, "SD2:", 1) succeeded
 
 static std::recursive_mutex s_mx;
 static FATFS s_fs;              // what obj.fs points at for every open object
@@ -139,6 +141,7 @@ static FRESULT parsePath(const TCHAR* path, int& vol, std::vector<std::string>& 
         std::string id = s.substr(0, colon);
         if (cpEqualNoCase(id, "SD") || id == "0") vol = 0;
         else if (cpEqualNoCase(id, "USB") || id == "1") vol = 1;
+        else if (cpEqualNoCase(id, "SD2") || id == "2") vol = 2;
         else return FR_INVALID_DRIVE;
         s = s.substr(colon + 1);
     }
@@ -166,8 +169,8 @@ struct Resolved {
 
 // Case-insensitive walk from the root. The last component may be missing (exists =
 // false, host = the name it would get); a missing intermediate one is FR_NO_PATH.
-static FRESULT resolve(const std::vector<std::string>& comps, Resolved& r) {
-    std::string host = rootDir();
+static FRESULT resolve(const std::vector<std::string>& comps, Resolved& r, int vol = 0) {
+    std::string host = vol == 2 ? host_root2 : rootDir();
     mkdirs(host);
     for (size_t i = 0; i < comps.size(); i++) {
         const bool last = i + 1 == comps.size();
@@ -200,6 +203,7 @@ static FRESULT lookup(const TCHAR* path, std::vector<std::string>& comps, Resolv
     int vol;
     FRESULT fr = parsePath(path, vol, comps);
     if (fr != FR_OK) return fr;
+    if (vol == 2) return s_sd2_mounted ? resolve(comps, r, 2) : FR_NOT_READY;
     if (vol != 0) return FR_NOT_READY;
     return resolve(comps, r);
 }
@@ -245,6 +249,14 @@ FRESULT f_mount(FATFS* fs, const TCHAR* path, BYTE opt) {
     std::vector<std::string> comps; int vol;
     FRESULT fr = parsePath(path, vol, comps);
     if (fr != FR_OK) return fr;
+    if (vol == 2) {               // SD2: = --sd2 DIR when given, else "no FAT volume there"
+        s_sd2_mounted = fs && !host_root2.empty();
+        if (!fs || !opt) return FR_OK;
+        if (!s_sd2_mounted) return FR_NO_FILESYSTEM;
+        mkdirs(host_root2);
+        fs->fs_type = FS_EXFAT;
+        return FR_OK;
+    }
     if (vol != 0) return opt ? FR_NOT_READY : FR_OK;
     mkdirs(rootDir());
     s_fs.fs_type = FS_EXFAT;

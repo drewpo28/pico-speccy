@@ -1296,21 +1296,79 @@ Host: 48K + ZC on partition 2, scratchpad `ZCWR.TAP` (CMD0, CMD24 to sector 3000
 the medium, 512 x 'A', prints the data-response token): `zc_wp=true` -> RESP=13 and the
 log line, `zc_wp=false` -> RESP=5 and `ZC/DivSD wr sec=97584 res=0`.
 
-F5 (the firmware's browser) shows only partition 1: FatFs with `FF_MULTI_PARTITION 0`
-mounts the first FAT partition of the card and nothing else, so a ZC/IDE partition is the
-guest's private area — fill it from a PC or from the guest.
-
-**Other partitions in the browser — deferred plan (2026-11-03, owner asked "only the
-second, or all?"; answer: all primaries, logicals with a patch).** Measured on the host
-with our ffconf (exFAT + LFN): `sizeof(FATFS)` = 1032 B, FIL 616 B, `FF_VOLUMES` is 2
-(SD, USB; FatFs max 10), `FF_STR_VOLUME_ID 1` so a volume can be named `SD2:` etc.
-- `FF_MULTI_PARTITION 1` + `VolToPart[]` (physical drive + partition number) opens MBR
-  entries 1-4; FatFs refuses logical partitions outright (ff.c `find_volume`, "MBR has
-  four primary partitions max"). Entries 5-8 need a small patch: pass the absolute LBA
-  that `IdeMbr.h` already decodes from the EBR chain instead of a partition number.
-- Cost: one FATFS per mounted volume, alive while mounted. Three static extra volumes =
-  3 KB SRAM; the cheap shape is ONE spare FATFS (1 KB) that the browser mounts on the
-  partition the user enters from a per-partition row in the root, unmounting the previous.
-- Writes from the browser into a partition a guest holds (ZC / IDE / esxDOS window on it)
-  are the two-writers case above: allow only while no guest window covers it, or warn.
-Nothing of this is built; the owner is first testing DivSD + ZC on the card (hw).
+**Other partitions in the F5 browser — "SD2:" (2026-11-03, host-bench UI flow only,
+hw-confirmed DVp2w 2026-11-04 "теперь все хорошо"; build `debug/DVp2w-elm-sd2-1.1.1`).** FatFs mounts the first FAT partition
+of the card as `SD:` and nothing else, so a ZC / IDE / esxDOS partition used to be the
+guest's private area. Now, on a card with MORE THAN ONE partition, "Local (SD)" on the F5
+locations level opens a level of `Partition N` rows (N = 1-4 MBR, 5-8 EBR logical,
+`IDE::mbrParts` numbering, plus " - LABEL" from the partition's FAT boot sector BPB —
+offset 43 for FAT12/16, 71 for FAT32 behind the 0x29 signature, one sector read per
+partition at scan time; exFAT keeps its label in the root directory, so none there; the
+owner's shape, 2026-11-03: the partitions sit INSIDE Local like folders, one partition =
+straight to the files as before). The right-pane hint reads
+"SD: - FAT32, 3.7 GB" for the one FatFs mounted, "SD2: - ..." for the one mounted on
+demand, plus "Seen by the Z-Controller too" / "esxDOS" / "IDE hd0" when a guest's card
+window covers it. Enter on a non-SD: partition mounts it as the FatFs volume `SD2:` and
+opens the browser at `SD2:/`; ".." at the root returns to the partition level, Left /
+Backspace there (`browseLocations(..., canBack)`, -2) to the top, Esc closes. With no
+WiFi and no stick the partition level IS the top (Remote / Web have nothing to offer).
+`f5HasChooser()` counts partitions > 1. `src/fs/SdVolumes.{h,cpp}`:
+- `FF_VOLUMES 3`, `FF_VOLUME_STRS "SD","USB","SD2"`, `FF_MULTI_PARTITION 1` with
+  `VolToPart[]` defined in SdVolumes.cpp (0 = SD auto, 1 = USB auto, 2 = SD2). Local
+  FatFs patch: `PARTITION` got an `lba` field and `mount_volume` (ff.c) does
+  `check_fs(fs, lba)` when it is nonzero — that is how a LOGICAL partition (5-8), which
+  stock FatFs refuses ("four primary partitions max"), gets mounted: by the absolute
+  sector `IdeMbr.h` decoded from the EBR chain. Primaries go the same way.
+- One spare `FATFS` (1032 B) on the HEAP, allocated at the first mount and kept; the
+  table of partitions is 96 B .bss (+136 B .bss, +1.9 KB flash in total; `FatFs[]` and
+  `VolumeStr[]` grew by one entry). Picking another partition re-registers the same
+  object — FatFs refuses the stale handles of the previous one (FR_INVALID_OBJECT), the
+  same policy as a card swap, so a tape still open on the old partition stops rather
+  than reading the new one.
+- `Config::sd2_part` (NVS `sd2_part`) remembers the mounted partition; `restore()` runs
+  after `Config::load()` (ESPectrum::setup), on every later `mountSDCard()` (automount,
+  card back) and is a no-op when the card lacks that partition — so a remembered
+  `SD2:/...` tape, disk image or `ALL_Path` reopens at boot. `storageLost()` and every
+  remount path drop `SD2:` first (`SdVolumes::drop()`, bookkeeping only).
+- `scan()` reads the MBR with `IDE::mbrParts(out, /*pdrv=*/0)` — drive 0 explicitly,
+  because `storageTick()` clears `usbRoot` only after the mount; USB-as-root has no
+  `SD2:` at all. The partition FatFs mounted as `SD:` (`fs.volbase`) is left out of the
+  list; on the host shim `volbase` is 0, so partition 1 is listed there too.
+- `ff_raw_write_notify` already walks every volume with the same `pdrv`, so a guest
+  write (DivSD / ZC / IDE raw) invalidates the SD2: window as it does SD:'s. The reverse
+  — the browser writing into a partition a guest holds — is the two-writers case above,
+  no worse than partition 1 with esxDOS on the card; the hint names the guest.
+- `browseLocations` clips its row count to the body (it never scrolled) and wraps the
+  hint at spaces. The net download / upload / snapshot-convert folder and file pickers
+  (`rfd_choose_folder` / `rfd_choose_file`, OSDFile.cpp — the owner found "Save to SD"
+  without them, 2026-11-03) carry the same rows as `[Partition N - LABEL]` after
+  `[USB Drive]` / `[SD Card]`, one per partition other than the current one
+  (`rfd_vol_rows` / `rfd_vol_go`, same mount + Config::save). The per-type dialogs
+  (F2 snapshot, tape / ROM / DCK / IF2 / slot / IDE image / DLS pickers, the player) get
+  the same level INSIDE the browser: with > 1 partition the SD root shows a ".." row
+  (`partitionsAbove()`), and ".." / Left at any volume root opens `partitionsLoop`
+  (the F5 rows plus "[USB Drive]" when a stick is in), Enter switches the browser to
+  "/", "SD2:/" or "USB:/" and ALWAYS rescans — the path "SD2:/" is the same for every
+  partition mounted there, and a "same dir, keep the list" shortcut left SD2's files on
+  screen after SD3 was picked (hw 2026-11-03, the first real bug of the feature); Esc /
+  Left there stays. On screen the SD2: prefix is replaced by the partition's label
+  ("SD3:/games", or "Partition 6:/" without one — `SdVolumes::displayPath`, path bar
+  and rfd picker title), and the hint says "Mounted - " rather than "SD2: - ": the
+  owner's card is labelled SD1/SD2/SD3, so the FatFs name read as the wrong partition. The rows and the mount
+  live in UiBrowser (`browsePartitions` / `enterPartition`), F5's Local (SD) calls the
+  same two. `locationsLoop` is the gfxBegin-free body of `browseLocations`, so the
+  level can run inside the browser's own gfx session (gfxEnd restores palettes).
+- Host bench: `--sd2 DIR` maps `SD2:` to a folder (the partition LIST comes from the
+  `--sd card.img` MBR, the CONTENT from DIR); the real FatFs mount of a partition runs
+  only on hardware. Recipe: `card2.img` (partitions 1, 5, 6) + keys
+  `400:F5,460:Left,490:Left,520:Left,580:Return,640:Down,680:Return,760:Left,840:Left`
+  (climb to the root, Local, Partition 5, back, back) — the log shows `SdVolumes:
+  partition 5 (34879+32768) mounted as SD2:` and the browser at `SD2:/`. The image comes
+  from the scratchpad `mkcard2.py` (MBR + EBR chain, three FAT16 16 MB volumes; /tmp is
+  tmpfs and loses it on a reboot). The folder picker: a `.pss` in the browser, F5
+  Convert, Enter on the format, then the picker rows `[Partition 1 - PART1]` ... —
+  Enter on partition 5 logs the mount and lists `SD2:/`. The per-type dialog: `SNA_Path=/`
+  in the host NVS, keys `400:F2,480:Return,560:Down,600:Return,700:Left` — log
+  `UiBrowser: UP from '/'`, `partition 5 ... mounted as SD2:`, `partition -> 'SD2:/'`.
+  A host NVS with `moonsound=true` + NeoGS on butter reboots in a loop at the GM.DLS
+  provisioning (bank does not fit butter -> flash write -> host restart); unrelated.

@@ -604,6 +604,10 @@ public:
     // one starts read-only and its F2 goes through the raw-write confirmation.
     static uint8_t  ide_wp, esx_wp;
     static bool     zc_wp;
+    // The SD partition mounted as the "SD2:" volume (1-8, MBR + EBR numbering), 0 =
+    // none. Set from the F5 locations level, remembered so an "SD2:/..." tape or
+    // disk image reopens at the next boot (fs/SdVolumes).
+    static uint8_t  sd2_part;
     static bool elm_aasram;  // eLeMeNt ZX: the AA-SRAM 2 MB expansion is fitted (e_zxi_038 bit 0, read at boot for the page strip)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)

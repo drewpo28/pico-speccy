@@ -592,9 +592,9 @@ bool IDE::openRaw(int slot) {
     return true;
 }
 
-int IDE::mbrParts(MbrPart out[MBR_PARTS]) {
+int IDE::mbrParts(MbrPart out[MBR_PARTS], int pdrv) {
     for (int i = 0; i < MBR_PARTS; i++) out[i] = MbrPart{0, 0, 0, 0};
-    const uint8_t drv = rawDevice();
+    const uint8_t drv = pdrv < 0 ? rawDevice() : (uint8_t)pdrv;
     LBA_t card = 0;   // see openRaw
     disk_ioctl(drv, GET_SECTOR_COUNT, &card);
     // 512 B for one menu action: the heap, not .bss — the same rule as the FIL in
