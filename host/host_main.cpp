@@ -30,6 +30,8 @@
 #include "host_kbd_prelude.h"
 #include "app/ESPectrum.h"
 #include "app/Config.h"
+#include "speccy/z80/z80.h"
+#include "speccy/core/MemESP.h"
 #include "net/HttpsGet.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/gs/GS.h"
@@ -500,6 +502,29 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         for (const HK& k : hk) {
             if (presented == k.at) key_event(k.sc, true);
             if (presented == k.at + 6) key_event(k.sc, false);
+        }
+    }
+    // PICOSPECCY_PCLOG=from:count prints PC/SP and the bytes at PC once per presented
+    // frame for `count` frames from frame `from` (a hang locator, no debugger).
+    static const char* pclog = getenv("PICOSPECCY_PCLOG");
+    if (pclog) {
+        const uint32_t from = (uint32_t)atoi(pclog), cnt = strchr(pclog, ':') ? (uint32_t)atoi(strchr(pclog, ':') + 1) : 16;
+        if (presented >= from && presented < from + cnt) {
+            const uint16_t pc = Z80::getRegPC(), sp = Z80::getRegSP();
+            fprintf(stderr, "host: pclog f=%u PC=%04X SP=%04X [%02X %02X %02X %02X %02X %02X] (SP)=%04X\n", presented, pc, sp,
+                    MemESP::readbyte(pc), MemESP::readbyte(pc + 1), MemESP::readbyte(pc + 2), MemESP::readbyte(pc + 3),
+                    MemESP::readbyte(pc + 4), MemESP::readbyte(pc + 5), MemESP::readword(sp));
+            // PICOSPECCY_PEEK=addr:len[,addr:len] (hex) dumps memory with each pclog line
+            if (const char* pk = getenv("PICOSPECCY_PEEK")) {
+                for (const char* q = pk; *q;) {
+                    const uint32_t a = strtoul(q, nullptr, 16); const char* c = strchr(q, ':');
+                    const uint32_t n = c ? strtoul(c + 1, nullptr, 16) : 16;
+                    fprintf(stderr, "host: peek %04X:", a);
+                    for (uint32_t i = 0; i < n; i++) fprintf(stderr, " %02X", MemESP::readbyte((uint16_t)(a + i)));
+                    fprintf(stderr, "\n");
+                    const char* nx = strchr(q, ','); if (!nx) break; q = nx + 1;
+                }
+            }
         }
     }
     std::string base;

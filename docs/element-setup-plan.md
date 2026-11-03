@@ -223,6 +223,58 @@ esxDOS между блоком 4 и встроенным; файл `flash.bin` �
 `ElCoreUp.tap` не вешает машину.
 
 ### Фаза C. Личности 48 / 128 / +2A / Pentagon 128-1024
+
+**Сделано 2026-11-03 (стенд, NOT hw-tested):** `g_elm_personality` взводится в `CPU::reset`
+(`Elm::armPersonality`: FRAM при включении, живой `e_zxi_000` потом), предикаты
+`Config::isElm48Raster/isElm128Raster/isElmPentRaster/isElmPlus3` стоят рядом с `isEvo*Raster`
+в цепочках такта кадра (CPU.cpp), флагов (`Elm::cpuFlags`: is48/is128/isP3/isPentagon/is512/is1024,
+плавающая шина, `target`), растра и класса видеорежима (Video.cpp), звука и contention
+(ESPectrum.cpp), таблицы ожиданий +2A (`wait_st`). Применяется только при сбросе. Личность 48
+оставляет `#7FFD` бит 4 как выбор блока ROM (esxDOS выходит в 48 BASIC через `OUT #7FFD,#10`;
+FLASH48 заполняет все четыре блока) — иначе с областью 0 машина молчала. +2A: `Plus3::portWrite`
+после `plus3Remap` возвращает окна URAM (`Elm::remap`). 08 (P4096) пока = 1024, 09 (Gama) = 48K
+тайминг + страницы i8255 (фаза D).
+Проверка на стенде (2026-11-03, против стоковых машин, область экрана попиксельно):
+ULA 128E +3 test — равен стоковым 128K и +3; Float48K — таблица плавающей шины равна
+стоковому 48K; 48K NEC Contention (IR contention) — равен стоковому 48K; +2A-+3 Paging Tests
+(Woodmass), тест 1 «7FFD then 1FFD» — все строки `expected` совпали на личности +2A (стоковый
++3 на стенде этот тест даже не признал). Timing Tests 48K не грузится и на стоковом 48K
+(свой лоадер), не показатель.
+
+**ROM-окно было записываемым (hw 2026-11-03, владелец: ula48.tap на личности 00 «рисует
+только на папере и виснет»; воспроизведено и исправлено на стенде):** блоки ROM лежат в
+образе флеша в butter PSRAM, а `MemESP::writebyte` отбрасывает запись только по указателям
+ниже базы PSRAM — каждая запись в #0000-#3FFF ложилась в блок области. У ula48.tap вектор IM2
+(таблица #FE00, JR в #FFFF поверх байта ROM) попадал в мусор, RAM-fill ROM проходил все 64 КБ.
+Фикс: `Elm::windowsRebuild` ставит бит 0 `g_atm_ro` (правило ATM «окно 0 показывает ROM»),
+пока зона 0 на штатной раскладке; хук записи в CPU.cpp пропускает через этот бит RAM divMMC и
+страницу 0 Pentagon (`romWindowDrops`, вынесен из строки: inline стоил 532 Б RAM, хелпер 96 Б).
+Диагностика, которая это нашла: `PICOSPECCY_PCLOG=from:count` и `PICOSPECCY_PEEK=addr:len`
+в host_main.cpp. Стенд после фикса: ula48.tap на личности 00 (и через `.tapein` esxDOS)
+попиксельно равен стоковому 48K.
+
+**Shift+R в SetUp = сброс машины (стенд 2026-11-03):** SetUp пишет регистры и уходит через
+`RST 0` (C544). Эмулятор к этому моменту уже вернул обычный ROM (первая запись в порт), и
+`RST 0` просто продолжал ROM с #0000 в ТЁПЛЫЙ esxDOS (память divMMC и состояние браузера
+целы), а личность, применяемая только при сбросе, не менялась. У владельца после такого
+рестарта NMI-браузер иногда отвечал «No such FILE or DIR, 0:1» (тот же симптом описан в
+заметках Next: esxDOS не прошёл холодный init в $0000). Теперь `Elm::rst0` (из
+`Z80::decodeRST`, только RST 0) пишет одну строку `[ELM] SetUp RST 0 at C544: e_000=.. e_001=..
+e_00F=.. e_02D=.. divmmc map= con= -> machine reset`, а `Elm::takeReset` в конце кадра делает
+`DivMMC::reset()` + `ESPectrum::reset()` (как «Soft Reset» меню): esxDOS грузится холодно
+(«Detecting Devices»), затем `[ELM] personality NN at reset`. Вход в SetUp логируется строкой
+`[ELM] SetUp ROM (block 7 of Area n) boots at this reset`. Тестовая прошивка
+`debug/DVp2w-elm-setupr-1.1.1` (build 2026-11-03 12:42, RAM 191840 Б: +32 Б за два флага и хук в decodeRST; она же несёт фикс ROM-окна).
+
+### Фаза D. Gama 80, Pentagon 4096
+
+**Gama 80 сделано 2026-11-03 (стенд, NOT hw-tested):** личность 09 = 48K тайминг + i8255:
+`OUT 127,x` (управляющее слово BSR на бит 0 порта C) или `OUT 95,x` выбирают 32 КБ страницу на
+`#8000-#FFFF` (страница 1 = `ram[1]`/`ram[3]`), `Elm::gamaOut` перед DAC-портами, `legacyZone`
+знает про страницу. Проверка: `GAMATEST.TAP` (CLEAR 32767; OUT 127,1: POKE 32768,1: OUT 127,0:
+POKE 32768,2; печать PEEK при 127,1 / 127,0 / 95,1) даёт 1 2 1. Без CLEAR стек BASIC лежит в
+переключаемой половине и машина падает — как и на настоящей Gama.
+**Pentagon 4096 (08)** пока = 1024: пейджинг rdacomp (`#7FFD/#DFFD/#1FFD/#EFF7/#FDFD`) не начат.
 Проверка: SetUp → Machine → 48 → `r` → 48 BASIC с таймингом 48K (тест бордюра/contention из
 `debug/next-tests` или Overscan), Machine → +2A → `#1FFD` all-RAM, `OUT 30779,0: OUT 31035,x` из
 манула (стр. 23) + сброс.

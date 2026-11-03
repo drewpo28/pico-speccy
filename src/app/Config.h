@@ -44,6 +44,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/ArchRom.h"
 #include "Debug.h"
 
+// eLeMeNt ZX: the personality (e_zxi_000) as it was armed at the last reset
+// (Element.cpp, Elm::armPersonality) — read by the Config::isElm*Raster() predicates.
+extern uint8_t g_elm_personality;
+
 namespace JoyProf { struct Profile; }
 struct NvsWriter;   // Config.cpp
 
@@ -474,6 +478,13 @@ public:
     static bool isEvo60Raster()   { return isEvoBase() && evo_raster == 1; }
     static bool isEvo48Raster()   { return isEvoBase() && evo_raster == 2; }
     static bool isEvo128Raster()  { return isEvoBase() && evo_raster == 3; }
+    // eLeMeNt ZX personalities (e_zxi_000, armed at reset): 00 ZX48 and 09 Didaktik Gama
+    // take the 48K raster and contention, 01 128/+2 and 03 128+2A the 128K ones (+2A with
+    // its own INT length, contention pattern and #1FFD paging), 05-08 the Pentagon's.
+    static bool isElm48Raster()   { return arch == A_ELM && (g_elm_personality == 0 || g_elm_personality == 9); }
+    static bool isElm128Raster()  { return arch == A_ELM && (g_elm_personality == 1 || g_elm_personality == 3); }
+    static bool isElmPentRaster() { return arch == A_ELM && !isElm48Raster() && !isElm128Raster(); }
+    static bool isElmPlus3()      { return arch == A_ELM && g_elm_personality == 3; }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }

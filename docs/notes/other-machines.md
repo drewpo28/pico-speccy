@@ -606,6 +606,32 @@ power-up only. URAM also on with `e_001 = #FF` (old FLASH6, SetUp). The MB03+SD 
 `OUT (#E3)`): defaults = the SetUp's table + Pentagon 1024. SetUp entry = block 7 as ROM + `g_elm_nodiv` until the first
 Element port write (Alt+F11 Reset to... > SetUp (firmware), or Machine > eLeMeNt ZX > SetUp; bench `PICOSPECCY_ELM_SETUP=1`). FLASHESX/FLASHZXD/FlashSetUp_V2,
 the flashed esxDOS, Area 3 boot, SetUp menu/R/L and ElCoreUp's graceful failure all ran on the bench. `tools/elm_flash_test.cpp`.
+**Personalities (2026-11-03, hw-confirmed DVp2w, committed ef5a1d58):** `e_zxi_000` is armed at reset only (`Elm::armPersonality`, FRAM at
+power-up, the live register after) into `g_elm_personality`; `Config::isElm48Raster/isElm128Raster/isElmPentRaster/isElmPlus3`
+sit beside the `isEvo*Raster` predicates in the frame-timing (CPU.cpp), raster + video-mode class (Video.cpp), audio and
+contention (ESPectrum.cpp) chains and the +2A `wait_st`; `Elm::cpuFlags` sets is48/is128/isP3/isPentagon/is512/is1024, the
+floating bus and the frame target. The 48K personality keeps #7FFD bit 4 as the ROM-block select (esxDOS reaches 48 BASIC by
+OUT #7FFD,#10; FLASH48 fills all four blocks) — without it an Area 0 boot was a black screen. +2A: `Plus3::portWrite` re-applies
+the URAM zones after `plus3Remap`. Gama 80 (09): 48K timing + i8255 #7F (BSR bit 0) / #5F pick the 32 KB page at #8000
+(`ram[1]`/`ram[3]`). 08 (P4096) runs as the 1024. Bench, against the stock machines pixel-for-pixel over the paper: ULA 128E +3
+test (128 and +2A), Float48K, NEC IR contention, +2A paging test 1 all equal / all `expected`; GAMATEST.TAP prints 1 2 1.
+**ROM window writable (found by the owner's ula48.tap on hw, 2026-11-03, fixed on the bench):** the ROM blocks are the flash
+image in butter PSRAM, and `MemESP::writebyte` drops a store only for pointers below the PSRAM base, so every write
+to #0000-#3FFF landed in the Area's block. ula48.tap's IM2 vector (table at #FE00, JR at #FFFF over the ROM byte) hit
+garbage, the ROM's RAM-fill ran over all 64 KB and the screen stayed on its red-dot paper; esxDOS's early writes had
+already changed bytes 0-4 of ROM0. Fix: `Elm::windowsRebuild` sets `g_atm_ro` bit 0 (the ATM "window 0 shows ROM" rule) whenever Zone 0 is
+on the legacy mapping, and the CPU write hook lets the divMMC RAM and the Pentagon page-0 RAM through that bit
+(`romWindowDrops`, out of line: inlined it cost 532 B of RAM, the helper 96 B). Diagnostics that found it: the host bench's
+`PICOSPECCY_PCLOG=from:count` (PC/SP/bytes at PC per frame) and `PICOSPECCY_PEEK=addr:len,...` (host_main.cpp).
+**SetUp Shift+R / Shift+L = a machine reset (2026-11-03, bench):** the SetUp writes its registers and leaves by `RST 0`
+(C544). The first Element port write had already put the normal ROMs back, so the RST ran the ROM on at #0000 into a
+WARM esxDOS (divMMC RAM intact, browser state too) and the personality, applied at reset only, stayed the old one; the
+owner saw the NMI browser answer "No such FILE or DIR, 0:1" after such a restart (not every time; the same symptom is in
+the Next notes as "esxDOS never ran its cold init at $0000"). Now `Elm::rst0` (from `Z80::decodeRST`, RST 0 only) logs
+`[ELM] SetUp RST 0 at C544: e_000=.. e_001=.. e_00F=.. e_02D=.. divmmc map= con= -> machine reset` once per SetUp
+session and `Elm::takeReset` at the frame end does `DivMMC::reset()` + `ESPectrum::reset()` (the menu's Soft Reset),
+so esxDOS cold-boots ("Detecting Devices") and `[ELM] personality NN at reset` follows. The SetUp entry logs
+`[ELM] SetUp ROM (block 7 of Area n) boots at this reset`.
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)

@@ -30,6 +30,7 @@
 
 uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
 const uint8_t* g_elm_divrom;          // DivMMC.cpp: esxDOS from block 4 of the ROM Area (e_zxi_02D bit 0)
+uint8_t g_elm_personality = 7;        // Config.h: e_zxi_000 as armed at the last reset
 
 namespace Elm {
 
@@ -72,7 +73,15 @@ static bool s_flashOpen;              // zone 0 shows the flash (layout 6)
 // copies the code to #C000 and the first OUT of the relocated code (#7FFD, then
 // e_zxi_030) is when the ROM is wanted no more - the block stays until the first port
 // write after the reset, which the stub never makes.
+static const uint8_t kDefaults[0x40] = {
+    0x07, 0x01, 0x3F, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
+    0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 };
+
 static bool s_setupBoot, s_setupRom, s_setupOnce;
+static bool s_setupLive, s_resetWanted;   // a SetUp session is running / its RST 0 asked for a reset
+static uint8_t s_gamaPage;            // Didaktik Gama 80: the 32 KB page at #8000 (i8255 PC0)
 static bool s_powered;                // the first reset of the session is the power-up
 static uint8_t s_keep[0x40];          // e_zxi_000..03F across a warm reset
 static uint32_t s_onFrames;
@@ -122,6 +131,12 @@ static void windowsRebuild() {
     bool any = false;
     for (int i = 0; i < 256 && !any; i++) any = w[i] != 0;
     if (any) g_atm_ro |= GM_ELM; else g_atm_ro &= (uint8_t)~GM_ELM;
+    // The ROM blocks are the flash image in butter PSRAM, which MemESP::writebyte's
+    // flash-pointer filter takes for RAM: with Zone 0 on the legacy mapping, window 0
+    // drops the store (bit 0, the ATM rule; the CPU hook lets the divMMC RAM and the
+    // Pentagon page-0 RAM through). ula48.tap's bogus IM2 vector ran the ROM's
+    // RAM-fill over the ROM0 block and the "48K" went dark (bench 2026-11-03).
+    if (s_active & 1) g_atm_ro &= (uint8_t)~1; else g_atm_ro |= 1;
     readHookUpdate();
 }
 
@@ -296,9 +311,31 @@ static void legacyZone(uint8_t z) {
     switch (z) {
     case 0: MemESP::p3special = 0; MemESP::recoverPage0(); break;
     case 1: MemESP::plugPtr16(1, MemESP::ram[5].direct()); break;
-    case 2: MemESP::plugPtr16(2, MemESP::ram[2].sync(2)); break;
-    case 3: MemESP::plugPtr16(3, MemESP::ram[MemESP::bankLatch].sync(3)); break;
+    case 2: MemESP::plugPtr16(2, MemESP::ram[(g_elm_personality == 9 && (s_gamaPage & 1)) ? 1 : 2].sync(2)); break;
+    case 3: MemESP::plugPtr16(3, MemESP::ram[(g_elm_personality == 9 && (s_gamaPage & 1)) ? 3 : MemESP::bankLatch].sync(3)); break;
     }
+}
+
+// Didaktik Gama 80 (personality 09): 80 KB as two 32 KB pages at #8000, picked by
+// the i8255's port C bit 0 - OUT 127,x (control word, BSR for bit 0) or port 95
+// (Reference, "Didaktik Gama 80KB memory"). Page 0 = the usual 2/0, page 1 = 1/3.
+static void gamaPlug() {
+    const bool alt = s_gamaPage & 1;
+    MemESP::plugPtr16(2, MemESP::ram[alt ? 1 : 2].sync(2));
+    MemESP::plugPtr16(3, MemESP::ram[alt ? 3 : 0].sync(3));
+    remap();                            // URAM zones 2/3 back on top
+}
+static bool gamaOut(uint8_t lo, uint8_t v) {
+    if (g_elm_personality != 9) return false;
+    uint8_t page = s_gamaPage;
+    if (lo == 0x7F) {                   // control word: BSR (bit 7 = 0) on bit 0 only
+        if (v & 0x80) return true;      // a mode-set word: nothing to page
+        if (((v >> 1) & 7) != 0) return true;
+        page = v & 1;
+    } else if (lo == 0x5F) page = v & 1;
+    else return false;
+    if (page != s_gamaPage) { s_gamaPage = page; gamaPlug(); }
+    return true;
 }
 
 // The one writer of a URAM slot. The reserved layouts leave the Zone on the legacy
@@ -510,12 +547,64 @@ void flush(bool force) {
     ElmFlash::flush(force);
 }
 
+// The personality at the reset that is starting: the live register once the session
+// is up (the SetUp writes it, then restarts), the FRAM's at power-up.
+void armPersonality() {
+    uint8_t p = kDefaults[0];
+    if (s_powered && s_r) p = s_r->e[0x000];
+    else if (ElmFlash::ensure()) {
+        const uint8_t* f = ElmFlash::fram();
+        if (f[0x000] <= 9 && f[0x001] != 0xFF) p = f[0x000];
+    }
+    if (p > 9 || p == 2 || p == 4) p = kDefaults[0];   // reserved values: the base machine
+    if (g_elm_personality != p) Debug::log("[ELM] personality %02X at reset", p);
+    g_elm_personality = p;
+}
+
+// What CPU::reset's own branches set for the stock machine of this personality. 08
+// (Pentagon 4096) runs as the 1024 for now, 09 (Didaktik Gama 80) as a 48K.
+void cpuFlags() {
+    const uint8_t p = g_elm_personality;
+    Z80Ops::isByte = false;
+    Z80Ops::isProfi = false;
+    Z80Ops::isP3 = (p == 3);
+    Z80Ops::is48 = (p == 0 || p == 9);
+    Z80Ops::is128 = (p == 1);                 // the +2A is not "128": its own paging and contention
+    Z80Ops::isPentagon = (p >= 5);
+    Z80Ops::is512 = (p == 6);
+    Z80Ops::is1024 = (p >= 7);
+    Ports::getFloatBusData = Z80Ops::is48 ? &Ports::getFloatBusData48
+                           : Z80Ops::is128 ? &Ports::getFloatBusData128
+                           : &Ports::getFloatBusDataNone;   // +2A: none; Pentagon: none
+    ESPectrum::target = Z80Ops::is48 ? MICROS_PER_FRAME_48
+                      : (p == 1 || p == 3) ? MICROS_PER_FRAME_128 : MICROS_PER_FRAME_PENTAGON;
+}
+
 // Machine > eLeMeNt ZX > SetUp (the board: reset held 1.5 s). Takes effect at the
 // reset that follows; a blank block 7 shows what to flash.
 bool enterSetup() {
     if (!ElmFlash::ensure()) return false;
     if (ElmFlash::blockBlank(s_r ? s_r->e[0x00F] & 3 : 0, ElmFlash::BLOCK_SETUP)) return false;
     s_setupBoot = true;
+    return true;
+}
+
+// Shift+R / Shift+L in the SetUp: the registers are written, then RST 0. On the board
+// that restarts the machine; here the ROM would run on at #0000 into a warm esxDOS
+// (divMMC RAM intact, its browser state too) and the personality, which is applied at
+// reset only, would not change. Log the state once and ask for a machine reset.
+void rst0(uint16_t pc) {
+    if (!s_setupLive || !s_r) return;
+    s_setupLive = false;
+    s_resetWanted = true;
+    g_elm_nodiv = 1;                    // the rest of this frame: the ROM alone at #0000
+    Debug::log("[ELM] SetUp RST 0 at %04X: e_000=%02X e_001=%02X e_00F=%02X e_02D=%02X divmmc map=%d con=%d -> machine reset",
+               pc, s_r->e[0x000], s_r->e[0x001], s_r->e[0x00F], s_r->e[0x02D],
+               (int)MemESP::divmmc_mapped, (int)DivMMC::conmem);
+}
+bool takeReset() {
+    if (!s_resetWanted) return false;
+    s_resetWanted = false;
     return true;
 }
 
@@ -538,6 +627,7 @@ void reset() {
     s_zone = 0;
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
+    s_gamaPage = 0;
     if (s_flashOpen) { s_flashOpen = false; ElmFlash::windowClosed(); }
     g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
@@ -569,11 +659,6 @@ void reset() {
     // e_02D bit 0 = esxDOS from the flash block when one is flashed (the table boots the
     // FPGA copy). LIFO and DMA on: the MB03+SD esxDOS build keeps its divMMC control
     // byte in the LIFO (IN A,(#2B) before OUT (#E3)) and hangs without it.
-    static const uint8_t kDefaults[0x40] = {
-        0x07, 0x01, 0x3F, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01,
-        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
-        0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 };
     memcpy(s_r->e, kDefaults, sizeof kDefaults);
     // The FRAM's SetUp area (#2000 + N = e_zxi_N, 64 bytes) is what the board loads at
     // power-up; a blank FRAM (no file yet, or defaults never saved) keeps the table.
@@ -601,6 +686,9 @@ void reset() {
     if (getenv("PICOSPECCY_ELM_SETUP") && !s_setupOnce) { s_setupOnce = true; s_setupRom = true; }
 #endif
     if (s_setupRom) g_elm_nodiv = 1;   // esxDOS stays off the bus until the SetUp runs from RAM
+    s_setupLive = s_setupRom;
+    s_resetWanted = false;
+    if (s_setupRom) Debug::log("[ELM] SetUp ROM (block 7 of Area %u) boots at this reset", s_r->e[0x00F] & 3);
     cpuSpeed(s_r->e[0x030]);
     ElmSid::mute(!(s_r->e[0x002] & 8));
     s_r->e[0x0FC] = kStampDay;
@@ -609,6 +697,7 @@ void reset() {
     s_r->e[0x0FF] = kInterfaceId;
     romsBind();
     divRomApply();
+    windowsRebuild();       // no window yet; the ROM write gate on window 0
 }
 
 static uint8_t gRead(uint8_t r) {
@@ -880,6 +969,18 @@ bool portOut(uint16_t a, uint8_t v) {
         Debug::log("[ELM] out %04X=%02X pc=%04X sp=%04X z=%u idx=%02X/%02X", a, v, Z80::getRegPC(), Z80::getRegSP(), s_zone, s_gIdx, s_eIdx);
 #endif
     if (uramOut((uint8_t)a, v)) return true;
+    // A 48K personality has no RAM paging, but the ROM Area is still four blocks and
+    // esxDOS reaches 48 BASIC by OUT #7FFD,#10 (FLASH48 fills all four blocks, so a
+    // 48 set works whichever one the latch picks): bit 4 selects the block, the rest
+    // of the write is dropped. The generic decode ignores #7FFD entirely on a 48K.
+    if (a == 0x7FFD) {
+        if (!Z80Ops::is48) return false;
+        MemESP::romLatch = (v >> 4) & 1;
+        MemESP::romInUse = MemESP::romLatch;
+        MemESP::recoverPage0();
+        return true;
+    }
+    if (gamaOut((uint8_t)a, v)) return true;   // Gama 80: #7F / #5F page the upper 32 KB
     switch ((uint8_t)a) {
     case 0x0F: dacWrite(0, v); return true;
     case 0x1F: dacWrite(1, v); return true;

@@ -5317,16 +5317,16 @@ void VIDEO::pickMachineVideoMode() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default: // VM_640x480_60
@@ -5342,8 +5342,8 @@ void VIDEO::pickMachineVideoMode() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
-                else if (Config::arch == A_128K || Config::isEvo128Raster() || nk == 1) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
+                else if (Config::arch == A_128K || Config::isEvo128Raster() || Config::isElm128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
@@ -5351,8 +5351,8 @@ void VIDEO::pickMachineVideoMode() {
                 break;
             case Config::VM_720x576_169:
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default:
@@ -5367,8 +5367,8 @@ void VIDEO::pickMachineVideoMode() {
     if (Config::isBigVideoMode(vmSel)) {
         // The big modes are per machine too (except the 60 Hz entries):
         // 0 = Pentagon, 1 = 48K/Profi/Scorpion, 2 = 128K — the 720x576 grouping.
-        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) ? 1
-                        : (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) ? 2 : 0;
+        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || Config::arch == A_ENT || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster() || nk == 0) ? 1
+                        : (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster() || nk == 1) ? 2 : 0;
         // VGA runs them at its own pixel clocks (63 / 42 MHz, integer at 252/378/504),
         // so it takes the entry the HDMI mode would use at its own clock.
         const int big = graphics_big_mode(vmSel, SELECT_VGA ? Config::bigModePrefClock(vmSel)
@@ -5641,6 +5641,26 @@ void VIDEO::Reset() {
     // the top: VPIX_BEG_60HZ 42 vs VPIX_BEG_PENTAGON 76 (video_sync_v.v), INT on line 0 in
     // both, so every anchor moves 34 * 224 = 7616 T earlier. The 288-row anchor would fall
     // before the INT (the raster has only 46 lines above the paper); it is clamped.
+    // eLeMeNt ZX in a 48K or 128K personality: those rasters over the Pentagon branch
+    // above (the same values the A_48K / A_128K branches use).
+    if (Config::isElm48Raster() || Config::isElm128Raster()) {
+        if (Config::isElm48Raster()) {
+            tStatesPerLine = TSTATES_PER_LINE;
+            tStatesScreen = TS_SCREEN_48;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
+                          : TS_BORDER_320x240;
+        } else {
+            tStatesPerLine = TSTATES_PER_LINE_128;
+            tStatesScreen = TS_SCREEN_128;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_128 : TS_BORDER_360x288_128)
+                          : TS_BORDER_320x240_128;
+        }
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    }
     if (Config::isEvoBase() && !Config::isEvoPentRaster()) {
         if (Config::isEvo48Raster()) {
             tStatesPerLine = TSTATES_PER_LINE;
@@ -5826,7 +5846,7 @@ void VIDEO::Reset() {
 
     // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
     // timing block above, so every machine reset re-picks it.
-    wait_st = wait_st_tab[Config::isPlus3() ? 1 : 0];
+    wait_st = wait_st_tab[(Config::isPlus3() || Config::isElmPlus3()) ? 1 : 0];
 
     VIDEO::paper_off = !Config::render_paper;
 
@@ -8123,7 +8143,7 @@ int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin
 int VIDEO::screenTopRows() {
     if (!isFullBorder || isFullBorder240()) return 24;
     const bool pentRaster = Config::arch == A_PENT || Config::arch == A_P512 ||
-                            Config::arch == A_P1024 || Config::arch == A_ELM || Config::arch == A_TSCONF ||
+                            Config::arch == A_P1024 || Config::isElmPentRaster() || Config::arch == A_TSCONF ||
                             Config::isEvoPentRaster();
     if (!pentRaster) return 48;
     static const uint8_t kTop[3] = { 48, 60, 64 };   // Even / Middle / Full top

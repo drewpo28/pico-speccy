@@ -155,7 +155,15 @@ void CPU::updateStatesInFrame() {
     // IntEnd += latetiming shifts the INT window 1T later for Late.
     // isActiveINT adds latetiming to tstates so that Late fires 1T later,
     // including via end-of-frame straddle (tstates=statesInFrame-1 → tmp=0).
-    if (Config::arch == A_48K) {
+    if (Config::isElm48Raster()) {          // eLeMeNt ZX: the 48K / 128K personalities (Element.h)
+        statesInFrame = TSTATES_PER_FRAME_48;
+        IntStart = INT_START48;
+        IntEnd = INT_END48 + CPU::latetiming;
+    } else if (Config::isElm128Raster()) {
+        statesInFrame = TSTATES_PER_FRAME_128;
+        IntStart = INT_START128;
+        IntEnd = (Config::isElmPlus3() ? INT_END_P3 : INT_END128) + CPU::latetiming;
+    } else if (Config::arch == A_48K) {
         statesInFrame = TSTATES_PER_FRAME_48;
         IntStart = INT_START48;
         IntEnd = INT_END48 + CPU::latetiming;
@@ -317,6 +325,7 @@ void CPU::reset() {
     Z80Ops::isSam = (Config::arch == A_SAM);
     Z80Ops::isEnt = (Config::arch == A_ENT);
     Z80Ops::isElm = (Config::arch == A_ELM);
+    if (Z80Ops::isElm) Elm::armPersonality();   // e_zxi_000 -> the flag and timing chains below
     if (!Z80Ops::isAtm && !Z80Ops::isSam && !Z80Ops::isEnt && !Z80Ops::isElm) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
@@ -375,7 +384,9 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
-    } else if (Config::arch == A_P1024 || Config::arch == A_ELM) {
+    } else if (Config::arch == A_ELM) {
+        Elm::cpuFlags();                 // 48K / 128K / +2A / Pentagon 128-1024 by e_zxi_000
+    } else if (Config::arch == A_P1024) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -1400,6 +1411,13 @@ static void atmPgTableWriteTrace(uint16_t address, uint8_t value) {
                (const void*)MemESP::ramCurrent[(address >> 14) << 1], Atm::p7ffd);
 }
 #endif
+// A window showing ROM drops the store (ATM-Turbo, eLeMeNt: its ROM blocks live in
+// PSRAM) - unless the divMMC RAM or the Pentagon page-0 RAM is on top of window 0.
+// Out of line: inlined into the three poke paths it cost 532 B of RAM (2026-11-03).
+static IRAM_ATTR __attribute__((noinline)) bool romWindowDrops(uint16_t address) {
+    return address >= 0x4000 || !(MemESP::divmmc_mapped || MemESP::page0ram);
+}
+
 static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 #if ZC_PORT_TRACE || ATM_PAGE_TRACE
     if (Z80Ops::isAtm) {
@@ -1449,7 +1467,7 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     if (__builtin_expect(g_atm_ro != 0, 0)) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;  // eLeMeNt windows
-        if ((g_atm_ro >> (address >> 14)) & 1) return;
+        if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;
     }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
     // does NOT replace the normal store, the hardware writes RAM and the FPGA
@@ -1715,7 +1733,7 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     if (g_atm_ro) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;
-        if ((g_atm_ro >> (address >> 14)) & 1) return;
+        if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;
     }
     tsPoke8Store(address, value);
 }

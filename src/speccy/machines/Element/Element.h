@@ -17,6 +17,18 @@ bool portOut(uint16_t address, uint8_t data);
 void frameEnd();                              // EndFrame
 void flush(bool force = false);               // flash image / FRAM write-back (main loop; force on reboot)
 bool enterSetup();                            // next reset boots the SetUp ROM (block 7); false = not flashed
+// The SetUp leaves by RST 0 (Shift+R, Shift+L): the board restarts, so the emulator
+// does a machine reset too instead of letting the ROM run on into a warm esxDOS.
+// rst0 is called from the Z80 core on every RST 0 (flash, rare); takeReset is
+// polled at the frame end (ESPectrum.cpp) and clears the request.
+void rst0(uint16_t pc);
+bool takeReset();
+// The personality e_zxi_000 names, applied at reset only (the SetUp restarts, FLASH6
+// flips it and back without one): CPU::reset arms it before its timing chain, then
+// cpuFlags() sets the Z80Ops machine flags, the floating bus and the frame target
+// the way the stock 48K / 128K / +2A / Pentagon branches would.
+void armPersonality();
+void cpuFlags();
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY
@@ -30,12 +42,13 @@ extern uint8_t* wrKind;                       // per high address byte: 0 = plai
 
 // The ports the machine claims ahead of the generic decode, tested in the RAM path:
 // #xx3B, #9EFD/#9FFD, the URAM ports #07 #27 #47 #67 #53 #73 and the DACs #0F-#7F
-// (low byte only). portIn leaves the DAC ports to the generic decode.
+// (low byte only), and #7FFD for the 48K personalities' ROM select. portIn leaves the
+// DAC ports and #7FFD to the generic decode.
 static inline bool isPort(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     return lo == 0x3B || (lo & 0x9F) == 0x07 || (lo & 0xDF) == 0x53 ||
            (lo & 0x8F) == 0x0F || lo == 0x2B || (address & 0xF0FF) == 0x0003 ||
-           (address & 0xFEFF) == 0x9EFD || address == 0xEFF7;
+           (address & 0xFEFF) == 0x9EFD || address == 0xEFF7 || address == 0x7FFD;
 }
 
 }

@@ -1514,7 +1514,7 @@ void ESPectrum::setup() {
 
   MemESP::plug16(0, MemESP::rom[MemESP::romInUse].direct(), false);
   MemESP::plug16(1, MemESP::ram[5].direct(),
-                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::arch == A_ELM ||
+                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::isElmPentRaster() ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
                    Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
@@ -1713,7 +1713,7 @@ void ESPectrum::setup() {
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
-      Config::isEvo48Raster() || Config::isQuorumKvRaster()) {
+      Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1739,7 +1739,7 @@ void ESPectrum::setup() {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
     Audio_freq = ESP_AUDIO_FREQ_EVO60;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -2340,7 +2340,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   MemESP::plug16(0, MemESP::rom[romInUse].direct(), false);
   MemESP::plug16(1, MemESP::ram[5].direct(),
-                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::arch == A_ELM ||
+                 !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::isElmPentRaster() ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
                    Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
@@ -2517,7 +2517,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
-      Config::isEvo48Raster() || Config::isQuorumKvRaster()) {
+      Config::isEvo48Raster() || Config::isElm48Raster() || Config::isQuorumKvRaster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -2540,7 +2540,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
     Audio_freq = ESP_AUDIO_FREQ_EVO60;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || Config::isElm128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -4541,6 +4541,15 @@ void ESPectrum::loop() {
     beeperSampleAccum = 0;
     beeperTstatesInSample = 0;
 
+    // eLeMeNt: the SetUp's RST 0 (Elm::rst0) = the board's restart: the divMMC and the
+    // machine reset, the personality written in the SetUp is applied by CPU::reset.
+    if (Z80Ops::isElm && Elm::takeReset()) {
+      Debug::log("[ELM] reset after the SetUp (PC was %04X)", Z80::getRegPC());
+      if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+      Config::last_ram_file = NO_RAM_FILE;
+      DivMMC::reset();
+      ESPectrum::reset();
+    }
     if (Z80Ops::isNext && NextReg::resetPending) {
       // nextreg 0x02 (Reset). The WHOLE POINT of resetting through this
       // register is that NextReg state, RAM, the MMU and the divMMC pager

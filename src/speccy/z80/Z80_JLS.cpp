@@ -3346,6 +3346,8 @@ void Z80::decodeRST() {    /* RST p */
     // Enterprise: RST 30h is the EXOS call (function byte at PC) — the typed-launch
     // prompt detector (Ep::exosCall, flash) watches for BASIC's read-character call.
     if (__builtin_expect(Z80Ops::isEnt, 0) && opCode == 0xF7) Ep::exosCall(REG_PC);
+    // eLeMeNt: the SetUp firmware leaves by RST 0 - a machine reset there (Elm::rst0).
+    if (__builtin_expect(opCode == 0xC7, 0) && Z80Ops::isElm) Elm::rst0((uint16_t)(REG_PC - 1));
     Z80Ops::addressOnBusIR(1);
     push(REG_PC);
     REG_PC = REG_WZ = opCode & 0x38;

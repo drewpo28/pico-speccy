@@ -6,6 +6,8 @@
 #include "Plus3Fdc.h"
 #include "speccy/core/Ports.h"
 #include "speccy/video/Video.h"
+#include "app/Config.h"
+#include "speccy/machines/Element/Element.h"   // eLeMeNt ZX +2A personality: URAM back over the paging
 
 #ifndef bitRead
 #define bitRead(value, bit) (((value) >> (bit)) & 0x01)
@@ -25,6 +27,7 @@ bool Plus3::portWrite(uint16_t address, uint8_t data) {
       VIDEO::gigascreenAutoFlip();          // Gigascreen Auto: the displayed page changed
     }
     MemESP::plus3Remap(Ports::port1FFD);
+    if (Config::isElm()) Elm::remap();   // the +2A personality: URAM zones stay on top
     return true;
   }
   if ((address & 0xF002) == 0x1000) {
@@ -34,6 +37,7 @@ bool Plus3::portWrite(uint16_t address, uint8_t data) {
     if (MemESP::pagingLock) return true;
     Ports::port1FFD = data;
     MemESP::plus3Remap(data);
+    if (Config::isElm()) Elm::remap();
     return true;
   }
   // The FDC data register. #2FFD is read-only, so a write there is swallowed.
