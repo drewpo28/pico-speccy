@@ -196,6 +196,7 @@ static uint8_t s_scan;
 static uint8_t s_lifo[32], s_lifoTop;     // #2B, 32 bytes, circular
 static uint64_t s_clkLatch;               // e_zxi_0F3..0F8, latched by reading 0F3
 static void cpuSpeed(uint8_t sel);
+static void extraTick();
 static uint8_t s_dac[5], s_dacUsed;
 static bool s_scanHeld;
 static bool s_radFlip;
@@ -480,6 +481,7 @@ void frameEnd() {
     hrxcLatch();                          // the next frame starts with the table as it is now
     ElmSdma::frameEnd(ESPectrum::samplesPerFrame);
     ElmSid::frameEnd(ESPectrum::samplesPerFrame);
+    extraTick();
 }
 
 // SafeNMI: the return address of the last NMI is readable, bit 7 locks the button.
@@ -664,10 +666,13 @@ void rst0(uint16_t pc) {
                pc, s_r->e[0x000], s_r->e[0x001], s_r->e[0x00F], s_r->e[0x02D],
                (int)MemESP::divmmc_mapped, (int)DivMMC::conmem);
 }
-bool takeReset() {
-    if (!s_resetWanted) return false;
+static uint8_t s_resetKind = 1;          // what s_resetWanted asks for: 1 restart, 2 warm
+int takeReset() {
+    if (!s_resetWanted) return 0;
     s_resetWanted = false;
-    return true;
+    const int k = s_resetKind;
+    s_resetKind = 1;
+    return k;
 }
 
 // Phase E: the SetUp's registers -> Config. Runtime only, never Config::save(): the
@@ -1184,6 +1189,149 @@ bool portOut(uint16_t a, uint8_t v) {
     if ((a & 0xF8FF) == 0x703B) return true;
     if (a == 0xEFF7) VIDEO::timexHiresRequest(v & 2);   // and on to the generic decode
     return false;
+}
+
+// ── the EXTRA and RESET buttons ────────────────────────────────────────────────
+// EXTRA = Win+F11 (User Manual: "ZX + F11"), RESET = the hard-reset hot key. The
+// board holds the CPU while a button is down (CPU::paused here, so the frame stays
+// and the digits never reach the ZX keyboard). e_zxi_020 = what a short EXTRA press
+// does, e_zxi_021 = 01 arms the Spectrum menu on a 1.5 s hold; RESET held 1.5 s =
+// the SetUp firmware. The live registers change, not the FRAM: the SetUp is where
+// the choice is stored.
+static uint64_t s_extraT0, s_rstT0;
+static bool s_extraHeld, s_extraMenu, s_rstHeld;
+static uint8_t s_gsLast = 3;            // the GigaScreen mode a short press toggles back to
+static const char* const kPersName[10] = {
+    "ZX Spectrum 48", "ZX Spectrum 128/+2", nullptr, "ZX Spectrum +2A", nullptr,
+    "Pentagon 128", "Pentagon 512", "Pentagon 1024", "Pentagon 4096", "Didaktik Gama 80" };
+static const char* const kSpeedName[8] = {
+    "3.5 MHz", "7 MHz", "14 MHz", "20 MHz",
+    "OverClock 22 MHz", "OverClock 28 MHz", "OverClock 28 MHz (RAM)", "OverClock 30 MHz (RAM)" };
+
+static void extraShort() {
+    char m[64];
+    switch (s_r->e[0x020]) {
+    case 1: {                                                   // CPU speed: 3.5 -> 7 -> 14 -> 20
+        const uint8_t v = (uint8_t)((s_r->e[0x030] + 1) & 3);
+        eWrite(0x30, v);
+        snprintf(m, sizeof m, "EXTRA: CPU %s", kSpeedName[v]);
+        break;
+    }
+    case 2: {                                                   // Machine: the next personality, restart
+        static const uint8_t kOrder[8] = { 0, 1, 3, 5, 6, 7, 8, 9 };
+        int i = 0;
+        while (i < 8 && kOrder[i] != s_r->e[0x000]) i++;
+        const uint8_t v = kOrder[(i + 1) % 8];
+        eWrite(0x00, v);
+        s_resetKind = 1; s_resetWanted = true;
+        snprintf(m, sizeof m, "EXTRA: %s", kPersName[v]);
+        break;
+    }
+    case 3: {                                                   // GigaScreen on/off (back to the last mode)
+        const uint8_t cur = s_r->e[0x01D];
+        if (cur) s_gsLast = cur;
+        const uint8_t v = cur ? 0 : s_gsLast;
+        eWrite(0x1D, v);
+        applyRegs(s_r->e, true);
+        snprintf(m, sizeof m, "EXTRA: GigaScreen %s", v == 0 ? "off" : v == 3 ? "auto" : "on");
+        break;
+    }
+    case 4:                                                     // Warm reset: RAM and the divSD stay
+        s_resetKind = 2; s_resetWanted = true;
+        snprintf(m, sizeof m, "EXTRA: warm reset");
+        break;
+    case 5: {                                                   // Joystick interface: the next one
+        static const char* const kJoy[5] = { "none", "Kempston", "Sinclair left", "Sinclair right", "keyboard" };
+        const uint8_t v = (uint8_t)((s_r->e[0x003] + 1) % 5);
+        eWrite(0x03, v);
+        applyRegs(s_r->e, true);
+        snprintf(m, sizeof m, "EXTRA: joystick %s", kJoy[v]);
+        break;
+    }
+    default: return;                                            // 00 none
+    }
+    Debug::log("[ELM] %s", m);
+    OSD::notify(m, LEVEL_INFO, 1500);
+}
+
+// The speccy rainbow of the Spectrum menu: four slanted stripes in the bottom border,
+// painted straight into the framebuffer every frame of the hold (the CPU is held, so
+// nothing else repaints the border; the release asks for a border repaint). Only the
+// standard border geometry: the HGFX / big modes keep the toast alone.
+static void drawRainbow() {
+    if (VIDEO::osd_in_paper || VIDEO::bandBorderMode() || VIDEO::ds80BandMode()) return;
+    const int top = VIDEO::isFullBorder288() ? 48 : 24;
+    const int y0 = top + 192, h = (int)OSD::scrH - y0;
+    const int w = (int)OSD::scrW;
+    if (h <= 0 || w < 128) return;
+    static const uint8_t kInk[4] = { 2, 6, 4, 5 };            // red, yellow, green, cyan
+    for (int r = 0; r < h; r++) {
+        int x = w - 40 - r;                                   // the "/" slant of the logo
+        for (int k = 0; k < 4; k++, x += 8) {
+            const int xa = x < 0 ? 0 : x, xb = x + 8 > w ? w : x + 8;
+            if (xb > xa) VIDEO::vga.fillRect(xa, y0 + r, xb - xa, 1, zxColor(kInk[k], 1));
+        }
+    }
+}
+
+static void buttonRelease() {
+    CPU::paused = false;
+    VIDEO::brdChange = true;                                  // repaint the border (the rainbow)
+    VIDEO::brdnextframe = true;
+}
+
+static void extraTick() {
+    if (!s_extraHeld) return;
+    if (s_extraMenu) { drawRainbow(); return; }
+    if (s_r->e[0x021] != 1 || time_us_64() - s_extraT0 < 1500000ull) return;
+    s_extraMenu = true;
+    Debug::log("[ELM] EXTRA held: Spectrum menu");
+    OSD::notify("Spectrum menu: 1-8 = CPU speed", LEVEL_INFO, 30000);
+}
+
+int extraKey(uint16_t vk, bool down, bool gui, bool plain, uint16_t resetVk) {
+    if (!s_r) return EK_NONE;
+    if (vk == fabgl::VK_F11 && gui && !s_rstHeld) {           // EXTRA
+        if (down) {
+            if (!s_extraHeld) {
+                s_extraHeld = true; s_extraMenu = false; s_extraT0 = time_us_64(); CPU::paused = true;
+                framCount(0x1FF0);                                // the SetUp's "Extra" counter
+            }
+            return EK_TAKEN;
+        }
+    }
+    if (vk == fabgl::VK_F11 && !down && s_extraHeld) {
+        s_extraHeld = false;
+        buttonRelease();
+        if (s_extraMenu) { s_extraMenu = false; OSD::cancelNotify(); }
+        else extraShort();
+        return EK_TAKEN;
+    }
+    if (vk == resetVk && plain && !gui && !s_extraHeld) {     // RESET: short = reset, 1.5 s = SetUp
+        if (down) {
+            if (!s_rstHeld) { s_rstHeld = true; s_rstT0 = time_us_64(); CPU::paused = true; }
+            return EK_TAKEN;
+        }
+        if (!s_rstHeld) return EK_NONE;
+        s_rstHeld = false;
+        buttonRelease();
+        const bool setup = time_us_64() - s_rstT0 >= 1500000ull;
+        Debug::log("[ELM] reset button %s", setup ? "held: SetUp" : "released: reset");
+        return setup ? EK_SETUP : EK_RESET;
+    }
+    if (!s_extraHeld || !down) return EK_NONE;
+    int n = -1;
+    if (vk >= fabgl::VK_1 && vk <= fabgl::VK_8) n = vk - fabgl::VK_1;
+    else if (vk >= fabgl::VK_KP_1 && vk <= fabgl::VK_KP_8) n = vk - fabgl::VK_KP_1;
+    if (n < 0) return EK_NONE;
+    if (!s_extraMenu) return EK_TAKEN;                          // the CPU is held: the key goes nowhere
+    if (n >= 4 && !(s_r->e[0x031] & 1)) return EK_TAKEN;        // 5-8 need OverClock enabled
+    eWrite(0x30, (uint8_t)n);
+    char m[48];
+    snprintf(m, sizeof m, "CPU speed: %s", kSpeedName[n]);
+    Debug::log("[ELM] Spectrum menu: %s", m);
+    OSD::notify(m, LEVEL_INFO, 1500);
+    return EK_TAKEN;
 }
 
 }

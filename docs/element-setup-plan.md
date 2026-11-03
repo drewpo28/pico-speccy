@@ -298,6 +298,38 @@ variants» из Reference (ядро rdacomp Pentagon-4096): `#7FFD` биты 0-2
 ### Фаза D. Gama 80, Pentagon 4096
 Проверка: §3.6; для 4096 — тест пейджинга rdacomp (искать на zxfiles.net).
 
+### Фаза E′. EXTRA button и долгий reset (2026-11-04, hw-confirmed DVp2w «работает», `debug/DVp2w-elm-extra-1.1.1`)
+
+Две кнопки платы на PC-клавиатуре: **EXTRA = Win + F11** («ZX + F11» в мануале; владелец,
+2026-11-04), **RESET = горячая клавиша hard reset (F11)**: отпущена раньше 1.5 с — сброс, держится
+дольше — SetUp (мануал: «A long press of reset button (at least 1.5 sec) results into the SetUp»).
+`Elm::extraKey` из `ESPectrum::processKeyboard` до горячих клавиш (иначе голая F11 сработала бы
+как hard reset на нажатии), `Elm::extraTick` из `frameEnd`. Пока кнопка нажата, CPU стоит
+(`CPU::paused`, как на плате), поэтому цифры не доходят до ZX, а кадр не перерисовывается.
+Регистры меняются живьём, FRAM не трогается (где хранить выбор — дело SetUp); счётчик «Extra»
+FRAM `#3FF0` растёт на каждое нажатие.
+- **Короткое нажатие EXTRA** по `e_020`: 01 CPU speed — `e_030` по кругу 3.5 → 7 → 14 → 20; 02
+  Machine — следующая личность по кругу 00 01 03 05 06 07 08 09 (`e_000` + restart с холодным
+  esxDOS, как RST 0 SetUp); 03 GigaScreen — `e_01D` 0 ↔ последний ненулевой режим (по умолчанию
+  03 auto) + `applyRegs` live; 04 Warm reset — `takeReset()` = 2: `ESPectrum::reset` без
+  `DivMMC::init` (RAM и divSD остаются, как в мануале); 05 Joystick — `e_003` по кругу 0..4 +
+  `applyRegs`. Каждое с тостом «EXTRA: …» и строкой `[ELM] EXTRA: …` в логе.
+- **Долгое (≥ 1.5 с) EXTRA при `e_021 = 01`** — «Spectrum menu»: радуга из четырёх косых полос
+  (red/yellow/green/cyan, `drawRainbow`: `vga.fillRect` построчно в нижний бордюр справа, только в
+  стандартной геометрии бордюра; HGFX/большие режимы — один тост) плюс тост «Spectrum menu: 1-8 =
+  CPU speed»; 1–4 пишут `e_030` 0–3, 5–8 только при `e_031` бит 0 (OverClock; у нас всё ≥ 14 МГц
+  идёт на 14). Отпускание закрывает меню без действия короткого нажатия и просит перерисовать
+  бордюр (`brdChange` + `brdnextframe`).
+- **RESET**: отпускание <1.5 с = тот же путь, что HK_HARD_RESET (ram_file сброшен, `ESPectrum::reset`);
+  ≥1.5 с = `Elm::enterSetup()` + reset, без прошитого блока 7 — тост «SetUp not flashed…».
+  Alt+F11 «Reset to…» остаётся.
+- Стенд: FRAM `e_020 = 01`, `e_021 = 01`; хостовый инжектор клавиш теперь умеет длительность
+  (`frame:Key:N` кадров). `400:Left GUI:120,402:F11:110,500:3,700:F11:12,900:F11:110` → лог «EXTRA
+  held: Spectrum menu», «CPU speed: 14 MHz», «reset button released: reset», «reset button held:
+  SetUp», «SetUp ROM (block 7 of Area 0) boots at this reset»; скриншоты: радуга в правом нижнем
+  углу бордюра, первый экран SetUp.
+- Не сделано: «CPU speed» в диагностике (цветная рамка по скорости).
+
 ### Фаза E. Хвосты §3.7, счётчики, (опц.) `roms/plus2a`, импорт полного дампа flash.
 
 **Сделано 2026-11-03 (hw-confirmed DVp2w: строки `SetUp -> settings` в логе, `e_001`, AA-SRAM):** регистры SetUp → настройки эмулятора

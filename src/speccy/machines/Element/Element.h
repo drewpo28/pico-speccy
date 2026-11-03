@@ -22,12 +22,21 @@ bool enterSetup();                            // next reset boots the SetUp ROM 
 // rst0 is called from the Z80 core on every RST 0 (flash, rare); takeReset is
 // polled at the frame end (ESPectrum.cpp) and clears the request.
 void rst0(uint16_t pc);
-bool takeReset();
+int takeReset();                              // 0 = none, 1 = restart (esxDOS cold), 2 = warm (the EXTRA button: RAM and divSD kept)
 // The SetUp's registers as the emulator's settings: joystick, Timex, ULAplus,
 // GigaScreen, TSFM, SAA1099, Z-Controller. From ESPectrum::setup before the audio
 // and video come up (the FRAM, so the boot allocates what the SetUp says); every
 // later reset re-applies the live registers with the hooks and a quiet reconcile.
 void bootSettings();
+// The two buttons of the board on the PC keyboard. EXTRA = Win+F11 ("ZX + F11" in the
+// User Manual): a short press does what e_zxi_020 says, holding it 1.5 s with
+// e_zxi_021 = 01 opens the "Spectrum menu" (rainbow in the border) where 1-8 pick the
+// CPU speed (5-8 with OverClock, e_zxi_031). RESET = the hard-reset hot key
+// (`resetVk`, F11): released within 1.5 s = the reset, held longer = the SetUp
+// firmware, as on the board. The CPU is held while either button is down.
+// Returns what the caller has to do; EK_NONE = not ours, the key goes on.
+enum { EK_NONE = 0, EK_TAKEN, EK_RESET, EK_SETUP };
+int  extraKey(uint16_t vk, bool down, bool gui, bool plain, uint16_t resetVk);
 bool rebootWanted();                          // the SetUp changed the URAM size (AA-SRAM): the strip is laid out at boot
 // The personality e_zxi_000 names, applied at reset only (the SetUp restarts, FLASH6
 // flips it and back without one): CPU::reset arms it before its timing chain, then

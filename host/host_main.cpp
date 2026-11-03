@@ -479,7 +479,7 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     // Space, Return, A, F1, ...) from that presented frame for 6 frames — typing
     // without a display (SDL_VIDEODRIVER=dummy), alongside the shots above.
     {
-        struct HK { uint32_t at; SDL_Scancode sc; };
+        struct HK { uint32_t at; SDL_Scancode sc; uint32_t hold; };
         static std::vector<HK> hk;
         static bool hkParsed = false;
         if (!hkParsed) {
@@ -493,9 +493,14 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
                     const std::string item = all.substr(p, e - p);
                     const size_t c = item.find(':');
                     if (c != std::string::npos) {
-                        const SDL_Scancode sc = SDL_GetScancodeFromName(item.substr(c + 1).c_str());
-                        if (sc != SDL_SCANCODE_UNKNOWN) hk.push_back({(uint32_t)atoi(item.c_str()), sc});
-                        else fprintf(stderr, "host: PICOSPECCY_KEYS: unknown key '%s'\n", item.c_str() + c + 1);
+                        // "frame:Key" holds 6 frames; "frame:Key:N" holds N (a long press).
+                        std::string name = item.substr(c + 1);
+                        uint32_t hold = 6;
+                        const size_t h = name.rfind(':');
+                        if (h != std::string::npos && h > 0) { hold = (uint32_t)atoi(name.c_str() + h + 1); name.resize(h); }
+                        const SDL_Scancode sc = SDL_GetScancodeFromName(name.c_str());
+                        if (sc != SDL_SCANCODE_UNKNOWN) hk.push_back({(uint32_t)atoi(item.c_str()), sc, hold});
+                        else fprintf(stderr, "host: PICOSPECCY_KEYS: unknown key '%s'\n", name.c_str());
                     }
                     p = e + 1;
                 }
@@ -503,7 +508,7 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         }
         for (const HK& k : hk) {
             if (presented == k.at) key_event(k.sc, true);
-            if (presented == k.at + 6) key_event(k.sc, false);
+            if (presented == k.at + k.hold) key_event(k.sc, false);
         }
     }
     // PICOSPECCY_PCLOG=from:count prints PC/SP and the bytes at PC once per presented

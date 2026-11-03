@@ -3011,6 +3011,23 @@ void ESPectrum::processKeyboard() {
           return;
         }
       }
+      // eLeMeNt ZX: Win+F11 is the EXTRA button (User Manual "ZX + F11"); the digits
+      // while it is held belong to its Spectrum menu, not to the ZX keyboard. Before
+      // the hot keys: a bare F11 there is the hard reset.
+      if (Z80Ops::isElm) {
+        const int ek = Elm::extraKey((uint16_t)KeytoESP, Kdown,
+                                     Kbd->isVKDown(fabgl::VK_LGUI) || Kbd->isVKDown(fabgl::VK_RGUI),
+                                     !NextKey.LALT && !NextKey.RALT && !NextKey.CTRL,
+                                     Config::hotkeys[Config::HK_HARD_RESET].vk);
+        if (ek == Elm::EK_RESET || ek == Elm::EK_SETUP) {   // the board's reset button, let go
+          if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+          Config::last_ram_file = NO_RAM_FILE;
+          if (ek == Elm::EK_SETUP && !Elm::enterSetup())
+            OSD::notify("SetUp not flashed: run FlashSetUp_V2.tap", LEVEL_WARN, 2000);
+          ESPectrum::reset();
+        }
+        if (ek != Elm::EK_NONE) continue;
+      }
       // The rest of the Karabas-Pro "Menu"-key combos from the user manual.
       // Unlike Menu+F1..F4 they map onto machine-independent emulator settings,
       // so they work on any arch. OSD::notify puts the confirmation in the top
@@ -4552,8 +4569,11 @@ void ESPectrum::loop() {
     // warm-booted on the mount state of the previous personality / ROM pick and
     // answered "No such FILE or DIR" (hw 2026-11-03, Shift+L: 07 -> 01, e_02D 1 -> 0;
     // the SPI trace showed no sector 0 read, only stray directory clusters).
-    if (Z80Ops::isElm && Elm::takeReset()) {
-      Debug::log("[ELM] reset after the SetUp (PC was %04X): esxDOS cold", Z80::getRegPC());
+    // The EXTRA button's warm reset (kind 2) keeps the divSD as it is: DivMMC::reset
+    // inside ESPectrum::reset, no init.
+    if (const int rk = Z80Ops::isElm ? Elm::takeReset() : 0) {
+      Debug::log("[ELM] reset after the %s (PC was %04X): esxDOS %s", rk == 2 ? "EXTRA button" : "SetUp",
+                 Z80::getRegPC(), rk == 2 ? "warm" : "cold");
       if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
       Config::last_ram_file = NO_RAM_FILE;
       if (Elm::rebootWanted()) {      // AA-SRAM on/off: the page strip is laid out by setup()
@@ -4561,7 +4581,7 @@ void ESPectrum::loop() {
         Config::save();
         OSD::esp_hard_reset();        // never returns
       }
-      DivMMC::init();
+      if (rk == 1) DivMMC::init();
       ESPectrum::reset();
     }
     if (Z80Ops::isNext && NextReg::resetPending) {
