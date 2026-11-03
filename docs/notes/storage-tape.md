@@ -1184,3 +1184,106 @@ and `-sdcut2-perf-` (PERF_TRACE, PERF_HIST OFF: [SD] line). Can damage the card 
   1500 pulses. `iff=0` = a handler still running (lost on the board too unless our timing is
   longer), `iff=1` + large `seen` = we ran past the pulse. Read it first on any "raster split /
   parallax glitches every N frames" report on the Next.
+
+## Two cards on one SPI machine: esxDOS + Z-Controller side by side, card windows, MB-02+ with esxDOS (2026-11-03, bench-tested, NOT hw-tested)
+
+Owner's ask (eLeMeNt session, but machine-independent): the Z-Controller back in the
+eLeMeNt's Devices, esxDOS + Z-Controller and esxDOS + MB-02+ no longer mutually
+exclusive, a partition of the SD card (or an image) for the ZC / DivSD / DivIDE the way
+an IDE slot is served "straight off the SD" (IdeMbr.h, above). Test ELF
+`debug/DVp2w-elm-zc2-1.1.1` (build 2026-11-03 21:43). Bench: 48K + esxDOS DivSD on
+partition 1 + ZC on partition 2 of one `--sd card.img` — esxDOS `.tapein` loads the test
+tape off partition 1 and the BASIC program driving #77/#57 prints partition 2's label
+("ZCPART2"), the same with the ZC on an image file, and with the ZC on a LOGICAL
+partition 5 inside an extended container.
+
+- **One SPI protocol machine, two media (`DivMMC::Medium s_med[2]`, `selectCard`)**:
+  esxDOS's card (#E7/#EB, `CARD_ESX`) and the Z-Controller's (#77/#57, `CARD_ZC`) share
+  the command latch, the indices and the one 512 B sector buffer; each has its own medium
+  (a window of the real card — `base`/`sectors` — or an image file) and its own CS latch
+  (`s_cs[]`). The public port entries (`mmc_cs/mmc_read/mmc_write/mmc_read_bulk`,
+  `zc_write_config/zc_write_data/zc_read_data`, the INIR batch's `zc_read_byte/_bulk`)
+  turn the machine to their card first; turning = a CS edge for the other card's
+  conversation (its latch kept), the buffer tag dropped, CSD/OCR rebuilt for the medium
+  (`spiIdentity`: SDHC always, sized by the window). The private bodies are
+  `csEdge/spiRead/spiWrite/spiReadBulk`; `spiRead` is the RAM-resident one, `mmc_read` a
+  28 B wrapper (RAM code +60 B, data +256 B incl. the 8-entry partition rows).
+  A single Z80 cannot interleave two SD transactions mid-block, so the shared buffer is
+  safe; an esxDOS NMI inside a ZC transfer aborts that transfer like a CS edge would.
+- **The guest's sectors go through `lba()`**: raw media add the window's base, anything
+  past the medium is `~0u` — `loadSector` fills 0xFF (a card error), `storeSector` drops
+  the block and logs once. The read-ahead / core1 machinery (`s_sq_*`, `c17*`) is keyed
+  by CARD sectors as before and serves either card; `s1Drop()` on every card turn, since a
+  sector number means a different place on an image. `sdAsyncMachine()` is per card: the
+  ZC card and the Next's divMMC go async, esxDOS on the other machines stays synchronous.
+- **Config**: `esx_raw` (DivIDE hd0: 0 image, 1 the card read-only, 2 writable),
+  `esx_rwin` "start/len" (DivSD always, DivIDE hd0 in raw mode; 0/0 = the whole card, the
+  old behaviour), `zc_img` (the ZC's image; empty = the card) and `zc_rwin`. All
+  reboot-class keys (`kSnapRebootKeys`). DivSD / ZC windows are writable, as the whole
+  card was before (they are the interface's card, not a slot with an RO switch); DivIDE
+  hd0 on the card follows the IDE slot's rule (read-only first, F6 for writes, WRITE
+  SECTOR refused with ABRT before any data phase).
+- **Menu**: Devices > esxDOS > "Disks hd0 / hd1" now also for DivSD (one row "SD card
+  <whole card | part N | window a+b>": Enter = the source list, F2 = typed window, F8 =
+  whole card) and for DivIDE hd0 (image / card, RO badge, F6 write, F8 eject = image +
+  card mode cleared). Devices > Z-Controller is a submenu: the On/Off row and "SD card /
+  image" (Enter: image file / whole card / partitions / window; F8: image out = whole
+  card). The source list is one function for IDE / esxDOS / ZC (`rawSourcePick`,
+  UiActions.cpp). The ZC row shows on the eLeMeNt (its SetUp's e_zxi_02C sets it).
+- **MBR + EBR chain (owner, same day)**: `ide_mbr::extended()` finds the container,
+  `ide_mbr::parseEbr()` decodes one link (entry 0 relative to that EBR, entry 1 relative
+  to the container; a link outside the container or backwards ends the chain),
+  `IDE::mbrParts` walks at most 4 links: entries 5-8 of its 8-entry list
+  (`IDE::MBR_PARTS`). `tools/ide_mbr_test.cpp` has 32 checks (9 new). Host:
+  `PICOSPECCY_MBR=1` prints the list the menu would show.
+- **esxDOS + MB-02+ (page 0 arbitration)**: the divMMC window wins while mapped
+  (`DivMMC::applyMapping` sets the MB-02+ write gate open and clears its dirty pointer);
+  `MB02::applyMapping` only latches its #17 register while the window is mapped, and
+  `DivMMC::applyMapping`'s unmap branch calls it back instead of `recoverPage0`.
+  `MB02::init` leaves a mapped divMMC window alone (a menu toggle while the guest sits in
+  esxDOS). Bench: 128K + esxDOS DivSD + MB-02+ boots to BASIC, nothing more was tried —
+  BS-DOS beside esxDOS is the owner's to prove on hardware. NOT on the eLeMeNt: MB-02+
+  there would take the URAM strip's last 32 pages (`MB02::init` uses `MemESP::ram`), so
+  the e_zxi_001 = 02 mode still means "= 01" (see other-machines.md).
+- **Exclusions lifted**: the UiStage trio rule, `Subsystems::FEAT_ZCONTROLLER`'s
+  "esxdos = 0, mb02 = 0" and its DivMMC credit, `ESPectrum::setup`'s `zc_init` gate,
+  `Elm::applyRegs`'s "zc-held-by-esxdos". Kept: the +3 rule (DivMMC and ZC off there),
+  IDE vs esxDOS (same ports).
+- **Snapshots (.pss PSSD)**: a trailer byte after `zc_ft_rd` = the card served | CS
+  latches (bits 1/2); an older record is esxDOS's card. A record for the ZC card with the
+  ZC off is refused.
+- Rule confirmed by the bench on the way: the BASIC tape builder's `TO` token (0xCC) was
+  missing — "Nonsense in BASIC" at `FOR i=1 TO 10`, not an emulator bug.
+
+### Shared windows: the same sectors for esxDOS and the ZC (2026-11-03, bench-tested, NOT hw-tested)
+
+The owner picked partition 1 for DivSD and the whole card, then partition 1 again, for
+the ZC: nothing stopped it. It works for reads (the ZC guest sees the MBR card, esxDOS
+its partition), but two guest file systems writing one volume corrupt it — the same
+reason the DivIDE hd0 card window starts read-only. Guard: `sharedOk()` in UiActions.cpp
+asks (Default No, `TXT_CARD_SHARED`) before a pick / F8 / typed window that overlaps the
+other interface's card window (DivSD always on the card, DivIDE only with `esx_raw`, ZC
+only without `zc_img`; 0/0 = the whole card overlaps everything); the rows carry a
+`shared` badge (the hd0 row keeps RO and says "shared" in the text); `DivMMC::logShared()`
+prints "Z-Controller: window a+b shares sectors with esxDOS's c+d" at boot for a config
+that already overlaps (both default to the whole card). Host: 48K + DivSD 2048/65536 + ZC
+2048/65536 prints the line, ZC 67584/32768 does not. Flash +720 B, SRAM 0.
+
+F5 (the firmware's browser) shows only partition 1: FatFs with `FF_MULTI_PARTITION 0`
+mounts the first FAT partition of the card and nothing else, so a ZC/IDE partition is the
+guest's private area — fill it from a PC or from the guest.
+
+**Other partitions in the browser — deferred plan (2026-11-03, owner asked "only the
+second, or all?"; answer: all primaries, logicals with a patch).** Measured on the host
+with our ffconf (exFAT + LFN): `sizeof(FATFS)` = 1032 B, FIL 616 B, `FF_VOLUMES` is 2
+(SD, USB; FatFs max 10), `FF_STR_VOLUME_ID 1` so a volume can be named `SD2:` etc.
+- `FF_MULTI_PARTITION 1` + `VolToPart[]` (physical drive + partition number) opens MBR
+  entries 1-4; FatFs refuses logical partitions outright (ff.c `find_volume`, "MBR has
+  four primary partitions max"). Entries 5-8 need a small patch: pass the absolute LBA
+  that `IdeMbr.h` already decodes from the EBR chain instead of a partition number.
+- Cost: one FATFS per mounted volume, alive while mounted. Three static extra volumes =
+  3 KB SRAM; the cheap shape is ONE spare FATFS (1 KB) that the browser mounts on the
+  partition the user enters from a per-partition row in the root, unmounting the previous.
+- Writes from the browser into a partition a guest holds (ZC / IDE / esxDOS window on it)
+  are the two-writers case above: allow only while no guest window covers it, or warn.
+Nothing of this is built; the owner is first testing DivSD + ZC on the card (hw).
