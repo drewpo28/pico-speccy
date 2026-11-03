@@ -18,6 +18,7 @@
 #include "speccy/devices/sound/SAASound.h"
 #include "ui/LEDIndicators.h"
 #include "ui/OSDMain.h"
+#include "ui/UiStage.h"
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/z80/MemGates.h"
 #include "app/Config.h"
@@ -53,13 +54,27 @@ static Regs* s_r;
 // keeps the ZX pages of the Pentagon 1024 out, Full (1) addresses the whole 2 MB.
 enum { GM_ELM = 0x20 };               // g_atm_ro bit: Elm::memWrite wants the store
 enum { LAYOUT_OFF = 0, LAYOUT_RAM = 2, LAYOUT_FLASH = 6, LAYOUT_HGFX = 8, LAYOUT_HGFX1 = 9, LAYOUT_LCU0 = 0xA, LAYOUT_LCU1 = 0xC, LAYOUT_FRAM = 0xE };
-enum { PROTECT_BASE = 128, FULL_PAGES = 256 };
+// URAM in 8 KB pages: 256 on the 2 MB board, 512 with the AA-SRAM pack (MEM_PG_CNT is
+// 16 KB pages; Config::wantedPages reads e_zxi_038 from the NVS at boot). The Protect
+// pool follows the Reference's table: ZX RAM up to 512 KB -> 128 pages (384 with
+// AA-SRAM), the Pentagon 1024 -> 64 (256); on the 4096 "there is no Protect mode" (the
+// Reference): the pool is the whole URAM, like Full (AWORLD on 08 + AA-SRAM, hw 2026-11-03). The pool sits above the ZX pages, the divRAM is separate memory here.
+static inline uint32_t fullPages() { return MEM_PG_CNT * 2; }
+static inline bool aasram() { return MEM_PG_CNT >= 256; }
+static void aasramWanted(bool want, const char* who);
+static void divsdWanted(uint8_t e001, const char* who);
 // Protect mode leaves URAM what the ZX memory of the personality (e_zxi_000) does not
 // take: 128 pages up to 512 KB, 64 on the Pentagon 1024 (the Reference's table).
 // HGFNICCC sets Pentagon 128 and streams 120 pages; with 64 its stream wrapped onto
 // itself and the player waited for frame #820D. The ZX side stays a Pentagon 1024
 // here, so the upper 64 pages sit in ram[96..127], which only divRAM would take.
-static uint32_t protectPages() { return s_r->e[0x000] == 7 || s_r->e[0x000] == 8 ? 64 : 128; }
+static void protectPool(uint32_t* base, uint32_t* n) {
+    const uint8_t p = s_r->e[0x000];
+    if (p == 8)      { *n = fullPages();          *base = 0; }   // the Reference: "no Protect mode" on the 4096, the whole URAM
+    else if (p == 7) { *n = aasram() ? 256 : 64;  *base = aasram() ? 256 : 128; }
+    else             { *n = aasram() ? 384 : 128; *base = 128; }
+}
+static uint32_t protectPages() { uint32_t b, n; protectPool(&b, &n); return n; }
 // g_zxi_010, or the obsolete e_zxi_001 = #FF ("former Ultimate mode"): FLASH6 of 2024 and the
 // SetUp open their layout-6 / E windows with only that, so it counts as Full.
 static uint8_t uramMode() { return s_r->g[0x010] ? s_r->g[0x010] : (s_r->e[0x001] == 0xFF ? 1 : 0); }
@@ -81,6 +96,11 @@ static const uint8_t kDefaults[0x40] = {
 
 static bool s_setupBoot, s_setupRom, s_setupOnce;
 static bool s_setupLive, s_resetWanted;   // a SetUp session is running / its RST 0 asked for a reset
+static bool s_running;                    // frames have run: a reset now is a live one, not the boot
+// Pentagon 4096 (personality 08, rdacomp's combined paging): the latches of the three
+// extension ports and a guard for the #7FFD re-entry into the generic decode.
+static uint8_t s_p4k1FFD, s_p4kDFFD, s_p4kFDFD, s_p4k7FFD;
+static bool s_inGeneric;
 static uint8_t s_gamaPage;            // Didaktik Gama 80: the 32 KB page at #8000 (i8255 PC0)
 static bool s_powered;                // the first reset of the session is the power-up
 static uint8_t s_keep[0x40];          // e_zxi_000..03F across a warm reset
@@ -278,10 +298,13 @@ static void lcu2Publish() {
     for (int i = 0; i < ElmLcu::SIZE; i++) MemESP::writebyte((uint16_t)(base + i), s_lcu2[i]);
 }
 
+static uint32_t poolIndex(uint16_t page) {   // Protect: the pool wraps like the board's page decode
+    uint32_t b, n; protectPool(&b, &n);
+    return b + ((n & (n - 1)) ? page % n : (page & (n - 1)));
+}
 static uint8_t* uramPtr(uint16_t page) {
     const uint8_t mode = uramMode();
-    const uint32_t idx = mode == 1 ? (page & (FULL_PAGES - 1))
-                                   : PROTECT_BASE + (page & (protectPages() - 1));
+    const uint32_t idx = mode == 1 ? (page & (fullPages() - 1)) : poolIndex(page);
     uint8_t* p = MemESP::ram[idx >> 1].direct();
     return p ? p + (idx & 1) * 0x2000 : nullptr;
 }
@@ -289,14 +312,14 @@ static uint8_t* uramPtr(uint16_t page) {
 // SoundDMA reads protected URAM whatever the mode (the Reference: "works with protected
 // URAM only"); the address counts from its first page.
 static const uint8_t* sdPage(uint32_t page) {
-    const uint32_t idx = PROTECT_BASE + (page & (protectPages() - 1));
+    const uint32_t idx = poolIndex((uint16_t)page);
     const uint8_t* p = MemESP::ram[idx >> 1].direct();
     return p ? p + (idx & 1) * 0x2000 : nullptr;
 }
 
 static uint16_t freePages() {
     const uint8_t mode = uramMode();
-    return mode == 1 ? FULL_PAGES : mode == 2 ? protectPages() : 0;
+    return (uint16_t)(mode == 1 ? fullPages() : mode == 2 ? protectPages() : 0);
 }
 
 static uint8_t* lcuBlock() {
@@ -314,6 +337,44 @@ static void legacyZone(uint8_t z) {
     case 2: MemESP::plugPtr16(2, MemESP::ram[(g_elm_personality == 9 && (s_gamaPage & 1)) ? 1 : 2].sync(2)); break;
     case 3: MemESP::plugPtr16(3, MemESP::ram[(g_elm_personality == 9 && (s_gamaPage & 1)) ? 3 : MemESP::bankLatch].sync(3)); break;
     }
+}
+
+// Pentagon 4096 (personality 08): the Reference's "Combined memory variants" (rdacomp's
+// Pentagon-4096 core): #7FFD bits 0-2 and 6-7 are the Pentagon 512's page bits 0-4, bit 5
+// is the 4096K bit (page bit 7: the AA-SRAM half, absent here, so it is dropped - no
+// lock either); page bits 5-6 come from #1FFD bits 4 and 7 (Kay/Scorpion), #DFFD bits
+// 0-1 (Profi) or #FDFD bits 0-1 (ATM1), OR-ed; their bit 2 is the 4096K bit again.
+// #1FFD bit 0 puts RAM page 0 at #0000 (Scorpion). The generic decode keeps the #7FFD
+// side effects; the extension bits ride on its #AFF7 extended-page latch (32 pages per
+// unit for a 512), re-applied by the generic #AFF7 handler on every change.
+static void p4kExtra() {
+    uint8_t extra = (uint8_t)(((s_p4k1FFD >> 4) & 1) | ((s_p4k1FFD >> 6) & 2) | (s_p4kDFFD & 3) | (s_p4kFDFD & 3));
+    if (aasram()) extra |= (uint8_t)((((s_p4k7FFD >> 5) | (s_p4kDFFD >> 2) | (s_p4kFDFD >> 2)) & 1) << 2);   // the 4096K bit
+    static uint8_t logged;
+    if (logged < 8) { logged++; Debug::log("[ELM] P4096 7FFD=%02X 1FFD=%02X DFFD=%02X FDFD=%02X -> extra %u", s_p4k7FFD, s_p4k1FFD, s_p4kDFFD, s_p4kFDFD, extra); }
+    if (Ports::portAFF7 != extra) Ports::output(0xAFF7, extra);
+}
+static bool p4kOut(uint8_t hi, uint8_t v) {
+    if (hi == 0x7F) {
+        if (s_inGeneric) return false;
+        if (((s_p4k7FFD ^ v) & 0x20) && aasram()) { s_p4k7FFD = v; p4kExtra(); }
+        s_p4k7FFD = v;
+        s_inGeneric = true;
+        Ports::output(0x7FFD, v & ~0x20);
+        s_inGeneric = false;
+#if HOST_BUILD
+        if (getenv("PICOSPECCY_ELMLOG")) Debug::log("[ELM] P4096 7FFD=%02X -> bank %u aff7 %u", v, (unsigned)MemESP::bankLatch, Ports::portAFF7);
+#endif
+        return true;
+    }
+    if (hi == 0x1F) s_p4k1FFD = v;
+    else if (hi == 0xDF) s_p4kDFFD = v;
+    else if (hi == 0xFD) s_p4kFDFD = v;
+    else return false;
+    p4kExtra();
+    const uint32_t ram0 = s_p4k1FFD & 1;
+    if (MemESP::page0ram != ram0) { MemESP::page0ram = ram0; MemESP::recoverPage0(); }
+    return true;
 }
 
 // Didaktik Gama 80 (personality 09): 80 KB as two 32 KB pages at #8000, picked by
@@ -402,6 +463,7 @@ static void hrxcLatch() {
 // KeyLayer: the screen #7FFD bit 3 shows is on top, the other shines through its key
 // colour. g_zxi_002 bit 0 puts the first screen in page 6 instead of 5.
 void frameEnd() {
+    s_running = true;
     const uint8_t* a = MemESP::ram[(s_r->g[0x002] & 1) ? 6 : 5].direct();
     const uint8_t* b = MemESP::ram[7].direct();
     if (s_r->g[0x002] & 1) VIDEO::grmem = MemESP::videoLatch ? (uint8_t*)b : (uint8_t*)a;
@@ -562,7 +624,7 @@ void armPersonality() {
 }
 
 // What CPU::reset's own branches set for the stock machine of this personality. 08
-// (Pentagon 4096) runs as the 1024 for now, 09 (Didaktik Gama 80) as a 48K.
+// (Pentagon 4096) is a 512 on #7FFD plus the extension ports below, 09 (Didaktik Gama 80) a 48K.
 void cpuFlags() {
     const uint8_t p = g_elm_personality;
     Z80Ops::isByte = false;
@@ -571,8 +633,8 @@ void cpuFlags() {
     Z80Ops::is48 = (p == 0 || p == 9);
     Z80Ops::is128 = (p == 1);                 // the +2A is not "128": its own paging and contention
     Z80Ops::isPentagon = (p >= 5);
-    Z80Ops::is512 = (p == 6);
-    Z80Ops::is1024 = (p >= 7);
+    Z80Ops::is512 = (p == 6 || p == 8);       // 08: #7FFD bits 6-7 as the 512, the rest from p4kWrite
+    Z80Ops::is1024 = (p == 7);
     Ports::getFloatBusData = Z80Ops::is48 ? &Ports::getFloatBusData48
                            : Z80Ops::is128 ? &Ports::getFloatBusData128
                            : &Ports::getFloatBusDataNone;   // +2A: none; Pentagon: none
@@ -608,6 +670,84 @@ bool takeReset() {
     return true;
 }
 
+// Phase E: the SetUp's registers -> Config. Runtime only, never Config::save(): the
+// SetUp is the Element's own configuration (FRAM), the NVS stays the user's. `live`
+// runs the hooks the settings menu would (and the subsystem reconcile); at boot the
+// setup() that follows allocates from Config by itself.
+static void applyRegs(const uint8_t* e, bool live) {
+    char what[112]; int n = 0; bool subsys = false;
+    auto note = [&](const char* s) { if (n < (int)sizeof(what) - 12) n += snprintf(what + n, sizeof(what) - n, "%s ", s); };
+    static const uint8_t kJoy[4] = { JOY_NONE, JOY_KEMPSTON, JOY_SINCLAIR2, JOY_SINCLAIR1 };   // 04 = the game's keys
+    if (e[0x003] < 4 && Config::joystick != kJoy[e[0x003]]) { Config::joystick = kJoy[e[0x003]]; note("joystick"); }
+    const bool timex = e[0x010] & 1;
+    if (Config::timex_video != timex) {
+        Config::timex_video = timex; note(timex ? "timex" : "timex-off");
+        if (live && !timex) { VIDEO::timex_port_ff = 0; VIDEO::timex_mode = 0; VIDEO::timex_hires_ink = 0; }
+    }
+    const bool ulap = e[0x011] & 1;
+    if (Config::ulaplus != ulap) {
+        Config::ulaplus = ulap; note(ulap ? "ulaplus" : "ulaplus-off");
+        if (live && !ulap && VIDEO::ulaplus_enabled) VIDEO::ulaPlusDisable();
+    }
+    const uint8_t gs = e[0x01D] == 0 ? 0 : e[0x01D] == 3 ? 2 : 1;   // 01/02 = on, 03 = auto detect
+    if (Config::gigascreen_onoff != gs) { Config::gigascreen_onoff = gs; subsys = true; note(gs ? "gigascreen" : "gigascreen-off"); }
+    const bool tsfm = e[0x002] & 2;
+    if ((Config::tsfm != 0) != tsfm) { Config::tsfm = tsfm ? 1 : 0; subsys = true; note(tsfm ? "tsfm" : "tsfm-off"); }
+    const bool saa = e[0x002] & 0x10;
+    if (Config::SAA1099 != saa) { Config::SAA1099 = saa; subsys = true; note(saa ? "saa" : "saa-off"); }
+    // Z-Controller: on the board a second SD interface beside the divSD; here one card
+    // and the SD ports shared with esxDOS (the settings menu's esxDOS / MB-02+ / ZC
+    // exclusion), so the SetUp's ZC takes effect only while esxDOS is off.
+    const bool zc = e[0x02C] != 0 && Config::esxdos == 0;
+    if (e[0x02C] != 0 && Config::esxdos != 0) note("zc-held-by-esxdos");
+    if (Config::zcontroller != zc) {
+        Config::zcontroller = zc; note(zc ? "zc" : "zc-off");
+        if (live) { if (zc) DivMMC::zc_init(); else DivMMC::zc_shutdown(); }
+    }
+    if (n) Debug::log("[ELM] SetUp -> settings%s: %s", live ? "" : " (boot)", what);
+    if (live && subsys) nm::Stage::reconcileQuiet();
+}
+
+void bootSettings() {
+    if (Config::arch != A_ELM) return;
+    if (!ElmFlash::ensure()) { Debug::log("[ELM] boot settings: no flash image / FRAM"); return; }
+    const uint8_t* f = ElmFlash::fram();
+    const uint8_t* e = f[0x001] != 0xFF ? f : kDefaults;
+    Debug::log("[ELM] boot settings from %s: e_002=%02X e_003=%02X e_010=%02X e_011=%02X e_01D=%02X e_02C=%02X (config: joy %u timex %d ulap %d gs %u tsfm %u saa %d zc %d)",
+               e == f ? "FRAM" : "defaults", e[0x002], e[0x003], e[0x010], e[0x011], e[0x01D], e[0x02C],
+               Config::joystick, (int)Config::timex_video, (int)Config::ulaplus, Config::gigascreen_onoff, Config::tsfm, (int)Config::SAA1099, (int)Config::zcontroller);
+    applyRegs(e, false);
+    aasramWanted(e[0x038] & 1, "FRAM e_zxi_038");
+    divsdWanted(e[0x001], "FRAM e_zxi_001");
+    Debug::log("[ELM] URAM %u MB (%s)", (unsigned)(MEM_PG_CNT / 64), aasram() ? "AA-SRAM" : "no AA-SRAM");
+}
+
+// e_zxi_038 bit 0 = the AA-SRAM 2 MB pack: the page strip is laid out at boot, so the
+// pick goes to the NVS and the next boot (the SetUp's restart reboots the board when
+// the strip has to change - Elm::takeReset's caller).
+static void aasramWanted(bool want, const char* who) {
+    if (Config::elm_aasram == want) return;
+    Config::elm_aasram = want;
+    Config::save();
+    Debug::log("[ELM] %s: AA-SRAM %s -> URAM %u MB at the next boot (now %u MB)", who, want ? "on" : "off",
+               want ? 4u : 2u, (unsigned)(MEM_PG_CNT / 64));
+}
+// e_zxi_001: 00 none and 03 "SD only" run without the divSD memory interface (no esxDOS),
+// 01 divSD and 02 divSD+MB02+ with it; FE (the flashers' rescue mode) and FF (obsolete)
+// change nothing. esxDOS is boot-class here (its ROM, RAM and SD come up in setup()),
+// so the pick goes to the NVS like the AA-SRAM and the SetUp's restart reboots.
+static void divsdWanted(uint8_t e001, const char* who) {
+    if (e001 != 0 && e001 != 1 && e001 != 2 && e001 != 3) return;
+    const bool want = e001 == 1 || e001 == 2;
+    if ((Config::esxdos != 0) == want) return;
+    Config::esxdos = want ? 3 : 0;      // 3 = DivSD over the raw card, the Element's mode
+    Config::save();
+    Debug::log("[ELM] %s = %02X: esxDOS (divSD) %s at the next boot", who, e001, want ? "on" : "off");
+}
+bool rebootWanted() {
+    return Config::wantedPages(A_ELM) != MEM_PG_CNT || (Config::esxdos != 0) != DivMMC::enabled;
+}
+
 static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again
     static const char kId[] = "eLeMeNt ZX";
     const uint8_t c = (uint8_t)kId[*pos];
@@ -628,6 +768,7 @@ void reset() {
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
     s_gamaPage = 0;
+    s_p4k1FFD = s_p4kDFFD = s_p4kFDFD = s_p4k7FFD = 0;
     if (s_flashOpen) { s_flashOpen = false; ElmFlash::windowClosed(); }
     g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
@@ -691,6 +832,7 @@ void reset() {
     if (s_setupRom) Debug::log("[ELM] SetUp ROM (block 7 of Area %u) boots at this reset", s_r->e[0x00F] & 3);
     cpuSpeed(s_r->e[0x030]);
     ElmSid::mute(!(s_r->e[0x002] & 8));
+    if (s_running) applyRegs(s_r->e, true);   // the power-up values went in through bootSettings()
     s_r->e[0x0FC] = kStampDay;
     s_r->e[0x0FD] = kStampMonth;
     s_r->e[0x0FE] = kStampYear;
@@ -806,6 +948,8 @@ static void eWrite(uint8_t r, uint8_t v) {
     if (r == 0x2D) { remap(); divRomApply(); }
     if (r == 0x0F && s_flashOpen) remap();   // the flash window follows the Area at once; the ROMs at the next reset (FLASH2A returns to BASIC between blocks)
     if (r == 0x02) ElmSid::mute(!(v & 8));
+    if (r == 0x38) aasramWanted(v & 1, "e_zxi_038");
+    if (r == 0x01) divsdWanted(v, "e_zxi_001");
     if (r == 0x19) { ElmSid::renderTo(audioPos()); ElmSid::setParams(v & 3); }
 }
 
@@ -828,6 +972,7 @@ static uint8_t uRead(uint8_t r) {
 
 // SounDrive and Czech DACs: the rail is the average of the DACs driven on it (Ports.cpp).
 static void dacWrite(int slot, uint8_t v) {
+    if (!(s_r->e[0x002] & 4)) return;      // SetUp: MonsterBlaster off
     s_dac[slot] = v;
     s_dacUsed |= (uint8_t)(1 << slot);
     int ln = __builtin_popcount(s_dacUsed & 7), rn = __builtin_popcount(s_dacUsed & 0x18);
@@ -973,6 +1118,7 @@ bool portOut(uint16_t a, uint8_t v) {
     // esxDOS reaches 48 BASIC by OUT #7FFD,#10 (FLASH48 fills all four blocks, so a
     // 48 set works whichever one the latch picks): bit 4 selects the block, the rest
     // of the write is dropped. The generic decode ignores #7FFD entirely on a 48K.
+    if (g_elm_personality == 8 && (uint8_t)a == 0xFD && p4kOut(a >> 8, v)) return true;
     if (a == 0x7FFD) {
         if (!Z80Ops::is48) return false;
         MemESP::romLatch = (v >> 4) & 1;

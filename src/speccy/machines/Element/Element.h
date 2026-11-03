@@ -23,6 +23,12 @@ bool enterSetup();                            // next reset boots the SetUp ROM 
 // polled at the frame end (ESPectrum.cpp) and clears the request.
 void rst0(uint16_t pc);
 bool takeReset();
+// The SetUp's registers as the emulator's settings: joystick, Timex, ULAplus,
+// GigaScreen, TSFM, SAA1099, Z-Controller. From ESPectrum::setup before the audio
+// and video come up (the FRAM, so the boot allocates what the SetUp says); every
+// later reset re-applies the live registers with the hooks and a quiet reconcile.
+void bootSettings();
+bool rebootWanted();                          // the SetUp changed the URAM size (AA-SRAM): the strip is laid out at boot
 // The personality e_zxi_000 names, applied at reset only (the SetUp restarts, FLASH6
 // flips it and back without one): CPU::reset arms it before its timing chain, then
 // cpuFlags() sets the Z80Ops machine flags, the floating bus and the frame target
@@ -42,13 +48,15 @@ extern uint8_t* wrKind;                       // per high address byte: 0 = plai
 
 // The ports the machine claims ahead of the generic decode, tested in the RAM path:
 // #xx3B, #9EFD/#9FFD, the URAM ports #07 #27 #47 #67 #53 #73 and the DACs #0F-#7F
-// (low byte only), and #7FFD for the 48K personalities' ROM select. portIn leaves the
-// DAC ports and #7FFD to the generic decode.
+// (low byte only), #7FFD for the 48K personalities' ROM select and, with #1FFD/#DFFD/
+// #FDFD, the Pentagon 4096 paging. portIn leaves the DAC ports and the xxFD ports to the
+// generic decode.
 static inline bool isPort(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     return lo == 0x3B || (lo & 0x9F) == 0x07 || (lo & 0xDF) == 0x53 ||
            (lo & 0x8F) == 0x0F || lo == 0x2B || (address & 0xF0FF) == 0x0003 ||
-           (address & 0xFEFF) == 0x9EFD || address == 0xEFF7 || address == 0x7FFD;
+           (address & 0xFEFF) == 0x9EFD || address == 0xEFF7 ||
+           (lo == 0xFD && ((address >> 8) == 0x7F || (address >> 8) == 0x1F || (address >> 8) == 0xDF || (address >> 8) == 0xFD));
 }
 
 }

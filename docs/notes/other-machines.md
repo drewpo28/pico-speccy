@@ -632,6 +632,32 @@ the Next notes as "esxDOS never ran its cold init at $0000"). Now `Elm::rst0` (f
 session and `Elm::takeReset` at the frame end does `DivMMC::reset()` + `ESPectrum::reset()` (the menu's Soft Reset),
 so esxDOS cold-boots ("Detecting Devices") and `[ELM] personality NN at reset` follows. The SetUp entry logs
 `[ELM] SetUp ROM (block 7 of Area n) boots at this reset`.
+**Pentagon 4096 (08, 2026-11-03, hw-confirmed DVp2w with AWORLD on 08 + AA-SRAM):** the Reference's "Combined memory variants" (rdacomp): #7FFD bits
+0-2, 6-7 = page bits 0-4 (a 512), bit 5 = the 4096K bit (AA-SRAM half, absent: dropped, no lock), page bits 5-6 from #1FFD
+bits 4/7 | #DFFD bits 0-1 | #FDFD bits 0-1, #1FFD bit 0 = RAM 0 at #0000. `Elm::p4kOut`: #7FFD goes to the generic decode
+without bit 5 (`is512`), the extension bits ride the generic #AFF7 latch (32 pages per unit) through the generic #AFF7
+handler. Test tape P4KTEST (BASIC, scratchpad mkbas.py); #EFF7 is dead in 08. Test trap: the 128 ROM's 48 BASIC rewrites
+#7FFD from BANKM (23388) in the interrupt, so `OUT 32765,x` needs `POKE 23388,x` first (the #AFF7 extension survives).
+**SetUp registers -> settings (phase E, 2026-11-03, hw-confirmed DVp2w):** `Elm::applyRegs` maps e_003 joystick, e_010
+Timex, e_011 ULAplus, e_01D GigaScreen, e_002 bits 1/4 TSFM/SAA (bit 2 gates the Element's own DACs), e_02C Z-Controller
+onto Config at runtime only (no `Config::save`): `Elm::bootSettings` right after `Buffer::initPools` in setup (the FRAM is
+in butter PSRAM; before VIDEO/AUDIO so the boot allocates per SetUp), and a live reset after the first frame (`s_running`)
+with the menu's hooks + `nm::Stage::reconcileQuiet()` (reconcileSubsystems with nothing staged, no prompts). Trap: a live
+apply during setup() (Elm::reset runs twice there) ran the reconcile before the subsystems existed. SetUp keys: Caps Shift
++ R / L (its key routine compares #52/#4C; the help line omits the Shift).
+**SetUp restart = esxDOS cold (hw 2026-11-03):** with `DivMMC::reset()` the divMMC RAM survived and esxDOS warm-booted
+on the mount state of the previous personality / ROM pick: after Shift+L (FRAM defaults: 07 -> 01, e_02D 1 -> 0) the SPI
+trace had no sector 0 read, two root sectors, two SYS sectors and a stray cluster, then "No such FILE or DIR". Now
+`DivMMC::init()` (the menu's Hard Reset). AWORLD (LnxPckg APP) wants 384 free 8 KB URAM pages in Protect mode = the
+AA-SRAM 4 MB machine (e_038 = 01); on 2 MB it says "Out of Memory" on every personality, not emulated. Z-Controller: one
+card here, the menu's esxDOS / MB-02+ / ZC exclusion, so the SetUp's ZC applies only with esxDOS off.
+**AA-SRAM (e_zxi_038, 2026-11-03, hw-confirmed DVp2w, AWORLD loads):** `Config::elm_aasram` (NVS) makes `wantedPages(A_ELM)` 256 (4 MB,
+512 URAM pages); the Protect pool follows the Reference table (ZX <= 512 KB: 128 / 384 pages at base 128; P1024: 64 at 128 /
+256 at 256; 4096: the whole URAM - "no Protect mode" - AWORLD's loader checks g_011/012 before it writes e_000 = 06
+itself, hw 2026-11-03), `poolIndex` wraps modulo for the 384. The 4096K bit (#7FFD bit 5, #DFFD/#FDFD bit 2) becomes
+#AFF7 extra bit 2 with the pack. e_zxi_001 00/03 -> esxdos 0, 01/02 -> 3 (NVS, boot-class; FE/FF untouched). Both are
+reboot-class: `Elm::rebootWanted()` makes the SetUp restart `esp_hard_reset` like a machine switch. AWORLD (needs 384
+pages) reaches its menu on the bench with the pack. Owner's idea for ZC: second card partition like IdeMbr, open.
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)

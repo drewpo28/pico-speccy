@@ -431,6 +431,10 @@ struct CommitReport {
 // The single exit point of the menu: resolve, persist once, apply, report.
 void commit(CommitReport& out);
 
+// Config vs the live subsystems with nothing staged and no prompts: the eLeMeNt ZX
+// applies its SetUp registers (TSFM, SAA, Gigascreen) at a reset through this.
+void reconcileQuiet();
+
 // The message of a mutual exclusion set() just applied (the other setting of a pair
 // switched off), or nullptr; cleared by the call.
 const char* takeNote();

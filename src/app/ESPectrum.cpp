@@ -1577,6 +1577,7 @@ void ESPectrum::setup() {
   // boundaries are final, and BEFORE GS::init so GS's work/ring buffers can draw
   // from the butter arena. See Buffer.cpp.
   Buffer::initPools();
+  Elm::bootSettings();          // eLeMeNt ZX: the SetUp's FRAM settings (butter PSRAM holds the FRAM) before the video / audio come up
 
   // AFTER initPools: GS::init allocates its work RAM + DAC rings from the butter
   // arena (NEED_POINTER|PREFER_PSRAM), freeing ~32 KB SRAM on PSRAM boards. The
@@ -4541,13 +4542,22 @@ void ESPectrum::loop() {
     beeperSampleAccum = 0;
     beeperTstatesInSample = 0;
 
-    // eLeMeNt: the SetUp's RST 0 (Elm::rst0) = the board's restart: the divMMC and the
-    // machine reset, the personality written in the SetUp is applied by CPU::reset.
+    // eLeMeNt: the SetUp's RST 0 (Elm::rst0) = the board's restart: the machine reset,
+    // the personality written in the SetUp is applied by CPU::reset. esxDOS cold
+    // (DivMMC::init, the menu's Hard Reset): with DivMMC::reset its RAM survived, it
+    // warm-booted on the mount state of the previous personality / ROM pick and
+    // answered "No such FILE or DIR" (hw 2026-11-03, Shift+L: 07 -> 01, e_02D 1 -> 0;
+    // the SPI trace showed no sector 0 read, only stray directory clusters).
     if (Z80Ops::isElm && Elm::takeReset()) {
-      Debug::log("[ELM] reset after the SetUp (PC was %04X)", Z80::getRegPC());
+      Debug::log("[ELM] reset after the SetUp (PC was %04X): esxDOS cold", Z80::getRegPC());
       if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
       Config::last_ram_file = NO_RAM_FILE;
-      DivMMC::reset();
+      if (Elm::rebootWanted()) {      // AA-SRAM on/off: the page strip is laid out by setup()
+        Debug::log("[ELM] URAM size changed in the SetUp: rebooting the board");
+        Config::save();
+        OSD::esp_hard_reset();        // never returns
+      }
+      DivMMC::init();
       ESPectrum::reset();
     }
     if (Z80Ops::isNext && NextReg::resetPending) {

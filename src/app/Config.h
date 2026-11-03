@@ -252,7 +252,7 @@ public:
     // then calls requestMachine, which compares against this).
     static uint32_t wantedPages(ArchIdx a, RomsetIdx rs = R_NONE) {
         if (a == A_TSCONF) return TSCONF_PAGES;
-        if (a == A_ELM) return 128;   // 2 MB: the URAM space of the board
+        if (a == A_ELM) return (elm_aasram && butter_psram_size() > 0) ? 256 : 128;   // the board's 2 MB URAM, 4 MB with the AA-SRAM pack (e_zxi_038)
         // SAM Coupe: 32 internal 16K pages + the external megabytes (samExtPages),
         // never fewer than the 64 the rest of the firmware assumes exist.
         if (a == A_SAM) {
@@ -587,6 +587,7 @@ public:
     // lamp and keeps timed loaders honest. This collapses that for the impatient.
     static bool p3_fastdisk;
     static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (mutually exclusive with esxDOS/MB-02+)
+    static bool elm_aasram;  // eLeMeNt ZX: the AA-SRAM 2 MB expansion is fitted (e_zxi_038 bit 0, read at boot for the page strip)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)
     static uint16_t ide_chs[2][3]; // per-slot geometry override [C,H,S]; 0,0,0 = auto-detect

@@ -2067,6 +2067,15 @@ void commit(CommitReport& rep) {
     }
 }
 
+void reconcileQuiet() {
+    CommitReport rep{};
+    rep.blockedFeat = -1;
+    reconcileSubsystems(rep);
+    if (rep.blocked || rep.failed || rep.needsReboot)
+        Debug::log("[ELM] settings: subsystems blocked %u failed %u reboot %d%s%s", rep.blocked, rep.failed,
+                   (int)rep.needsReboot, rep.note ? " " : "", rep.note ? rep.note : "");
+}
+
 } // namespace Stage
 
 // ── the model's view of a value ────────────────────────────────────────────────
