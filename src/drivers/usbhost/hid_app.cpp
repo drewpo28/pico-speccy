@@ -29,6 +29,7 @@
 #include "app/Config.h"
 #include "app/ESPectrum.h"
 #include "HidMouseLayout.h"
+#include "HidPadLayout.h"
 #include "hid_rip.h"
 #include "pico/time.h"
 #if defined(ZERO2_PIO_USB_HOST)
@@ -252,6 +253,10 @@ static uint16_t mouse_layout_foreign[CFG_TUH_HID];
 static bool mouse_layout_parse(uint8_t instance, uint8_t const* desc, uint16_t desc_len);
 static bool mouse_layout_feed (uint8_t instance, uint8_t const* report, uint16_t len);
 static void mouse_layout_clear(uint8_t instance);
+
+// Generic pads decoded by their descriptor (HidPadLayout.h; parsed at mount for
+// itf_protocol NONE interfaces, used by process_generic_report).
+static HidPad::Layout pad_layout[CFG_TUH_HID];
 static bool mouse_layout_ready(uint8_t instance);
 
 //--------------------------------------------------------------------+
@@ -351,6 +356,13 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     }
   } else {
     mouse_layout_clear(instance);
+  }
+
+  if (instance < CFG_TUH_HID) {
+    if (itf_protocol == HID_ITF_PROTOCOL_NONE)
+      HidPad::parse(pad_layout[instance], desc_report, desc_len, HID_SNAP_REPORT_BYTES);
+    else
+      pad_layout[instance] = HidPad::Layout{};
   }
 
   // 0810:0001 announces boot kbd/mouse protocol but is a gamepad dongle.
@@ -488,6 +500,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
     hid_snap[instance].mounted = false;
     no_rpt_info_logged[instance] = false;
     mouse_layout_clear(instance);   // the slot is reused by whatever plugs in next
+    pad_layout[instance] = HidPad::Layout{};
   }
   // A keyboard that goes away with a key held leaves that key down for the emulated
   // machine for ever, and leaves its trust verdict behind for whatever takes the slot
@@ -1174,6 +1187,76 @@ static void mouse_apply(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32
     // (the FPGA negates PS/2 y for the same reason: MS_Y => -ms_delta_y).
     ESPectrum::mouseDX += dx;
     ESPectrum::mouseDY += dy;
+}
+
+struct PadPrev { bool u, d, l, r; uint32_t b; };
+static void pad_apply(PadPrev& p, bool up, bool down, bool left, bool right, uint32_t buttons);
+
+// A generic pad: 4 directions + up to 32 buttons, numbered as the device's HID
+// Button page (0 = Button 1). Button 1 fire,
+// 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9 Select, 10 Start. Used by the USB
+// pads decoded by their descriptor (HidPadLayout.h); each caller keeps its own
+// previous state so two pads do not release each other.
+static void pad_apply(PadPrev& p, bool up, bool down, bool left, bool right, uint32_t buttons)
+{
+    const bool sj = Config::secondJoy != 1;
+    if (up != p.u)    { joyPushData(fabgl::VirtualKey::VK_MENU_UP, up);       if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_UP, up); }
+    if (down != p.d)  { joyPushData(fabgl::VirtualKey::VK_MENU_DOWN, down);   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_DOWN, down); }
+    if (left != p.l)  { joyPushData(fabgl::VirtualKey::VK_MENU_LEFT, left);   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_LEFT, left); }
+    if (right != p.r) { joyPushData(fabgl::VirtualKey::VK_MENU_RIGHT, right); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_RIGHT, right); }
+    p.u = up; p.d = down; p.l = left; p.r = right;
+    const uint32_t ch = buttons ^ p.b;
+    p.b = buttons;
+    if (!ch) return;
+    auto bit = [&](int n) { return (buttons >> n) & 1u; };
+    auto changed = [&](int n) { return (ch >> n) & 1u; };
+    if (changed(0)) { joyPushData(fabgl::VirtualKey::VK_MENU_ENTER, bit(0)); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_FIRE, bit(0)); }
+    if (changed(1) && sj) joyPushData(fabgl::VirtualKey::VK_DPAD_ALTFIRE, bit(1));
+    if (changed(2)) kbdPushData(fabgl::VirtualKey::VK_JOY_X,  bit(2));
+    if (changed(3)) kbdPushData(fabgl::VirtualKey::VK_JOY_Y,  bit(3));
+    if (changed(4)) kbdPushData(fabgl::VirtualKey::VK_JOY_Z,  bit(4));
+    if (changed(5)) kbdPushData(fabgl::VirtualKey::VK_JOY_C,  bit(5));
+    if (changed(6)) kbdPushData(fabgl::VirtualKey::VK_JOY_L2, bit(6));
+    if (changed(7)) kbdPushData(fabgl::VirtualKey::VK_JOY_R2, bit(7));
+    if (changed(8)) { joyPushData(fabgl::VirtualKey::VK_MENU_BS, bit(8));   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_SELECT, bit(8)); }
+    if (changed(9)) { joyPushData(fabgl::VirtualKey::VK_MENU_HOME, bit(9)); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_START, bit(9)); }
+}
+
+// USB generic pad through its parsed descriptor. False = no layout or not its report
+// (the caller then keeps the old fixed-layout decoder). The DragonRise / SNES-style
+// families keep that decoder: their fire-button choice (B = button 3) is hw-proven
+// and the descriptor numbering would move fire to button 1.
+static bool pad_layout_feed(uint8_t instance, uint8_t const* report, uint16_t len)
+{
+    if (instance >= CFG_TUH_HID || !pad_layout[instance].use) return false;
+    const uint16_t vid = hid_info[instance].vid;
+    if (vid == 0x081F || vid == 0x0079) return false;
+    HidPad::Report r;
+    if (!HidPad::decode(pad_layout[instance], report, len, r)) return false;
+    // Android-order pads (SDL gamecontrollerdb, every 20BC:5500 entry — Betop BFM,
+    // ShanWan, GameSir G3w): A b0, B b1, X b3, Y b4, LB b6, RB b7, LT b8, RT b9,
+    // Back b10, Start b11 (b2/b5 unused). Read in plain order their Back/Start did
+    // nothing and LT/RT acted as Select/Start (hw 2026-11-04).
+    if (vid == 0x20BC && hid_info[instance].pid == 0x5500) {
+        static const uint8_t src[10] = { 0, 1, 3, 4, 6, 7, 8, 9, 10, 11 };
+        uint32_t m = 0;
+        for (uint8_t i = 0; i < 10; i++) m |= ((r.buttons >> src[i]) & 1u) << i;
+        r.buttons = m;
+    }
+    static PadPrev prev[CFG_TUH_HID];
+    pad_apply(prev[instance], r.up, r.down, r.left, r.right, r.buttons);
+
+    uint16_t dec = 0;
+    if (r.up)    dec |= HID_DEC_UP;    if (r.down)  dec |= HID_DEC_DOWN;
+    if (r.left)  dec |= HID_DEC_LEFT;  if (r.right) dec |= HID_DEC_RIGHT;
+    const uint32_t b = r.buttons;
+    if (b & 0x001) dec |= HID_DEC_A;   if (b & 0x002) dec |= HID_DEC_B;
+    if (b & 0x004) dec |= HID_DEC_X;   if (b & 0x008) dec |= HID_DEC_Y;
+    if (b & 0x010) dec |= HID_DEC_L;   if (b & 0x020) dec |= HID_DEC_R;
+    if (b & 0x100) dec |= HID_DEC_SELECT;
+    if (b & 0x200) dec |= HID_DEC_START;
+    hid_snap_set_decoded(instance, HID_HANDLER_GENERIC_GAMEPAD, dec);
+    return true;
 }
 
 //--------------------------------------------------------------------+
@@ -2123,6 +2206,10 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
 
       case HID_USAGE_DESKTOP_GAMEPAD:
       case HID_USAGE_DESKTOP_JOYSTICK:
+        // The composite branch above stripped the report id; the layout wants it back.
+        if (rpt_info->report_id ? pad_layout_feed(instance, report - 1, (uint16_t)(len + 1))
+                                : pad_layout_feed(instance, report, len))
+          break;
         hid_snap_set_handler(instance, HID_HANDLER_GENERIC_GAMEPAD);
         process_hid_gamepad(report, len);
       break;
@@ -2239,6 +2326,17 @@ extern "C" int hid_app_format_devices_info(char* buf, int bufsz)
                         mouse_layout_foreign[inst]);
     } else if (s.itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
       pos += snprintf(buf + pos, bufsz - pos, " wheel: none (boot mouse)\n");
+    }
+
+    // Generic pad decoded by its descriptor: where the fields were found.
+    if (inst < CFG_TUH_HID && pad_layout[inst].use) {
+      const HidPad::Layout& L = pad_layout[inst];
+      pos += snprintf(buf + pos, bufsz - pos,
+        " pad rpt id=%u len=%u btn=%u\n"
+        "  X@%u/%u Y@%u/%u hat@%u/%u\n",
+        L.report_id, L.bytes,
+        L.nruns ? (unsigned)(L.runs[L.nruns - 1].first + L.runs[L.nruns - 1].cnt - 1) : 0u,
+        L.x.off, L.x.size, L.y.off, L.y.size, L.hat.off, L.hat.size);
     }
 
     pos += snprintf(buf + pos, bufsz - pos,
