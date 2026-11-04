@@ -16,6 +16,7 @@
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Enterprise/EpFdc.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/storage/IDE.h"
 
@@ -174,6 +175,7 @@ namespace DiskSlots {
                 Config::epDiskFile[idx] = fname;
                 EpFdc::setWriteProtect(idx, Config::epWP[idx]);
                 LastRun::note(fname);
+                Ep::diskMountNote();     // EXDOS is not on the bus yet: say F11 starts it
             }
         }
         else if (iface == IFACE_ESX) {

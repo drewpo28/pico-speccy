@@ -10,6 +10,9 @@
 #include "app/SnapPack.h"
 #include "EpTapeRec.h"
 #include "speccy/devices/tape/Tape.h"
+#include "fs/FileUtils.h"
+#include "app/ESPectrum.h"
+#include "speccy/devices/disk/DiskSlots.h"
 #include "ui/LEDIndicators.h"
 #include "EpCore.h"
 
@@ -323,6 +326,7 @@ static void lineRun() {
 // move of s_daveT and every register write (a keyboard-polling game reads #B4
 // ~1500 times a frame; before this each read ran Dave to its own T).
 static uint32_t s_daveStatT = 0;
+static int  s_b6Quiet = 100;                 // frames since the last tape read (capped)
 static bool s_b6Read = false;                // the guest polled #B6 this frame (a LOAD)
 static __attribute__((always_inline)) inline void daveStatRecalc() {
     s_daveStatT = s_daveT + (s_dave.statusCycles() - 1) * (uint32_t)s_dave.cycleT();
@@ -407,6 +411,10 @@ bool tapeFastHalt() {
     }
     uint8_t e = 0;
     if (!measure(e)) return false;
+    // A fast-loaded frame has no IN #B6 at all (the bits are taken here), and the deck's
+    // feedback is on Dave's left output: without this the SAVE recorder took the frame
+    // for a SAVE, stopped the deck and the load hung (Bruce Lee on EP64, hw 2026-11-04).
+    s_b6Read = true;
     if (byteLoop) {
         uint8_t h = Z80::getRegH();
         uint16_t c = Z80::getRegHLx();
@@ -435,7 +443,22 @@ bool tapeFastHalt() {
 
 #if HOST_BUILD
 static const char* s_pssAt = nullptr;
-void hostPssPoll() { if (s_pssAt) { Debug::log("[EP] pss %s: %d", s_pssAt, (int)Pss::save(s_pssAt, "host")); s_pssAt = nullptr; } }
+static const char* s_liveTapeAt = nullptr;
+static const char* s_liveDiskAt = nullptr;
+static const char* s_liveMountAt = nullptr;
+static bool s_hostF11 = false;
+void hostPssPoll() {
+    if (s_hostF11) { s_hostF11 = false; ESPectrum::reset(); launchResume(); }   // F11 (+ PICOSPECCY_EP_TYPE)
+    if (s_liveMountAt) { std::string p(s_liveMountAt); s_liveMountAt = nullptr; if (p.empty()) DiskSlots::slotEject(IFACE_EP, 0); else DiskSlots::slotMount(IFACE_EP, 0, p); }   // the slot picker ("" = eject)
+    if (s_liveDiskAt) { std::string p(s_liveDiskAt); s_liveDiskAt = nullptr; launchDisk(p); launchResume(); }   // Enter on an image (+ PICOSPECCY_EP_TYPE after it)
+    if (s_liveTapeAt) {   // the F5 browser's tape path on a running EP (OSDFile.cpp)
+        std::string p(s_liveTapeAt); s_liveTapeAt = nullptr;
+        const size_t sl = p.rfind('/');
+        FileUtils::TAP_Path = p.substr(0, sl + 1);
+        Tape::LoadTape("R" + p.substr(sl + 1));
+        launchTape();
+    }
+    if (s_pssAt) { Debug::log("[EP] pss %s: %d", s_pssAt, (int)Pss::save(s_pssAt, "host")); s_pssAt = nullptr; } }
 #endif
 
 void frameEnd() {
@@ -453,9 +476,16 @@ void frameEnd() {
         for (int i = n; i < AUD_CAP; i++) { s_aud[i] = l; s_aud[AUD_CAP + i] = r; }
     }
     // Tape SAVE: the frame's left output is the cassette signal (EpTapeRec.cpp).
-    if (EpTapeRec::frame(s_aud, s_dave.outN, tapeRemoteUp(), s_b6Read)) {
-        if (Tape::tapeStatus == TAPE_LOADING) Tape::Stop();    // the deck is recording, not playing
-        s_dave.setTapeIn(0);                                   // no feedback under the signal
+    // A recording STARTS only with the remote up now (the one-shot also covers the frame
+    // it dropped in, which the game after a load fills with sound — Amaurote, EP64) and
+    // with no tape read for 2 s (a load between chunks is not a SAVE).
+    {
+        const bool seen = tapeRemoteUp();
+        if (s_b6Read) s_b6Quiet = 0; else if (s_b6Quiet < 100) s_b6Quiet++;
+        if (EpTapeRec::frame(s_aud, s_dave.outN, EpTapeRec::active() ? seen : tapeRemoteNow(), s_b6Quiet < 100)) {
+            if (Tape::tapeStatus == TAPE_LOADING) Tape::Stop();    // the deck is recording, not playing
+            s_dave.setTapeIn(0);                                   // no feedback under the signal
+        }
     }
     s_b6Read = false;
     s_dave.outN = 0;
@@ -486,6 +516,19 @@ void frameEnd() {
         // PICOSPECCY_EP_PSS="frame:/path" writes a .pss at that frame.
         if (const char* e = getenv("PICOSPECCY_EP_PSS"))
             if (n == strtoul(e, nullptr, 10)) s_pssAt = strchr(e, ':') + 1;
+        // PICOSPECCY_EP_LIVEMOUNT="frame:/path" = mount in A: from the slot picker (no reset);
+        // PICOSPECCY_EP_F11="f1,f2,..." = F11 at those frames.
+        if (const char* e = getenv("PICOSPECCY_EP_LIVEMOUNT"))
+            if (n == strtoul(e, nullptr, 10)) s_liveMountAt = strchr(e, ':') + 1;
+        if (const char* e = getenv("PICOSPECCY_EP_F11"))
+            for (const char* q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : nullptr)
+                if (n == strtoul(q, nullptr, 10)) s_hostF11 = true;
+        // PICOSPECCY_EP_LIVEDISK="frame:/path" = Enter on a disk image while the EP runs.
+        if (const char* e = getenv("PICOSPECCY_EP_LIVEDISK"))
+            if (n == strtoul(e, nullptr, 10)) s_liveDiskAt = strchr(e, ':') + 1;
+        // PICOSPECCY_EP_LIVETAPE="frame:/path" = F5 on a tape while the EP runs.
+        if (const char* e = getenv("PICOSPECCY_EP_LIVETAPE"))
+            if (n == strtoul(e, nullptr, 10)) s_liveTapeAt = strchr(e, ':') + 1;
     }
 #endif
     EPT_ADD(fe, tfe);
@@ -580,9 +623,22 @@ void reset() {
     // default device, and tape loaders chain their blocks with a plain LOAD "name" —
     // Amaurote died after its first chunk asking A: for AMAUROTE.BIN). The disk stays
     // mounted; the next plain reset (F11) puts EXDOS back on the bus.
+    // Both one-shots are consumed at EVERY reset: `!s_exdosOn || launchWantsFile()` left
+    // the .COM flag standing after a launch without a disk, and the next disk launch
+    // then made FILE: the default under EXDOS (:DIR showed the SD card, hw 2026-11-04).
     const bool tape = launchWantsTape();
+    const bool wantFile = launchWantsFile();
+    const bool exdosWas = s_exdosOn;
     s_exdosOn = EpFdc::anyMounted() && !tape;
-    fileSetDefault(!tape && (!s_exdosOn || launchWantsFile()));
+    // EXDOS leaving the bus at a WARM reset (F11 after ejecting the disk, a tape launch
+    // with a disk in): EXOS keeps its RAM, EXDOS's devices and RAM claims included, and
+    // ran into a segment that is no longer there (window 1 = B0, a hang, hw 2026-11-04;
+    // the next F11 did a cold start by itself). The warm-start test of EXOS 2.0/2.1 is
+    // the word at FF:3FF8 (ROM 0x004B, LD HL,(BFF8) / OR / JR Z cold): zeroed = the
+    // cold start a real machine gets when its disk cartridge is unplugged.
+    if (exdosWas && !s_exdosOn)
+        if (uint8_t* ff = segPtr(0xFF)) { ff[0x3FF8] = 0; ff[0x3FF9] = 0; }
+    fileSetDefault(!tape && (!s_exdosOn || wantFile));
     memcpy(s_dave.keys, keys, sizeof(keys));
     lineT = T_PER_LINE;
     frac57 = 0;

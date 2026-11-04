@@ -107,6 +107,7 @@ namespace Ep {
     // present from the next reset on while a disk is in a drive. F5 / Web catalog
     // on an EP disk image: mount in A:, switch to the Enterprise if needed, reset.
     bool exdosOn();
+    void diskMountNote();   // a disk went into a drive on a running EP without EXDOS: toast "F11"
     bool launchDisk(const std::string& path);
     // Tape: the deck is the shared Tape:: (TAP/TZX/PZX/CSW/WAV and the Enterprise
     // EPTE image), its ear bit is Dave #B6 bits 6-7, the remote (#B5 bits 6-7) starts
@@ -115,6 +116,7 @@ namespace Ep {
     void tapeRemote(uint8_t bits);
     bool tapeFastHalt();   // fast load: answer EXOS's pulse measurement at its HALT
     bool tapeRemoteUp();   // #B5 bits 6-7 as written
+    bool tapeRemoteNow();  // a remote line is up right now (no one-shot)
     // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
     // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)
     // into the matrix once IS-BASIC waits for a line.

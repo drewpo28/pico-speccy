@@ -16046,6 +16046,19 @@ EXOS keeps it on — `Dave::tapeFb/setTapeIn`, a level edge at #B6 runs Dave to 
 after 4 chunks on the host too (needs 128K?, EXOS 2.0's tape code = 2.1's).
 SAVE (2026-10-31): Dave's left output -> `EpTapeRec` -> `/pico-speccy/tapes/EPnnnn.tap`. Fast load: `Ep::tapeFastHalt` at EXOS's own EI/HALT pulse measurement, plan "Fast tape load" (EPTE, ep128emu .tap, CSW, WAV; MP3 in real time). I/O is charged now (3 T + 1 T tail), Nick runs in parts so port writes land on their slot, `.pss` covers the EP (PSEP/PSEF, `epd` lines). Those four are host-tested only. Not itemised on hw: the tape audible from the speaker, the EPTE/WAV test
 tapes, Enter-rewind in the tape browser.
+**Tape + EXDOS fixes (2026-11-04, hw-confirmed DVp2w on `debug/DVp2w-ep-tapefix5-1.1.1`, owner: "работает"):**
+(1) the SAVE recorder took fast-loaded frames for a SAVE (no IN #B6 there, tape feedback on the
+left output) and stopped the deck mid-load (Bruce Lee EP64 hung, F11 then "Saved EP0005.tap"):
+`tapeFastHalt` marks the frame a tape read, and a recording STARTS only with a remote up NOW and no
+#B6 read for 100 frames. (2) FILE:'s `:DIR`/`:CD` answered even under EXDOS (EXOS asks the ROMs in
+an order a warm F11 can change: the SD root listed under a mounted disk) — declined when EXDOS is on
+and FILE: is not the default. (3) Both launch one-shots are consumed at every reset; launchResume
+arms the FILE: flag only for setup's EXDOS re-reset. (4) EXDOS leaving the bus at a reset zeroes
+FF:3FF8 (EXOS's warm-start word, ROM 0x004B): a warm start kept EXDOS's devices and RAM and ran
+into segment B0 (eject + F11 hung). A mount from the slot picker without EXDOS toasts "F11: reset to
+start EXDOS". Amaurote_48K.tap needs 128K (pages segment FA itself) — not a bug.
+Host hooks: `PICOSPECCY_EP_LIVETAPE` / `_LIVEDISK` / `_LIVEMOUNT` ("frame:" = eject) `="frame:/path"`,
+`PICOSPECCY_EP_F11="f1,f2"` — the menu flows on a running EP without a menu (EP_TYPE re-arms after them).
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 
