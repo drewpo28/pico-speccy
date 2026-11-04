@@ -1158,7 +1158,10 @@ at > 2x its samples (copy back first). Window map / ZX-DMA peek/poke / PSGS snap
 chunks all go through `ngs_ram_ptr`. Moves happen with the ZX-DMA window open (TheLink
 keeps it open for whole effects) only if core0 wrote nothing through it for the period,
 and are abandoned if a write slips in. Allocated in `GS::init` only on butter cards and
-only while 48 KB of heap stays free (`GS::init: NeoGS SRAM page cache N x 16 KB`).
+only while 64 KB of heap stays free (`GS::init: NeoGS SRAM page cache N x 16 KB`),
+and NEVER on the Spectrum Next: its video state (~19.5 KB) and hot frames are claimed
+after GS::init, and the first cut (48 KB reserve) left a 576p Next + NeoGS session
+with 4 KB of heap (hw 2026-11-04, Hardware Info "Free RAM 4 KB").
 Host: dragon fetches 98-99% from the copies, frames identical (animation phase only).
 Overlay terms raised: `.gsovl` 23 344 B, `.ngsovl` 7 656 B measured. Test ELFs
 `debug/DVp2w-sram46ngs-1.1.2` (plain) and `-ngsprof-` (PERF + GS_PERF: compare GS MHz).

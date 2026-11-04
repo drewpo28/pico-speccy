@@ -2459,8 +2459,12 @@ bool GS::init(uint32_t ram_size_bytes) {
         s_ngs_boot_hold = true;   // parked until ngsBootRelease() (see pump)
 #if NGS_SRAM_PAGES > 0
         // NeoGS SRAM page cache (see ngs_ram_ptr): butter-backed cards only, and only
-        // while the heap keeps NGS_SH_RESERVE free after every 16 KB copy.
-        #define NGS_SH_RESERVE (48u * 1024u)
+        // while the heap keeps NGS_SH_RESERVE free after every 16 KB copy. Never on
+        // the Spectrum Next: its video state (~19.5 KB) and hot-page frames are
+        // claimed AFTER this, and a 16 KB copy left the session with 4 KB of heap
+        // (hw 2026-11-04, 576p + NeoGS).
+        #define NGS_SH_RESERVE (64u * 1024u)
+        const bool shNext = Config::arch == A_NEXT;   // final here: setup's requestMachine ran
         memset(s_sh_page, 0, sizeof s_sh_page);
         memset(s_hot_pg, 0, sizeof s_hot_pg);
         memset(s_hot_hits, 0, sizeof s_hot_hits);
@@ -2468,7 +2472,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         int nsh = 0;
         for (int k = 0; k < NGS_SH_N; k++) {
             s_sh_buf[k] = nullptr;
-            if (s_gs_use_spi || getFreeHeap() < NGS_SH_PAGE + NGS_SH_RESERVE) continue;
+            if (s_gs_use_spi || shNext || getFreeHeap() < NGS_SH_PAGE + NGS_SH_RESERVE) continue;
             s_sh_buf[k] = (uint8_t*)tryMalloc(NGS_SH_PAGE);
             if (s_sh_buf[k]) nsh++;
         }
