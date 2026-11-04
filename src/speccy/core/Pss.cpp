@@ -43,6 +43,7 @@
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/Alf.h"
+#include "speccy/machines/Quorum.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Next/NextVideo.h"
@@ -81,7 +82,7 @@ static constexpr int MAX_PAGES = 2048;   // Murmuzavr 32 MB
 static int pageCount(bool& sparse) {
     sparse = false;
     if (Z80Ops::isNext) return 0;   // its own 8K pages: PSXP / PSXF (saveNext)
-    if (Z80Ops::is48) return 3;
+    if (Z80Ops::is48) return g_quorum ? 4 : 3;   // Quorum 64: + its shadow RAM (page 1)
     int n = Z80Ops::is1024 ? 64 : (Z80Ops::is512 ? 32 : 8);
     if (Z80Ops::isPentagon && MEM_PG_CNT > 64) n = (int)MEM_PG_CNT;   // Murmuzavr
     if (Z80Ops::isScorpion) n = (int)Scorpion::ramPages();
@@ -90,19 +91,27 @@ static int pageCount(bool& sparse) {
     if (Z80Ops::isTsconf) n = (int)MEM_PG_CNT;   // 4 MB
     if (Z80Ops::isSam) n = (int)MEM_PG_CNT;      // 32 internal + the external pages
     if (Z80Ops::isEnt) n = 8;                    // segments F8..FF
+    if (g_quorum) n = (int)Quorum::ramPages();   // 128/128+ 8, 256 16, 1024 64
     if (n > (int)MEM_PG_CNT) n = (int)MEM_PG_CNT;
     if (n > MAX_PAGES) n = MAX_PAGES;
     sparse = n > 64;
     return n;
 }
-// The i-th page in file order: 5, 2, 0 on a 48K, else simply i.
+// The i-th page in file order: 5, 2, 0 on a 48K (then 1, the Quorum 64's shadow
+// RAM), else simply i.
 static uint16_t pageAt(int i) {
-    static const uint8_t p48[3] = { 5, 2, 0 };
+    static const uint8_t p48[4] = { 5, 2, 0, 1 };
     return Z80Ops::is48 ? p48[i] : (uint16_t)i;
 }
 static int pageIndex(uint16_t page, int np) {
-    if (Z80Ops::is48) { for (int i = 0; i < 3; i++) if (pageAt(i) == page) return i; return -1; }
+    if (Z80Ops::is48) { for (int i = 0; i < np; i++) if (pageAt(i) == page) return i; return -1; }
     return page < np ? page : -1;
+}
+// Pages a file must carry. A Quorum .pss written before PSQU has only the 48K's
+// three pages or the Pentagon's eight; the rest take the power-on pattern.
+static int pagesRequired(int np) {
+    if (!g_quorum) return np;
+    return Z80Ops::is48 ? 3 : (np < 8 ? np : 8);
 }
 
 // What a page holds, for the sparse encoding: 1 = the power-on pattern (omitted),
@@ -463,6 +472,12 @@ bool save(const string& path, const string& name) {
             w.begin("PSEF"); w.raw(fb, fn); w.end();
             free(fb);
         }
+    }
+
+    if (g_quorum) {   // PSQU: #00, #80FD, #7FFD (all page bits), #85
+        uint8_t b[Quorum::SNAP_MAX];
+        const uint32_t n = Quorum::snapSave(b);
+        w.begin("PSQU"); w.raw(b, n); w.end();
     }
 
     if (Z80Ops::isALF) {   // PSAL: the ROM-bank select (cart bit 7) + the #FE D3 read-back
@@ -1222,6 +1237,7 @@ bool load(const string& path) {
     bool haveAlf = false; uint8_t alfSel = 0, alfBit = 0;
     uint8_t sam[Sam::SNAP_MAX] = {}; uint32_t samSize = 0;
     uint8_t ep[Ep::SNAP_MAX] = {}; uint32_t epSize = 0;
+    uint8_t qu[Quorum::SNAP_MAX] = {}; uint32_t quSize = 0;
     JoyProf::Profile joyOffer; bool joyMissing = false;
     uint8_t bd[2][16] = {}; bool haveBd[2] = {}, bdV2[2] = {};
     uint8_t up[UPD_SNAP_MAX] = {}; uint32_t upSize = 0;
@@ -1299,6 +1315,7 @@ bool load(const string& path) {
         else if (idIs(id, "PSSC") && sz >= 1)  { scSize = sz < sizeof(sc) ? sz : sizeof(sc); r.raw(sc, scSize); }
         else if (idIs(id, "PSPR") && sz >= 1)  { prSize = sz < sizeof(pr) ? sz : sizeof(pr); r.raw(pr, prSize); }
         else if (idIs(id, "PSAT") && sz >= 1)  { atmSize = sz < sizeof(atm) ? sz : sizeof(atm); r.raw(atm, atmSize); }
+        else if (idIs(id, "PSQU") && sz >= 1 && g_quorum) { quSize = sz < sizeof(qu) ? sz : sizeof(qu); r.raw(qu, quSize); }
         else if (idIs(id, "PSAL") && sz >= 3)  { r.u8(); alfSel = r.u8(); alfBit = r.u8(); haveAlf = true; }
         else if (idIs(id, "PSEP") && sz >= 1 && Z80Ops::isEnt) { epSize = sz < sizeof(ep) ? sz : sizeof(ep); r.raw(ep, epSize); }
         else if (idIs(id, "PSEF") && sz >= 1 && Z80Ops::isEnt) epFdc.take(r, sz, EpFdc::SNAP_MAX);
@@ -1373,14 +1390,15 @@ bool load(const string& path) {
     }
     fclose2(f);
     GS::snapLoadEnd(ngs.p, ngs.n);
-    if (!haveZ80 || !havePT || ptSize < 16 || (!fileSparse && loadedPages != np) ||
+    if (!haveZ80 || !havePT || ptSize < 16 || (!fileSparse && loadedPages < pagesRequired(np)) ||
         (nxOn && (nxPages != NX_SNAP_PAGES || !nxrSize))) {
         if (ftOn) Ft812::snapLoadEnd();   // a reset chip, but the renderer un-parked
         loadFail("PSS: damaged file (missing state)");
         return false;
     }
-    // Pages a sparse file left out held the power-on pattern when it was saved.
-    if (fileSparse)
+    // Pages a sparse file left out held the power-on pattern when it was saved (and
+    // a pre-PSQU Quorum file never had the shadow / above-128K pages).
+    if (fileSparse || loadedPages != np)
         for (int i = 0; i < np; i++) if (!(loaded[i >> 5] & (1u << (i & 31)))) fillPowerOnPattern(pageAt(i));
 
     // Memory map.
@@ -1441,6 +1459,10 @@ bool load(const string& path) {
     }
     if (!Z80Ops::is48 && !Z80Ops::isProfi && !Z80Ops::isAtm && !Z80Ops::isTsconf && !nxOn && !Z80Ops::isSam && !Z80Ops::isEnt)   // they set their own (DS80 4/6, ATM remap, VPage, Next, SAM)
         VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
+    // Quorum: #00 & co. rebuild window 0, #C000 and the screen (the 64's UP_S). A file
+    // without PSQU leaves it to afterSnapshot (BASIC running, as for a .z80).
+    if (g_quorum && quSize && !Quorum::snapLoad(qu, quSize))
+        Debug::log("[PSS] Quorum record refused - #00 = BASIC running");
 
     // DivMMC last of the memory map: it overrides page 0 while mapped.
     if (haveDmmc) DivMMC::snapRestore(dmmcCtl, dmmcPaged);

@@ -562,10 +562,20 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
 - Window 0 is Quorum's (`p3special = 3`): #00 D0 shadow RAM / D5 SYS ROM / D6 write
   protect (`g_atm_ro`) / D7 TR-DOS ROM vs shadow RAM; writes under visible ROM go to the
   shadow page (`wrOverlay`). #00 cleared by reset and the NMI ack; a snapshot load sets
-  #A0 (`Quorum::afterSnapshot`, from LoadSnapshot). WD1793 on #80-#83 / #85 (mapped to
+  #A0 (`Quorum::afterSnapshot`, from LoadSnapshot) — except a .pss with `PSQU`, below. WD1793 on #80-#83 / #85 (mapped to
   the Beta SYS register via `Ports::fdcSysWrite`); the Beta #1F family, other even
   ports, #F7 and the printer are swallowed. #7E extended keyboard = `quorumKeys()`
   (ESPectrum.cpp, ZXMAK2 map, only keys with no Spectrum-matrix twin; F-keys stay ours).
+- **.pss keeps the Quorum state (2026-11-04, host-tested only, NOT hw-tested):** record
+  `PSQU` = u8 ver 1, #00, #80FD, #7FFD as last written (256/1024 page bits), #85, flags
+  (b0 #80FD written); `Quorum::snapLoad` applies it after the Pentagon/48K memory map and
+  the `afterSnapshot()` that follows keeps it. Pages: the Q64 also writes page 1 (its
+  shadow RAM; file order 5, 2, 0, 1), the 256/1024 all `quorumRamPages` (16/64), not 8.
+  Older Quorum files (3 / 8 pages, no PSQU) still load: the rest gets the power-on
+  pattern, #00 = #A0 as before. Export to .szx/.z80/.sna lists "Quorum #00 / shadow
+  RAM" (and "RAM above 128K") as dropped. Host bench: Q128+ saved in the SYS menu
+  (#00 = 0) resumes in it and "1" boots BASIC 128 — the old loader hung on the same file;
+  Q64 and Q1024 round trips resume too.
 - ROMs: QU4V93T4 (Q64) + QU7V42 (Q128), `tools/rom_pack.py quorum` = 1 raw SYS page +
   5 overlays, 22 967 B; `rom_verify.py` checks them.
 - **Quorum 128 CP/M boots (hw 2026-10-29, owner: NC for Quorum v2.3 on `kv_cpm (System 3.1

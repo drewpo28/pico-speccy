@@ -71,7 +71,8 @@
 // page 5/7 by #7FFD D3. Deliberate deviations: #80FD is latched but moves nothing
 // (as in ZXMAK2 / Unreal; the ULA-M's CP/M screen base is unknown), its D7 EN_RAM is
 // not modelled; a snapshot load comes
-// back with #00 = BASIC-running (#A0) — no snapshot format carries the register.
+// back with #00 = BASIC-running (#A0) — no foreign snapshot format carries the
+// register. Our own .pss does: the PSQU record (snapSave / snapLoad).
 #pragma once
 #include <stdint.h>
 
@@ -110,6 +111,15 @@ void reset();
 void remap();
 // Every snapshot loader leaves the #7FFD latches; rebuild around them.
 void afterSnapshot();
+// .pss record PSQU: u8 version (1), #00, #80FD, #7FFD as last written (with the
+// 256/1024 page bits), #85, flags (b0 = #80FD already written). snapLoad applies it
+// and remaps; the afterSnapshot() that follows the load then keeps it.
+constexpr uint32_t SNAP_MAX = 6;
+uint32_t snapSave(uint8_t* b);
+bool snapLoad(const uint8_t* b, uint32_t n);
+// RAM pages (16 KB) the running Quorum has: 4 on the 64 (the shadow RAM is page 1),
+// 8..64 on the 128 family; 0 when no Quorum is running. The .pss page list.
+uint32_t ramPages();
 // Port dispatch ahead of the generic decode. true = handled.
 bool portIn(uint16_t address, uint8_t* out);
 bool portOut(uint16_t address, uint8_t data);

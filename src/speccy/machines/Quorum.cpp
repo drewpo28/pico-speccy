@@ -35,6 +35,8 @@ static uint8_t s_pages = 8;
 // The original Quorum 64 (quorum48.rom): no TR-DOS ROM, no DOS signal — the trap at
 // #3Dxx does nothing and the Beta ports are never the controller.
 static bool s_orig = false;
+// Pss::load restored #00 & co. (snapLoad): the afterSnapshot() that follows keeps them.
+static bool s_snapRestored = false;
 
 static inline bool is128() { return g_quorum >= 2; }
 // The Quorum-1024+ (74xx board, ROM-MENU V5.0): #00 reads back, D2 = Pentagon raster,
@@ -155,6 +157,7 @@ void reset() {
     s_orig = g_quorum == 1 && isQuorum64OrigRomset(Config::romSet48);
     s_cpm = false;
     s_p85 = 0;
+    s_snapRestored = false;
     for (int i = 0; i < 8; i++) ext[i] = 0;
     if (!g_quorum) {
         MemESP::wr_overlay_mask &= (uint8_t)~3;
@@ -166,10 +169,41 @@ void reset() {
 
 void afterSnapshot() {
     if (!g_quorum) return;
+    if (s_snapRestored) { s_snapRestored = false; return; }   // a .pss brought its own
     p00 = (uint8_t)(B_ROM | TR_DOS | keepBits());      // BASIC running, TR-DOS from ROM
     s_p7ffd = (uint8_t)((MemESP::bankLatch & 7) | (MemESP::videoLatch ? 0x08 : 0)
                       | (MemESP::romLatch ? 0x10 : 0));
     remap();
+}
+
+uint32_t ramPages() {
+    if (!g_quorum) return 0;
+    return is128() ? s_pages : 4;
+}
+
+uint32_t snapSave(uint8_t* b) {
+    b[0] = 1;
+    b[1] = p00;
+    b[2] = p80FD;
+    b[3] = s_p7ffd;
+    b[4] = s_p85;
+    b[5] = s_cpm ? 1 : 0;
+    return SNAP_MAX;
+}
+
+bool snapLoad(const uint8_t* b, uint32_t n) {
+    if (!g_quorum || n < 6 || b[0] < 1) return false;
+    const uint8_t old = p00;
+    p00     = b[1];
+    p80FD   = b[2];
+    s_p7ffd = b[3];
+    s_p85   = b[4];
+    s_cpm   = (b[5] & 1) != 0;
+    // D2 picks the raster on the 1024: re-derive it at the frame boundary.
+    if (is1024() && ((old ^ p00) & PENT)) rasterPending = true;
+    remap();
+    s_snapRestored = true;
+    return true;
 }
 
 void nmiAck() {
