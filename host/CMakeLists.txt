@@ -51,6 +51,8 @@ list(APPEND EMU_SRC
 # behind the same interfaces (WifiNet, WifiSock, AtEmu).
 list(FILTER EMU_SRC EXCLUDE REGEX "/src/net/(WifiNet|WifiSock|AtEmu)\\.cpp$")
 list(FILTER EMU_SRC EXCLUDE REGEX "/src/net/cyw43_[^/]*\\.c$")
+# On-chip Bluetooth (BTstack over the CYW43 bus): no radio on the PC.
+list(FILTER EMU_SRC EXCLUDE REGEX "/src/net/(BtHost\\.cpp|cybt_[^/]*\\.c)$")
 
 # Firmware-only: libc/libstdc++ link-time shims (malloc wrap, terminate handler).
 list(FILTER EMU_SRC EXCLUDE REGEX "/src/app/cxx_shims\\.cpp$")
