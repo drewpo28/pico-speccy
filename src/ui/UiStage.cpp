@@ -1057,6 +1057,14 @@ static bool stagedIsTc2068() {
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
+// Murmuzavr hangs off the real Pentagon's #AFF7 latch. Quorum 128/256/1024 are romsets
+// of A_PENT with their own port map (machines/Quorum.h), so they do not count.
+static bool stagedIsMurmuzavrMachine() {
+    if (!stagedIsPentagon()) return false;
+    const int32_t m = staged(SET_MACHINE);
+    const RomsetIdx r = (m >= 0) ? (RomsetIdx)(m & 0xFF) : Config::romSet;
+    return !isQuorum128Romset(r);
+}
 
 static void resolveConstraints(CommitReport& rep) {
     // Bounded: each rule only ever turns something OFF, so it cannot oscillate, but the
@@ -1479,7 +1487,7 @@ static void resolveConstraints(CommitReport& rep) {
         // Profi (which spends another ~80 KB of its own) it OOM-panicked at boot.
         // ESPectrum::setup clamps the same way, so a config that predates this rule
         // still boots; this is what makes the menu agree with it.
-        if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsPentagon())
+        if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsMurmuzavrMachine())
             changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
 
         // Fast load and tape wear cannot both be true: the in-ROM trap fills a block

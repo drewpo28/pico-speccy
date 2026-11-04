@@ -750,7 +750,7 @@ static void assign_ram(int i, bool butterOnly = false) {
 #define ZX_PSRAM_PAGES 0x5F
 #endif
 #ifndef ZX_SRAM46_MIN_FREE_KB
-#define ZX_SRAM46_MIN_FREE_KB 40
+#define ZX_SRAM46_MIN_FREE_KB 0
 #endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
 static void donateZxPagesToFb() {

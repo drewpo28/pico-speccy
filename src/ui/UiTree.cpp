@@ -595,7 +595,14 @@ static bool p_pentActive() {
 // Strictly Pentagon: a count cannot survive on another machine, so there is nothing to
 // come back and switch off here. ESPectrum::setup clamps it at boot and the commit's
 // resolveConstraints() forces it to Off whenever the staged machine is not Pentagon.
-static bool p_murmAvail() { return FileUtils::fsMount && p_pentActive(); }
+// Quorum 128/256/1024 are romsets of A_PENT with their own port map — no #AFF7 latch.
+static bool p_murmMachine() {
+    if (!p_pentActive()) return false;
+    const int32_t m = Stage::get(SET_MACHINE);
+    const RomsetIdx r = (m < 0) ? Config::romSet : (RomsetIdx)(m & 0xFF);
+    return !isQuorum128Romset(r);
+}
+static bool p_murmAvail() { return FileUtils::fsMount && p_murmMachine(); }
 
 // TS-Conf needs every RAM page pointer-backed for the render/DMA phases —
 // butter/QSPI PSRAM only (MURM1's PIO-SPI PSRAM is accessor-only and cannot
@@ -857,8 +864,8 @@ static const Option opt_mach_atm[] = {
 // SAM Coupe: internal 256K / 512K, plus the external megabytes (LEPR/HEPR).
 // Enterprise: EP64 (EXOS 2.0 + BASIC 2.0, 64K) / EP128 (EXOS 2.1 + BASIC 2.1, 128K).
 static const Option opt_mach_ep[] = {
-    { "64",   NM_MACH(A_ENT, R_EP64),  "64"  },
-    { "128",  NM_MACH(A_ENT, R_EP128), "128" },
+    { "EP64",   NM_MACH(A_ENT, R_EP64),  "EP64"  },
+    { "EP128",  NM_MACH(A_ENT, R_EP128), "EP128" },
 };
 static const Option opt_mach_sam[] = {
     { "256K",          NM_MACH(A_SAM, R_SAM256),    "256K"   },
@@ -907,7 +914,7 @@ const char* murmuzavrTag() {
     // Only where the mode actually applies: the persisted pick survives a switch to
     // another machine, but ESPectrum::setup clamps the live count off there, so showing
     // the tag would advertise RAM the machine does not have.
-    if (!p_pentActive()) return nullptr;
+    if (!p_murmMachine()) return nullptr;
     // The STAGED count, so the subheader tracks the pick right away (the live MEM_PG_CNT
     // only follows on the reboot the commit asks for).
     const int32_t pg = Stage::get(SET_MEM_PG_CNT);
