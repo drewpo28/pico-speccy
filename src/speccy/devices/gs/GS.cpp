@@ -19,6 +19,8 @@ extern "C" {
 #include "hardware/clocks.h"   // clock_get_hz for the PERF line's config self-id
 #include <string.h>
 #include "app/CodeOverlay.h"   // GS_OVL_BSS / NGS_OVL_CODE / NGS_OVL_BSS
+#include "app/TryAlloc.h"      // tryMalloc: the NeoGS SRAM page cache
+extern size_t getFreeHeap(void);
 
 // Atomic byte OR/AND via GCC __atomic builtins — compile to LDREXB/STREXB on
 // ARM Cortex-M33, which is safe across both RP2350 cores sharing the AHB bus.
@@ -871,9 +873,67 @@ static inline zuint8 __not_in_flash_func(gs_mem_raw_read)(zuint16 address) {
 // Use the same fetch_page table for non-banked reads (single load, no
 // branches). For 0x6000-0x7FFF the cheap DAC update is folded into the
 // fast path. Banked region falls through to gs_pc_read.
+#if HOST_BUILD
+// Host-only card memory profile (PICOSPECCY_GSMEM=1): GS-Z80 reads / writes /
+// opcode fetches per 4 KB of PHYSICAL card memory, plus a 256 B PC histogram,
+// dumped every ~16M opcode fetches. Finds the card's working set for an effect.
+static int      s_mp_on = -1;
+static uint32_t s_mp_cnt[3][1025];          // [r,w,f][4 KB block of 4 MB; 1024 = ROM/other]
+static uint32_t s_mp_pc[256];
+static uint32_t s_mp_fetches = 0;
+static void gs_mp_dump() {
+    static const char* kn[3] = { "rd", "wr", "op" };
+    for (int k = 0; k < 3; k++) {
+        uint64_t tot = 0; for (int i = 0; i < 1025; i++) tot += s_mp_cnt[k][i];
+        char line[512]; int n = snprintf(line, sizeof line, "[GSMEM] %s total=%llu:", kn[k], (unsigned long long)tot);
+        for (int t = 0; t < 12 && tot; t++) {
+            int best = -1; for (int i = 0; i < 1025; i++) if (s_mp_cnt[k][i] && (best < 0 || s_mp_cnt[k][i] > s_mp_cnt[k][best])) best = i;
+            if (best < 0) break;
+            n += snprintf(line + n, sizeof line - n, " %s%05X:%u%%", best == 1024 ? "ROM" : "", best == 1024 ? 0 : best << 12,
+                          (unsigned)(s_mp_cnt[k][best] * 100ull / tot));
+            s_mp_cnt[k][best] = 0;
+        }
+        Debug::log("%s", line);
+        memset(s_mp_cnt[k], 0, sizeof s_mp_cnt[k]);
+    }
+    char line[512]; int n = snprintf(line, sizeof line, "[GSMEM] pc:");
+    for (int t = 0; t < 12; t++) {
+        int best = 0; for (int i = 1; i < 256; i++) if (s_mp_pc[i] > s_mp_pc[best]) best = i;
+        if (!s_mp_pc[best]) break;
+        n += snprintf(line + n, sizeof line - n, " %04X:%u%%", best << 8, (unsigned)(s_mp_pc[best] * 100ull / s_mp_fetches));
+        s_mp_pc[best] = 0;
+    }
+    Debug::log("%s", line);
+    memset(s_mp_pc, 0, sizeof s_mp_pc);
+    s_mp_fetches = 0;
+}
+static inline void gs_mp(const uint8_t* base, zuint16 a, int k) {
+    if (s_mp_on < 0) s_mp_on = getenv("PICOSPECCY_GSMEM") ? 1 : 0;
+    if (!s_mp_on) return;
+    uint32_t blk = 1024;
+    if (base) {
+        const uint8_t* p = base + (a & 0x1FFF);
+        if (s_ngs_low_ram && p >= s_ngs_low_ram && p < s_ngs_low_ram + NGS_LOW_RAM_SIZE)
+            blk = (uint32_t)(p - s_ngs_low_ram) >> 12;
+        else if (s_gs_ram && p >= s_gs_ram && p < s_gs_ram + (s_ngs_ram_total - NGS_LOW_RAM_SIZE))
+            blk = ((uint32_t)(p - s_gs_ram) + NGS_LOW_RAM_SIZE) >> 12;
+    }
+    if (blk > 1024) blk = 1024;
+    s_mp_cnt[k][blk]++;
+    if (k == 2) {
+        s_mp_pc[a >> 8]++;
+        if (++s_mp_fetches >= 16000000u) gs_mp_dump();
+    }
+}
+#define GS_MP(base, a, k) gs_mp(base, a, k)
+#else
+#define GS_MP(base, a, k) ((void)0)
+#endif
+
 static zuint8 __not_in_flash_func(gs_cb_read)(void* ctx, zuint16 address) {
     (void)ctx;
     const uint8_t* base = s_fetch_page[address >> 13];
+    GS_MP(base, address, 0);
     if (base) {
         zuint8 v = base[address & 0x1FFF];
         // DAC latch — only for the 0x6000-0x7FFF page. Cheap test: page-id
@@ -897,6 +957,7 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
     if (s_ngs) {
         uint8_t slot = address >> 13;
         uint8_t* p = s_write_page[slot];
+        GS_MP(p, address, 1);
         if (p) { p[address & 0x1FFF] = value; return; }
         uint32_t off = s_bank_woff[slot];
         if (off == NGS_BANK_NONE) return;  // ROM window / RAMRO-protected page 0
@@ -926,6 +987,49 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
         s_gs_ram[off] = value;  // PSRAM — banked sample pages
     }
     gs_pc_invalidate_line(off);  // keep SRAM cache coherent
+}
+
+// ---------------------------------------------------------------
+// NeoGS SRAM page cache (2026-11-04, TheLink's 16col dragon). With the card RAM
+// in butter PSRAM every GS-Z80 fetch/read/write goes through the one XIP cache
+// core0 also lives on, and an effect that renders into big card buffers keeps
+// evicting the card's own code: hw log 2026-11-04 had the GS-Z80 at 21.0 of
+// 24 MHz on the dragon (IDL -2 ms every frame, GS ring underruns = the audio
+// damage, realFPS 46.4). The host profile of that scene: 97% of the card's
+// opcode fetches and ~60% of its reads in TWO 16 KB physical pages (its code +
+// tables in 0x2C000, its fixed 0x4000-0x7FFF work RAM = low 0xC000).
+// So: up to NGS_SRAM_PAGES 16 KB SRAM copies of the hottest physical pages,
+// picked from the card PC sampled on every card INT. A shadowed page IS the
+// page: every pointer to it (window map, ZX-DMA, snapshot) goes through
+// ngs_ram_ptr(); the butter copy is stale until the page is demoted (copied
+// back). Promotion/demotion run on the card's own thread (core1, from the INT
+// ack) and only with the ZX-DMA window closed — the one core0 path into card
+// RAM. Butter-backed cards only (SPI PSRAM keeps its private line cache).
+#ifndef NGS_SRAM_PAGES
+#define NGS_SRAM_PAGES 2
+#endif
+#define NGS_SH_N        (NGS_SRAM_PAGES > 0 ? NGS_SRAM_PAGES : 1)
+#define NGS_SH_PAGE     0x4000u
+#define NGS_SH_SAMPLES  8192u          // card INTs per decision (~0.22 s at 37.5 kHz)
+static GS_OVL_BSS uint8_t*  s_sh_buf[NGS_SH_N];   // SRAM copies (heap), null = feature off
+static GS_OVL_BSS uint16_t  s_sh_page[NGS_SH_N];  // physical 16 KB page + 1, 0 = free
+static GS_OVL_BSS uint16_t  s_slot_pg[8];         // page + 1 behind each 8 KB slot, 0 = ROM/none
+// Card PC samples per physical page, taken AT SAMPLE TIME (the 0x8000-0xFFFF
+// windows are re-paged constantly, so a per-slot count folded later would credit
+// the wrong page). 8 entries; a new page takes the emptiest.
+static GS_OVL_BSS uint16_t  s_hot_pg[8];
+static GS_OVL_BSS uint16_t  s_hot_hits[8];
+static GS_OVL_BSS uint16_t  s_sh_samples;
+
+static inline uint8_t* ngs_butter_ptr(uint32_t phys) {
+    return phys < NGS_LOW_RAM_SIZE ? s_ngs_low_ram + phys : s_gs_ram + (phys - NGS_LOW_RAM_SIZE);
+}
+// Card-physical RAM address -> the byte that IS that address right now.
+static inline uint8_t* ngs_ram_ptr(uint32_t phys) {
+    const uint16_t pg = (uint16_t)((phys >> 14) + 1);
+    for (int k = 0; k < NGS_SH_N; k++)
+        if (s_sh_page[k] == pg) return s_sh_buf[k] + (phys & (NGS_SH_PAGE - 1));
+    return ngs_butter_ptr(phys);
 }
 
 // =================================================================
@@ -965,23 +1069,24 @@ static inline void ngs_zxdma_gate() {
 // buffer. Butter PSRAM is memory-mapped anyway; SPI PSRAM has its own cross-core
 // spinlock in psram_spi. The write path still has to invalidate on SPI, because
 // there core1 DOES read banked pages through that cache.
+// ngs_ram_ptr: the SRAM copy when the card keeps that page hot (see the NeoGS
+// SRAM page cache above ngs_map_half16) — the butter bytes are stale then.
 static uint8_t __not_in_flash_func(ngs_dma_peek)(uint32_t phys) {
     phys &= s_ngs_ram_total - 1;
-    if (phys < NGS_LOW_RAM_SIZE) return s_ngs_low_ram[phys];
-    uint32_t off = phys - NGS_LOW_RAM_SIZE;
-    return s_gs_use_spi ? read8psram(s_gs_ram_base + off) : s_gs_ram[off];
+    if (s_gs_use_spi && phys >= NGS_LOW_RAM_SIZE)
+        return read8psram(s_gs_ram_base + (phys - NGS_LOW_RAM_SIZE));
+    return *ngs_ram_ptr(phys);
 }
 
 static void __not_in_flash_func(ngs_dma_poke)(uint32_t phys, uint8_t v) {
     phys &= s_ngs_ram_total - 1;
-    if (phys < NGS_LOW_RAM_SIZE) { s_ngs_low_ram[phys] = v; return; }
-    uint32_t off = phys - NGS_LOW_RAM_SIZE;
-    if (s_gs_use_spi) {
+    if (s_gs_use_spi && phys >= NGS_LOW_RAM_SIZE) {
+        uint32_t off = phys - NGS_LOW_RAM_SIZE;
         write8psram(s_gs_ram_base + off, v);
         gs_pc_invalidate_line(off);
-    } else {
-        s_gs_ram[off] = v;   // pointer-backed for core1 too — no cache to sync
+        return;
     }
+    *ngs_ram_ptr(phys) = v;   // pointer-backed for core1 too — no cache to sync
 }
 
 NGS_OVL_CODE uint8_t GS::zxDmaRead() {
@@ -1467,6 +1572,7 @@ static NGS_OVL_CODE __attribute__((noinline)) void ngs_map_half16(int slot, uint
                                                 bool rom, bool ramro) {
     for (int i = 0; i < 2; i++) {
         uint32_t phys = page * 0x8000u + half * 0x4000u + (uint32_t)i * 0x2000u;
+        s_slot_pg[slot + i] = 0;
         if (rom) {
             s_fetch_page[slot + i] = ngs_rom_slot(phys);
             s_write_page[slot + i] = nullptr;
@@ -1477,9 +1583,11 @@ static NGS_OVL_CODE __attribute__((noinline)) void ngs_map_half16(int slot, uint
                 // Physical pages 0+1 are pointer-backed (this also gives the
                 // documented aliasing with the fixed 0x4000-0x7FFF region).
                 bool ro = ramro && phys < 0x8000;  // RAMRO protects big page 0
-                s_fetch_page[slot + i] = s_ngs_low_ram + phys;
-                s_write_page[slot + i] = ro ? nullptr : s_ngs_low_ram + phys;
+                uint8_t* p = ngs_ram_ptr(phys);
+                s_fetch_page[slot + i] = p;
+                s_write_page[slot + i] = ro ? nullptr : p;
                 s_bank_woff[slot + i]  = NGS_BANK_NONE;
+                s_slot_pg[slot + i]    = (uint16_t)((phys >> 14) + 1);
             } else {
                 uint32_t boff = phys - NGS_LOW_RAM_SIZE;
                 s_bank_off[slot + i]  = boff;
@@ -1502,8 +1610,10 @@ static NGS_OVL_CODE __attribute__((noinline)) void ngs_map_half16(int slot, uint
                     // agree with writes — and with no reader left on the private
                     // cache for these pages, its coherency invalidate is moot.
                     // SPI PSRAM (MURM1) has no such window and keeps the cache.
-                    s_fetch_page[slot + i] = s_gs_ram + boff;
-                    s_write_page[slot + i] = s_gs_ram + boff;
+                    uint8_t* p = ngs_ram_ptr(phys);   // SRAM copy when the page is hot
+                    s_fetch_page[slot + i] = p;
+                    s_write_page[slot + i] = p;
+                    s_slot_pg[slot + i]    = (uint16_t)((phys >> 14) + 1);
                 } else {
                     s_fetch_page[slot + i] = nullptr;
                     s_write_page[slot + i] = nullptr;
@@ -1524,20 +1634,25 @@ static NGS_OVL_CODE __attribute__((noinline)) void ngs_rebuild_map() {
     for (int s = 0; s < 2; s++) {
         uint32_t phys = (uint32_t)s * 0x2000u;
         if (norom) {
-            s_fetch_page[s] = s_ngs_low_ram + phys;
-            s_write_page[s] = ramro ? nullptr : s_ngs_low_ram + phys;
+            uint8_t* p = ngs_ram_ptr(phys);
+            s_fetch_page[s] = p;
+            s_write_page[s] = ramro ? nullptr : p;
+            s_slot_pg[s]    = 1;                 // physical 16 KB page 0
         } else {
             s_fetch_page[s] = ngs_rom_slot(phys);
             s_write_page[s] = nullptr;
+            s_slot_pg[s]    = 0;
         }
         s_bank_woff[s] = NGS_BANK_NONE;
     }
     // 0x4000-0x7FFF: second half of RAM page 1, always mapped and writable
     for (int s = 2; s < 4; s++) {
         uint32_t phys = 0xC000u + (uint32_t)(s - 2) * 0x2000u;
-        s_fetch_page[s] = s_ngs_low_ram + phys;
-        s_write_page[s] = s_ngs_low_ram + phys;
+        uint8_t* p = ngs_ram_ptr(phys);
+        s_fetch_page[s] = p;
+        s_write_page[s] = p;
         s_bank_woff[s]  = NGS_BANK_NONE;
+        s_slot_pg[s]    = 4;                     // physical 16 KB page 3 (0xC000)
     }
     // 0x8000-0xFFFF: one 32 KB window (MPAG) or two 16 KB halves (EXPAG:
     // MPAG → 0x8000-0xBFFF, MPAGEX → 0xC000-0xFFFF). In EXPAG the 16 KB page
@@ -1553,6 +1668,70 @@ static NGS_OVL_CODE __attribute__((noinline)) void ngs_rebuild_map() {
         ngs_map_half16(4, s_ngs_mpag   & 0x7F, s_ngs_mpag   >> 7, !norom, ramro);
         ngs_map_half16(6, s_ngs_mpagex & 0x7F, s_ngs_mpagex >> 7, !norom, ramro);
     }
+}
+
+// NeoGS SRAM page cache: pick the hottest pages from the last NGS_SH_SAMPLES card
+// PC samples (per 8 KB slot, folded onto physical 16 KB pages). A page is worth a
+// slot at >= 1/8 of the samples; it displaces a cached page only when it has more
+// than twice that page's samples (hysteresis — a copy is 2 x 16 KB of PSRAM
+// traffic). Card thread only (core1 / the host emulator thread), from the INT ack.
+// Flash-resident on purpose: ~4 calls a second.
+static __attribute__((noinline)) void ngs_sh_rebalance() {
+    s_sh_samples = 0;
+    uint16_t pg[8], hits[8]; int n = 0;
+    for (int s = 0; s < 8; s++) {
+        if (s_hot_pg[s] && s_hot_hits[s]) { pg[n] = s_hot_pg[s]; hits[n] = s_hot_hits[s]; n++; }
+        s_hot_pg[s] = 0; s_hot_hits[s] = 0;
+    }
+    // The ZX-DMA window is core0's only way into card RAM. Its READS are safe
+    // across a move (both copies hold the same bytes while this thread copies),
+    // a WRITE could land in the copy being abandoned — so pages move only when
+    // core0 wrote nothing through the window for the whole sample period, and
+    // the move is abandoned if a write slips in while it runs. TheLink keeps the
+    // window open for whole effects, streaming card -> ZX only.
+    static uint32_t s_sh_wr_seen = 0;
+    const uint32_t wr0 = s_ngs_dma_wr;
+    const bool quiet = !g_ngs_zxdma || wr0 == s_sh_wr_seen;
+    s_sh_wr_seen = wr0;
+    if (!quiet || !s_sh_buf[0]) return;
+    bool changed = false;
+    bool done[8] = {};
+    bool keep[NGS_SH_N] = {};                             // chosen this pass: not a victim
+    for (int round = 0; round < NGS_SH_N; round++) {
+        int best = -1;
+        for (int j = 0; j < n; j++)
+            if (!done[j] && hits[j] >= NGS_SH_SAMPLES / 8 && (best < 0 || hits[j] > hits[best])) best = j;
+        if (best < 0) break;
+        done[best] = true;
+        const uint16_t want = pg[best];
+        const uint16_t wantHits = hits[best];
+        int k = -1, victim = -1; uint32_t victimHits = 0xFFFFFFFFu;
+        for (int i = 0; i < NGS_SH_N; i++) {
+            if (!s_sh_buf[i]) continue;
+            if (s_sh_page[i] == want) { k = i; break; }
+            if (keep[i]) continue;
+            uint32_t h = 0;                               // a free slot counts as 0 hits
+            if (s_sh_page[i])
+                for (int j = 0; j < n; j++) if (pg[j] == s_sh_page[i]) h = hits[j];
+            if (h < victimHits) { victim = i; victimHits = h; }
+        }
+        if (k >= 0) { keep[k] = true; continue; }         // already cached
+        if (victim < 0) break;                            // no slot left
+        if (s_sh_page[victim] && victimHits * 2u >= wantHits) continue;
+        keep[victim] = true;
+        if (s_sh_page[victim]) {                          // demote: the copy goes home
+            memcpy(ngs_butter_ptr((uint32_t)(s_sh_page[victim] - 1) << 14), s_sh_buf[victim], NGS_SH_PAGE);
+            __dmb();
+            s_sh_page[victim] = 0;
+            changed = true;
+        }
+        memcpy(s_sh_buf[victim], ngs_butter_ptr((uint32_t)(want - 1) << 14), NGS_SH_PAGE);
+        __dmb();                                          // bytes before the page number
+        if (s_ngs_dma_wr != wr0) break;                   // core0 wrote meanwhile: stay in butter
+        s_sh_page[victim] = want;
+        changed = true;
+    }
+    if (changed) ngs_rebuild_map();
 }
 
 // ---------------------------------------------------------------
@@ -2024,6 +2203,7 @@ static inline void gs_init_fetch_pages(void) {
 static zuint8 __not_in_flash_func(gs_cb_fetch_opcode)(void* ctx, zuint16 address) {
     (void)ctx;
     const uint8_t* base = s_fetch_page[address >> 13];
+    GS_MP(base, address, 2);
     if (base) return base[address & 0x1FFF];
     // Defensive fallback if firmware ever jumps into banked PSRAM.
     return gs_mem_raw_read(address);
@@ -2277,6 +2457,28 @@ bool GS::init(uint32_t ram_size_bytes) {
         // framebuffer. See the lazy-allocation note in NgsMp3.cpp — a failure there
         // still just leaves the MP3 path in stub mode.
         s_ngs_boot_hold = true;   // parked until ngsBootRelease() (see pump)
+#if NGS_SRAM_PAGES > 0
+        // NeoGS SRAM page cache (see ngs_ram_ptr): butter-backed cards only, and only
+        // while the heap keeps NGS_SH_RESERVE free after every 16 KB copy.
+        #define NGS_SH_RESERVE (48u * 1024u)
+        memset(s_sh_page, 0, sizeof s_sh_page);
+        memset(s_hot_pg, 0, sizeof s_hot_pg);
+        memset(s_hot_hits, 0, sizeof s_hot_hits);
+        s_sh_samples = 0;
+        int nsh = 0;
+        for (int k = 0; k < NGS_SH_N; k++) {
+            s_sh_buf[k] = nullptr;
+            if (s_gs_use_spi || getFreeHeap() < NGS_SH_PAGE + NGS_SH_RESERVE) continue;
+            s_sh_buf[k] = (uint8_t*)tryMalloc(NGS_SH_PAGE);
+            if (s_sh_buf[k]) nsh++;
+        }
+        // Compact: ngs_ram_ptr / the INT sampler test s_sh_buf[0] first.
+        if (!s_sh_buf[0] && NGS_SH_N > 1 && s_sh_buf[NGS_SH_N - 1]) {
+            s_sh_buf[0] = s_sh_buf[NGS_SH_N - 1]; s_sh_buf[NGS_SH_N - 1] = nullptr;
+        }
+        Debug::log("GS::init: NeoGS SRAM page cache %d x 16 KB, freeHeap=%u",
+                   nsh, (unsigned)getFreeHeap());
+#endif
     } else {
         memset(s_gs_work_ram, 0, GS_WORK_RAM_SIZE);
         gs_init_fetch_pages();   // hot-path fetch table: see gs_cb_fetch_opcode
@@ -2329,6 +2531,9 @@ void GS::deinit() {
     s_gs_ram_mask = 0;
     gs_ram_size = 0;
     s_workRamBuf.free();    s_gs_work_ram = nullptr;   // free() is a no-op for the butter alias (never allocated)
+#if NGS_SRAM_PAGES > 0
+    for (int k = 0; k < NGS_SH_N; k++) { free(s_sh_buf[k]); s_sh_buf[k] = nullptr; s_sh_page[k] = 0; }
+#endif
     s_ngs_low_ram = nullptr;
     s_ngs_blank   = nullptr;
     s_ngs_ram_total = 0;
@@ -3154,6 +3359,21 @@ int __not_in_flash_func(GS::step)(int tstates) {
             // 37500 Hz tick: DAC sample capture always; CPU INT every tick on
             // GS, every s_ngs_int_div ticks on NeoGS (TIM_FRQ) when enabled.
             s_int_timer_ts -= GS_INT_PERIOD;
+#if NGS_SRAM_PAGES > 0
+            // NeoGS SRAM page cache: sample the card PC on the 37.5 kHz tick (not
+            // the INT ack — TheLink's card runs with its timer INT disabled).
+            if (s_sh_buf[0]) {
+                const uint16_t p = s_slot_pg[Z80_PC(s_cpu) >> 13];
+                if (p) {
+                    int j = 0, lo = 0;
+                    for (; j < 8 && s_hot_pg[j] != p; j++)
+                        if (s_hot_hits[j] < s_hot_hits[lo]) lo = j;
+                    if (j == 8) { j = lo; s_hot_pg[j] = p; s_hot_hits[j] = 0; }
+                    s_hot_hits[j]++;
+                }
+                if (++s_sh_samples >= NGS_SH_SAMPLES) ngs_sh_rebalance();
+            }
+#endif
             int_count++;
             GS_PERF(s_perf_ints++);
             bool fire_int = true;
@@ -4238,7 +4458,12 @@ static GS_OVL_BSS uint32_t s_snap_size;   // its RAM size (card-physical bytes)
 // the 64 KB low part then s_gs_ram.
 static uint32_t gs_snap_ram_total() { return s_ngs ? s_ngs_ram_total : GS::gs_ram_size; }
 static uint8_t* gs_snap_ptr(uint32_t off) {
-    if (s_ngs) return off < NGS_LOW_RAM_SIZE ? s_ngs_low_ram + off : s_gs_ram + (off - NGS_LOW_RAM_SIZE);
+    // NeoGS: GS_SNAP_CHUNK-aligned chunks never straddle a 16 KB page, so the SRAM
+    // page cache's copy (when the page is hot) is the whole chunk.
+    if (s_ngs) {
+        if (s_gs_use_spi && off >= NGS_LOW_RAM_SIZE) return nullptr;
+        return ngs_ram_ptr(off);
+    }
     if (off == GS_WORK_RAM_OFF && s_gs_use_spi) return s_gs_work_ram;
     return s_gs_use_spi ? nullptr : s_gs_ram + off;
 }

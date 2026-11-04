@@ -749,6 +749,9 @@ static void assign_ram(int i, bool butterOnly = false) {
 #ifndef ZX_PSRAM_PAGES
 #define ZX_PSRAM_PAGES 0x5F
 #endif
+#ifndef ZX_SRAM46_MIN_FREE_KB
+#define ZX_SRAM46_MIN_FREE_KB 40
+#endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
 static void donateZxPagesToFb() {
   if (!butter_psram_size()) return;
@@ -802,7 +805,26 @@ static void donateZxPagesToFb() {
     if (next) VIDEO::fbDonate(p0 + 2u * MEM_PG_SZ, 2u * MEM_PG_SZ, 0x0Cu);   // pages 2/3 only
     else      VIDEO::fbDonate(p0, 4u * MEM_PG_SZ, 0x0Fu);
   }
-  if ((ZX_PSRAM_PAGES & 0x50) == 0x50) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
+  // Pages 4/6 stay in SRAM when the heap can afford it (owner, 2026-11-04): without
+  // their donor the FB takes those rows (~32 KB at 360 wide) off the heap instead, so
+  // ask what the heap holds after THAT rebuild. At least ZX_SRAM46_MIN_FREE_KB left
+  // → keep 4/6 (all of 4-7 in SRAM, the pre-2026-10-13 layout for those pages);
+  // less → donate them as before and only 5/7 stay. 0 = always donate.
+  // Measured here, before audio/tape/GS/MIDI/TS-Conf ring take their share — the
+  // `setup: COMPLETE` heap comes out ~25 KB+ lower than this figure.
+  if ((ZX_PSRAM_PAGES & 0x50) == 0x50) {
+    bool keep46 = false;
+#if ZX_SRAM46_MIN_FREE_KB > 0
+    size_t held = 0, after = 0;
+    VIDEO::fbHeapPlan(&held, &after);          // donors so far: pages 0-3 (2/3 on Next)
+    const long freeAfter = (long)getFreeHeap() + (long)held - (long)after;
+    keep46 = freeAfter >= (long)ZX_SRAM46_MIN_FREE_KB * 1024;
+    Debug::log2SD("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB)",
+                  keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024,
+                  (unsigned)ZX_SRAM46_MIN_FREE_KB);
+#endif
+    if (!keep46) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
+  }
 }
 
 // One line with everything a machine-switch bug hides in: the paging latches that

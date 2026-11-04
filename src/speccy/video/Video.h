@@ -212,6 +212,10 @@ public:
   // a donor the map did not use stays the caller's memory.
   static void     fbDonate(uint8_t* p, size_t bytes, uint32_t tag);
   static uint32_t fbDonorsUsed();
+  // Before reserveFrameBuffer(): *held = heap bytes the FB holds now, *after = heap
+  // bytes it will hold once rebuilt over the donors registered so far (active mode).
+  // getFreeHeap() + held - after = the free heap right after that rebuild.
+  static void     fbHeapPlan(size_t* held, size_t* after);
 
   // Heap bytes a VM_* video mode costs: return value = main FB (one block where the
   // heap has a hole that big, otherwise 2-8 whole-row chunks — so this is a TOTAL,

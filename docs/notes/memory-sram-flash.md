@@ -756,6 +756,17 @@ on. ATM EGA checked the same day: Golden Axe under NedoOS (ATM-Turbo 3, BIOS 1.0
 osatm3sd_pico-speccy.trd) runs at 50 FPS with IDL ~10000 us — pages 1/3 in butter cost it
 nothing visible. Still owed: heap figure at 576p + NeoGS. The text below is the 0-3-only state.
 
+**Fourth revision 2026-11-04 (owner): pages 4/6 back in SRAM when the heap can afford
+it.** `ZX_SRAM46_MIN_FREE_KB` (cmake/options.cmake, default 80, 0 = old behaviour):
+`donateZxPagesToFb` asks `VIDEO::fbHeapPlan` what the heap holds once the FB is rebuilt
+WITHOUT the 4/6 donor (its rows then come off the heap, ~32 KB at 360 wide); >= the
+threshold → 4/6 are not donated (all of 4-7 SRAM), else donated as before. One line
+`setup: pages 4/6 stay in SRAM|-> butter: free heap after FB NKB` in the SD log. The
+figure is taken before audio/tape/GS/MIDI/TS-Conf ring (~25 KB+ more by `setup:
+COMPLETE` on a plain 48K/DVp2w boot: 177.9 → 151.4 KB with 4/6 donated). Decided at
+donation time and not at the end of setup because >25 files cache `ram[i].direct()`
+pointers. Test ELF `debug/DVp2w-sram46-1.1.2`. NOT hw-tested.
+
 
 **Revised the same day — read this first.** All eight pages in butter cost TheLink's
 16col dragon (P1024, 7 MHz) 6 ms a frame: cpu 20.9 ms / 41 FPS against 14.9 with the

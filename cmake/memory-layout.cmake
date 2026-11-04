@@ -163,7 +163,9 @@ if (GSOVL_WIN_SIZE STREQUAL "AUTO")
     # + 260 B slack — tight on purpose: on a NeoGS boot both GS windows are
     # resident and every byte of slack in either is heap that session loses.
     # The NeoGS-only code and data moved to .ngsovl (below).
-    set(_GSOVL_BYTES 23040)
+    # 2026-11-04: 23 344 B measured (DVp2w) after the NeoGS SRAM page cache — the
+    # card-PC sampler on the 37.5 kHz tick + ngs_ram_ptr in the ZX-DMA peek/poke.
+    set(_GSOVL_BYTES 23552)
     # The GS trace options add code to the same objects (counters, the handshake
     # ring writer, the per-command SD log), so the window has to grow with them.
     if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)
@@ -183,7 +185,9 @@ if (NGSOVL_WIN_SIZE STREQUAL "AUTO")
     # zxDmaRead/Write) + .ngsovl_bss 1 352 B (the card SD state, the MP3 SCI file)
     # = 7 056, + 112 B slack (see the .gsovl note on why tight). Loaded only on a
     # NeoGS boot.
-    set(NGSOVL_WIN_SIZE_EFFECTIVE 7168)
+    # 2026-11-04: 7 656 B measured (DVp2w) — ngs_map_half16 / ngs_rebuild_map
+    # resolve every RAM slot through ngs_ram_ptr (the NeoGS SRAM page cache).
+    set(NGSOVL_WIN_SIZE_EFFECTIVE 7680)
     if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)
         math(EXPR NGSOVL_WIN_SIZE_EFFECTIVE "${NGSOVL_WIN_SIZE_EFFECTIVE} + 2048")
     endif()

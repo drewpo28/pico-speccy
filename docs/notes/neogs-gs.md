@@ -1132,3 +1132,33 @@ MinSizeRel, against the build before it:
 - Test ELFs `debug/{m2p2,m2p2-hstx}-sram4-1.0.8`. **Hw check owed**: NeoGS (NPL MOD +
   MP3, ZP4, TheLink with ZX-DMA, NEO8), classic GS (a MOD player), GS off, and the
   boot log's `[OVL] NeoGS ... code resident` / `window to the heap` lines.
+
+## NeoGS SRAM page cache — TheLink's dragon (2026-11-04, NOT hw-tested)
+
+**Symptom (hw log 2026-11-04, `debug/DVp2w-tlprof-1.1.2`, 504 MHz):** on the 16col
+dragon the GS-Z80 ran at **21.0 of 24 MHz** (`PERF[504/24MHz] IDL_min -2000 neg 47/47`),
+the GS ring underran (`PERF-A und ~1600/s`) = the audio damage, realFPS 46.4 (the ZX
+waits for the card on #BB, 75k reads/s). Other scenes: 24.0 MHz, IDL +5 ms. Core0 is
+NOT the limit there; the card is. Pentagon full speed is 48.83 FPS, not 50.
+
+**Cause:** NeoGS on butter maps every card window to PSRAM through the one XIP cache
+core0 shares; the dragon renders into ~64 KB of card buffers (0x10000-0x1FFFF), which
+keeps evicting the card's code. Host card-memory profile (`PICOSPECCY_GSMEM=1`, host
+only — `[GSMEM]` lines: rd/wr/op per 4 KB of card-physical RAM + a 256 B PC histogram):
+97% of opcode fetches and ~60% of reads in two 16 KB physical pages — 0x2C000 (code at
+E000-E6FF + its table at 0x2F000) and the fixed work RAM 0x0C000.
+
+**Fix:** up to `NGS_SRAM_PAGES` (default 2) heap copies of 16 KB card pages
+(`ngs_ram_ptr`, GS.cpp). The card PC is sampled on the 37.5 kHz tick in `GS::step`
+(NOT the INT ack: TheLink's card runs with its timer INT off), counted per PHYSICAL page
+at sample time (the 0x8000-0xFFFF windows are re-paged constantly — a per-slot count
+folded later credited the wrong page; first cut). Every 8192 samples `ngs_sh_rebalance`
+(flash, core1) copies a page with >= 1/8 of the samples in, displacing a cached page only
+at > 2x its samples (copy back first). Window map / ZX-DMA peek/poke / PSGS snapshot
+chunks all go through `ngs_ram_ptr`. Moves happen with the ZX-DMA window open (TheLink
+keeps it open for whole effects) only if core0 wrote nothing through it for the period,
+and are abandoned if a write slips in. Allocated in `GS::init` only on butter cards and
+only while 48 KB of heap stays free (`GS::init: NeoGS SRAM page cache N x 16 KB`).
+Host: dragon fetches 98-99% from the copies, frames identical (animation phase only).
+Overlay terms raised: `.gsovl` 23 344 B, `.ngsovl` 7 656 B measured. Test ELFs
+`debug/DVp2w-sram46ngs-1.1.2` (plain) and `-ngsprof-` (PERF + GS_PERF: compare GS MHz).

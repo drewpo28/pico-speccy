@@ -111,6 +111,10 @@ option(TSCONF_DRAM_MODEL "TS-Conf: model DRAM contention (CPU/video vs DMA) and 
 # on for, gained ~1 frame — not worth the SRAM it takes from the Next session.
 set(NEXT_HOT_FRAMES "1" CACHE STRING "Next: SRAM frames (8K) in the hot-page pool, 0 = off, max 8")
 set(ZX_PSRAM_PAGES "0x5F" CACHE STRING "ZX pages moved to butter PSRAM, block mask (0x0F pages 0-3, 0x50 pages 4/6)")
+# Pages 4/6 stay in SRAM (with 5/7: all of 4-7) when the heap left after the framebuffer
+# takes their rows is at least this many KB; below it they go to butter as 0x50 says.
+# 0 = always follow ZX_PSRAM_PAGES. Decided per boot in ESPectrum.cpp donateZxPagesToFb.
+set(ZX_SRAM46_MIN_FREE_KB "80" CACHE STRING "Keep ZX pages 4/6 in SRAM when this much heap (KB) remains after the FB; 0 = never")
 option(WD1793_IN_RAM "WD1793: keep the FDC step/read/write/_do code in SRAM (~6.8 KB). OFF since 2026-09-30: flash is fast enough now that the Z80 core is in SRAM" OFF)
 option(DIVMMC_HOT_IN_RAM "DivMMC/DivSD: keep the SD SPI read path (port 0xEB, mmc_read) in SRAM (~0.9 KB; every IN (EB) otherwise fetches flash code through the XIP cache the Next's butter RAM keeps busy)" ON)
 option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)

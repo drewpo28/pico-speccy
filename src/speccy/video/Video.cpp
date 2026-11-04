@@ -5121,6 +5121,36 @@ size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
     return fbMainBytes(lines, stride);
 }
 
+// See Video.h. `held`: what the block claimed so far takes off the heap (the
+// pre-Config claim is one heap block, or heap pieces — donor chunks are not heap).
+// `after`: the heap rows the active mode needs once the donors registered so far
+// are laid in, exactly as ensureMainFB() fills them (whole rows, in order).
+void VIDEO::fbHeapPlan(size_t* held, size_t* after) {
+    size_t h = 0;
+    if (sharedFB_main) {
+        if (!sharedFB_nchunks) {
+            h = sharedFB_main_size;
+        } else {
+            int all = 0, heapRows = 0;
+            for (int c = 0; c < sharedFB_nchunks; c++) {
+                all += sharedFB_chunk[c].rows;
+                if (!sharedFB_chunk[c].ext) heapRows += sharedFB_chunk[c].rows;
+            }
+            if (all) h = sharedFB_main_size / (size_t)all * (size_t)heapRows;
+        }
+    }
+    const int Mode = fbModeIndex();
+    const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    int row = 0;
+    for (int d = 0; d < sharedFB_ndonors && row < lines; d++) {
+        int rows = (int)(sharedFB_donor[d].bytes / (size_t)stride);
+        if (rows > lines - row) rows = lines - row;
+        if (rows > 0) row += rows;
+    }
+    if (held)  *held  = h;
+    if (after) *after = (size_t)(lines - row) * (size_t)stride;
+}
+
 // Claim the main framebuffer as early as setup() can — ideally straight after
 // Config::load(), where ~185 KB of heap is untouched. Its size depends on nothing
 // but the configured video mode, while everything that runs between there and
