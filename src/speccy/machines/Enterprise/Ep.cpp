@@ -446,9 +446,9 @@ static const char* s_pssAt = nullptr;
 static const char* s_liveTapeAt = nullptr;
 static const char* s_liveDiskAt = nullptr;
 static const char* s_liveMountAt = nullptr;
-static bool s_hostF11 = false;
+static int s_hostF11 = 0;            // 1 = F11 (warm), 2 = Alt+F11 Hard (cold)
 void hostPssPoll() {
-    if (s_hostF11) { s_hostF11 = false; ESPectrum::reset(); launchResume(); }   // F11 (+ PICOSPECCY_EP_TYPE)
+    if (s_hostF11) { if (s_hostF11 == 2) coldStart(); s_hostF11 = 0; ESPectrum::reset(); launchResume(); }   // F11 (+ PICOSPECCY_EP_TYPE)
     if (s_liveMountAt) { std::string p(s_liveMountAt); s_liveMountAt = nullptr; if (p.empty()) DiskSlots::slotEject(IFACE_EP, 0); else DiskSlots::slotMount(IFACE_EP, 0, p); }   // the slot picker ("" = eject)
     if (s_liveDiskAt) { std::string p(s_liveDiskAt); s_liveDiskAt = nullptr; launchDisk(p); launchResume(); }   // Enter on an image (+ PICOSPECCY_EP_TYPE after it)
     if (s_liveTapeAt) {   // the F5 browser's tape path on a running EP (OSDFile.cpp)
@@ -479,11 +479,17 @@ void frameEnd() {
     // A recording STARTS only with the remote up now (the one-shot also covers the frame
     // it dropped in, which the game after a load fills with sound — Amaurote, EP64) and
     // with no tape read for 2 s (a load between chunks is not a SAVE).
+    // Above all, like a real deck: a deck PLAYING a tape is never recording. The remote
+    // resumes the inserted tape before this point, so a remote-on with a tape left to
+    // play is a LOAD, whatever the guest does in its first frames. The 2 s rule alone
+    // let IK+ Reloaded record: its loader keeps the motor off for > 2 s between
+    // chunks and reads #B6 only a frame after the next remote-on (hw 2026-11-04).
+    // SAVE works with no tape in, or after the tape has played to its end / was stopped.
     {
         const bool seen = tapeRemoteUp();
         if (s_b6Read) s_b6Quiet = 0; else if (s_b6Quiet < 100) s_b6Quiet++;
-        if (EpTapeRec::frame(s_aud, s_dave.outN, EpTapeRec::active() ? seen : tapeRemoteNow(), s_b6Quiet < 100)) {
-            if (Tape::tapeStatus == TAPE_LOADING) Tape::Stop();    // the deck is recording, not playing
+        const bool loading = s_b6Quiet < 100 || Tape::tapeStatus == TAPE_LOADING;
+        if (EpTapeRec::frame(s_aud, s_dave.outN, EpTapeRec::active() ? seen : tapeRemoteNow(), loading)) {
             s_dave.setTapeIn(0);                                   // no feedback under the signal
         }
     }
@@ -517,12 +523,12 @@ void frameEnd() {
         if (const char* e = getenv("PICOSPECCY_EP_PSS"))
             if (n == strtoul(e, nullptr, 10)) s_pssAt = strchr(e, ':') + 1;
         // PICOSPECCY_EP_LIVEMOUNT="frame:/path" = mount in A: from the slot picker (no reset);
-        // PICOSPECCY_EP_F11="f1,f2,..." = F11 at those frames.
+        // PICOSPECCY_EP_F11="f1,f2h,..." = F11 at those frames ("h" = Alt+F11 Hard reset).
         if (const char* e = getenv("PICOSPECCY_EP_LIVEMOUNT"))
             if (n == strtoul(e, nullptr, 10)) s_liveMountAt = strchr(e, ':') + 1;
         if (const char* e = getenv("PICOSPECCY_EP_F11"))
             for (const char* q = e; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : nullptr)
-                if (n == strtoul(q, nullptr, 10)) s_hostF11 = true;
+                if (n == strtoul(q, nullptr, 10)) { char* t; strtoul(q, &t, 10); s_hostF11 = *t == 'h' ? 2 : 1; }
         // PICOSPECCY_EP_LIVEDISK="frame:/path" = Enter on a disk image while the EP runs.
         if (const char* e = getenv("PICOSPECCY_EP_LIVEDISK"))
             if (n == strtoul(e, nullptr, 10)) s_liveDiskAt = strchr(e, ':') + 1;
@@ -585,6 +591,14 @@ void clearKeysOverride() { s_keysOvr = -1; s_fkPolled = false; }
 // ---------------------------------------------------------------------------
 // Reset
 
+// A reset is the RESET button: EXOS warm-starts when the word at FF:3FF8 (ROM 0x004B,
+// LD HL,(BFF8) / OR / JR Z cold) is non-zero, and a game that stored its own warm-reset
+// address there gets control back (Cyrus Chess: F11 returned to the game, 2026-11-04).
+// Zeroing it is what power-on gives: the next reset() is an EXOS cold start.
+void coldStart() {
+    if (uint8_t* ff = segPtr(0xFF)) { ff[0x3FF8] = 0; ff[0x3FF9] = 0; }
+}
+
 void reset() {
     if (!s_exos) bindRoms();
     for (int i = 0; i < 4; i++) s_nick.vram[i] = MemESP::ram[4 + i].direct();
@@ -637,7 +651,7 @@ void reset() {
     // the word at FF:3FF8 (ROM 0x004B, LD HL,(BFF8) / OR / JR Z cold): zeroed = the
     // cold start a real machine gets when its disk cartridge is unplugged.
     if (exdosWas && !s_exdosOn)
-        if (uint8_t* ff = segPtr(0xFF)) { ff[0x3FF8] = 0; ff[0x3FF9] = 0; }
+        coldStart();
     fileSetDefault(!tape && (!s_exdosOn || wantFile));
     memcpy(s_dave.keys, keys, sizeof(keys));
     lineT = T_PER_LINE;

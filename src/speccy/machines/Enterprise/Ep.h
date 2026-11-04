@@ -54,6 +54,7 @@ namespace Ep {
 
     void bindRoms();                 // Config::requestMachine
     void reset();                    // CPU::reset
+    void coldStart();                // before a reset: EXOS does a cold start (Alt+F11 Hard)
 
     uint8_t portIn(uint16_t address);
     void portOut(uint16_t address, uint8_t data);

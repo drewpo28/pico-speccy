@@ -132,7 +132,10 @@ visit https://zxespectrum.speccy.org/contacto
 // machine's own menu reaches by locking paging with ROM 3 selected).
 #define MENU_RESETTO_P3 "Reset to\n" "+3\n" "48 BASIC\n"
 
-#define MENU_RESETTO_DIVMMC "Reset\n" "Soft Reset\n" "Hard Reset\n"
+#define MENU_RESETTO_DIVMMC "Reset\n" "Soft reset (warm)\n" "Hard reset (cold)\n"
+// Enterprise: Soft = the RESET button (EXOS warm start: the program, or a game's own
+// warm-reset address at FF:3FF8, survives); Hard = power-on (EXOS cold start).
+#define MENU_RESETTO_EP "Reset\n" "Soft reset (warm)\n" "Hard reset (cold)\n"
 
 #define MENU_RESETTO_PENT "Reset to\n" "TR-DOS\n" "128K\n" "48K\n"
 // Quorum 128/128+: the SYS ROM's own menu first; the 64 has no SYS ROM.

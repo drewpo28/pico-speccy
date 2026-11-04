@@ -408,7 +408,15 @@ FF:3FF8 (EXOS's warm-start word, ROM 0x004B): a warm start kept EXDOS's devices 
 into segment B0 (eject + F11 hung). A mount from the slot picker without EXDOS toasts "F11: reset to
 start EXDOS". Amaurote_48K.tap needs 128K (pages segment FA itself) — not a bug.
 Host hooks: `PICOSPECCY_EP_LIVETAPE` / `_LIVEDISK` / `_LIVEMOUNT` ("frame:" = eject) `="frame:/path"`,
-`PICOSPECCY_EP_F11="f1,f2"` — the menu flows on a running EP without a menu (EP_TYPE re-arms after them).
+`PICOSPECCY_EP_F11="f1,f2h"` — the menu flows on a running EP without a menu (EP_TYPE re-arms after them; `h` = Alt+F11 Hard).
+**No false SAVE, Soft/Hard reset (2026-11-04, host-tested, NOT hw-tested, `debug/DVp2w-ep-reset-1.1.1`):**
+(1) International Karate+ Reloaded recorded EP0007.tap mid-load: its loader keeps the motor off > 2 s
+between chunks and reads #B6 only a frame after the next remote-on, so the 2 s rule alone passed. Rule
+now, like a real deck: a deck PLAYING a tape never records (the remote resumes the tape before
+`frameEnd`); SAVE needs no tape in, or one played to its end / stopped. BASIC SAVE without a tape
+still records. (2) F11 is the RESET button = EXOS warm start: a game that stored its own address at
+FF:3FF8 gets control back (Cyrus Chess) — authentic, kept. Alt+F11 on the EP offers Soft (warm) /
+Hard (cold: `Ep::coldStart` zeroes FF:3FF8 first, EXOS logo).
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 

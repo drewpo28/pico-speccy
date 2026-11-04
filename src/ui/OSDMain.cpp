@@ -2612,11 +2612,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                   : opt == 3 ? Quorum::BOOT_128 : Quorum::BOOT_48);
                 }
             } else
-            if (Z80Ops::is48 || Z80Ops::isEnt || Z80Ops::isSam) {
-                // 48K, Enterprise, SAM Coupe: one ROM set, nothing to pick - reset
-                // directly (the EP's reset is a warm one, EXOS keeps the program;
-                // owner 2026-10-31). The fallback dialog below would offer the
-                // Spectrum's "128K / 48K" rows, which mean nothing on either.
+            if (Z80Ops::isEnt) {
+                // Enterprise: F11 is the RESET button (warm, EXOS keeps the program;
+                // owner 2026-10-31) — and so a game that set its own warm-reset
+                // address gets control back. Hard = power-on: EXOS cold start.
+                uint8_t opt = hotkeyChooser(MENU_RESETTO_EP);
+                if (opt > 0) {
+                    if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+                    Config::last_ram_file = NO_RAM_FILE;
+                    if (opt == 2) Ep::coldStart();
+                    ESPectrum::reset(0);
+                }
+            } else
+            if (Z80Ops::is48 || Z80Ops::isSam) {
+                // 48K, SAM Coupe: one ROM set, nothing to pick - reset directly.
+                // The fallback dialog below would offer the Spectrum's "128K / 48K"
+                // rows, which mean nothing on either.
                 if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
                 Config::last_ram_file = NO_RAM_FILE;
                 ESPectrum::reset(0);

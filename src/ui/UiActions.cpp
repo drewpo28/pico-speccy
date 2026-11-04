@@ -14,6 +14,7 @@
 #include "OSDMain.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/If2.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "app/Config.h"
 #include "app/ESPectrum.h"
 #include "speccy/core/Snapshot.h"
@@ -23,6 +24,7 @@
 #include "speccy/devices/tape/Tape.h"
 #include "fs/ZipExtract.h"
 #include "speccy/z80/z80.h"
+#include "speccy/z80/z80operations.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/devices/disk/DiskSlots.h"
 #include "speccy/devices/sound/MidiSynth.h"
@@ -1684,6 +1686,7 @@ void act_resetSoft() {
 void act_resetHard() {
     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
+    if (Z80Ops::isEnt) Ep::coldStart();   // the EP's plain reset is a warm EXOS start
     ESPectrum::reset();
     requestClose();
 }

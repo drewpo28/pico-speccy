@@ -160,8 +160,8 @@
 #define TXT_JOY_KPORT       "Kempston port"
 
 // ── Reset ──────────────────────────────────────────────────────────────────────
-#define TXT_RESET_SOFT      "Soft ZX reset"
-#define TXT_RESET_HARD      "Hard ZX reset"
+#define TXT_RESET_SOFT      "Soft reset (warm)"
+#define TXT_RESET_HARD      "Hard reset (cold)"
 #if HOST_BUILD   // host: watchdog_reboot restarts the process (= a power cycle)
 #define TXT_RESET_RPI       "Restart emulator"
 #else
