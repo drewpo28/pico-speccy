@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Enterprise/EpFdc.h"
 #include <stdio.h>
 #include "app/TryAlloc.h"
+#include "fs/SdVolumes.h"
 #include <stdlib.h>
 #include <string>
 #include <vector>
@@ -306,6 +307,7 @@ static bool sdStillThere() {
 // directory state, and writing THAT onto a different card put in next is the
 // one way this ends in destroyed data rather than a failed operation.
 static FileUtils::StorageEvent storageLost() {
+    SdVolumes::drop();
     f_mount(NULL, "SD:", 0);
     disk_invalidate();
     FileUtils::fsMount = false;
@@ -426,6 +428,7 @@ FileUtils::StorageEvent FileUtils::storageTick() {
         // a USB stick here: every path this session holds names the card, and
         // swapping the root volume under open files would be worse than waiting.
         const DWORD was = s_sd_vsn;
+        SdVolumes::drop();
         f_mount(NULL, "SD:", 0);
         disk_invalidate();
         if (!mountSDCard()) return StorageEvent::None;
@@ -498,11 +501,19 @@ bool FileUtils::mountSDCard() {
     // "SD:" with the colon — with FF_FS_RPATH a bare "SD" parses as "no volume
     // prefix" and would target the CURRENT volume instead.
     fsMount = f_mount(&fs, "SD:", 1) == FR_OK;
-    if (fsMount) s_sd_vsn = sdVolumeSerial();
+    if (fsMount) {
+        s_sd_vsn = sdVolumeSerial();
+        // The card's other partitions (SD2:). At the boot mount Config is not loaded
+        // yet, so restore() is a no-op there; ESPectrum::setup calls it again after
+        // Config::load(). Every later mount (automount, card back) has the setting.
+        SdVolumes::scan((uint32_t)fs.volbase);
+        SdVolumes::restore();
+    }
     return fsMount;
 }
 
 void FileUtils::unmountSDCard() {
+    if (!usbRoot) SdVolumes::drop();
     f_unmount(usbRoot ? "USB:" : "SD:");
 }
 
@@ -571,6 +582,7 @@ bool FileUtils::remountSD() {
     } else
     {
         // Unmount FatFS and force full SD card reinit
+        SdVolumes::drop();
         f_mount(NULL, "SD:", 0);
         disk_invalidate();
         if (!mountSDCard()) return false;
@@ -626,110 +638,115 @@ void FileUtils::reopenMedia() {
     if (IDE::scheme != IDE::OFF) IDE::init();  // reopen IDE images after remount
 }
 
+// The last n characters, "" for a shorter name: `substr(size() - n)` on a name of
+// one to three characters threw out_of_range (= abort on the board) from every
+// extension test below, i.e. any such file in a listing, or a remembered tape name.
+static inline string tailOf(const string& s, size_t n) { return s.size() >= n ? s.substr(s.size() - n, n) : string(); }
+
 bool FileUtils::hasSNAextension(const string& filename)
 {
 
-    if (filename.substr(filename.size()-4,4) == ".sna") return true;
-    if (filename.substr(filename.size()-4,4) == ".SNA") return true;
+    if (tailOf(filename, 4) == ".sna") return true;
+    if (tailOf(filename, 4) == ".SNA") return true;
     return false;
 }
 
 bool FileUtils::hasZ80extension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".z80") return true;
-    if (filename.substr(filename.size()-4,4) == ".Z80") return true;
+    if (tailOf(filename, 4) == ".z80") return true;
+    if (tailOf(filename, 4) == ".Z80") return true;
     return false;
 }
 
 bool FileUtils::hasNEXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".nex") return true;
-    if (filename.substr(filename.size()-4,4) == ".NEX") return true;
+    if (tailOf(filename, 4) == ".nex") return true;
+    if (tailOf(filename, 4) == ".NEX") return true;
     return false;
 }
 
 bool FileUtils::hasPextension(const string& filename)
 {
-    if (filename.substr(filename.size()-2,2) == ".p") return true;
-    if (filename.substr(filename.size()-2,2) == ".P") return true;
+    if (tailOf(filename, 2) == ".p") return true;
+    if (tailOf(filename, 2) == ".P") return true;
     return false;
 }
 
 bool FileUtils::hasSPGextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".spg" || e == ".SPG";
 }
 
 bool FileUtils::hasPSSextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".pss" || e == ".PSS";
 }
 
 bool FileUtils::hasRZXextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".rzx" || e == ".RZX";
 }
 
 bool FileUtils::hasTAPextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".tap") return true;
-    if (filename.substr(filename.size()-4,4) == ".TAP") return true;
+    if (tailOf(filename, 4) == ".tap") return true;
+    if (tailOf(filename, 4) == ".TAP") return true;
     return false;
 }
 
 bool FileUtils::hasTZXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".tzx") return true;
-    if (filename.substr(filename.size()-4,4) == ".TZX") return true;
+    if (tailOf(filename, 4) == ".tzx") return true;
+    if (tailOf(filename, 4) == ".TZX") return true;
     return false;
 }
 
 bool FileUtils::hasPZXextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".pzx") return true;
-    if (filename.substr(filename.size()-4,4) == ".PZX") return true;
+    if (tailOf(filename, 4) == ".pzx") return true;
+    if (tailOf(filename, 4) == ".PZX") return true;
     return false;
 }
 
 bool FileUtils::hasCSWextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".csw" || e == ".CSW";
 }
 
 bool FileUtils::hasEPTextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    const string e = filename.substr(filename.size()-4,4);
+    const string e = tailOf(filename, 4);
     return e == ".ept" || e == ".EPT";
 }
 
 bool FileUtils::hasWAVextension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".wav") return true;
-    if (filename.substr(filename.size()-4,4) == ".WAV") return true;
+    if (tailOf(filename, 4) == ".wav") return true;
+    if (tailOf(filename, 4) == ".WAV") return true;
     return false;
 }
 
 bool FileUtils::hasMP3extension(const string& filename)
 {
-    if (filename.substr(filename.size()-4,4) == ".mp3") return true;
-    if (filename.substr(filename.size()-4,4) == ".MP3") return true;
+    if (tailOf(filename, 4) == ".mp3") return true;
+    if (tailOf(filename, 4) == ".MP3") return true;
     return false;
 }
 
 bool FileUtils::hasZIPextension(const string& filename)
 {
     if (filename.size() < 4) return false;
-    if (filename.substr(filename.size()-4,4) == ".zip") return true;
-    if (filename.substr(filename.size()-4,4) == ".ZIP") return true;
+    if (tailOf(filename, 4) == ".zip") return true;
+    if (tailOf(filename, 4) == ".ZIP") return true;
     return false;
 }
 

@@ -46,6 +46,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "OSDMain.h"
 #include "speccy/machines/Atm.h"
 #include "fs/FileUtils.h"
+#include "fs/SdVolumes.h"
 #include "app/Subsystem.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
@@ -937,18 +938,36 @@ static void splitTabs(const string& s, std::vector<string>& out) {
 // Esc or any network action (caller closes the OSD).
 
 // The chooser is reachable when there's any location besides the SD card: a WiFi
-// link (or saved SSID) or a USB stick. With the stick AS the root volume (no SD
-// at boot) "Local" already browses it, so it adds no extra location.
+// link (or saved SSID), a USB stick, or more than one partition on the card
+// (fs/SdVolumes: "Local (SD)" then lists them). With the stick AS the root volume (no SD at boot) "Local" already
+// browses it, so it adds no extra location.
 static inline bool f5HasChooser() {
     return ZiFiAT::connected || !Config::wifi_ssid.empty() ||
-           (UsbMsc::ready() && !FileUtils::usbRoot);
+           (UsbMsc::ready() && !FileUtils::usbRoot) ||
+           (!FileUtils::usbRoot && SdVolumes::count() > 1);
 }
 
-// Last browse dir per local source, so switching SD⇄USB in the chooser returns to
-// where you were on each side. ALL_Path holds whichever is active (and is the one
+// Last browse dir per local source, so switching SD⇄USB⇄SD2 in the chooser returns
+// to where you were on each side. ALL_Path holds whichever is active (and is the one
 // persisted to NVS; a stale "USB:/..." with no stick self-heals in the browser).
 static string s_f5_sd_dir  = "/";
 static string s_f5_usb_dir = "USB:/";
+static string s_f5_sd2_dir = "SD2:/";
+static uint8_t s_f5_level = 0;    // 1 = inside "Local (SD)", on the partition level
+static int     s_f5_part  = 0;    // the partition last opened as SD2: from there
+static int     lp = 0;            // cursor on the partition level
+static string& f5DirSlot(const string& p) {
+    if (p.compare(0, 4, "USB:") == 0) return s_f5_usb_dir;
+    if (p.compare(0, 4, "SD2:") == 0) return s_f5_sd2_dir;
+    return s_f5_sd_dir;
+}
+// Point ALL_Path at another local volume, remembering where the current one was.
+static void f5GoVolume(string& target) {
+    string& cur = f5DirSlot(FileUtils::ALL_Path);
+    if (&cur == &target) return;
+    cur = FileUtils::ALL_Path;
+    FileUtils::ALL_Path = target;
+}
 
 static bool f5Locations() {
     // Net fetch progress goes to the new browser's status line for the whole F5
@@ -992,58 +1011,60 @@ static bool f5Locations() {
             return true;   // "L" or empty → Local (SD) at ALL_Path
         }
     }
-    int lf = 2;                                       // keep the cursor on the chosen location
+    static int lf = 2;                                // keep the cursor on the chosen location
     while (1) {
         if (OSD::net_launch_close) return false;      // a quick-start launched → close OSD
         // Hide the USB row when the stick is the root volume — "Local" IS the stick.
         const bool usb = UsbMsc::ready() && !FileUtils::usbRoot;
+        const bool net = ZiFiAT::connected || !Config::wifi_ssid.empty();
+        // A card with more than one partition: "Local (SD)" opens a level of partition
+        // rows (folders, in effect) and a partition opens its files; one partition =
+        // straight to the files, as always. Partitions alone (no WiFi, no stick) make
+        // that level the top: Remote / Web have nothing to offer without a link.
+        const int  nparts     = FileUtils::usbRoot ? 0 : SdVolumes::count();
+        const bool partsLevel = nparts > 1;
+        const bool partsTop   = partsLevel && !usb && !net;
+        if (partsLevel && (s_f5_level == 1 || partsTop)) {
+            const int r = nm::browsePartitions(&lp, /*canBack=*/!partsTop, /*withUsb=*/false);
+            if (r == -2) { s_f5_level = 0; continue; }    // Left / Backspace → the top level
+            if (r < 0)   { s_f5_level = 0; return false; }   // Esc → close OSD
+            s_f5_level = 1;                               // ".." at the root comes back here
+            const string to = nm::enterPartition((uint8_t)r);
+            if (to.empty()) continue;                     // no FAT there (toasted)
+            if (to == "/") { f5GoVolume(s_f5_sd_dir); return true; }
+            if (s_f5_part != r) {                         // another partition than last time:
+                s_f5_sd2_dir = "SD2:/";                   // its remembered dir is meaningless
+                if (FileUtils::ALL_Path.compare(0, 4, "SD2:") == 0) FileUtils::ALL_Path = "/";
+            }
+            s_f5_part = r;
+            f5GoVolume(s_f5_sd2_dir);
+            return true;
+        }
+        s_f5_level = 0;
         // No "Add Remote" row here: the Remote host list carries its own trailing
         // [Add Remote] row (remoteHostsBrowse), so the root stays three locations.
-        std::vector<string> rows = {
-            // USB-as-root: "Local" is the stick, not the (absent) SD card.
-            string(1, (char)DIR_MARKER) + (FileUtils::usbRoot ? MSG_F5_USB
-                                                              : MSG_F5_LOCAL),
-            string(1, (char)DIR_MARKER) + MSG_F5_REMOTE,
-            string(1, (char)DIR_MARKER) + MSG_F5_WEB,
-        };
-        if (usb)
-            rows.insert(rows.begin() + 1, string(1, (char)DIR_MARKER) + MSG_F5_USB);
-        int loc;
-        {
-            // The chooser is a LEVEL of the fullscreen browser (same chrome), not a
-            // modal; the remote/web flows a chosen row dives into own their own
-            // browser chrome (fdChromeNav).
-            const char* items[8];
-            const char* hints[8];
-            int n = 0;
-            for (auto& r : rows) {
-                const int i = n++;
-                items[i] = r.c_str() + ((uint8_t)r[0] == DIR_MARKER ? 1 : 0);
-                hints[i] = "";
-            }
-            // Right-pane notes, matched to the row set built above.
-            int hi = 0;
-            hints[hi++] = FileUtils::usbRoot ? "USB stick (root volume)" : "SD card";
-            if (usb) hints[hi++] = "USB mass-storage stick";
-            hints[hi++] = "Saved FTP / SFTP hosts";
-            hints[hi++] = "Online archives (vtrd.in, ...)";
-            loc = nm::browseLocations(items, hints, n, lf - 2);
-            lf = loc >= 0 ? loc + 2 : 2;
-        }
+        // USB-as-root: "Local" is the stick, not the (absent) SD card.
+        const char* items[4] = { FileUtils::usbRoot ? MSG_F5_USB : MSG_F5_LOCAL };
+        const char* hints[4] = { FileUtils::usbRoot ? "USB stick (root volume)"
+                                 : partsLevel ? "SD card: its partitions" : "SD card" };
+        int n = 1;
+        if (usb) { items[n] = MSG_F5_USB; hints[n] = "USB mass-storage stick"; n++; }
+        items[n] = MSG_F5_REMOTE; hints[n] = "Saved FTP / SFTP hosts"; n++;
+        items[n] = MSG_F5_WEB;    hints[n] = "Online archives (vtrd.in, ...)"; n++;
+        // The chooser is a LEVEL of the fullscreen browser (same chrome), not a
+        // modal; the remote/web flows a chosen row dives into own their own
+        // browser chrome (fdChromeNav).
+        int loc = nm::browseLocations(items, hints, n, lf - 2);
+        lf = loc >= 0 ? loc + 2 : 2;
         if (loc < 0) return false;                    // Esc → close OSD
         if (usb && loc == 1) {                        // USB Drive → browse the stick
-            if (FileUtils::ALL_Path.compare(0, 4, "USB:") != 0) {
-                s_f5_sd_dir = FileUtils::ALL_Path;
-                FileUtils::ALL_Path = s_f5_usb_dir;
-            }
+            f5GoVolume(s_f5_usb_dir);
             return true;
         }
         if (usb && loc > 1) loc--;                    // fold the USB row out of the indices
-        if (loc == 0) {                               // Local (SD) → caller opens SD browser
-            if (FileUtils::ALL_Path.compare(0, 4, "USB:") == 0) {
-                s_f5_usb_dir = FileUtils::ALL_Path;
-                FileUtils::ALL_Path = s_f5_sd_dir;
-            }
+        if (loc == 0) {                               // Local (SD) → its partitions, or the SD browser
+            if (partsLevel) { s_f5_level = 1; continue; }
+            f5GoVolume(s_f5_sd_dir);
             return true;
         }
         else if (loc == 1) remoteHostsBrowse();
@@ -2345,6 +2366,14 @@ void OSD::nmiAction() {
         }
         return;
     }
+    if (DivMMC::enabled && MB02::enabled && MB02::booted) {
+        // Both cards, and BS-DOS took this boot (a disk was in drive A at the reset):
+        // the NMI is the MB-02+'s - a plain NMI with the divMMC's 0x0066 trap skipped
+        // once, so the Z80 lands in whatever the card has paged at 0x0000. With drive
+        // A empty esxDOS booted and keeps its NMI (owner, 2026-11-04: no chooser).
+        DivMMC::nmi_bypass = true;
+        Z80::triggerNMI();
+    } else
     if (DivMMC::enabled) {
         // DivMMC NMI: automap at 0x0066 handled by preOpcFetch/postOpcFetch
         Z80::triggerNMI();
@@ -7235,10 +7264,19 @@ static void buildEmulatorInfoText() {
             }
         }
 
-        // Z-Controller (mutually exclusive with esxDOS/MB-02+, hence its own row)
-        if (Config::zcontroller)
-            pos += infoAppend(buf, pos, bufsz,
-                " Z-Controller   : On (#77/#57)\n");
+        // Z-Controller: its own card (DivMMC.h)
+        if (Config::zcontroller) {
+            const DivMMC::Medium& m = DivMMC::medium(DivMMC::CARD_ZC);
+            char zl[64];
+            if (!Config::zc_image.empty())
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) image\n");
+            else if (m.present)
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) SD %u+%u\n",
+                         (unsigned)m.base, (unsigned)m.sectors);
+            else
+                snprintf(zl, sizeof zl, " Z-Controller   : On (#77/#57) no card\n");
+            pos += infoAppend(buf, pos, bufsz, zl);
+        }
 
         // IDE/HDD (NEMO/PROFI/SMUC/IDEDOS/DivIDE) — indexed by IDE::Scheme
         if (Config::ide_scheme != 0) {

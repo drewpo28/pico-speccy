@@ -540,7 +540,11 @@ void Z80DMA::doEnable() {
     // MB-02+: defer only if this DMA reads/writes an IO port (FDC data register).
     // Memory↔memory transfers (spriting, blitting) have no external READY signal
     // and must run immediately on ENABLE, just like a plain Z80-DMA load.
-    if (mb02_deferred && (port_a_is_io || port_b_is_io)) return;
+    // Only the WD2797 ports (#0F/#2F/#4F/#6F): beside esxDOS the DMA also reads the
+    // SD card's #EB (the MB03+SD esxDOS, LFN Browser), which no FDC command will ever
+    // start (hw 2026-11-04, the eLeMeNt's divSD + MB02+: the NMI browser never opened).
+    if (mb02_deferred && ((port_a_is_io && (port_a_addr & 0x9F) == 0x0F) ||
+                          (port_b_is_io && (port_b_addr & 0x9F) == 0x0F))) return;
 #if NEXT_TRACE
     // [DMA5]: blocks whose memory destination lands in 16K bank 5 (pages 0A/0B:
     // the tilemap and the tile definitions) — who wrote what, from where.

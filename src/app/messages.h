@@ -289,6 +289,8 @@ visit https://zxespectrum.speccy.org/contacto
 #define MSG_F5_USB "USB Drive"
 #define MSG_F5_REMOTE "Remote (FTP/SFTP)"
 #define MSG_F5_WEB "Web Archives"
+#define MSG_F5_PART "Partition %u"               // a partition of the card (inside Local (SD)); not SD:'s = mounted as SD2:
+#define MSG_F5_PART_FAIL "No FAT file system on partition %u"
 #define MENU_REMOTE_TITLE "Remote connections"
 #define MSG_REMOTE_ADD_ROW "[Add Remote]"
 #define MSG_REMOTE_FORGET_Q "Forget connection?"

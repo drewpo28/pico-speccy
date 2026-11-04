@@ -26,6 +26,9 @@ public:
     static void init();
     static void reset();
     static void applyMapping();
+    // BS-DOS took this boot: the card's EPROM was paged at 0x0000 after the last reset
+    // (drive A held a disk). Beside esxDOS the NMI then belongs to the MB-02+.
+    static bool booted;
 
     // Port handlers
     static void writePort17(uint8_t data);

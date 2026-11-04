@@ -69,18 +69,25 @@ public:
     // longer answers it.
     static bool     isRaw(int slot);
     static bool     rawReadOnly(int slot);   // mode 1: every write is refused
+    // The slot refuses writes: a read-only card window, or Config::ide_wp on an image.
+    static bool     writeProtected(int slot);
     static uint32_t rawStart(int slot);      // card sector served as the guest's LBA 0
     static uint32_t rawSectors(int slot);    // window length in sectors (real, after clamping)
     static uint8_t  rawDevice();             // FatFs drive of the medium (0 = SD, 1 = USB root)
 
-    // The four MBR entries of sector 0 of the card, for the menu's "from MBR"
-    // picker (speccy/devices/storage/IdeMbr.h does the decoding). Returns how many
-    // name a usable volume; 0 means no MBR there — a super-floppy card has FAT at
-    // LBA 0, and then the window's start and length have to be typed in; -1 means
-    // the card could not be read at all. `out[i].card` is the card's size in
-    // sectors, so a caller can show a length as "the rest of the card".
+    // The four MBR entries of sector 0 of the card and up to four logical volumes
+    // of its extended container (the EBR chain), for the menu's "from MBR" picker
+    // (speccy/devices/storage/IdeMbr.h does the decoding): out[0..3] = partitions
+    // 1-4, out[4..7] = 5-8. Returns how many name a usable volume; 0 means no MBR
+    // there — a super-floppy card has FAT at LBA 0, and then the window's start and
+    // length have to be typed in; -1 means the card could not be read at all.
+    // `out[i].card` is the card's size in sectors, so a caller can show a length as
+    // "the rest of the card".
+    // `pdrv` -1 = the medium's drive (rawDevice()); fs/SdVolumes passes the SD card
+    // (0) explicitly, because it scans before usbRoot has been cleared.
     struct MbrPart { uint8_t type; uint32_t lba; uint32_t sectors; uint32_t card; };
-    static int mbrParts(MbrPart out[4]);
+    static constexpr int MBR_PARTS = 8;
+    static int mbrParts(MbrPart out[MBR_PARTS], int pdrv = -1);
 
     // True if the slot holds an ATAPI CD-ROM (.iso). Used by the OSD menu/info.
     static bool isCD(int slot);

@@ -125,6 +125,51 @@ void twoVolumes() {
     CHECK(p[2].lba == 500063 && p[2].sectors == 1953125);
 }
 
+// The extended container and its EBR chain (logical volumes, partitions 5+):
+// entry 0 of an EBR is relative to that EBR, entry 1 (the next link) to the
+// container; a link outside the container or back to itself ends the chain.
+void ebrChain() {
+    std::vector<uint8_t> s; page(s);
+    uint8_t* sec = s.data();
+    entry(sec, 0, 0x80, 0x0C, 2048, 100000);
+    entry(sec, 1, 0x00, 0x05, 102048, 300000);     // the container: [102048, 402048)
+    sig(sec);
+    uint32_t el = 0, en = 0;
+    CHECK(ide_mbr::extended(sec, 4000000, &el, &en) && el == 102048 && en == 300000);
+    CHECK(!ide_mbr::extended(sec, 300000, &el, &en));   // runs past the card
+    std::vector<uint8_t> noext; page(noext);
+    entry(noext.data(), 0, 0x80, 0x0C, 2048, 100000); sig(noext.data());
+    CHECK(!ide_mbr::extended(noext.data(), 4000000, &el, &en));
+
+    // EBR 1 at 102048: a FAT16 volume 63 sectors in, 100000 long; next EBR at +150000.
+    std::vector<uint8_t> e1; page(e1);
+    entry(e1.data(), 0, 0x00, 0x06, 63, 100000);
+    entry(e1.data(), 1, 0x00, 0x05, 150000, 100000);
+    sig(e1.data());
+    Part p;
+    uint32_t next = ide_mbr::parseEbr(e1.data(), 102048, 102048, 300000, &p);
+    CHECK(p.type == 0x06 && p.lba == 102048 + 63 && p.sectors == 100000);
+    CHECK(next == 102048 + 150000);
+    // EBR 2: a Linux volume, no further link.
+    std::vector<uint8_t> e2; page(e2);
+    entry(e2.data(), 0, 0x00, 0x83, 63, 80000);
+    sig(e2.data());
+    next = ide_mbr::parseEbr(e2.data(), next, 102048, 300000, &p);
+    CHECK(p.type == 0x83 && p.lba == 102048 + 150000 + 63 && p.sectors == 80000);
+    CHECK(next == 0);
+    // A volume running past the container is no volume; a link back is the end.
+    std::vector<uint8_t> e3; page(e3);
+    entry(e3.data(), 0, 0x00, 0x06, 63, 300000);
+    entry(e3.data(), 1, 0x00, 0x05, 0, 100000);
+    sig(e3.data());
+    next = ide_mbr::parseEbr(e3.data(), 102048, 102048, 300000, &p);
+    CHECK(p.sectors == 0 && next == 0);
+    // No signature: nothing, chain over.
+    e1[510] = 0;
+    next = ide_mbr::parseEbr(e1.data(), 102048, 102048, 300000, &p);
+    CHECK(p.sectors == 0 && next == 0);
+}
+
 } // namespace
 
 int main() {
@@ -132,6 +177,7 @@ int main() {
     vbR();
     refusals();
     twoVolumes();
+    ebrChain();
     printf("ide_mbr: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

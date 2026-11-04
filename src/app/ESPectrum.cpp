@@ -64,6 +64,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "NxFrameProf.h"
 #include "LastRun.h"
 #include "fs/FileUtils.h"
+#include "fs/SdVolumes.h"
 #include "drivers/usbhost/UsbMsc.h"
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/core/MemESP.h"
@@ -977,8 +978,10 @@ void ESPectrum::setup() {
   // LOAD CONFIG
   //=======================================================================================
   Config::initHotkeys(); // fill hotkey defaults even without SD
-  if (FileUtils::fsMount)
+  if (FileUtils::fsMount) {
     Config::load();
+    SdVolumes::restore();   // the remembered SD2: partition, before any "SD2:/..." path is opened
+  }
   // Runtime PSRAM kill-switch (Debug > PSRAM = Off). Applied HERE, in the window
   // between load() and the first consumer: the boot probe has run (so the menu knows
   // the chip is there) and nothing has placed a page or a pool in PSRAM yet — every
@@ -1303,12 +1306,9 @@ void ESPectrum::setup() {
     Config::romSet = R_128K;
     Config::romSet128 = R_128K;
   }
-  // On real Next the divMMC is part of the machine — NextZXOS cannot boot
-  // without the automap. Default it on for the session (mode 1: MMC image,
-  // Config::esxdos_hdf_image[0] or /esxdos.mmc); DivMMC::init self-disables
-  // gracefully when no image is present.
-  if (Config::arch == A_NEXT && Config::esxdos == 0)
-    Config::esxdos = 1;
+  // Next: esxDOS is whatever Devices > esxDOS holds. MachineSwitch sets DivSD (raw
+  // card) on ENTRY, the mode NextZXOS boots from; a later Off / DivMMC / DivIDE is
+  // the user's pick and survives the reboot (owner, 2026-11-02).
 
   //=======================================================================================
   // INIT PS/2 KEYBOARD
@@ -1380,15 +1380,7 @@ void ESPectrum::setup() {
       // Next mode: 8K page table over static SRAM (banks 0-7) + butter PSRAM
       // carve-out (banks 8-111 + the 72K ROM region). Legacy extended pages
       // are not allocated; Murmuzavr stays clamped to 64 above.
-      //
-      // NextZXOS boots from the REAL SD card: force DivSD (raw card, ==3)
-      // over the .mmc-image / DivIDE modes. Boot-time twin of the
-      // MachineSwitch rule — covers configs that never went through the menu.
-      if (Config::esxdos != 3) {
-          Debug::log2SD("setup: Next forces DivSD (esxdos %u -> 3)",
-                        (unsigned)Config::esxdos);
-          Config::esxdos = 3;
-      }
+      // (esxDOS is not forced here any more: see the Next note above.)
       if (MemESP::buildNextRam()) {
         bool roms = MemESP::loadNextRoms();
         Debug::log("setup: Next RAM carved, ROMs %s",
@@ -1557,8 +1549,9 @@ void ESPectrum::setup() {
   MB02::init();
   Debug::log2SD("setup: MB02::init done, enabled=%d freeHeap=%u",
                 (int)MB02::enabled, (unsigned)getFreeHeap());
-  // Z-Controller raw SD on ports 0x77/0x57 (mutually exclusive with esxDOS)
-  if (Config::zcontroller && !Config::esxdos && !Config::mb02) {
+  // Z-Controller raw SD on ports 0x77/0x57: its own card (a window of the SD card or
+  // an image) on DivMMC's SPI machine, beside esxDOS and MB-02+ (DivMMC.h)
+  if (Config::zcontroller) {
     Debug::log2SD("setup: DivMMC::zc_init");
     DivMMC::zc_init();
   }
@@ -1871,6 +1864,9 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: Config::loadDiskMounts begin, freeHeap=%u", (unsigned)getFreeHeap());
   if (FileUtils::fsMount) {
     Config::loadDiskMounts();
+    // MB-02+ beside esxDOS: its boot EPROM takes page 0 only with a disk in drive A
+    // (MB02::applyMapping), and the drives were loaded AFTER the reset above.
+    if (MB02::enabled) MB02::applyMapping();
   }
   Debug::log("setup: Config::loadDiskMounts done, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: Config::loadDiskMounts done, freeHeap=%u", (unsigned)getFreeHeap());

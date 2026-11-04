@@ -1069,7 +1069,7 @@ void slotsArmFile(const std::string& fname) { s_armedFile = fname; }
 // the classic popup, one session behind here).
 static uint8_t esxStagedSlots() {
     const int32_t v = Stage::get(SET_ESXDOS);
-    return v == 1 ? 1 : v == 2 ? 2 : 0;   // DivMMC: hd0; DivIDE: hd0+hd1
+    return v == 1 ? 1 : v == 2 ? 2 : v == 3 ? 1 : 0;   // DivMMC: hd0; DivIDE: hd0+hd1; DivSD: the card row
 }
 // Same reasoning for IDE: NEMO/PROFI expose master+slave, Off exposes nothing.
 static uint8_t ideStagedSlots() {
@@ -1183,39 +1183,54 @@ static void ideToggleWrite(uint8_t slot) {
     else        ideRawToast("SD card read-only", slot, !IDE::isRaw(slot));
 }
 
-// Typed window: from the source list, or F2 on a raw slot (which keeps its mode).
-static void ideEditRawWin(uint8_t slot) {
+// ── A window of the card, for every interface served off it ───────────────────
+// IDE slots, esxDOS (DivSD's card, DivIDE's hd0) and the Z-Controller all take the
+// same thing: a start and a length in card sectors, 0/0 = the whole card. The list
+// offers the four primary MBR entries (IdeMbr.h); a logical partition is typed in.
+struct CardWin { uint32_t lba, len; };
+
+// Typed window. False = cancelled or unchanged.
+static bool rawEditWin(CardWin& w) {
     char cur[32];
-    if (Config::ide_raw_len[slot])
-        snprintf(cur, sizeof cur, "%u/%u", (unsigned)Config::ide_raw_lba[slot],
-                 (unsigned)Config::ide_raw_len[slot]);
-    else
-        snprintf(cur, sizeof cur, "0/0");
+    if (w.len) snprintf(cur, sizeof cur, "%u/%u", (unsigned)w.lba, (unsigned)w.len);
+    else       snprintf(cur, sizeof cur, "0/0");
     string in = cur;
-    if (!uiPrompt("Start / length, sectors", in, 22, false, true)) return;
-    if (in.empty()) { uiToast("0/0 = the whole card", true, 2500); return; }
+    if (!uiPrompt("Start / length, sectors", in, 22, false, true)) return false;
+    if (in.empty()) { uiToast("0/0 = the whole card", true, 2500); return false; }
     unsigned v[2] = {0, 0};
     if (scanUints(in.c_str(), '/', v, 2) != 2) {
         uiToast("Format: start/len", true, 2000);
-        return;
+        return false;
     }
-    if (!Config::ide_raw[slot]) Config::ide_raw[slot] = 1;
-    Config::ide_raw_lba[slot] = v[0];
-    Config::ide_raw_len[slot] = v[1];        // 0 = from `start` to the end of the card
-    IDE::init();
-    Config::save();
-    ideRawToast("SD card window", slot, !IDE::isRaw(slot));
+    w.lba = v[0];
+    w.len = v[1];        // 0 = from `start` to the end of the card
+    return true;
 }
 
 // What a window is, for the row and the list's cursor: 0 = the whole card, 1..4 = that
 // MBR entry, -1 = typed numbers. p may be nullptr when n <= 0.
-static int ideRawPartOf(uint8_t slot, const IDE::MbrPart* p, int n) {
-    const uint32_t lba = Config::ide_raw_lba[slot], len = Config::ide_raw_len[slot];
-    if (!lba && !len) return 0;
+static int rawPartOf(const CardWin& w, const IDE::MbrPart* p, int n) {
+    if (!w.lba && !w.len) return 0;
     if (n > 0)
-        for (int i = 0; i < 4; i++)
-            if (p[i].type && p[i].lba == lba && p[i].sectors == len) return i + 1;
+        for (int i = 0; i < IDE::MBR_PARTS; i++)
+            if (p[i].type && p[i].lba == w.lba && p[i].sectors == w.len) return i + 1;
     return -1;
+}
+static int ideRawPartOf(uint8_t slot, const IDE::MbrPart* p, int n) {
+    return rawPartOf(CardWin{ Config::ide_raw_lba[slot], Config::ide_raw_len[slot] }, p, n);
+}
+
+// The window in words, for a row: one sector read (the MBR) per call.
+static string rawWinText(const CardWin& w) {
+    IDE::MbrPart p[IDE::MBR_PARTS];
+    const int n = IDE::mbrParts(p);
+    if (n < 0) return "no card";
+    const int part = rawPartOf(w, p, n);
+    char b[40];
+    if (part == 0)     snprintf(b, sizeof b, "whole card");
+    else if (part > 0) snprintf(b, sizeof b, "part %d  %u MB", part, (unsigned)(w.len / 2048u));
+    else               snprintf(b, sizeof b, "window %u+%u", (unsigned)w.lba, (unsigned)w.len);
+    return b;
 }
 
 static const char* idePartType(uint8_t t) {
@@ -1229,22 +1244,25 @@ static const char* idePartType(uint8_t t) {
     }
 }
 
-// Enter on an IDE slot. True = the user wants an image file (the caller browses).
-static bool ideSourcePick(uint8_t slot) {
+// The source list: an image file (when the interface takes one), the whole card, the
+// card's partitions, a typed window. PICK_WINDOW fills `w`.
+enum { PICK_CANCEL = 0, PICK_IMAGE = 1, PICK_WINDOW = 2 };
+static int rawSourcePick(bool imageOpt, bool curIsImage, CardWin& w) {
     enum { SRC_IMAGE = -1, SRC_WHOLE = -2, SRC_WINDOW = -3 };
-    IDE::MbrPart p[4];
+    IDE::MbrPart p[IDE::MBR_PARTS];
     const int n = IDE::mbrParts(p);
-    if (n < 0) return true;              // no card: an image is the only source
-    static char rows[4][40];
-    const char* items[7];
-    int tags[7], m = 0, np = 0, initial = 0;
-    const int cur = Config::ide_raw[slot] ? ideRawPartOf(slot, p, n) : -2;
-    items[m] = TXT_IDE_SRC_IMAGE; tags[m++] = SRC_IMAGE;
+    if (n < 0) return imageOpt ? PICK_IMAGE : PICK_CANCEL;   // no card: an image is the only source
+    static char rows[IDE::MBR_PARTS][32];   // "SD card: part 8  FAT16 1023 MB"
+    const char* items[IDE::MBR_PARTS + 3];
+    int tags[IDE::MBR_PARTS + 3], m = 0, np = 0, initial = 0;
+    const int cur = curIsImage ? -2 : rawPartOf(w, p, n);
+    if (imageOpt) { items[m] = TXT_IDE_SRC_IMAGE; tags[m++] = SRC_IMAGE; }
     if (cur == 0) initial = m;
     items[m] = TXT_IDE_SRC_WHOLE; tags[m++] = SRC_WHOLE;
     // A super-floppy card has FAT at LBA 0 and no table: there is nothing to list.
+    // Entries 5-8 are the logical volumes of the extended container (IdeMbr.h).
     if (n > 0)
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < IDE::MBR_PARTS; i++) {
             if (!p[i].type || !p[i].sectors) continue;      // empty slot of the table
             const uint32_t mb = p[i].sectors / 2048u;
             const char* ty = idePartType(p[i].type);
@@ -1263,28 +1281,222 @@ static bool ideSourcePick(uint8_t slot) {
     items[m] = TXT_IDE_SRC_WINDOW; tags[m++] = SRC_WINDOW;
 
     const int pick = uiPickList(TXT_IDE_SRC_TITLE, items, m, initial);
-    if (pick < 0 || pick >= m) return false;
+    if (pick < 0 || pick >= m) return PICK_CANCEL;
     switch (tags[pick]) {
-        case SRC_IMAGE:  return true;
-        case SRC_WHOLE:  ideSetRaw(slot, 0, 0); break;
-        case SRC_WINDOW: ideEditRawWin(slot); break;
-        default:         ideSetRaw(slot, p[tags[pick]].lba, p[tags[pick]].sectors); break;
+        case SRC_IMAGE:  return PICK_IMAGE;
+        case SRC_WHOLE:  w.lba = 0; w.len = 0; return PICK_WINDOW;
+        case SRC_WINDOW: return rawEditWin(w) ? PICK_WINDOW : PICK_CANCEL;
+        default:         w.lba = p[tags[pick]].lba; w.len = p[tags[pick]].sectors; return PICK_WINDOW;
+    }
+}
+
+// Typed window: from the source list, or F2 on a raw slot (which keeps its mode).
+static void ideApplyWin(uint8_t slot, const CardWin& w) {
+    if (!Config::ide_raw[slot]) Config::ide_raw[slot] = 1;
+    Config::ide_raw_lba[slot] = w.lba;
+    Config::ide_raw_len[slot] = w.len;
+    IDE::init();
+    Config::save();
+    ideRawToast("SD card window", slot, !IDE::isRaw(slot));
+}
+static void ideEditRawWin(uint8_t slot) {
+    CardWin w{ Config::ide_raw_lba[slot], Config::ide_raw_len[slot] };
+    if (rawEditWin(w)) ideApplyWin(slot, w);
+}
+
+// Enter on an IDE slot. True = the user wants an image file (the caller browses).
+static bool ideSourcePick(uint8_t slot) {
+    CardWin w{ Config::ide_raw_lba[slot], Config::ide_raw_len[slot] };
+    const int r = rawSourcePick(true, !Config::ide_raw[slot], w);
+    if (r == PICK_IMAGE) return true;
+    if (r == PICK_WINDOW) {
+        // picking the card lands on read-only (see above); a slot already on the card keeps its mode
+        if (Config::ide_raw[slot]) ideApplyWin(slot, w); else ideSetRaw(slot, w.lba, w.len);
     }
     return false;
 }
 
+// ── esxDOS's card and the Z-Controller's ─────────────────────────────────────
+// DivSD: the one row says which part of the card esxDOS sees (Config::esx_raw_lba/len),
+// Enter picks it, F2 types it, F8 = the whole card again. DivIDE hd0: an image or the
+// card (Config::esx_raw), the IDE slot's shape — read-only first, F6 for writes.
+// The Z-Controller: the card (window) or an image (Config::zc_image).
+static bool esxIsDivSd()  { return Stage::get(SET_ESXDOS) == 3; }
+static bool esxIsDivIde() { return Stage::get(SET_ESXDOS) == 2; }
+
+// Both guests on one physical card: the windows may share sectors (the default,
+// 0/0 for both, is the whole card twice). Reads are fine; two guest file systems
+// writing one volume corrupt it, so a pick that overlaps asks first and the rows say so.
+static bool winOverlap(const CardWin& a, const CardWin& b) {
+    const uint32_t ae = a.len ? a.lba + a.len : 0xFFFFFFFFu;
+    const uint32_t be = b.len ? b.lba + b.len : 0xFFFFFFFFu;
+    return a.lba < be && b.lba < ae;
+}
+// The window the other interface has on the card; false = it is off or on an image.
+static bool esxCardWin(CardWin& w) {
+    if (!(esxIsDivSd() || (esxIsDivIde() && Config::esx_raw))) return false;
+    w = CardWin{ Config::esx_raw_lba, Config::esx_raw_len };
+    return true;
+}
+static bool zcCardWin(CardWin& w) {
+    if (!Stage::get(SET_ZCONTROLLER) || !Config::zc_image.empty()) return false;
+    w = CardWin{ Config::zc_raw_lba, Config::zc_raw_len };
+    return true;
+}
+static bool esxZcShared() {
+    CardWin e, z;
+    return esxCardWin(e) && zcCardWin(z) && winOverlap(e, z);
+}
+// False = the user backed out of a shared window.
+static bool sharedOk(const CardWin& mine, bool forZc) {
+    CardWin other;
+    if (!(forZc ? esxCardWin(other) : zcCardWin(other)) || !winOverlap(mine, other)) return true;
+    return uiConfirm(TXT_CARD_SHARED, TXT_CARD_SHARED_T);   // Default No
+}
+
+static void esxApplyWin(const CardWin& w, bool divide) {
+    if (!sharedOk(w, false)) return;
+    Config::esx_raw_lba = w.lba;
+    Config::esx_raw_len = w.len;
+    if (divide && !Config::esx_raw) Config::esx_raw = 1;   // the card, read-only first
+    DivMMC::init();
+    Config::save();
+    char b[64];
+    snprintf(b, sizeof b, "esxDOS SD card: %s", rawWinText(w).c_str());
+    uiToast(b, false, 2500);
+}
+
+// Enter on esxDOS's rows. True = the user wants an image file (the caller browses).
+static bool esxSourcePick(uint8_t slot) {
+    if (esxIsDivSd()) {
+        CardWin w{ Config::esx_raw_lba, Config::esx_raw_len };
+        if (rawSourcePick(false, false, w) == PICK_WINDOW) esxApplyWin(w, false);
+        return false;
+    }
+    if (esxIsDivIde() && slot == 0) {
+        CardWin w{ Config::esx_raw_lba, Config::esx_raw_len };
+        const int r = rawSourcePick(true, !Config::esx_raw, w);
+        if (r == PICK_IMAGE) return true;
+        if (r == PICK_WINDOW) esxApplyWin(w, true);
+        return false;
+    }
+    return true;
+}
+
+static void esxToggleWrite() {
+    if (!esxIsDivIde() || !Config::esx_raw) return;
+    const uint8_t v = Config::esx_raw == 1 ? 2 : 1;
+    if (v == 2 && !uiConfirm(TXT_IDE_RAW_WARN, TXT_IDE_RAW_WARN_T)) return;   // Default No: Enter must not destroy
+    Config::esx_raw = v;
+    DivMMC::init();
+    Config::save();
+    uiToast(v == 2 ? "SD card: writes go to the card!" : "SD card read-only", v == 2, 3000);
+}
+
+static void zcApplyWin(const CardWin& w) {
+    if (!sharedOk(w, true)) return;
+    Config::zc_image.clear();
+    Config::zc_raw_lba = w.lba;
+    Config::zc_raw_len = w.len;
+    DivMMC::zcMedium();
+    Config::save();
+    char b[64];
+    snprintf(b, sizeof b, "Z-Controller: %s", rawWinText(w).c_str());
+    uiToast(b, false, 2500);
+}
+
+// Enter on the Z-Controller's row. True = the user wants an image file.
+static bool zcSourcePick() {
+    CardWin w{ Config::zc_raw_lba, Config::zc_raw_len };
+    const int r = rawSourcePick(true, !Config::zc_image.empty(), w);
+    if (r == PICK_IMAGE) return true;
+    if (r == PICK_WINDOW) zcApplyWin(w);
+    return false;
+}
+
+// The verbs on esxDOS's and the Z-Controller's rows depend on the mode and on what the
+// row holds (owner, 2026-11-03: the level's generic "F2 Write protect" over a row whose
+// F2 types the SD window), so the right pane is built per row, not from a static list.
+static uint8_t verbLine(const char* const* v, int line, char* label) {
+    int n = 0;
+    while (v[n]) n++;
+    if (line < 0 || line >= n) return DYN_INFO_END;
+    snprintf(label, NM_DYN_LABEL_LEN, "%s", v[line]);
+    return DYN_INFO_HINT;
+}
+// F2 is write protect everywhere (the Beta-drive verb, owner 2026-11-03), F9 the window.
+static uint8_t esxInfo(int32_t tag, int line, char* label, char*) {
+    static const char* const divsd[]   = { SYM_ENTER " Pick the SD window", "F2  Write protect",
+                                           "F8  The whole card", "F9  Type start / length", nullptr };
+    static const char* const hd0card[] = { SYM_ENTER " Image or SD card", "F2  Write protect",
+                                           "F8  Eject", "F9  SD window", nullptr };
+    static const char* const hd0[]     = { SYM_ENTER " Image or SD card", "F2  Write protect",
+                                           "F8  Eject", nullptr };
+    static const char* const image[]   = { SYM_ENTER " Mount a file", "F2  Write protect",
+                                           "F8  Eject", nullptr };
+    if (esxIsDivSd()) return verbLine(divsd, line, label);
+    if (esxIsDivIde() && tag == 0) return verbLine(Config::esx_raw ? hd0card : hd0, line, label);
+    return verbLine(image, line, label);
+}
+static uint8_t zcInfo(int32_t, int line, char* label, char*) {
+    static const char* const card[]  = { SYM_ENTER " Image or SD card", "F2  Write protect",
+                                         "F8  The whole card", "F9  SD window", nullptr };
+    static const char* const image[] = { SYM_ENTER " Image or SD card", "F2  Write protect",
+                                         "F8  Eject", nullptr };
+    return verbLine(Config::zc_image.empty() ? card : image, line, label);
+}
+
+// The WP badge of an IDE / esxDOS / ZC row (F2 toggles it in keySlots): a card
+// window shows its read-only mode, an image its Config::*_wp bit.
+static bool ideWpShown(uint8_t i) { return Config::ide_raw[i] ? Config::ide_raw[i] == 1 : ((Config::ide_wp >> i) & 1) != 0; }
+static bool esxWpShown(uint8_t i) {
+    if (esxIsDivIde() && i == 0 && Config::esx_raw) return Config::esx_raw == 1;
+    return ((Config::esx_wp >> i) & 1) != 0;
+}
+
 static void buildSlots(DynRows& d, DiskIface iface) {
+    if (iface == IFACE_ESX) d.info = esxInfo;
+    if (iface == IFACE_ZC)  d.info = zcInfo;
     const uint8_t n = (iface == IFACE_ESX) ? esxStagedSlots()
                     : (iface == IFACE_IDE) ? ideStagedSlots()
+                    : (iface == IFACE_ZC)  ? (Stage::get(SET_ZCONTROLLER) ? 1 : 0)
                                            : DiskSlots::slotCount(iface);
     if (!n) {
-        // esxDOS exposes no slots while the interface is off (or is DivSD); say
-        // so rather than showing an empty pane.
+        // esxDOS exposes no slots while the interface is off; say so rather than
+        // showing an empty pane.
         d.add("No slots", "interface off", 0, true);
         return;
     }
     const bool wpCol = DiskSlots::slotHasWP(iface);
     for (uint8_t i = 0; i < n; i++) {
+        if (iface == IFACE_ZC) {
+            // The one card: an image's name, or which part of the SD card it is.
+            const string& p = Config::zc_image;
+            if (!p.empty()) {
+                const size_t sl = p.rfind('/');
+                d.add("Card  image", (sl == string::npos ? p : p.substr(sl + 1)).c_str(), 0, false);
+            } else {
+                string t = rawWinText(CardWin{ Config::zc_raw_lba, Config::zc_raw_len });
+                if (esxZcShared()) t += "  shared";           // the same sectors as esxDOS's
+                d.add("Card  SD", t.c_str(), 0, false);
+            }
+            d.badgeLast("WP", Config::zc_wp);
+            continue;
+        }
+        if (iface == IFACE_ESX && esxIsDivSd()) {
+            string t = rawWinText(CardWin{ Config::esx_raw_lba, Config::esx_raw_len });
+            if (esxZcShared()) t += "  shared";               // the same sectors as the ZC's
+            d.add("SD card", t.c_str(), 0, false);
+            d.badgeLast("WP", esxWpShown(0));
+            continue;
+        }
+        if (iface == IFACE_ESX && esxIsDivIde() && i == 0 && Config::esx_raw) {
+            string t = rawWinText(CardWin{ Config::esx_raw_lba, Config::esx_raw_len });
+            if (esxZcShared()) t += "  shared";
+            d.add("hd0  SD card", t.c_str(), 0, false);
+            d.badgeLast("WP", esxWpShown(0));
+            continue;
+        }
         if (iface == IFACE_IDE) {
             // The image name is long and the geometry is what you came for, so the
             // row reads "hd0 master  <name>" with C/H/S in the value column.
@@ -1293,13 +1505,13 @@ static void buildSlots(DynRows& d, DiskIface iface) {
                 // No file to name: the medium IS the card's window, and whether the
                 // guest may write to it is the one thing to see at a glance.
                 // One sector read, and only for a raw slot: this level builds on entry.
-                IDE::MbrPart pt[4];
+                IDE::MbrPart pt[IDE::MBR_PARTS];
                 const int pn = IDE::mbrParts(pt);
                 const int part = ideRawPartOf(i, pt, pn);
                 if (part > 0) { nm_ += "  SD part "; nm_ += (char)('0' + part); }
                 else          nm_ += part == 0 ? "  SD card" : "  SD window";
                 d.add(nm_.c_str(), ideGeoText(i).c_str(), i, false);
-                d.badgeLast("RO", Config::ide_raw[i] == 1);
+                d.badgeLast("WP", ideWpShown(i));
                 continue;
             }
             const string& p = Config::ide_image[i];
@@ -1308,6 +1520,7 @@ static void buildSlots(DynRows& d, DiskIface iface) {
                 nm_ += "  " + (sl == string::npos ? p : p.substr(sl + 1));
             }
             d.add(nm_.c_str(), ideGeoText(i).c_str(), i, false);
+            d.badgeLast("WP", ideWpShown(i));
             continue;
         }
         string fn = DiskSlots::slotFname(iface, i);
@@ -1322,6 +1535,7 @@ static void buildSlots(DynRows& d, DiskIface iface) {
         // the name was truncated, which is the normal case. As a badge next to "Drive A"
         // it is always visible, and F2 now has visible feedback on empty slots too.
         if (wpCol) d.badgeLast("WP", DiskSlots::slotWP(iface, i));
+        else if (iface == IFACE_ESX) d.badgeLast("WP", esxWpShown(i));   // hd0 / hd1 images
     }
 }
 
@@ -1332,23 +1546,64 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
     Debug::log("slots: iface=%d slot=%u key=%u sp=%08x\n", (int)iface, (unsigned)idx, (unsigned)key, debug_sp());
     switch (key) {
         case 2:
+            // Write protect on every interface, the Beta-drive verb (owner, 2026-11-03).
+            // A card window's write side stays the raw-write confirmation (ideToggleWrite /
+            // esxToggleWrite: enabling writes to the card is the one destructive step);
+            // an image flips its Config::*_wp bit and the device re-reads it.
             if (iface == IFACE_IDE) {
-                // A raw slot's F2 edits its window; an image slot's, its C/H/S.
-                if (Config::ide_raw[idx]) ideEditRawWin(idx); else ideEditChs(idx);
+                if (Config::ide_raw[idx]) { ideToggleWrite(idx); return; }   // saves by itself
+                Config::ide_wp ^= (uint8_t)(1u << idx);
+                IDE::init();
+                break;
+            }
+            if (iface == IFACE_ESX) {
+                if (esxIsDivIde() && idx == 0 && Config::esx_raw) { esxToggleWrite(); return; }
+                Config::esx_wp ^= (uint8_t)(1u << idx);
+                DivMMC::init();
+                break;
+            }
+            if (iface == IFACE_ZC) {
+                Config::zc_wp = !Config::zc_wp;
+                DivMMC::zcMedium();
                 break;
             }
             if (!DiskSlots::slotHasWP(iface)) return;
             DiskSlots::slotToggleWP(iface, idx);
             break;
-        case 6:
-            if (iface != IFACE_IDE) return;
-            ideToggleWrite(idx);                // saves by itself
+        case 9:
+            // The medium's shape: a raw slot's card window, an IDE image's C/H/S.
+            if (iface == IFACE_IDE) {
+                if (Config::ide_raw[idx]) ideEditRawWin(idx); else ideEditChs(idx);
+                break;
+            }
+            if (iface == IFACE_ESX && (esxIsDivSd() || (esxIsDivIde() && idx == 0 && Config::esx_raw))) {
+                CardWin w{ Config::esx_raw_lba, Config::esx_raw_len };
+                if (rawEditWin(w)) esxApplyWin(w, esxIsDivIde());
+                break;
+            }
+            if (iface == IFACE_ZC) {
+                if (!Config::zc_image.empty()) return;      // an image has no window
+                CardWin w{ Config::zc_raw_lba, Config::zc_raw_len };
+                if (rawEditWin(w)) zcApplyWin(w);
+                break;
+            }
             return;
         case 8: {
+            if (iface == IFACE_ESX && esxIsDivSd()) {              // the whole card again
+                if (!Config::esx_raw_lba && !Config::esx_raw_len) return;
+                esxApplyWin(CardWin{ 0, 0 }, false);
+                return;
+            }
+            if (iface == IFACE_ZC && Config::zc_image.empty()) {   // (an image: slotEject below)
+                if (!Config::zc_raw_lba && !Config::zc_raw_len) return;
+                zcApplyWin(CardWin{ 0, 0 });
+                return;
+            }
             // A raw slot has no file name, so the usual "empty slot" test would
             // swallow the eject that turns it off.
             if (DiskSlots::slotFname(iface, idx).empty() &&
-                !(iface == IFACE_IDE && Config::ide_raw[idx])) return;
+                !(iface == IFACE_IDE && Config::ide_raw[idx]) &&
+                !(iface == IFACE_ESX && idx == 0 && Config::esx_raw)) return;
             DiskSlots::slotEject(iface, idx);
             break;
         }
@@ -1361,7 +1616,9 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
             string fname = s_armedFile;
             if (fname.empty()) {
                 if (iface == IFACE_IDE && !ideSourcePick(idx)) return;  // saves by itself
-                const bool img = (iface == IFACE_ESX || iface == IFACE_IDE);
+                if (iface == IFACE_ESX && !esxSourcePick(idx)) return;
+                if (iface == IFACE_ZC && !zcSourcePick()) return;
+                const bool img = (iface == IFACE_ESX || iface == IFACE_IDE || iface == IFACE_ZC);
                 const uint8_t ftype = img ? DISK_IMGFILE : DISK_DSKFILE;
                 string& dir = img ? FileUtils::IMG_Path : FileUtils::DSK_Path;
                 const string pick = nm::browseFile(dir, TXT_SLOT_PICK, ftype);
@@ -1389,6 +1646,8 @@ void slots_buildSam (DynRows& d) { buildSlots(d, IFACE_SAM); }
 void slots_buildEp  (DynRows& d) { buildSlots(d, IFACE_EP); }
 void slots_buildEsx (DynRows& d) { buildSlots(d, IFACE_ESX);  }
 void slots_buildIde (DynRows& d) { buildSlots(d, IFACE_IDE);  }
+void slots_buildZc  (DynRows& d) { buildSlots(d, IFACE_ZC);   }
+void slots_keyZc  (int32_t s, uint8_t k) { keySlots(IFACE_ZC,   s, k); }
 void slots_keyBeta(int32_t s, uint8_t k) { keySlots(IFACE_BETA, s, k); }
 void slots_keyMb02(int32_t s, uint8_t k) { keySlots(IFACE_MB02, s, k); }
 void slots_keyP3  (int32_t s, uint8_t k) { keySlots(IFACE_PLUS3, s, k); }

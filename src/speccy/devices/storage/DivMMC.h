@@ -29,6 +29,28 @@
 class DivMMC {
 public:
     static bool enabled;          // Config: DivMMC active
+    // One SPI card machine, two cards: esxDOS's on #E7/#EB (CARD_ESX) and the
+    // Z-Controller's on #77/#57 (CARD_ZC). Each card has its own MEDIUM — a window of
+    // the real card (the way an IDE slot is served "straight off the SD", IdeMbr.h /
+    // IDE::openRaw) or an image file — and its own CS latch; the command latch, the
+    // indices and the 512 B sector buffer are shared and start over when the guest
+    // turns from one card to the other (selectCard, as a CS edge). That is what lets
+    // esxDOS and a Z-Controller program run side by side: on different partitions of
+    // the one card, or one of them on an image. A medium's sectors are the guest's;
+    // lba() puts them on the card and refuses anything past the window.
+    enum : uint8_t { CARD_ESX = 0, CARD_ZC = 1 };
+    struct Medium {
+        bool     present;   // something answers
+        bool     raw;       // the card itself (disk_read on the FatFs drive) vs an image file
+        bool     ro;        // writes refused (nothing stored, the card still says "accepted")
+        uint32_t base;      // raw: the first card sector of the window
+        uint32_t sectors;   // window / image length
+        FIL*     file;      // image: its handle
+    };
+    static const Medium& medium(uint8_t card) { return s_med[card]; }
+    static uint8_t  currentCard() { return s_card; }
+    static void     selectCard(uint8_t card);      // flash: rare (a CS edge of the other card)
+    static bool     cardSelected(uint8_t card) { return s_card == card ? mmc_cs_active : s_cs[card]; }
     static bool automap;          // Currently automapped (DivMMC memory visible)
     static bool conmem;           // Port 0xE3 bit 7: manual map control
     static bool mapram;           // Port 0xE3 bit 6: sticky MAPRAM flag
@@ -38,6 +60,9 @@ public:
     // maps (NR 0xBB bits 1/0), RETN or reset; next_nmi_hold = an NMI is in
     // progress, no new one is accepted until both the button and automap drop.
     static bool next_nmi_btn;
+    // One NMI that is NOT the divMMC's: the next 0x0066 entry does not automap
+    // (the NMI chooser's "MB-02+ NMI" - the card's own handler at its page 0).
+    static bool nmi_bypass;
     static bool next_nmi_hold;
     static void nextRetn();       // Next: RETN unmaps (divmmc i_retn_seen)
 
@@ -58,7 +83,6 @@ public:
     // core0 time they took — the FT812_TRACE meter's "sd" field (VIDEO::ftTraceTick).
     static uint32_t zc_rd_sectors, zc_rd_us;
     static uint32_t zc_in_bytes;          // guest IN (#57) data reads (the [FT812] feed line)
-    static bool cardSelected() { return mmc_cs_active; }   // SD CS asserted (Z80::zcInirBatch)
 
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state
@@ -81,7 +105,7 @@ public:
     static inline void markHiDirty() { if (hi_slot >= 0) slot_dirty[hi_slot] = true; }
     static inline void markLoDirty() { if (lo_slot >= 0) slot_dirty[lo_slot] = true; }
 
-    // SD/SPI protocol emulation (DivMMC/DivSD)
+    // SD/SPI protocol emulation: esxDOS's card (DivMMC .mmc image / DivSD card window)
     static void mmc_cs(uint8_t value);    // Port 0xE7 write: chip select
     static void mmc_write(uint8_t value); // Port 0xEB write: send command/data byte
     static uint8_t mmc_read();            // Port 0xEB read: receive response/data byte
@@ -89,6 +113,10 @@ public:
     // (the bytes mmc_read() would return one by one); 0 = not in a plain data
     // phase, read the next byte with mmc_read(). Next INIR / INI-run batches.
     static uint32_t mmc_read_bulk(uint8_t* dst, uint32_t n);
+    // The same bytes from the Z-Controller's card (Z80::zcInirBatch): the batch has
+    // established the card is selected, so no FT812 / ATM chip-select logic here.
+    static uint8_t  zc_read_byte();
+    static uint32_t zc_read_bulk(uint8_t* dst, uint32_t n);
     // A guest polling for a read's data token while core1 fetches the sector:
     // wait for it in WALL time, up to maxUs; returns the us waited (Z80::nextSdPollBatch
     // turns them into skipped poll passes). 0 = no such read pending.
@@ -98,10 +126,14 @@ public:
     static bool sdReadsIdleFF();
 
     // Z-Controller raw SD on ports 0x77 (config/status) / 0x57 (SPI data).
-    // Reuses the DivMMC SPI state machine in DivSD/SDHC mode without ROM
-    // or memory banking. Mutually exclusive with esxDOS modes.
+    // Reuses the DivMMC SPI state machine in SDHC mode without ROM or memory
+    // banking, on its own medium (CARD_ZC), beside esxDOS or without it.
     static void zc_init();                // Initialize raw SD access (called when Config::zcontroller toggles)
     static void zc_shutdown();            // Tear down raw SD access
+    // (Re)open the Z-Controller's medium from Config: Config::zc_image, else the card
+    // window Config::zc_raw_lba / zc_raw_len (0/0 = the whole card). The menu calls
+    // it live; the next CMD0 of the guest sees the new card.
+    static void zcMedium();
     static void zc_write_config(uint8_t value); // Port 0x77 write: power + CS
     static uint8_t zc_read_status();      // Port 0x77 read: card detect / WP
     static void zc_write_data(uint8_t value);   // Port 0x57 write: SPI byte out
@@ -134,6 +166,39 @@ public:
     static void reopenFiles();
 
 private:
+    static Medium  s_med[2];
+    static uint8_t s_card;            // the card the SPI machine serves right now
+    static bool    s_cs[2];           // the other card's CS latch while it is not served
+    static FIL*    zc_file;           // the Z-Controller's image handle (lazily allocated)
+    static bool    zcFileEnsure();
+    static void    mediumClose(Medium& m);
+    // A raw window of the card for `m`: start/len in card sectors (0/0 = the whole
+    // card), clamped to the card; false = no card. `what` names it in the log.
+    static bool    mediumCard(Medium& m, uint32_t start, uint32_t len, const char* what);
+    static bool    mediumImage(Medium& m, FIL* f, const char* path, const char* what);
+    // One log line when esxDOS's card window and the Z-Controller's share sectors.
+    static void    logShared();
+    static bool    ideWriteProtected(int d);
+    // The SPI machine proper, on the current card (the public entries pick the card).
+    static void     csEdge(uint8_t value);
+    static void     spiWrite(uint8_t value);
+    static uint8_t  spiRead();
+    static uint32_t spiReadBulk(uint8_t* dst, uint32_t n);
+    static void     spiIdentity();     // CSD / OCR of the current medium
+    // The guest's sector of the current card on the medium: raw media add the
+    // window's base; anything past the medium answers ~0u (loadSector fills 0xFF,
+    // storeSector drops the block).
+    static inline uint32_t lba(uint32_t s) {
+        const Medium& m = s_med[s_card];
+        if (s >= m.sectors) return 0xFFFFFFFFu;
+        return m.raw ? s + m.base : s;
+    }
+    // DivIDE hd0 served straight off the card (Config::esx_raw): a Medium of its
+    // own, outside the SPI machine; hd1 stays an image.
+    static Medium  s_ideRaw;
+    static bool    ideMounted(int d) { return mmc_file_open[d] || (d == 0 && s_ideRaw.present); }
+    static void    ideRawOpen();
+
     // Automap deferred signals (ZEsarUX model)
     // Automap deferred signals as ONE byte, so the per-opcode test in
     // postOpcFetch is a single load: bit 0 = entry point hit -> map after
@@ -275,6 +340,7 @@ __attribute__((always_inline)) inline uint8_t DivMMC::nextOpcode(uint16_t pc) {
 __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
     if (!opcodeTrapPage(pc)) return;
     pend_after = 0;
+    { extern bool g_mb02_page0; if (g_mb02_page0 && !automap && !conmem) { if (pc == DIVMMC_TRAP_0066) nmi_bypass = false; return; } }   // MB-02+ holds page 0 (its EPROM boots)
 
     // ZX Spectrum Next: the entry points are PROGRAMMABLE via nextreg
     // 0xB8-0xBB (NextZXOS reconfigures them right after its RAM check:
@@ -381,7 +447,9 @@ __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
 #endif
     // Entry points: map AFTER fetch, only if automap is currently OFF
     if (!automap) {
-        if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
+        if (pc == DIVMMC_TRAP_0066 && nmi_bypass) {
+            nmi_bypass = false;               // this NMI belongs to the MB-02+
+        } else if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
             pc == DIVMMC_TRAP_0038 || pc == DIVMMC_TRAP_0066 ||
             pc == DIVMMC_TRAP_04C6 || pc == DIVMMC_TRAP_0562) {
             pend_after |= 1;

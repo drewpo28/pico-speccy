@@ -834,7 +834,7 @@ size_t featurePsramCost(FeatureId f) {
         case FEAT_MIDI:          return MidiSynth::bankPsramBytes();
         // esxDOS banks become direct butter-PSRAM pointers in use_psram mode.
         case FEAT_DIVMMC:        return DivMMC::use_psram
-                                     ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
+                                     ? DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
         default:                 return 0;
     }
 }
@@ -928,16 +928,14 @@ void featureSetEnabled(FeatureId f, bool on) {
             else if (Config::midi != 4) Config::midi = 4;
             break;
         case FEAT_ZCONTROLLER:
+            // Its own card on the shared SPI machine (DivMMC.h): esxDOS and MB-02+ stay.
             Config::zcontroller = on;
-            // Mutually exclusive with esxDOS DivMMC / MB-02+ (shared SD ports). The
-            // gate's reboot path bypasses the OSD toggle's disabling, so clear here.
-            if (on) { Config::esxdos = 0; Config::mb02 = 0; }
             break;
         case FEAT_IDE:
             if (!on) Config::ide_scheme = 0;
             else {
                 if (Config::ide_scheme == 0) Config::ide_scheme = 1;    // default NEMO
-                Config::esxdos = 0;   // mutually exclusive with esxDOS DivMMC/DivIDE
+                // esxDOS stays: no shared port with NEMO / SMUC (UiStage resolveConstraints).
             }
             break;
         case FEAT_SAA:
@@ -1007,9 +1005,10 @@ static uint32_t autoDisabledMask(FeatureId f) {
     // (ZiFi only on butter-less boards — with butter PSRAM the Profi switch keeps it.)
     if (f == FEAT_PROFI)
         return (butter_psram_size() ? 0u : (1u << FEAT_ZIFI)) | (1u << FEAT_DIVMMC);
-    // Z-Controller and IDE both displace esxDOS DivMMC (shared SD ports) — credit
-    // its freed SRAM and exclude it from the manual free-list.
-    if (f == FEAT_ZCONTROLLER || f == FEAT_IDE) return (1u << FEAT_DIVMMC);
+    // IDE displaces esxDOS DivMMC (shared ports #EB/#E7/#A3) — credit its freed SRAM
+    // and exclude it from the manual free-list. (The Z-Controller no longer does: it
+    // has its own card on DivMMC's SPI machine, DivMMC.h.)
+    if (f == FEAT_IDE) return (1u << FEAT_DIVMMC);
     return 0;
 }
 

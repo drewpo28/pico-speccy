@@ -4587,7 +4587,10 @@ IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
     // sectors from with the DMA once it finds one answering (since #0B is
     // decoded). This path used to return 0xFF there: every file read by DMA
     // came in as 0xFF (hw: TX-1696 died loading its level after PLAY).
-    if (Z80Ops::isNext) return input(address);
+    // esxDOS's SPI data port #EB the same on every machine: an esxDOS driver that
+    // streams sectors with the Z80 DMA (the MB03+SD build, beside MB-02+) got 512 x #FF
+    // here (from the eLeMeNt ZX, 2026-11-02).
+    if (Z80Ops::isNext || (DivMMC::enabled && (address & 0xFF) == 0xEB)) return input(address);
     if ((address & 0x0001) == 0) {
         // ULA port: keyboard + ear
         return 0xFF; // no keys pressed

@@ -866,7 +866,35 @@ static inline __attribute__((always_inline)) void nextIdleNote() {
 }
 
 // noinline: called from ~30 handlers, which Z80::exec_nocheck_next inlines.
+#if ZC_PORT_TRACE
+// esxDOS calls from RAM (RST 8 + function byte) and what they returned: with the
+// SPI command lines above this shows which call lost the card (PF2026 streaming,
+// 2026-11-02). F_READ (#9D) is only counted: a load makes thousands of them.
+static uint16_t s_esxRet, s_esxReads;
+static uint8_t s_esxFn;
+static uint16_t s_esxN;
+static Z80_COLD void esxCallNote(uint16_t pc, uint8_t fn) {
+    s_esxFn = fn; s_esxRet = (uint16_t)(pc + 2);
+    if (fn == 0x9D) { s_esxReads++; return; }
+    if (s_esxN >= 400) return;
+    s_esxN++;
+    Debug::log("[ESX] %04X fn %02X A=%02X BC=%04X DE=%04X HL=%04X IX=%04X reads=%u", pc, fn, Z80::getRegA(),
+               Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL(), Z80::getRegIX(), (unsigned)s_esxReads);
+}
+static Z80_COLD void esxRetNote() {
+    const bool cf = Z80::isCarryFlag();
+    s_esxRet = 0;
+    if (s_esxFn == 0x9D && !cf) return;
+    if (s_esxN >= 400) return;
+    s_esxN++;
+    Debug::log("[ESX]   <- %02X cf=%d A=%02X BC=%04X DE=%04X HL=%04X", s_esxFn, (int)cf, Z80::getRegA(),
+               Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL());
+}
+#endif
 IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
+#if ZC_PORT_TRACE
+    if (__builtin_expect(s_esxRet != 0, 0) && REG_PC == s_esxRet) esxRetNote();
+#endif
 
     // TS-Conf owns its window-0 mapping (Page0/MemConfig) — the generic code
     // below writes ramCurrent[0]/romInUse directly and calls recoverPage0(),
@@ -1284,8 +1312,11 @@ Z80_COLD void Z80::doNMI(void) {
         DivMMC::automap = false;
         DivMMC::applyMapping();
     }
-    // MB-02+: ensure SRAM page 0 is mapped for NMI handler (BS-ROM 118 NMI menu)
-    if (MB02::enabled) {
+    // MB-02+: ensure SRAM page 0 is mapped for NMI handler (BS-ROM 118 NMI menu) -
+    // only when the NMI is the card's: beside esxDOS that is after BS-DOS booted
+    // (OSD::nmiAction sets nmi_bypass); otherwise the page hid esxDOS's 0x0066 trap
+    // and the LFN Browser never opened (hw 2026-11-04, the eLeMeNt's divSD + MB02+).
+    if (MB02::enabled && (!DivMMC::enabled || DivMMC::nmi_bypass)) {
         MB02::writePort17(0x60); // SRAM page 0, write enable
     }
     // Scorpion magic button: the hardware asserts 1FFD D1 (service page) with
@@ -3269,6 +3300,9 @@ Z80_COLD void nxErrPoll() {
 #endif
 
 void Z80::decodeRST() {    /* RST p */
+#if ZC_PORT_TRACE
+    if (opCode == 0xCF && REG_PC >= 0x4000) esxCallNote((uint16_t)(REG_PC - 1), Z80Ops::peek8(REG_PC));
+#endif
 #if NEXT_TRACE
     // Every RST 8 on the Next goes into a ring for nxErrPoll() (error M hunt,
     // 2026-10-07: NextZXOS's TAP loader ends in "M RAMTOP no good").
@@ -4744,7 +4778,7 @@ Z80_COLD void Z80::zcInirBatch() {
         if (T < 16 || T > 40) break;
         if (!z80_in_nocheck || Config::numPcBP > 0 || Config::numPortReadBP > 0 ||
             Config::numMemWriteBP > 0 || Rzx::mode) break;
-        if (!DivMMC::cardSelected() || Z80Ops::isProfi || Z80Ops::isNext) break;
+        if (!DivMMC::cardSelected(DivMMC::CARD_ZC) || Z80Ops::isProfi || Z80Ops::isNext) break;
         if (g_ts_memcyc || g_scorp_even_m1 || g_len_m1 || g_timex_mmu || (g_tsconf_wr & 0x10)) break;
         bool cont = false;
         for (int i = 0; i < 8; i++) cont |= MemESP::ramContended[i];
@@ -4769,9 +4803,9 @@ Z80_COLD void Z80::zcInirBatch() {
         *mem_desc_t::bank_dirty[ds] = true;
         uint32_t o = hl & 0x1FFF;
         for (uint32_t i = 0; i < n; ) {           // data bytes in runs, the protocol bytes one by one
-            const uint32_t k = DivMMC::mmc_read_bulk(dp + o, n - i);
+            const uint32_t k = DivMMC::zc_read_bulk(dp + o, n - i);
             if (k) { o += k; i += k; }
-            else { dp[o++] = DivMMC::mmc_read(); i++; }
+            else { dp[o++] = DivMMC::zc_read_byte(); i++; }
         }
         DivMMC::zc_in_bytes += n;
         REG_HL = (uint16_t)(hl + n);

@@ -485,6 +485,10 @@ uint8_t IDE::rawDevice() { return FileUtils::usbRoot ? 1 : 0; }
 bool IDE::mounted(int d) { return (d >= 0 && d < 2) && (file_open[d] || raw[d]); }
 bool IDE::isRaw(int slot) { return (slot>=0&&slot<2) && raw[slot]; }
 bool IDE::rawReadOnly(int slot) { return (slot>=0&&slot<2) && raw[slot] && raw_ro[slot]; }
+bool IDE::writeProtected(int slot) {
+    if (slot < 0 || slot > 1) return false;
+    return raw[slot] ? raw_ro[slot] : ((Config::ide_wp >> slot) & 1) != 0;
+}
 uint32_t IDE::rawStart(int slot) { return (slot>=0&&slot<2)?raw_start[slot]:0; }
 uint32_t IDE::rawSectors(int slot) { return (slot>=0&&slot<2)?raw_count[slot]:0; }
 
@@ -588,9 +592,9 @@ bool IDE::openRaw(int slot) {
     return true;
 }
 
-int IDE::mbrParts(MbrPart out[4]) {
-    for (int i = 0; i < 4; i++) out[i] = MbrPart{0, 0, 0, 0};
-    const uint8_t drv = rawDevice();
+int IDE::mbrParts(MbrPart out[MBR_PARTS], int pdrv) {
+    for (int i = 0; i < MBR_PARTS; i++) out[i] = MbrPart{0, 0, 0, 0};
+    const uint8_t drv = pdrv < 0 ? rawDevice() : (uint8_t)pdrv;
     LBA_t card = 0;   // see openRaw
     disk_ioctl(drv, GET_SECTOR_COUNT, &card);
     // 512 B for one menu action: the heap, not .bss — the same rule as the FIL in
@@ -599,9 +603,21 @@ int IDE::mbrParts(MbrPart out[4]) {
     if (!sh) return -1;
     uint8_t* sec = sh.as<uint8_t>();
     if (disk_read(drv, sec, 0, 1) != RES_OK) return -1;
-    ide_mbr::Part p[ide_mbr::MAX_PARTS];
-    const int n = ide_mbr::parse(sec, (uint32_t)card, p);
-    for (int i = 0; i < 4; i++) {
+    ide_mbr::Part p[ide_mbr::MAX_ALL];
+    for (int i = 0; i < ide_mbr::MAX_ALL; i++) p[i] = ide_mbr::Part{0, 0, 0};
+    int n = ide_mbr::parse(sec, (uint32_t)card, p);
+    // The logical volumes: the extended container's EBR chain, one sector per
+    // link, at most MAX_LOGICAL of them (partitions 5-8).
+    uint32_t ext_lba = 0, ext_n = 0;
+    if (n >= 0 && ide_mbr::extended(sec, (uint32_t)card, &ext_lba, &ext_n)) {
+        uint32_t ebr = ext_lba;
+        for (int i = 0; i < ide_mbr::MAX_LOGICAL && ebr; i++) {
+            if (disk_read(drv, sec, (LBA_t)ebr, 1) != RES_OK) break;
+            ebr = ide_mbr::parseEbr(sec, ebr, ext_lba, ext_n, &p[ide_mbr::MAX_PARTS + i]);
+            if (p[ide_mbr::MAX_PARTS + i].sectors) n++;
+        }
+    }
+    for (int i = 0; i < MBR_PARTS; i++) {
         out[i].type = p[i].type;
         out[i].lba = p[i].lba;
         out[i].sectors = p[i].sectors;
@@ -931,6 +947,7 @@ void IDE::write_sector_done() {
     // Belt and braces next to the command-time IDNF: a raw slot never writes outside
     // the window it was given, whatever the geometry says (see lbaBeyondEnd).
     if (raw[d] && l >= raw_count[d]) return;
+    if (writeProtected(d)) return;      // refused at command time; belt and braces
     UINT bw;
     if (raw[d]) {
         // A write goes into the card's own sector. That is why the default is
@@ -1089,13 +1106,14 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (retry)
         case 0x31: // WRITE SECTOR (no retry)
-            // A read-only raw-SD slot refuses the command the way a real drive with its
-            // write protect on does: ABRT with no data phase. It has to be refused HERE
-            // and not silently dropped later — the guest would otherwise get a
-            // completed write that changed nothing, and IDEDOS/CP/M cache their idea of
-            // the disk from those writes.
-            if (raw[drive()] && raw_ro[drive()]) {
-                Debug::log("IDE hd%d: write refused (raw SD is read-only)", drive());
+            // A read-only raw-SD slot, or an image with its write protect on (F2,
+            // Config::ide_wp), refuses the command the way a real drive with its write
+            // protect on does: ABRT with no data phase. It has to be refused HERE and
+            // not silently dropped later — the guest would otherwise get a completed
+            // write that changed nothing, and IDEDOS/CP/M cache their idea of the disk
+            // from those writes.
+            if (writeProtected(drive())) {
+                Debug::log("IDE hd%d: write refused (write protect)", drive());
                 reg_error = IDE_ERROR_ABRT;
                 reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
                 data_index = -1;

@@ -1150,17 +1150,19 @@ static const Option opt_hotkey_hints[] = {
     { "F8  Clear", 0 },
 };
 
-// IDE slots carry their own verbs: a HDD has no write-protect, F2 edits the CHS
-// override instead (see UiActions ideEditChs).
+// IDE slots carry their own verbs: F2 is write protect as on a Beta drive (a card
+// window's F2 is the raw-write confirmation), F9 the CHS override / SD window
+// (owner, 2026-11-03; see UiActions keySlots).
 static const Option opt_ide_slot_hints[] = {
     { SYM_ENTER " Image or SD card", 0 },
-    { "F2  CHS / SD window", 0 },
-    { "F6  SD read / write", 0 },
+    { "F2  Write protect", 0 },
     { "F8  Eject", 0 },
+    { "F9  CHS / SD window", 0 },
 };
 
 // Devices shows what the STAGED machine has: a row of another machine is not greyed,
-// it is not there. These mirror resolveConstraints / MachineSwitch / the CPU::reset
+// it is not there, and a row the machine has is always there (owner, 2026-11-02:
+// esxDOS on the Next). These mirror resolveConstraints / MachineSwitch / the CPU::reset
 // backstops, which stay the authority; a value left set by an NVS from elsewhere is
 // still cleared by them. Inside an interface's submenu the options keep the generic
 // grey-until-on gate (NM_*_EN).
@@ -1196,9 +1198,12 @@ static bool p_diskBeta() {
     return !devOwnBus() && !p_plus3On() && devRomset() != R_48K_BY;
 }
 static bool p_betaOn()  { return p_betaBuiltIn() || Stage::get(SET_BETADISK) != 0; }
+// The Next has a divMMC of its own: DivSD on entry, the user may change it.
 static bool p_esxRow() {
     const ArchIdx a = devArch();
-    return p_hasSD() && !devOwnBus() && !devProfi() && !p_plus3On() &&
+    if (!p_hasSD()) return false;
+    if (a == A_NEXT) return true;
+    return !devOwnBus() && !devProfi() && !p_plus3On() &&
            a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
 }
 static bool p_mb02Row() {
@@ -1208,9 +1213,11 @@ static bool p_mb02Row() {
            a != A_SCORP && a != A_TSCONF && a != A_ATM &&
            r != R_48K_BY && r != R_128K_BY;
 }
+// The Z-Controller: on the Spectrum bus only.
 static bool p_zcRow() {
     return p_hasSD() && !p_plus3On() && !devOwnBus();
 }
+static bool p_zcOn() { return Stage::get(SET_ZCONTROLLER) != 0; }
 static bool p_ideRow() {
     const ArchIdx a = devArch();
     const RomsetIdx r = devRomset();
@@ -1223,11 +1230,11 @@ static bool p_rtcRow() {
     if (a == A_ENT) return false;
     return (a != A_48K && a != A_128K) || isQuorum64Romset(devRomset());
 }
-// Images make sense for DivMMC (hd0) and DivIDE (hd0+hd1) only — DivSD talks to
-// the real SD card, so the row stays greyed there just like when esxDOS is off.
+// The disks: DivMMC's hd0 image, DivIDE's hd0 (an image or the card's own sectors) +
+// hd1, and for DivSD the one row that says which part of the card it is (the whole
+// card, a partition, a window). Greyed only while esxDOS is off.
 static bool p_esxImages() {
-    const int32_t v = Stage::get(SET_ESXDOS);
-    return v == 1 || v == 2;
+    return Stage::get(SET_ESXDOS) != 0;
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
@@ -1346,6 +1353,12 @@ static const Node kMb02[] = {
     NM_DYN_EN  (TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
 };
+// The Z-Controller's card: the whole SD card, one of its partitions, a typed window
+// or an image file — picked on the one row of its slot level (UiActions buildSlots).
+static const Node kZc[] = {
+    NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, nullptr),
+    NM_DYN_EN  (TXT_ZC_CARD,       slots_buildZc, slots_keyZc, nullptr, p_zcOn),
+};
 static const Node kIde[] = {
     NM_RADIO_D (TXT_IFACE_MODE,    SET_IDE_SCHEME, ide_schemeOpts, nullptr),
     NM_DYNH_EN (TXT_IDE_IMAGES,    slots_buildIde, slots_keyIde,
@@ -1356,6 +1369,7 @@ static const Node kIde[] = {
 static const char* vl_beta()  { return p_betaBuiltIn() ? nullptr : nodeValueLabel(kDiskBeta[0]); }
 static const char* vl_esx()   { return nodeValueLabel(kEsx[0]); }
 static const char* vl_mb02()  { return nodeValueLabel(kMb02[0]); }
+static const char* vl_zc()    { return nodeValueLabel(kZc[0]); }
 static const char* vl_ide()   { return nodeValueLabel(kIde[0]); }
 static const Node kHardware[] = {
     NM_SUB     (TXT_TAPE,          kTape,     nullptr),
@@ -1365,7 +1379,7 @@ static const Node kHardware[] = {
     NM_DYN     (TXT_EP_DRIVES,     slots_buildEp,  slots_keyEp,  p_epOn),
     NM_SUBV    (TXT_HW_ESXDOS,     kEsx,  vl_esx,  p_esxRow),
     NM_SUBV    (TXT_MB02,          kMb02, vl_mb02, p_mb02Row),
-    NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_zcRow),
+    NM_SUBV    (TXT_HW_ZC,         kZc,   vl_zc,   p_zcRow),
     NM_SUBV    (TXT_HW_IDE,        kIde,  vl_ide,  p_ideRow),
     NM_BOOL    (TXT_HW_RTC,        SET_RTC,   p_rtcRow),
     NM_SUB     (TXT_HW_MOUSE,      kMouse,    nullptr),
@@ -2088,6 +2102,7 @@ const Node* slotNodeFor(int iface) {
         case IFACE_PLUS3: return findDyn(kDiskP3, NM_COUNT(kDiskP3), slots_buildP3);
         case IFACE_SAM:   return findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam);
         case IFACE_EP:    return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEp);
+        case IFACE_ZC:    return findDyn(kZc, NM_COUNT(kZc), slots_buildZc);
         default:         return nullptr;
     }
 }

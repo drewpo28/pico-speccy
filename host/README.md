@@ -90,7 +90,9 @@ Test: `tools/host/vfat_sync_test.cpp` (recipe in its header) — a real FatFs pl
 guest; re-run it after any change to `host_vfat.cpp`.
 
 A real image still works: `--sd card.img` (`tools/host/mksd.sh card.img 256 files...`
-makes a FAT32 one).
+makes a FAT32 one). `--sd2 DIR` is the folder behind the `SD2:` volume (F5 > Local (SD) >
+"Partition N", another partition of the card): the partition LIST comes from the image's MBR, the
+CONTENT from DIR; without it the mount answers "no FAT file system".
 
 ## How it maps onto the RP2350
 

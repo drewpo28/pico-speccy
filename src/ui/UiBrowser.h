@@ -28,11 +28,25 @@ std::string browseFile(std::string& fdir, const std::string& title, uint8_t ftyp
 
 // The F5 "Open from" level, drawn IN the browser chrome (header / location bar /
 // panes / footer) rather than as a floating modal — visually it IS the browser,
-// one level above the volume roots. Returns the chosen index, or -1 on Esc.
+// one level above the volume roots. Returns the chosen index, or -1 on Esc; with
+// `canBack` (a sub-level, e.g. the card's partitions under "Local (SD)") Left /
+// Backspace return -2 instead of being ignored.
 // `hints` (optional, same length) fills the right pane for the focused row; `title`
 // and `bar` override the header and the location-bar label ("Open file"/"Open from").
 int browseLocations(const char* const* items, const char* const* hints, int n, int initial,
-                    const char* title = nullptr, const char* bar = nullptr);
+                    const char* title = nullptr, const char* bar = nullptr, bool canBack = false);
+
+// The card's partitions as one such level ("Partition N - LABEL" rows, the ones F5
+// shows under Local (SD)): returns the chosen partition number, PART_USB for the
+// "[USB Drive]" row (only with `withUsb`, when a stick is there), -1 Esc, -2 Back
+// (with `canBack`). `*ioCursor` keeps the row between visits. Drawn inside the
+// browser chrome; the per-type dialogs reach it with ".." at a volume root.
+enum { PART_USB = -3 };
+int browsePartitions(int* ioCursor, bool canBack, bool withUsb);
+// Make partition `no` browsable: SD:'s own needs nothing, another one is mounted as
+// the SD2: volume (fs/SdVolumes; a failure is toasted) and remembered in Config.
+// Returns the volume root to open ("/", "SD2:/"), "" = not available.
+std::string enterPartition(uint8_t no);
 
 // Renderer of the shared row index (fdIndexGet) — the body of OSD::fdChromeNav.
 // Serves the Remote host list,

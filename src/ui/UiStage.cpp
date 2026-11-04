@@ -1291,28 +1291,12 @@ static void resolveConstraints(CommitReport& rep) {
             changed |= force(SET_RTC, 1, rep, "CMOS + NVRAM on: the SMUC HDD is on that card");
         }
 
-        // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
-        // at most one may be on (OSDMain.cpp:3251, :3380, :3545). The classic menu enforces
-        // this inside each handler, which means the rule only ever fires in the direction
-        // you happened to edit; here the most recently touched one wins, whichever it was.
-        {
-            const uint16_t trio[3] = { SET_ESXDOS, SET_MB02, SET_ZCONTROLLER };
-            static const char* const trioNote[3] = {
-                "esxDOS turned off: only one storage interface at a time",
-                "MB-02+ turned off: only one storage interface at a time",
-                "Z-Controller turned off: only one storage interface at a time",
-            };
-            // Keep the newest, drop the others.
-            int newest = -1;
-            for (int i = 0; i < 3; i++) {
-                if (!staged(trio[i])) continue;
-                if (newest < 0 || g_seq[trio[i]] > g_seq[trio[newest]]) newest = i;
-            }
-            if (newest >= 0)
-                for (int i = 0; i < 3; i++)
-                    if (i != newest && staged(trio[i]))
-                        changed |= force(trio[i], 0, rep, trioNote[i]);
-        }
+        // esxDOS, MB-02+ and the Z-Controller used to be mutually exclusive here ("only one
+        // storage interface at a time", until 2026-11-03). No longer: the Z-Controller has
+        // its own card on DivMMC's SPI machine (DivMMC.h, selectCard) and MB-02+ and
+        // DivMMC arbitrate page 0 (DivMMC::applyMapping / MB02::applyMapping — the divMMC
+        // window wins while it is mapped, the MB-02+ paging register is kept and re-applied
+        // when it drops), the way the eLeMeNt's "divSD + MB02+" mode has both.
 
         // Turning esxDOS OFF also turns the VGM chips off — they exist for the
         // ESXDOS VGM-player plugin, and enabled-but-unreachable they only cost
@@ -1916,20 +1900,11 @@ void commit(CommitReport& rep) {
     for (uint16_t id = 1; id < SET_COUNT; id++)
         if (rebootDirty(id)) rep.needsReboot = true;
 
-    // General Sound and DivIDE both decode ports 0xB3/0xBB (OSDMain.cpp:3262), so turning
-    // GS on turns DivIDE off. Config::esxdos is not a staged setting yet, so this writes
-    // it directly; once the Devices branch stages it, this becomes an ordinary force().
-    // esxDOS and IDE share ports 0xEB/0xE7/0xA3. ideDialog turns esxDOS off when a scheme
-    // is selected, but never the reverse — so enabling esxDOS with NEMO/PROFI already on
-    // left both decoding the same ports. Config::ide_scheme is not staged (IDE is a modal),
-    // hence the direct write.
-    if (bmGet(g_dirty, SET_ESXDOS) && g_val[SET_ESXDOS] && Config::ide_scheme != 0) {
-        Config::ide_scheme = 0;
-        IDE::close();
-        IdeSubsys::syncFromState();
-        rep.constrained++;
-        if (!rep.note) rep.note = " IDE turned off: esxDOS needs the same ports ";
-    }
+    // esxDOS and IDE are not exclusive (owner, 2026-11-04): esxDOS answers #E3/#E7/#EB
+    // (DivIDE: #A3-#BF with A0=A1=1), NEMO needs A1=A2=0 and SMUC A0=0, so neither
+    // collides. The schemes that DO share a port — PROFI (#xxEB), the +3 divIDE
+    // (#A3-#BF), +3e, ATM and the Atom Lite — live on machines where esxDOS is forced
+    // off already (resolveConstraints / MachineSwitch / the setup backstops).
 
     // SMUC answers on a Scorpion and on TS-Conf (a ZXBUS card there, which is
     // what Wild Commander's IDEsmuc panel drivers expect) — everywhere else
@@ -1942,6 +1917,9 @@ void commit(CommitReport& rep) {
             if (!rep.note) rep.note = " SMUC is a Scorpion / TS-Conf card ";
     }
 
+    // General Sound and DivIDE both decode ports 0xB3/0xBB (OSDMain.cpp:3262), so turning
+    // GS on turns DivIDE off. Config::esxdos is not a staged setting yet, so this writes
+    // it directly; once the Devices branch stages it, this becomes an ordinary force().
     if (bmGet(g_dirty, SET_GS_MODE) && g_val[SET_GS_MODE] && Config::esxdos == 2) {
         Config::esxdos = 0;
         rep.constrained++;

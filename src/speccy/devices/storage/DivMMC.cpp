@@ -20,6 +20,7 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "app/Config.h"
 #include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/machines/Atm.h"   // Atm::evo: the ZX-Evo drives the card CS
+#include "speccy/devices/disk/MB02.h"   // page 0 goes back to MB-02+'s mapping when the divMMC window drops
 #include "app/Debug.h"
 #include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line
 #include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
@@ -38,6 +39,19 @@ extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
 // (pdrv 1) when it took over as the root volume (no SD card at boot).
 static BYTE raw_pdrv() { return FileUtils::usbRoot ? 1 : 0; }
 static void raDrop();   // CMD18 read-ahead (see loadSectorStream)
+static inline void s1Drop();   // the mmc_sector_buf content tag (see loadSectorStream)
+
+// The SD read path in SRAM (DIVMMC_HOT_IN_RAM, the TSCONF_HOT_IN_RAM pattern):
+// every IN (EB) lands here — 512 per sector through INIR, and NextZXOS's SD
+// driver polls it up to 12800 times after each sector write (its busy wait ends
+// only on timeout, enNextZX page 2 0x1925/0x19A1). From flash each call waited
+// behind butter-PSRAM line fills in the one XIP cache: ~3.6 us per IN on the
+// Next at 14 MHz (hw 2026-09-25, PERF_HIST: IN/CP/RET NZ/DJNZ at 1320 ns avg).
+#if DIVMMC_HOT_IN_RAM
+#define DIVMMC_HOT __not_in_flash("divmmc")
+#else
+#define DIVMMC_HOT
+#endif
 
 #if ZC_PORT_TRACE
 // Z-Controller / DivSD card trace. Two lessons from the SMUC and GMX traces are
@@ -112,6 +126,7 @@ bool DivMMC::conmem = false;
 bool DivMMC::mapram = false;
 uint8_t DivMMC::bank = 0;
 uint8_t *DivMMC::esxdos_rom = nullptr;
+bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
 bool DivMMC::divsd_mode = false;
@@ -192,6 +207,120 @@ uint8_t* DivMMC::mmc_sector_buf = nullptr;
 uint32_t DivMMC::mmc_sector_buf_addr = 0xFFFFFFFF;
 bool DivMMC::mmc_sector_dirty = false;
 
+// The two cards' media and the card the machine serves (see DivMMC.h).
+DivMMC::Medium DivMMC::s_med[2] = {};
+uint8_t DivMMC::s_card = DivMMC::CARD_ESX;
+bool    DivMMC::s_cs[2] = { false, false };
+FIL*    DivMMC::zc_file = nullptr;
+DivMMC::Medium DivMMC::s_ideRaw = {};
+
+bool DivMMC::zcFileEnsure() {
+    if (zc_file) return true;
+    zc_file = (FIL*)Buffer::palloc(sizeof(FIL), Buffer::NEED_POINTER);
+    if (!zc_file) { Debug::log("Z-Controller: no memory for the image handle"); return false; }
+    memset(zc_file, 0, sizeof(FIL));
+    return true;
+}
+
+void DivMMC::mediumClose(Medium& m) {
+    if (m.file && m.present && !m.raw) f_close(m.file);
+    m = Medium{};
+}
+
+// A window of the real card. The clamp is the safety: a start past the card is no
+// medium at all, a length past the end is cut to the card, and lba() refuses every
+// guest sector outside the window — a write can only land where the user pointed.
+bool DivMMC::mediumCard(Medium& m, uint32_t start, uint32_t len, const char* what) {
+    m = Medium{};
+    // usbRoot: the stick may not have enumerated yet at boot time
+    if (FileUtils::usbRoot) FileUtils::waitVolumeReady("USB:/");
+    // LBA_t: with FF_LBA64 the USB ioctl writes 8 bytes — a DWORD here
+    // would get its neighbour on the stack clobbered
+    LBA_t card = 0;
+    if (disk_ioctl(raw_pdrv(), GET_SECTOR_COUNT, &card) != RES_OK || card == 0) {
+        Debug::log("%s: no card on drv%u", what, (unsigned)raw_pdrv());
+        return false;
+    }
+    const uint32_t cs = (uint32_t)((uint64_t)card > 0xFFFFFFFFu ? 0xFFFFFFFFu : card);
+    if (start >= cs) {
+        Debug::log("%s: window start %lu past the card (%lu sectors)", what,
+                   (unsigned long)start, (unsigned long)cs);
+        return false;
+    }
+    const uint32_t avail = cs - start;
+    bool clipped = false;
+    if (len == 0 || len > avail) { clipped = (len != 0); len = avail; }
+    m.present = true; m.raw = true; m.base = start; m.sectors = len;
+    Debug::log("%s: raw %s, sectors %lu+%lu/%lu, SDHC mode%s", what,
+               FileUtils::usbRoot ? "USB" : "SD", (unsigned long)start, (unsigned long)len,
+               (unsigned long)cs, clipped ? " (window clamped)" : "");
+    return true;
+}
+
+// Two guests on one physical card may share sectors (both default to the whole card):
+// reads are fine, two file systems writing one volume are not. The menu asks at pick
+// time (UiActions.cpp sharedOk); this is the boot-time trace of the same thing.
+void DivMMC::logShared() {
+    const Medium& z = s_med[CARD_ZC];
+    if (!z.present || !z.raw) return;
+    const Medium* e = s_med[CARD_ESX].present && s_med[CARD_ESX].raw ? &s_med[CARD_ESX]
+                    : s_ideRaw.present && s_ideRaw.raw ? &s_ideRaw : nullptr;
+    if (!e) return;
+    if (e->base < z.base + z.sectors && z.base < e->base + e->sectors)
+        Debug::log("Z-Controller: window %lu+%lu shares sectors with esxDOS's %lu+%lu — "
+                   "do not write the same volume from both", (unsigned long)z.base,
+                   (unsigned long)z.sectors, (unsigned long)e->base, (unsigned long)e->sectors);
+}
+
+bool DivMMC::mediumImage(Medium& m, FIL* f, const char* path, const char* what) {
+    m = Medium{};
+    if (!f || !path || !path[0]) return false;
+    // "USB:/..." image at boot: wait for the stick to enumerate first
+    // (if it never shows up the opens below just fail like a missing file).
+    FileUtils::waitVolumeReady(path);
+    bool ro = false;
+    FRESULT fr = f_open(f, path, FA_READ | FA_WRITE);
+    if (fr != FR_OK) { fr = f_open(f, path, FA_READ); ro = true; }
+    if (fr != FR_OK) {
+        Debug::log("%s: %s not found (err=%d)", what, path, fr);
+        return false;
+    }
+    m.present = true; m.raw = false; m.ro = ro; m.file = f;
+    m.sectors = (uint32_t)(f_size(f) / 512);
+    Debug::log("%s: opened %s%s (%lu sectors, SDHC)", what, path, ro ? " read-only" : "",
+               (unsigned long)m.sectors);
+    return true;
+}
+
+// The CSD / OCR the guest reads describe the card it is talking to: SDHC
+// (sector-addressed) for every medium, sized by the window or the image.
+void DivMMC::spiIdentity() {
+    sdhc_mode = true;
+    buildCSD_real(s_med[s_card].sectors);
+    mmc_ocr[0] = 0xC0;  // bits 31:24 — power_up=1, CCS=1
+    mmc_ocr[1] = 0xFF;  // bits 23:16 — all voltages
+    mmc_ocr[2] = 0x80;  // bits 15:8
+    mmc_ocr[3] = 0x00;  // bits 7:0
+    mmc_ocr[4] = 0x00;
+}
+
+// The guest turns to the other card: the conversation with this one is over (its
+// CS latch is kept), the machine starts the other's as after a CS edge, and the
+// sector buffer holds nothing — a sector number means a different place on each
+// medium.
+void DivMMC::selectCard(uint8_t card) {
+    if (s_card == card) return;
+    flushWriteBuffer();
+    s_cs[s_card] = mmc_cs_active;
+    s_card = card;
+    csEdge(s_cs[card] ? 0x00 : 0x01);   // csEdge: bit 0 clear = selected
+    mmc_sector_buf_addr = 0xFFFFFFFF;
+    mmc_sector_dirty = false;
+    raDrop();
+    s1Drop();
+    spiIdentity();
+}
+
 FIL* DivMMC::mmc_file = nullptr;
 // One allocation for both handles, on the first open. Never freed: the handles
 // outlive individual mounts and 1 216 B is not worth churning. A member so it can
@@ -255,6 +384,9 @@ void DivMMC::init() {
                 mmc_file_size[d] = 0;
             }
         }
+        s_med[CARD_ESX] = Medium{};      // (the image handle was closed above)
+        s_ideRaw = Medium{};
+        if (s_card == CARD_ESX) { mmc_sector_buf_addr = 0xFFFFFFFF; mmc_sector_dirty = false; }
 
         // Bank cache slots are intentionally NOT freed: re-allocating 3 × 8 KB
         // contiguous blocks after a toggle cycle (DivSD→MB02→DivSD) fails on
@@ -338,44 +470,37 @@ void DivMMC::init() {
     // Close previous images if open
     for (int d = 0; d < 2; d++) {
         if (mmc_file_open[d]) {
-            if (d == 0) flushWriteBuffer();
+            if (d == 0 && s_card == CARD_ESX) flushWriteBuffer();
             if (mmc_file) f_close(&mmc_file[d]);
             mmc_file_open[d] = false;
             mmc_file_size[d] = 0;
         }
     }
+    s_med[CARD_ESX] = Medium{};
+    s_ideRaw = Medium{};
+    if (s_card == CARD_ESX) { mmc_sector_buf_addr = 0xFFFFFFFF; mmc_sector_dirty = false; s1Drop(); }
 
     if (divsd_mode && enabled) {
-        // DivSD: raw card access — SDHC mode (sector-addressed)
+        // DivSD: the card itself — the window Config::esx_raw_lba/len of it (0/0 = the
+        // whole card), SDHC mode (sector-addressed)
         sdhc_mode = true;
-        // usbRoot: the stick may not have enumerated yet at boot time
-        if (FileUtils::usbRoot) FileUtils::waitVolumeReady("USB:/");
-        // LBA_t: with FF_LBA64 the USB ioctl writes 8 bytes — a DWORD here
-        // would get its neighbour on the stack clobbered
-        LBA_t sector_count = 0;
-        disk_ioctl(raw_pdrv(), GET_SECTOR_COUNT, &sector_count);
-        mmc_file_size[0] = (uint32_t)((uint64_t)sector_count * 512 > 0xFFFFFFFF ? 0xFFFFFFFF : sector_count * 512);
-        buildCSD_real((uint32_t)sector_count);
-        // SDHC OCR: power_up done (bit31) + CCS=1 (bit30) + voltage
-        mmc_ocr[0] = 0xC0;  // bits 31:24 — power_up=1, CCS=1
-        mmc_ocr[1] = 0xFF;  // bits 23:16 — all voltages
-        mmc_ocr[2] = 0x80;  // bits 15:8
-        mmc_ocr[3] = 0x00;  // bits 7:0
-        mmc_ocr[4] = 0x00;
-        Debug::log("%s: raw %s, %lu sectors, SDHC mode", mode_name,
-                   FileUtils::usbRoot ? "USB" : "SD", (unsigned long)sector_count);
+        mediumCard(s_med[CARD_ESX], Config::esx_raw_lba, Config::esx_raw_len, mode_name);
+        if (Config::esx_wp & 1) s_med[CARD_ESX].ro = true;     // F2 on the row
+        logShared();
+        mmc_file_size[0] = (uint32_t)((uint64_t)s_med[CARD_ESX].sectors * 512 > 0xFFFFFFFF ? 0xFFFFFFFF : s_med[CARD_ESX].sectors * 512);
+        if (s_card == CARD_ESX) spiIdentity();
         raInit();
         Debug::log("CSD: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
             mmc_csd[0], mmc_csd[1], mmc_csd[2], mmc_csd[3], mmc_csd[4],
             mmc_csd[5], mmc_csd[6], mmc_csd[7], mmc_csd[8], mmc_csd[9], mmc_csd[10]);
         Debug::log("OCR: %02X %02X %02X %02X %02X", mmc_ocr[0], mmc_ocr[1], mmc_ocr[2], mmc_ocr[3], mmc_ocr[4]);
     } else if (divide_mode && enabled) {
-        sdhc_mode = false;
-        // Reset OCR to non-SDHC (DivIDE uses IDE not SPI, but keep clean state)
-        mmc_ocr[0] = 5; mmc_ocr[1] = 0; mmc_ocr[2] = 0; mmc_ocr[3] = 0; mmc_ocr[4] = 0;
-        // DivIDE: open HDF / fixed VHD / raw HDD/IMG images (hd0=master, hd1=slave)
+        // (the SPI machine stays SDHC: the Z-Controller may be on it beside DivIDE)
+        // DivIDE: open HDF / fixed VHD / raw HDD/IMG images (hd0=master, hd1=slave);
+        // hd0 may instead be the card's own sectors (Config::esx_raw, ideRawOpen below)
         const char* defaults[2] = {"/esxdos.hdf", ""};
         for (int d = 0; d < 2; d++) {
+            if (d == 0 && Config::esx_raw) continue;   // hd0 is the card window
             const char* image_path = Config::esxdos_hdf_image[d].empty() ? defaults[d] : Config::esxdos_hdf_image[d].c_str();
             if (image_path[0] == '\0') continue; // no slave configured
             // "USB:/..." image at boot: wait for the stick to enumerate first.
@@ -397,7 +522,7 @@ void DivMMC::init() {
                 }
             }
         }
-        if (mmc_file_open[0]) buildCSD();
+        // (no CSD here: DivIDE is not on the SPI machine, whose CSD is the Z-Controller's then)
     } else if (enabled) {
         // DivMMC: report SDHC (CCS=1) so ZP4 uses sector-addressing.
         // ESXDOS itself adapts to either; .mmc file is read by sector either way.
@@ -406,27 +531,13 @@ void DivMMC::init() {
         // DivMMC: open .mmc image (shared hd0 slot with DivIDE).
         const char* default_path = "/esxdos.mmc";
         const char* image_path = Config::esxdos_hdf_image[0].empty() ? default_path : Config::esxdos_hdf_image[0].c_str();
-        // "USB:/..." image at boot: wait for the stick to enumerate first
-        // (if it never shows up the opens below just fail like a missing file).
-        FileUtils::waitVolumeReady(image_path);
         if (!mmcFilesEnsure()) return;
-        FRESULT fr = f_open(&mmc_file[0], image_path, FA_READ | FA_WRITE);
-        if (fr == FR_OK) {
+        if (mediumImage(s_med[CARD_ESX], &mmc_file[0], image_path, mode_name)) {
             mmc_file_open[0] = true;
             mmc_file_size[0] = f_size(&mmc_file[0]);
-            buildCSD_real(mmc_file_size[0] / 512);
-            Debug::log("%s: opened %s (%u bytes, SDHC)", mode_name, image_path, mmc_file_size[0]);
-        } else {
-            fr = f_open(&mmc_file[0], image_path, FA_READ);
-            if (fr == FR_OK) {
-                mmc_file_open[0] = true;
-                mmc_file_size[0] = f_size(&mmc_file[0]);
-                buildCSD_real(mmc_file_size[0] / 512);
-                Debug::log("%s: opened %s read-only (%u bytes, SDHC)", mode_name, image_path, mmc_file_size[0]);
-            } else {
-                Debug::log("%s: %s not found (err=%d)", mode_name, image_path, fr);
-            }
+            if (Config::esx_wp & 1) s_med[CARD_ESX].ro = true;   // F2 on the row
         }
+        if (s_card == CARD_ESX) spiIdentity();
     }
 
     // Parse HDF headers, fixed VHD footers or raw HDD/IMG images for DivIDE
@@ -500,6 +611,7 @@ void DivMMC::init() {
                     mode_name, d, is_vhd ? "Fixed VHD" : "raw", ide_cylinders[d], ide_heads[d], ide_sectors[d], ide_image_sectors[d]);
             }
         }
+        if (Config::esx_raw) ideRawOpen();
     }
 
     // Next: the divMMC automap must run NextZXOS's own MMC ROM instead of
@@ -517,14 +629,14 @@ void DivMMC::init() {
 }
 
 void DivMMC::reopenFiles() {
-    if (!enabled) return;
+    if (!enabled && !zc_enabled) return;
     // Reopen MMC/HDF image files
     for (int d = 0; d < 2; d++) {
-        if (mmc_file_open[d]) {
+        if (enabled && mmc_file_open[d]) {
             FSIZE_t pos = f_tell(&mmc_file[d]);
             f_close(&mmc_file[d]);
             const char* path;
-            if (enabled == 2 || enabled == 3) { // DivIDE/DivSD
+            if (divide_mode || divsd_mode) { // DivIDE/DivSD
                 const char* defaults[] = {"/esxdos.hdf", ""};
                 path = Config::esxdos_hdf_image[d].empty() ? defaults[d] : Config::esxdos_hdf_image[d].c_str();
             } else {
@@ -548,6 +660,8 @@ void DivMMC::reopenFiles() {
             swap_open = false;
         }
     }
+    // The Z-Controller's image, if it is on one
+    if (zc_enabled && s_med[CARD_ZC].present && !s_med[CARD_ZC].raw) zcMedium();
 }
 
 // Next: any RETN (outside Multiface, which we do not emulate) drops the
@@ -616,9 +730,10 @@ void DivMMC::reset() {
     ide_cylinder_hi = 0;
     ide_head = 0;
     ide_error = 0;
-    ide_status = (mmc_file_open[0] || mmc_file_open[1]) ? 0x40 : 0x00; // DRDY if any disk present
+    ide_status = (ideMounted(0) || ideMounted(1)) ? 0x40 : 0x00; // DRDY if any disk present
     ide_data_index = -1;
     ide_data_write = false;
+    s_cs[CARD_ESX] = s_cs[CARD_ZC] = false;
 
     applyMapping();
 }
@@ -640,6 +755,11 @@ void DivMMC::applyMapping() {
         materialize(b);
         MemESP::page0_hi = bank_ptr[b];
         MemESP::divmmc_mapped = true;
+        // Beside MB-02+: the divMMC window wins while it is mapped, and its RAM is
+        // always writable — the MB-02+ write gate and page-dirty pointer are its own
+        // page's (MB02::applyMapping re-applies them when this window drops).
+        MemESP::mb02_write_gate = true;
+        MemESP::mb02_page_dirty = nullptr;
         if (Config::arch == A_NEXT && MemESP::nextRamReady &&
             !MemESP::nextBootRomActive && !MemESP::nextConfigMode)
             MemESP::nextDivPlug();
@@ -663,6 +783,8 @@ void DivMMC::applyMapping() {
             // fallback ROM instead of enNextZX). Re-apply the MMU mapping.
             MemESP::applyMMU(0, MemESP::mmu[0]);
             MemESP::applyMMU(1, MemESP::mmu[1]);
+        } else if (MB02::enabled) {
+            MB02::applyMapping();      // its paging register was kept under our window
         } else {
             MemESP::recoverPage0();
         }
@@ -850,14 +972,14 @@ static inline void s1Drop();   // the mmc_sector_buf content tag, defined with l
 // Read a byte from image/SD, using sector cache
 // address is always a byte offset (even in SDHC mode — converted at CMD level)
 uint8_t DivMMC::readByte(uint32_t address) {
-    if (!divsd_mode && !mmc_file_open[0]) return 0xFF;
+    if (!s_med[s_card].present) return 0xFF;
 
     uint32_t sector = address / 512;
     uint32_t offset = address % 512;
 
     if (sector != mmc_sector_buf_addr) {
         flushWriteBuffer();
-        loadSector(sector);
+        loadSector(lba(sector));
         mmc_sector_buf_addr = sector;
     }
 
@@ -866,14 +988,14 @@ uint8_t DivMMC::readByte(uint32_t address) {
 
 // Write a byte to image/SD, using sector cache
 void DivMMC::writeByte(uint32_t address, uint8_t value) {
-    if (!divsd_mode && !mmc_file_open[0]) return;
+    if (!s_med[s_card].present) return;
 
     uint32_t sector = address / 512;
     uint32_t offset = address % 512;
 
     if (sector != mmc_sector_buf_addr) {
         flushWriteBuffer();
-        loadSector(sector);
+        loadSector(lba(sector));
         mmc_sector_buf_addr = sector;
     }
 
@@ -885,7 +1007,7 @@ void DivMMC::writeByte(uint32_t address, uint8_t value) {
 // Flush dirty sector buffer
 void DivMMC::flushWriteBuffer() {
     if (!mmc_sector_dirty || mmc_sector_buf_addr == 0xFFFFFFFF) return;
-    storeSector(mmc_sector_buf_addr);
+    storeSector(lba(mmc_sector_buf_addr));
     mmc_sector_dirty = false;
 }
 
@@ -999,7 +1121,8 @@ void DivMMC::loadSectorStream(uint32_t sector) {
     const bool seq = (sector == s_ra_next);
     s_ra_run++;
     s_ra_next = sector + 1;
-    if (!s_ra_buf || (!divsd_mode && !mmc_file_open[0])) { loadSector(sector); return; }
+    const Medium& m = s_med[s_card];
+    if (!s_ra_buf || !m.present || sector == 0xFFFFFFFFu) { loadSector(sector); return; }
     const bool held = s_ra_n && s_ra_gen == g_disk_write_gen;
     ZS_T0();
     if (held && sector >= s_ra_first && sector - s_ra_first < s_ra_n) {
@@ -1032,15 +1155,15 @@ void DivMMC::loadSectorStream(uint32_t sector) {
     const uint32_t want = RA_MAX;
     const uint32_t gen = g_disk_write_gen;
     s_ra_n = 0;                            // the buffer is about to be overwritten
-    if (divsd_mode) {
+    if (m.raw) {
         if (disk_read(raw_pdrv(), s_ra_buf, sector, want) != RES_OK) {
             loadSector(sector);            // e.g. past the end of the card
             return;
         }
     } else {
         UINT br = 0;
-        f_lseek(&mmc_file[0], (FSIZE_t)sector * 512);
-        f_read(&mmc_file[0], s_ra_buf, want * 512, &br);
+        f_lseek(m.file, (FSIZE_t)sector * 512);
+        f_read(m.file, s_ra_buf, want * 512, &br);
         if (br < want * 512) memset(s_ra_buf + br, 0, want * 512 - br);
     }
     s_ra_first = sector;
@@ -1056,6 +1179,7 @@ void DivMMC::loadSectorStream(uint32_t sector) {
 // per-byte protocol dispatch. Anything else (token, CRC, gap, block boundary,
 // a non-SDHC card, no CS) answers false and the caller takes the byte path.
 bool DivMMC::zc_read_word(uint16_t& v) {
+    if (s_card != CARD_ZC) return false;    // the byte path turns the machine to the ZC card
     if (!mmc_cs_active || !sdhc_mode || (mmc_r1 & 1) == 0 || mmc_wr_resp >= 0) return false;
     if (mmc_last_command != 0x51 && mmc_last_command != 0x52) return false;
     const int i = mmc_read_index;
@@ -1066,6 +1190,7 @@ bool DivMMC::zc_read_word(uint16_t& v) {
 }
 
 uint32_t DivMMC::zc_read_span(const uint8_t*& p) {
+    if (s_card != CARD_ZC) return 0;
     if (!mmc_cs_active || !sdhc_mode || (mmc_r1 & 1) == 0 || mmc_wr_resp >= 0) return 0;
     if (mmc_last_command != 0x51 && mmc_last_command != 0x52) return 0;
     const int i = mmc_read_index;
@@ -1359,8 +1484,8 @@ static void sqAsyncDiscard() {
 // loop runs): a request nobody takes would otherwise wait for the 3 ms fallback.
 extern "C" volatile uint8_t g_sd_c1_live;
 static inline bool sdAsyncMachine() {
-    return g_sd_c1_live && DivMMC::divsd_mode && raw_pdrv() == 0 &&
-           (Z80Ops::isNext || DivMMC::zc_enabled);
+    return g_sd_c1_live && DivMMC::medium(DivMMC::currentCard()).raw && raw_pdrv() == 0 &&
+           (Z80Ops::isNext || DivMMC::currentCard() == DivMMC::CARD_ZC);
 }
 
 // The cap the window may reach right now: inside a CMD18 the guest itself
@@ -1740,7 +1865,7 @@ static bool c17FetchBlocking(uint32_t sector, uint32_t count) {
 // (enNxtmmc 1FB9: busy ends at 0xFF, which its poll keeps waiting through), so
 // Z80::nextSdPollBatch skips those passes without a wait.
 bool DivMMC::sdReadsIdleFF() {
-    if (!mmc_file_open[0] && !divsd_mode) return true;
+    if (!s_med[s_card].present) return true;
     if (!mmc_cs_active) return true;
     if ((mmc_r1 & 1) == 0) return false;
     if (mmc_wr_resp >= 0) return mmc_wr_resp == 2;
@@ -1750,7 +1875,7 @@ bool DivMMC::sdReadsIdleFF() {
 volatile uint8_t g_sd_tw_why;   // why sdTokenWait did not wait: [SD3] line
 uint32_t DivMMC::sdTokenWait(uint32_t maxUs) {
     g_sd_tw_why = (mmc_last_command != 0x51 && mmc_last_command != 0x52) ? 1 :
-                  !divsd_mode || !mmc_cs_active ? 2 : mmc_read_index != 2 ? 3 : mmc_nac ? 4 : !s_c17 ? 5 : 0;
+                  !s_med[s_card].raw || !mmc_cs_active ? 2 : mmc_read_index != 2 ? 3 : mmc_nac ? 4 : !s_c17 ? 5 : 0;
     if (g_sd_tw_why) return 0;
     const uint32_t t0 = time_us_32();
     for (;;) {
@@ -1875,7 +2000,15 @@ void DivMMC::loadSector(uint32_t sector) {
       if (g_nmi_trace_left)
           next_trace_ev('S', (uint8_t)(sector >> 8), (uint8_t)sector); }
 #endif
-    if (divsd_mode) {
+    // `sector` is on the MEDIUM (lba()): a card sector for a raw window, a file
+    // sector for an image, ~0 = the guest asked past the medium.
+    const Medium& m = s_med[s_card];
+    if (!m.present || sector == 0xFFFFFFFFu) {
+        s1Drop();
+        memset(mmc_sector_buf, m.raw ? 0xFF : 0x00, 512);
+        return;
+    }
+    if (m.raw) {
         sq1Ensure();
         // The same sector again (a FAT / directory cell is read over and over):
         // mmc_sector_buf still holds it — no card access and not even a copy.
@@ -1983,21 +2116,26 @@ void DivMMC::loadSector(uint32_t sector) {
         return;
     }
     s1Drop();
-    if (!mmc_file_open[0]) {
-        memset(mmc_sector_buf, 0, 512);
-        return;
-    }
-    // Read the sector directly from the .mmc file. The image is presented
+    // Read the sector directly from the image file. The image is presented
     // byte-for-byte: sector 0 holds the FAT16 BPB (superfloppy), there is no MBR.
     UINT br;
-    f_lseek(&mmc_file[0], (FSIZE_t)sector * 512);
-    f_read(&mmc_file[0], mmc_sector_buf, 512, &br);
+    f_lseek(m.file, (FSIZE_t)sector * 512);
+    f_read(m.file, mmc_sector_buf, 512, &br);
     if (br < 512) memset(mmc_sector_buf + br, 0, 512 - br);
 }
 
 void DivMMC::storeSector(uint32_t sector) {
     raDrop();
-    if (divsd_mode) {
+    const Medium& m = s_med[s_card];
+    if (!m.present || m.ro || sector == 0xFFFFFFFFu) {
+        if (sector == 0xFFFFFFFFu) Debug::log("SD wr: sector past the medium refused");
+        else if (m.ro) {
+            static bool once = false;      // the driver sees 0x0D per block (mmcWriteResponse)
+            if (!once) { once = true; Debug::log("SD wr: refused, the medium is write-protected"); }
+        }
+        return;
+    }
+    if (m.raw) {
         // Keep the read-ahead coherent with our own writes
         if (sector >= s_sq_base && sector < s_sq_base + s_sq_count)
             raInvalidate();
@@ -2022,11 +2160,37 @@ void DivMMC::storeSector(uint32_t sector) {
 #endif
         return;
     }
-    if (!mmc_file_open[0]) return;
     UINT bw;
-    f_lseek(&mmc_file[0], (FSIZE_t)sector * 512);
-    f_write(&mmc_file[0], mmc_sector_buf, 512, &bw);
-    f_sync(&mmc_file[0]);
+    f_lseek(m.file, (FSIZE_t)sector * 512);
+    f_write(m.file, mmc_sector_buf, 512, &bw);
+    f_sync(m.file);
+}
+
+// The public entries pick the card: esxDOS's ports (#E7/#EB) and the Z-Controller's
+// (#77/#57) are two conversations on one machine (selectCard).
+void DivMMC::mmc_cs(uint8_t value) {
+    if (s_card != CARD_ESX) selectCard(CARD_ESX);
+    csEdge(value);
+}
+DIVMMC_HOT uint8_t DivMMC::mmc_read() {
+    if (__builtin_expect(s_card != CARD_ESX, 0)) selectCard(CARD_ESX);
+    return spiRead();
+}
+void DivMMC::mmc_write(uint8_t value) {
+    if (s_card != CARD_ESX) selectCard(CARD_ESX);
+    spiWrite(value);
+}
+uint32_t DivMMC::mmc_read_bulk(uint8_t* dst, uint32_t n) {
+    if (s_card != CARD_ESX) selectCard(CARD_ESX);
+    return spiReadBulk(dst, n);
+}
+uint8_t DivMMC::zc_read_byte() {
+    if (s_card != CARD_ZC) selectCard(CARD_ZC);
+    return spiRead();
+}
+uint32_t DivMMC::zc_read_bulk(uint8_t* dst, uint32_t n) {
+    if (s_card != CARD_ZC) selectCard(CARD_ZC);
+    return spiReadBulk(dst, n);
 }
 
 // Port 0xE7 write — chip select
@@ -2034,7 +2198,7 @@ void DivMMC::storeSector(uint32_t sector) {
 //   Standard DivMMC: bit 0 (active-low)
 //   Some clones (ZP4-style): bit 1 (active-low)
 // Treat CS as active if EITHER bit 0 or bit 1 is 0.
-void DivMMC::mmc_cs(uint8_t value) {
+void DivMMC::csEdge(uint8_t value) {
     mmc_cs_active = (value & 0x01) == 0;  // Active low
     raEnd();
     c17Abandon();
@@ -2061,20 +2225,10 @@ void DivMMC::mmc_cs(uint8_t value) {
 // block is programmed, then 0xFF for ever. Drivers wait for BOTH edges — the
 // token to know it was accepted, the return to 0xFF to know the card is free —
 // so the sequence has to end, and end at 0xFF.
-// The SD read path in SRAM (DIVMMC_HOT_IN_RAM, the TSCONF_HOT_IN_RAM pattern):
-// every IN (EB) lands here — 512 per sector through INIR, and NextZXOS's SD
-// driver polls it up to 12800 times after each sector write (its busy wait ends
-// only on timeout, enNextZX page 2 0x1925/0x19A1). From flash each call waited
-// behind butter-PSRAM line fills in the one XIP cache: ~3.6 us per IN on the
-// Next at 14 MHz (hw 2026-09-25, PERF_HIST: IN/CP/RET NZ/DJNZ at 1320 ns avg).
-#if DIVMMC_HOT_IN_RAM
-#define DIVMMC_HOT __not_in_flash("divmmc")
-#else
-#define DIVMMC_HOT
-#endif
-
+// A write-protected medium (F2 on the row) answers 0x0D, "data rejected, write error":
+// the block was not stored (storeSector), and the driver is told so.
 DIVMMC_HOT uint8_t DivMMC::mmcWriteResponse() {
-    const uint8_t v = (mmc_wr_resp == 0) ? 0x05 : (mmc_wr_resp == 1) ? 0x00 : 0xFF;
+    const uint8_t v = (mmc_wr_resp == 0) ? (s_med[s_card].ro ? 0x0D : 0x05) : (mmc_wr_resp == 1) ? 0x00 : 0xFF;
     if (mmc_wr_resp < 2) mmc_wr_resp++;
     return v;
 }
@@ -2083,8 +2237,8 @@ DIVMMC_HOT uint8_t DivMMC::mmcWriteResponse() {
 // Flash: called once per run of data bytes (a sector is at most two calls).
 // Mirrors mmc_read()'s data-phase branch exactly: SDHC, the CMD17/CMD18 data
 // bytes 3..514 (index - 3 into mmc_sector_buf), nothing pending ahead of them.
-uint32_t DivMMC::mmc_read_bulk(uint8_t* dst, uint32_t n) {
-    if (!mmc_file_open[0] && !divsd_mode) return 0;
+uint32_t DivMMC::spiReadBulk(uint8_t* dst, uint32_t n) {
+    if (!s_med[s_card].present) return 0;
     if (!mmc_cs_active || (mmc_r1 & 1) == 0 || mmc_wr_resp >= 0 || !sdhc_mode) return 0;
     if (mmc_last_command != 0x51 && mmc_last_command != 0x52) return 0;
     const int idx = mmc_read_index;
@@ -2096,8 +2250,8 @@ uint32_t DivMMC::mmc_read_bulk(uint8_t* dst, uint32_t n) {
     return k;
 }
 
-DIVMMC_HOT uint8_t DivMMC::mmc_read() {
-    if (!mmc_file_open[0] && !divsd_mode) return 0xFF;
+DIVMMC_HOT uint8_t DivMMC::spiRead() {
+    if (!s_med[s_card].present) return 0xFF;
     if (!mmc_cs_active) return 0xFF;
 
     // If not idle, return R1
@@ -2223,9 +2377,10 @@ DIVMMC_HOT uint8_t DivMMC::mmc_read() {
                     if (mmc_nac) { mmc_nac--; return 0xFF; }                 // Nac (see mmc_nac)
                     if (mmc_cont_pending) {
                         mmc_cont_pending = false;
-                        if (sdAsyncMachine() || Z80Ops::isNext) { if (!c17Begin(mmc_read_address, true)) loadSector(mmc_read_address); }
-                        else if (s_ra_on) loadSectorStream(mmc_read_address);
-                        else loadSector(mmc_read_address);
+                        const uint32_t cs = lba(mmc_read_address);
+                        if (sdAsyncMachine() || Z80Ops::isNext) { if (!c17Begin(cs, true)) loadSector(cs); }
+                        else if (s_ra_on) loadSectorStream(cs);
+                        else loadSector(cs);
                         mmc_sector_buf_addr = mmc_read_address;
                     }
                     if (s_c17) {
@@ -2344,8 +2499,8 @@ DIVMMC_HOT uint8_t DivMMC::mmc_read() {
 }
 
 // Port 0xEB write — SD protocol command/data
-void DivMMC::mmc_write(uint8_t value) {
-    if (!mmc_file_open[0] && !divsd_mode) return;
+void DivMMC::spiWrite(uint8_t value) {
+    if (!s_med[s_card].present) return;
     if (!mmc_cs_active) return;
 
     // CMD25 WRITE_MULTIPLE_BLOCK data phase — token-framed stream that must
@@ -2378,7 +2533,7 @@ void DivMMC::mmc_write(uint8_t value) {
             if (sdhc_mode) {
                 mmc_sector_buf_addr = mmc_write_address;
                 mmc_sector_dirty = false;
-                storeSector(mmc_write_address);
+                storeSector(lba(mmc_write_address));
                 mmc_write_address += 1;           // sector-addressed
             } else {
                 flushWriteBuffer();
@@ -2495,14 +2650,15 @@ void DivMMC::mmc_write(uint8_t value) {
                                    mmc_params[3];
                 if (sdhc_mode) {
                     flushWriteBuffer();
+                    const uint32_t cs = lba(mmc_read_address);
 #if PERF_TRACE && PERF_HIST
                     // The same path as the plain build: a PERF_HIST build that
                     // read here with loadSector() blocked core0 on every sector
                     // and measured a different machine (2026-10-21).
-                    { const uint32_t sector = mmc_read_address; ZS_T0();
+                    { const uint32_t sector = cs; ZS_T0();
                       if (!c17Begin(sector, false)) loadSector(sector); ZS(ZS_C17, 1, "c17"); }
 #else
-                    if (!c17Begin(mmc_read_address, false)) loadSector(mmc_read_address);
+                    if (!c17Begin(cs, false)) loadSector(cs);
 #endif
                     mmc_sector_buf_addr = mmc_read_address;
                 }
@@ -2526,11 +2682,12 @@ void DivMMC::mmc_write(uint8_t value) {
                 if (sdhc_mode) {
                     flushWriteBuffer();
                     raEnd();                       // a new stream starts
+                    const uint32_t cs = lba(mmc_read_address);
                     if (sdAsyncMachine() || Z80Ops::isNext) {   // the 8-sector read-ahead + core1, as CMD17
-                        if (!c17Begin(mmc_read_address, true)) loadSector(mmc_read_address);
+                        if (!c17Begin(cs, true)) loadSector(cs);
                     } else {
                         s_ra_on = true;
-                        loadSectorStream(mmc_read_address);
+                        loadSectorStream(cs);
                     }
                     mmc_sector_buf_addr = mmc_read_address;
                 }
@@ -2581,7 +2738,7 @@ void DivMMC::mmc_write(uint8_t value) {
             mmc_index_command++;
             if (mmc_index_command == WRITE_BLOCK_OFFSET + 2 + 512) {
                 if (sdhc_mode) {
-                    storeSector(mmc_write_address);
+                    storeSector(lba(mmc_write_address));
                     mmc_sector_buf_addr = mmc_write_address;
                     mmc_sector_dirty = false;
                 } else {
@@ -2673,33 +2830,85 @@ uint32_t DivMMC::ide_lba() {
     }
 }
 
+// DivIDE hd0 on the card's own sectors (Config::esx_raw): the window
+// Config::esx_raw_lba/len, the geometry IDE::openRaw would give it (H=16 S=63,
+// C from the length, the CHS ceiling), IDENTIFY synthesized as for a raw image.
+void DivMMC::ideRawOpen() {
+    if (!mediumCard(s_ideRaw, Config::esx_raw_lba, Config::esx_raw_len, "DivIDE hd0")) return;
+    s_ideRaw.ro = (Config::esx_raw == 1);
+    logShared();
+    const uint32_t cap = 65535u * 16u * 63u;
+    if (s_ideRaw.sectors > cap) s_ideRaw.sectors = cap;
+    ide_hdf_data_offset[0] = 0;
+    ide_image_sectors[0] = s_ideRaw.sectors;
+    const uint32_t cylinders = s_ideRaw.sectors / (16u * 63u);
+    ide_cylinders[0] = cylinders ? (uint16_t)cylinders : 1;
+    ide_heads[0] = 16;
+    ide_sectors[0] = 63;
+    memset(ide_identity[0], 0, 106);
+    ide_identity[0][0] = 0x40; // fixed ATA disk
+    ide_identity[0][2] = ide_cylinders[0] & 0xFF;
+    ide_identity[0][3] = ide_cylinders[0] >> 8;
+    ide_identity[0][6] = ide_heads[0];
+    ide_identity[0][12] = ide_sectors[0];
+    ide_identity[0][99] = 0x02; // word 49: LBA supported
+    Debug::log("DivIDE hd0: SD card %s C=%u H=%u S=%u lba=%u",
+               s_ideRaw.ro ? "read-only" : "writable", ide_cylinders[0], ide_heads[0],
+               ide_sectors[0], ide_image_sectors[0]);
+}
+
 void DivMMC::ide_read_sector() {
     int d = ide_drive();
-    if (!mmc_file_open[d] || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
+    if (!ideMounted(d) || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
         ide_data_index = -1;
         ide_error = IDE_ERROR_IDNF;
         ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
         return;
     }
     uint32_t lba = ide_lba();
-    FSIZE_t pos = (FSIZE_t)ide_hdf_data_offset[d] + (FSIZE_t)lba * 512;
-    UINT br;
-    f_lseek(&mmc_file[d], pos);
-    f_read(&mmc_file[d], ide_buffer, 512, &br);
-    if (br < 512) memset(ide_buffer + br, 0xFF, 512 - br);
+    if (d == 0 && s_ideRaw.present) {
+        // A card error is IDNF, never 0xFF: a guest sizes the disk by reading until a failure.
+        if (disk_read(raw_pdrv(), ide_buffer, (LBA_t)(s_ideRaw.base + lba), 1) != RES_OK) {
+            ide_data_index = -1;
+            ide_error = IDE_ERROR_IDNF;
+            ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
+            return;
+        }
+    } else {
+        FSIZE_t pos = (FSIZE_t)ide_hdf_data_offset[d] + (FSIZE_t)lba * 512;
+        UINT br;
+        f_lseek(&mmc_file[d], pos);
+        f_read(&mmc_file[d], ide_buffer, 512, &br);
+        if (br < 512) memset(ide_buffer + br, 0xFF, 512 - br);
+    }
     ide_data_index = 0;
     ide_data_write = false;
     ide_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
 }
 
+// DivIDE hd<d> refuses writes: hd0 on a read-only card window, or Config::esx_wp bit d.
+bool DivMMC::ideWriteProtected(int d) {
+    if (d == 0 && s_ideRaw.present) return s_ideRaw.ro;
+    return ((Config::esx_wp >> d) & 1) != 0;
+}
+
 void DivMMC::ide_write_sector_done() {
     int d = ide_drive();
-    if (!mmc_file_open[d] || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
+    if (!ideMounted(d) || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
         ide_error = IDE_ERROR_IDNF;
         ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
         return;
     }
     uint32_t lba = ide_lba();
+    if (ideWriteProtected(d)) { ide_error = IDE_ERROR_ABRT; ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR; return; }
+    if (d == 0 && s_ideRaw.present) {
+        const LBA_t card_lba = (LBA_t)(s_ideRaw.base + lba);
+        // The firmware's FatFs has this volume mounted too (ff_raw_write_notify, as DivSD)
+        if (disk_write(raw_pdrv(), ide_buffer, card_lba, 1) == RES_OK)
+            ff_raw_write_notify(raw_pdrv(), card_lba, ide_buffer);
+        else { ide_error = IDE_ERROR_IDNF; ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR; }
+        return;
+    }
     FSIZE_t pos = (FSIZE_t)ide_hdf_data_offset[d] + (FSIZE_t)lba * 512;
     UINT bw;
     f_lseek(&mmc_file[d], pos);
@@ -2719,6 +2928,14 @@ void DivMMC::ide_execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (with retry)
         case 0x31: // WRITE SECTOR (no retry)
+            // A read-only card window, or an image with its write protect on (F2 on
+            // the row, Config::esx_wp), refuses the write before any data phase (IDE.cpp's
+            // rule): a silently dropped block would be a "completed" write that changed nothing.
+            if (ideWriteProtected(ide_drive())) {
+                ide_error = IDE_ERROR_ABRT;
+                ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
+                break;
+            }
             ide_data_index = 0;
             ide_data_write = true;
             ide_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
@@ -2739,7 +2956,7 @@ void DivMMC::ide_execute_command(uint8_t cmd) {
 
         case 0xEC: { // IDENTIFY DEVICE
             int d = ide_drive();
-            if (!mmc_file_open[d]) {
+            if (!ideMounted(d)) {
                 ide_error = IDE_ERROR_ABRT;
                 ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
                 break;
@@ -2881,57 +3098,50 @@ bool DivMMC::zc_ft_cs = false;
 uint32_t DivMMC::zc_rd_sectors = 0, DivMMC::zc_rd_us = 0, DivMMC::zc_in_bytes = 0;
 static uint8_t zc_ft_rd = 0xFF;   // the byte the FT812 shifted out during the last exchange
 
+// The Z-Controller's medium from Config: an image file (Config::zc_image), else
+// the card window Config::zc_raw_lba/len. Live: the next CMD0 sees the new card.
+void DivMMC::zcMedium() {
+    if (s_card == CARD_ZC) { flushWriteBuffer(); mmc_sector_buf_addr = 0xFFFFFFFF; mmc_sector_dirty = false; s1Drop(); raDrop(); }
+    mediumClose(s_med[CARD_ZC]);
+    if (!Config::zc_image.empty()) {
+        if (zcFileEnsure()) mediumImage(s_med[CARD_ZC], zc_file, Config::zc_image.c_str(), "Z-Controller");
+    } else {
+        mediumCard(s_med[CARD_ZC], Config::zc_raw_lba, Config::zc_raw_len, "Z-Controller");
+        logShared();
+    }
+    if (Config::zc_wp) s_med[CARD_ZC].ro = true;                 // F2 on the row
+    if (s_card == CARD_ZC) spiIdentity();
+}
+
 void DivMMC::zc_init() {
     if (zc_enabled) return;
-    // Real card (SD, or USB stick in usbRoot mode) in SDHC sector-addressed mode.
-    divsd_mode = true;
-    sdhc_mode = true;
-    // usbRoot: the stick may not have enumerated yet at boot time
-    if (FileUtils::usbRoot) FileUtils::waitVolumeReady("USB:/");
-    // LBA_t: with FF_LBA64 the USB ioctl writes 8 bytes — a DWORD here
-    // would get its neighbour on the stack clobbered
-    LBA_t sector_count = 0;
-    disk_ioctl(raw_pdrv(), GET_SECTOR_COUNT, &sector_count);
-    mmc_file_size[0] = (uint32_t)((uint64_t)sector_count * 512 > 0xFFFFFFFF ? 0xFFFFFFFF : sector_count * 512);
-    buildCSD_real((uint32_t)sector_count);
-    mmc_ocr[0] = 0xC0;
-    mmc_ocr[1] = 0xFF;
-    mmc_ocr[2] = 0x80;
-    mmc_ocr[3] = 0x00;
-    mmc_ocr[4] = 0x00;
-
     if (!mmc_sector_buf) mmc_sector_buf = (uint8_t*)calloc(512, 1);
-    mmc_last_command = 0;
-    mmc_index_command = 0;
-    mmc_r1 = 1;
-    mmc_cs_active = false;
-    mmc_read_index = -1;
-    mmc_write_index = -1;
-    mmc_csd_index = -1;
-    mmc_cid_index = -1;
-    mmc_ocr_index = -1;
-    mmc_sector_buf_addr = 0xFFFFFFFF;
-    mmc_sector_dirty = false;
-    raDrop();
+    if (!mmc_sector_buf) { Debug::log("Z-Controller: OOM (sector buffer)"); return; }
+    s_cs[CARD_ZC] = false;
+    if (s_card == CARD_ZC) {
+        csEdge(0x01);
+        mmc_sector_buf_addr = 0xFFFFFFFF;
+        mmc_sector_dirty = false;
+        raDrop();
+    }
     zc_config = 0;
     zc_ft_cs = false; zc_ft_rd = 0xFF;
     zc_enabled = true;
+    zcMedium();
     raInit();
-    Debug::log("Z-Controller: raw %s, %lu sectors, SDHC mode",
-               FileUtils::usbRoot ? "USB" : "SD", (unsigned long)sector_count);
 }
 
 void DivMMC::zc_shutdown() {
     if (!zc_enabled) return;
-    flushWriteBuffer();
+    if (s_card == CARD_ZC) { flushWriteBuffer(); csEdge(0x01); mmc_sector_buf_addr = 0xFFFFFFFF; mmc_sector_dirty = false; }
+    mediumClose(s_med[CARD_ZC]);
     zc_enabled = false;
     zc_config = 0;
-    mmc_cs_active = false;
-    // Leave divsd_mode/sdhc_mode as-is — DivMMC::init() owns these and will
-    // reset them on the next mode change.
+    s_cs[CARD_ZC] = false;
 }
 
 void DivMMC::zc_write_config(uint8_t value) {
+    if (s_card != CARD_ZC) selectCard(CARD_ZC);
     zc_config = value;
     // ATM-Turbo 2+: #xx77 is the machine's own config port while DOS is up, so a
     // driver cannot rely on reaching the card's CS through it. UnrealSpeccy (where
@@ -2956,7 +3166,7 @@ void DivMMC::zc_write_config(uint8_t value) {
             zcTraceFold(line);
         }
 #endif
-        mmc_cs(new_cs ? 0x00 : 0x01); // mmc_cs treats bit0==0 as active
+        csEdge(new_cs ? 0x00 : 0x01); // csEdge treats bit0==0 as active
     }
 }
 
@@ -2971,19 +3181,21 @@ uint8_t DivMMC::zc_read_status() {
 // during the PREVIOUS exchange and starts a new one with 0xFF on MOSI — which is
 // what makes TSLib's "OUT dummy / IN dummy / IN data" read sequence come out right.
 void DivMMC::zc_write_data(uint8_t value) {
-    // ATM: CS is not modelled (see zc_write_config) — select once; mmc_cs resets
+    if (s_card != CARD_ZC) selectCard(CARD_ZC);
+    // ATM: CS is not modelled (see zc_write_config) — select once; csEdge resets
     // the protocol state, so only on the edge.
-    if (Z80Ops::isAtm && !mmc_cs_active) mmc_cs(0x00);
+    if (Z80Ops::isAtm && !mmc_cs_active) csEdge(0x00);
     if (!mmc_cs_active) {
         if (zc_ft_cs && Ft812::enabled) zc_ft_rd = Ft812::transfer(value);
         return;
     }
-    mmc_write(value);
+    spiWrite(value);
 }
 
 uint8_t DivMMC::zc_read_data() {
     zc_in_bytes++;
-    if (Z80Ops::isAtm && !mmc_cs_active) mmc_cs(0x00);
+    if (s_card != CARD_ZC) selectCard(CARD_ZC);
+    if (Z80Ops::isAtm && !mmc_cs_active) csEdge(0x00);
     if (!mmc_cs_active) {
         if (zc_ft_cs && Ft812::enabled) {
             const uint8_t v = zc_ft_rd;
@@ -2992,7 +3204,7 @@ uint8_t DivMMC::zc_read_data() {
         }
         return 0xFF;
     }
-    return mmc_read();
+    return spiRead();
 }
 
 
@@ -3042,6 +3254,8 @@ uint32_t DivMMC::snapCardSave(uint8_t* out) {
     // Appended later: the byte the FT812 (VDAC2) shifted out on the last ZC exchange
     // — TSLib reads it with OUT dummy / IN, and a snapshot can fall between the two.
     o.u8(zc_ft_rd);
+    // ...and the two-card machine (2026-11-03): the card served and the other's CS latch.
+    o.u8((uint8_t)(s_card | (s_cs[CARD_ESX] ? 2 : 0) | (s_cs[CARD_ZC] ? 4 : 0)));
     return o.n;
 }
 
@@ -3066,6 +3280,15 @@ bool DivMMC::snapCardLoad(const uint8_t* in, uint32_t n) {
     const bool ib = s.u8() != 0;
     if (ib) { if (!ide_buffer) return false; s.raw(ide_buffer, 512); }
     if (!s.ok || ic > 1024 || (int32_t)ri > 1024 || (int32_t)w25 > 1024) return false;
+    const uint8_t ftRd = (s.at < s.n) ? s.u8() : 0xFF;   // absent in files saved before it
+    // The card the record describes and the other's CS latch (absent before the
+    // two-card machine: esxDOS's card). selectCard resets the state restored below.
+    const uint8_t tail = (s.at < s.n) ? s.u8() : 0;
+    const uint8_t card = tail & 1;
+    if (card == CARD_ZC && !zc_enabled) return false;
+    if (card != s_card) selectCard(card);
+    s_cs[CARD_ESX] = (tail & 2) != 0;
+    s_cs[CARD_ZC] = (tail & 4) != 0;
     raDrop();
     zc_config = zcc;
     mmc_last_command = lc; mmc_index_command = (int)ic; memcpy(mmc_params, par, 6); mmc_r1 = r1;
@@ -3087,6 +3310,6 @@ bool DivMMC::snapCardLoad(const uint8_t* in, uint32_t n) {
     // edges against zc_ft_cs): a stale zc_ft_cs would swallow the next edge and
     // run the chip's next transaction on from the old one's phase.
     if (!(Z80Ops::isAtm && !Atm::evo)) zc_ft_cs = (zcc & 0x04) != 0;
-    zc_ft_rd = (s.at < s.n) ? s.u8() : 0xFF;   // absent in files saved before it
+    zc_ft_rd = ftRd;
     return true;
 }

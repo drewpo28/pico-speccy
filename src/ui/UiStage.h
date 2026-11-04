@@ -209,10 +209,9 @@ const char* romsetName(int32_t composite);
     X(SET_PREF_ROM_P512,   AC_PURE,   0,                     get_prefP512,   put_prefP512,   nullptr,        -1)          \
     X(SET_PREF_ROM_P1024,  AC_PURE,   0,                     get_prefP1M,    put_prefP1M,    nullptr,        -1)          \
     /* ── Devices > storage interfaces ────────────────────────────────────────── */      \
-    /* esxDOS, MB-02+ and the Z-Controller each rewire page 0 and the port decoder, so   */ \
-    /* all three need the Z80 restarted (F_ZXRESET) and all three are mutually           */ \
-    /* exclusive — resolved as a rule table rather than inside each handler, so the rule  */ \
-    /* fires whichever one you edit.                                                     */ \
+    /* esxDOS, MB-02+ and the Z-Controller each rewire page 0 or the port decoder, so   */ \
+    /* all three need the Z80 restarted (F_ZXRESET). They may all be on at once since    */ \
+    /* 2026-11-03 (the ZC has its own card, MB-02+ and divMMC arbitrate page 0).         */ \
     /* esxDOS is REBOOT-class, not live-subsystem: bringing DivMMC up mid-session   */ \
     /* left the machine resetting in a loop on the startup screen (hw 2026-07-26 —   */ \
     /* the ESXDOS ROM + automap want the page-0/NMI wiring laid out at boot, and     */ \

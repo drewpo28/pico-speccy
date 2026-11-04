@@ -37,6 +37,7 @@ namespace DiskSlots {
             case IFACE_IDE:
                 // NEMO/PROFI/SMUC all expose master + slave; OFF exposes nothing.
                 return Config::ide_scheme ? 2 : 0;
+            case IFACE_ZC:  return Config::zcontroller ? 1 : 0;   // its one card
             default: return 0;
         }
     }
@@ -60,6 +61,7 @@ namespace DiskSlots {
         }
         if (iface == IFACE_IDE)
             return idx ? string("hd1 slave") : string("hd0 master");
+        if (iface == IFACE_ZC) return "Card";
         return "";
     }
     inline string slotFname(DiskIface iface, uint8_t idx) {
@@ -74,6 +76,7 @@ namespace DiskSlots {
         if (iface == IFACE_EP) return EpFdc::fname(idx);
         if (iface == IFACE_ESX) return Config::esxdos_hdf_image[idx];
         if (iface == IFACE_IDE) return Config::ide_image[idx];
+        if (iface == IFACE_ZC) return Config::zc_image;
         return "";
     }
     inline bool slotWP(DiskIface iface, uint8_t idx) {
@@ -133,7 +136,11 @@ namespace DiskSlots {
             Config::epDiskFile[idx].clear();
         }
         else if (iface == IFACE_ESX) {
+            // hd0 of DivIDE may be the card window (Config::esx_raw) instead of an image:
+            // eject clears both, as IDE's does. The DivSD window itself is kept (it is the
+            // interface's card, not a disk in it; F8 on its row resets it to the whole card).
             Config::esxdos_hdf_image[idx].clear();
+            if (idx == 0) Config::esx_raw = 0;
             DivMMC::init();
         }
         else if (iface == IFACE_IDE) {
@@ -143,6 +150,12 @@ namespace DiskSlots {
             Config::ide_image[idx].clear();
             Config::ide_raw[idx] = 0;
             IDE::init();
+        }
+        else if (iface == IFACE_ZC) {
+            // The image out: the card itself again (the whole of it).
+            Config::zc_image.clear();
+            Config::zc_raw_lba = 0; Config::zc_raw_len = 0;
+            DivMMC::zcMedium();
         }
     }
     // Mount `fname` into `idx`; seed WP from the per-slot Config flag.
@@ -180,6 +193,7 @@ namespace DiskSlots {
         }
         else if (iface == IFACE_ESX) {
             Config::esxdos_hdf_image[idx] = fname;
+            if (idx == 0) Config::esx_raw = 0;   // one medium per drive (see slotEject)
             DivMMC::init();
             LastRun::note(fname);
         }
@@ -187,6 +201,12 @@ namespace DiskSlots {
             Config::ide_image[idx] = fname;
             Config::ide_raw[idx] = 0;      // one medium per drive (see slotEject)
             IDE::init();
+            LastRun::note(fname);
+        }
+        else if (iface == IFACE_ZC) {
+            Config::zc_image = fname;
+            Config::zc_raw_lba = 0; Config::zc_raw_len = 0;
+            DivMMC::zcMedium();
             LastRun::note(fname);
         }
     }}

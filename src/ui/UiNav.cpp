@@ -147,7 +147,7 @@ static bool isIntNode(const Node* n) {
 enum NmKey : uint8_t {
     NK_NONE, NK_UP, NK_DOWN, NK_LEFT, NK_RIGHT, NK_ENTER,
     NK_ESC, NK_CLOSE, NK_HOME, NK_END, NK_PGUP, NK_PGDN,
-    NK_F2, NK_F3, NK_F4, NK_F5, NK_F6, NK_F8   // per-row verbs, only meaningful on dynamic levels
+    NK_F2, NK_F3, NK_F4, NK_F5, NK_F6, NK_F8, NK_F9   // per-row verbs, only meaningful on dynamic levels
 };
 
 static NmKey decode(const fabgl::VirtualKeyItem& k) {
@@ -168,6 +168,7 @@ static NmKey decode(const fabgl::VirtualKeyItem& k) {
         case fabgl::VK_F5:         return NK_F5;
         case fabgl::VK_F6:         return NK_F6;
         case fabgl::VK_F8:         return NK_F8;
+        case fabgl::VK_F9:         return NK_F9;
         case fabgl::VK_ESCAPE:     return NK_ESC;
         case fabgl::VK_F1:         return NK_CLOSE;   // closes from any depth
         default:                   return NK_NONE;
@@ -651,6 +652,7 @@ static bool handleKey(NmKey k) {
         case NK_F5: pickOrDyn(5); break;
         case NK_F6: pickOrDyn(6); break;
         case NK_F8: pickOrDyn(8); break;
+        case NK_F9: pickOrDyn(9); break;
         case NK_CLOSE: S.quit = true; break;
         default: break;
     }

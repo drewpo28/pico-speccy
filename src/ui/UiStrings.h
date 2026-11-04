@@ -190,7 +190,8 @@
 #define TXT_MB02_DRIVES     "Drives 1-4"
 #define TXT_MB02_SNDLED     "Sound and LED"
 #define TXT_ESX_INTERFACE   "Interface"
-#define TXT_HW_ESX_IMAGES   "Images hd0 / hd1"
+#define TXT_HW_ESX_IMAGES   "Disks hd0 / hd1"
+#define TXT_ZC_CARD         "SD card / image"
 #define TXT_HW_ESXDOS       "esxDOS"
 #define TXT_HW_ZC           "Z-Controller"
 #define TXT_HW_IDE          "IDE / HDD"
@@ -208,6 +209,13 @@
                             "A wrong window or a bad write can\n" \
                             "damage the card and lose its files.\n" \
                             "Enable writes?"
+// esxDOS's card window and the Z-Controller's share sectors of the one SD card.
+#define TXT_CARD_SHARED_T   "One card, two guests"
+#define TXT_CARD_SHARED     "esxDOS and the Z-Controller would\n" \
+                            "see the same sectors of the card.\n" \
+                            "Reading is fine; two guests writing\n" \
+                            "one volume corrupt it.\n" \
+                            "Use this window anyway?"
 #define TXT_HW_LED          "LED indicators"
 #define TXT_HW_LEGEND       "LED legend"
 // Indicators on their own panel beside the F8 stats box instead of bare glyphs

@@ -89,6 +89,9 @@ enum DiskIface {
     // Enterprise EXDOS (WD1770): flat FAT12 images (.img .ima, or a .dsk with a FAT
     // boot sector) — Drive A:/B:.
     IFACE_EP = 7,
+    // The Z-Controller's card: a window of the SD card or an image file (.mmc .img) —
+    // one slot. Not produced by ifaceForExt; picked inside its own slot row.
+    IFACE_ZC = 8,
 };
 
 class FileUtils

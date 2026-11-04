@@ -385,7 +385,9 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // .mmc-image mode would point the OS at esxdos.mmc instead of the
         // card and DivIDE has no SD at all. Persisted by the save below;
         // the arch boundary hard-reset re-inits DivMMC in the new mode.
-        if (Config::arch == A_NEXT && Config::esxdos != 3) {
+        // Entry only: a romset change inside the machine keeps what the user
+        // picked in Devices > esxDOS (owner, 2026-11-02).
+        if (Config::arch == A_NEXT && prevArch != Config::arch && Config::esxdos != 3) {
             Config::esxdos = 3;
             OSD::osdCenteredMsg("DivSD (raw SD) enabled", LEVEL_WARN, 1500);
         }

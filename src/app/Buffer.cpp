@@ -223,7 +223,7 @@ static size_t pageBudget(size_t chip, bool gs_lands_here, bool divmmc_here) {
     // DivMMC's banks sit directly above the pages (DivMMC.cpp). Reserved
     // unconditionally: esxDOS can be switched on at runtime, and 128 KB is cheap
     // next to being pushed onto the swap-file path for the rest of the session.
-    if (divmmc_here) reserve += (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+    if (divmmc_here) reserve += DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
     return chip > reserve ? chip - reserve : 0;
 }
 
@@ -261,7 +261,7 @@ void Buffer::initPools() {
     uint32_t bsize = butter_psram_size();
     if (bsize) {
         size_t bottom = (size_t)butter_pages * MEM_PG_SZ;
-        if (DivMMC::use_psram) bottom += (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+        if (DivMMC::use_psram) bottom += DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
         size_t top = bsize;
         // initPools now runs BEFORE GS::init (so GS's work/ring buffers can draw from
         // this arena), hence GS::gs_ram_size isn't set yet — derive the reserved

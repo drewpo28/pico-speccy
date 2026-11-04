@@ -201,9 +201,16 @@ bool     Config::epKeepTmp = false;
 bool     Config::p3_speedlock = true;
 bool     Config::p3_fastdisk = false;
 bool     Config::zcontroller = true;
+uint8_t  Config::esx_raw = 0;
+uint32_t Config::esx_raw_lba = 0, Config::esx_raw_len = 0;
+string   Config::zc_image;
+uint32_t Config::zc_raw_lba = 0, Config::zc_raw_len = 0;
 uint8_t  Config::ide_scheme = 0;
 string   Config::ide_image[2] = {"", ""};
 uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
+uint8_t  Config::ide_wp = 0, Config::esx_wp = 0;
+bool     Config::zc_wp = false;
+uint8_t  Config::sd2_part = 0;
 uint8_t  Config::ide_raw[2] = {0, 0};
 uint32_t Config::ide_raw_lba[2] = {0, 0};
 uint32_t Config::ide_raw_len[2] = {0, 0};
@@ -1154,6 +1161,7 @@ void Config::loadDiskMounts() {
                     std::string fn = s.substr(plen);
                     // Keep the remembered path in sync (authoritative for save()).
                     mb02DiskFile[i] = fn;
+                    Debug::log("mounts: mb02d%u.file=%s (mb02=%u)", (unsigned)i, fn.c_str(), (unsigned)Config::mb02);
                     // Only re-insert MB-02 disks when the interface is enabled.
                     // The path is persisted regardless of Config::mb02, so a disk
                     // remembered while MB-02+ was on lingers in the mounts file
@@ -1167,6 +1175,8 @@ void Config::loadDiskMounts() {
                     // MB-02+ is re-enabled (loadMb02DiskMounts) or on next boot.
                     if (!fn.empty() && Config::mb02 && FileUtils::waitVolumeReady(fn)) {
                         rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, i, fn);
+                        Debug::log("mounts: MB-02+ drive %u <- %s (%s)", (unsigned)i, fn.c_str(),
+                                   ESPectrum::mb02_fdd.disk[i] ? "ok" : "failed");
                         if (ESPectrum::mb02_fdd.disk[i])
                             ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
                     }
@@ -1682,6 +1692,26 @@ void Config::load() {
         nvs_get_b("p3_speedlock", p3_speedlock, sts);
         nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
         nvs_get_b("zcontroller", zcontroller, sts);
+        {   // The SD interfaces' media: "start/length" windows in CARD sectors, the ZC image
+            esx_raw = 0;
+            nvs_get_u8("esx_raw", esx_raw, sts);
+            if (esx_raw > 2) esx_raw = 0;
+            string win; unsigned w[2];
+            nvs_get_str("esx_rwin", win, sts);
+            if (scanUints(win.c_str(), '/', w, 2) == 2) { esx_raw_lba = w[0]; esx_raw_len = w[1]; }
+            else { esx_raw_lba = 0; esx_raw_len = 0; }
+            win.clear();
+            nvs_get_str("zc_rwin", win, sts);
+            if (scanUints(win.c_str(), '/', w, 2) == 2) { zc_raw_lba = w[0]; zc_raw_len = w[1]; }
+            else { zc_raw_lba = 0; zc_raw_len = 0; }
+            nvs_get_str("zc_img", zc_image, sts);
+            ide_wp = 0; esx_wp = 0; zc_wp = false;
+            nvs_get_u8("ide_wp", ide_wp, sts);
+            nvs_get_u8("esx_wp", esx_wp, sts);
+            nvs_get_b("zc_wp", zc_wp, sts);
+            sd2_part = 0;
+            nvs_get_u8("sd2_part", sd2_part, sts);
+        }
         nvs_get_u8("zifi_enabled", zifi_enabled, sts);
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
         nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
@@ -2133,6 +2163,18 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
     nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
+    nvs_set_u8(buf,"esx_raw", esx_raw);
+    {   char w[32];
+        snprintf(w, sizeof(w), "%u/%u", (unsigned)esx_raw_lba, (unsigned)esx_raw_len);
+        nvs_set_str(buf, "esx_rwin", w);
+        snprintf(w, sizeof(w), "%u/%u", (unsigned)zc_raw_lba, (unsigned)zc_raw_len);
+        nvs_set_str(buf, "zc_rwin", w);
+        nvs_set_str(buf, "zc_img", zc_image.c_str());
+        nvs_set_u8(buf, "ide_wp", ide_wp);
+        nvs_set_u8(buf, "esx_wp", esx_wp);
+        nvs_set_str(buf, "zc_wp", zc_wp ? "true" : "false");
+        nvs_set_u8(buf, "sd2_part", sd2_part);
+    }
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
     nvs_set_str(buf,"snap_exp",snap_export_dir.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
@@ -2432,6 +2474,7 @@ static const char* const kSnapRebootKeys[] = {
     "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
     "ide_raw0", "ide_raw1", "ide_rwin0", "ide_rwin1",
+    "esx_raw", "esx_rwin", "zc_rwin", "zc_img",
     "dckcart", "alfcart", "alfCartBanks", "MEM_PG_CNT", "tsconf_vdac2",
     "gs_enabled", "gs_ram_size", "gs_clock", "ngs_clock",
 };
@@ -2473,6 +2516,8 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "ide_chs0", "IDE geometry" },     { "ide_chs1", "IDE geometry" },
         { "ide_raw0", "IDE raw SD" },        { "ide_raw1", "IDE raw SD" },
         { "ide_rwin0", "IDE raw window" },   { "ide_rwin1", "IDE raw window" },
+        { "esx_raw", "esxDOS SD card" },     { "esx_rwin", "esxDOS SD window" },
+        { "zc_rwin", "Z-Controller window" },{ "zc_img", "Z-Controller image" },
         { "dckcart", "DOCK cartridge" },    { "alfcart", "ALF cartridge" },
         { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
         { "MEM_PG_CNT", "Murmuzavr RAM" },  { "tsconf_vdac2", "VDAC2 (FT812)" },

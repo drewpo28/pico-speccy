@@ -3545,6 +3545,12 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 #endif
 
 	/* Find an FAT volume on the hosting drive */
+#if FF_MULTI_PARTITION
+	if (VolToPart[vol].lba) {	/* pico-speccy: pinned to an absolute sector (a logical partition
+								   out of the EBR chain, which find_volume cannot reach) */
+		fmt = check_fs(fs, VolToPart[vol].lba);
+	} else
+#endif
 	fmt = find_volume(fs, LD2PT(vol));
 	if (fmt == 4) return FR_DISK_ERR;		/* An error occurred in the disk I/O layer */
 	if (fmt >= 2) return FR_NO_FILESYSTEM;	/* No FAT volume is found */
