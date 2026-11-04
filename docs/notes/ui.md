@@ -721,6 +721,33 @@ top-level `Joystick type` row is GONE and the type is a cell under the button ro
 - Cost: the list is a per-menu-session heap block (~1.6 KB, `joyProfilesSessionBegin/
   End` beside the config-profile ones); static ~150 B.
 
+## Generic USB pads are decoded by their report descriptor (2026-11-04, NOT hw-tested)
+
+`process_hid_gamepad()` knows ONE layout (8-byte DragonRise / SNES: X/Y in bytes 0/1,
+buttons in bytes 5/6) and returned on `len < 7`, so any other Joystick/Gamepad interface
+without a vendor handler was dead or read from the wrong bytes. Logitech Precision
+046D:C21A (4-byte report: X, Y, 10 one-bit buttons, 6 vendor bits) did nothing at all;
+the OSD HID page showed `handler = generic gamepad`, `last len = 4`.
+
+- `src/drivers/usbhost/HidPadLayout.h` parses the first Desktop/Joystick|Gamepad
+  application collection at mount (X/Y with logical range, hat 8-way or 4-way, Button
+  runs, report id); host test `tools/hid_pad_layout_test.cpp`.
+- `pad_layout_feed()` (hid_app.cpp) goes first in the GAMEPAD case; directions = outer
+  quarter of X/Y OR the hat; buttons through `pad_apply()`, the mapping the Bluetooth
+  pads already used (1 fire, 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9 Select, 10 Start).
+  Each source keeps its own previous state.
+- **VID 081F / 0079 keep the old decoder**: its fire = B = button 3 choice is what users
+  have; the descriptor numbering would move fire to button 1.
+- Logitech Precision 046D:C21A **hw-confirmed 2026-11-04** (m1p2, test-hidpad branch).
+- **20BC:5500 (Betop / ShanWan / GameSir G3w) is Android button order** (SDL
+  gamecontrollerdb: A b0, B b1, X b3, Y b4, LB b6, RB b7, LT b8, RT b9, Back b10,
+  Start b11), remapped in `pad_layout_feed`. Plain order put Select/Start on LT/RT and
+  left the real Back/Start dead. Descriptor itself parses right (15 buttons, hat@16/4,
+  X@24 Y@32, idle `00 00 0F 80 80`). Its 3rd interface is System/Consumer control.
+  Remap hw-confirmed 2026-11-04 (m1p2).
+- OSD HID page: a `pad rpt id= len= btn=` line + field offsets, and the `dec:` lines.
+- Cost: .bss +552 B (`pad_layout` 60 B x 8 interfaces), code in flash.
+
 ## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
 
 The user-visible data root is **`/pico-speccy`** (`SPEC_DIR_ROOT`, holding
