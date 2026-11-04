@@ -1872,6 +1872,14 @@ static const Option opt_ui_click_vol[] = {
     { "Normal", 2 },
     { "Loud",   3 },
 };
+// Software auto-repeat delay (repeat_handler, ESPectrum.cpp), the PC typematic
+// steps; the rate after it stays ~30/s.
+static const Option opt_kbd_rep_delay[] = {
+    { "250 ms",  0 },
+    { "500 ms",  1 },
+    { "750 ms",  2 },
+    { "1000 ms", 3 },
+};
 
 // ── Interface ──────────────────────────────────────────────────────────────────
 // Everything about the firmware's own UI and indication, gathered in one submenu
@@ -1885,6 +1893,7 @@ static const Node kInterface[] = {
     NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaDither, p_themeSlate),
     NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
     NM_RADIO (TXT_OPT_UI_SOUND,     SET_UI_CLICK_VOL, opt_ui_click_vol, nullptr),
+    NM_RADIO (TXT_OPT_KBD_REP,      SET_KBD_REP_DELAY, opt_kbd_rep_delay, nullptr),
     NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),
     // LED indication is one group: the master toggle, its legend (a reference for
     // the indicators, so greyed while they are off) and the board's own SD LED,

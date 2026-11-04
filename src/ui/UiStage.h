@@ -391,7 +391,10 @@ const char* romsetName(int32_t composite);
     /* SRAM is claimed once in setup(). Appended last per the APPEND ONLY rule.    */ \
     X(SET_MOONSOUND,      AC_REBOOT, 0,                     get_moonsound,  put_moonsound, nullptr,        -1) \
     /* Audio > PI-CARD MUSICA: reboot-class (ring + lock claimed in setup()).  */ \
-    X(SET_PIMUSICA,       AC_REBOOT, 0,                     get_pimusica,   put_pimusica,  nullptr,        -1)
+    X(SET_PIMUSICA,       AC_REBOOT, 0,                     get_pimusica,   put_pimusica,  nullptr,        -1) \
+    /* Interface > Key repeat delay (Config::kbd_rep_delay, 0..3 = 250..1000 ms).  */ \
+    /* repeat_handler reads it on each key press, so nothing to push.             */ \
+    X(SET_KBD_REP_DELAY,  AC_LIVE,   0,                     get_kbdRepDelay, put_kbdRepDelay, hook_uiLook,  -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

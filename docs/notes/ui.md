@@ -920,3 +920,20 @@ the F5 "which slot" path on each machine, a machine switch from inside the sessi
   forced Off (resolveConstraints, MachineSwitch, setup, CPU::reset; images stay in Config), and
   ENTERING Profi turns a leftover scheme, or Off with a medium in a slot, into PROFI (an edge:
   NEMO picked on Profi afterwards stays, and so does a NEMO persisted across a reboot).
+
+## Software auto-repeat: 500 ms + ~30/s (2026-11-04, NOT hw-tested)
+
+All key repeat (menus, browser, guest PS/2 typematic) comes from `repeat_handler`
+(ESPectrum.cpp): PS/2 swallows repeated make codes and USB HID never sends any. It ran
+on the 150 ms housekeeping tick of `repeat_me_for_input`, so the delay was 600-750 ms
+and the rate 6.7/s, and for Up/Down worse: the repeat went through
+`kbdPushData(VK_MENU_UP)`, which made the twin the "last key" and re-armed the delay,
+so the 2nd step came at ~1.3 s. Now it keeps its own deadline (`KBD_REP_DELAY_US`
+500 ms, `KBD_REP_PERIOD_US` 33 ms = PC default), is polled on every input pump,
+injects directly (no `last_key_pressed` change, no Ctrl+J re-toggle), never catches up
+in a burst, and skips a step while the previous one is still queued
+(`Keyboard::virtualKeyPending`) so a slow consumer stops on release. F1..F12 still
+never repeat. Host: `PICOSPECCY_KEYS="frame:Key:N"` holds a key N frames.
+The delay is a setting: Interface > Key repeat delay (`Config::kbd_rep_delay`, nvs
+`kbd_rep_delay` 0..3 = 250/500/750/1000 ms, default 1), `SET_KBD_REP_DELAY` appended
+last; read at each press, so a change applies to the next hold. Host-checked the row.

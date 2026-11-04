@@ -992,9 +992,9 @@ void repeat_me_for_input() {
             last_input_tick = tick;
         }
         tick = time_us_64();
+        repeat_handler();   // own deadline: 500 ms delay, ~30/s (ESPectrum.cpp)
         uint32_t tickKbdRep2 = time_us_32();
-        if (tickKbdRep2 - tickKbdRep1 > 150000) { // repeat each 150 ms
-            repeat_handler();
+        if (tickKbdRep2 - tickKbdRep1 > 150000) { // housekeeping each 150 ms
             uptime_refresh();
 #ifdef KBDUSB
             // PS/2 frames rejected by the driver's stop/parity check (each one

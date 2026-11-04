@@ -280,6 +280,7 @@ bool     Config::ui_vga_solid = true;
 bool     Config::ui_rounded = true;
 uint8_t  Config::ui_theme = 0;
 uint8_t  Config::ui_click_vol = 2;   // Normal
+uint8_t  Config::kbd_rep_delay = 1;  // 500 ms
 bool     Config::timex_video = true;
 uint8_t  Config::dma_mode = 0;
 bool     Config::mode16col_onoff = false;
@@ -1865,6 +1866,8 @@ void Config::load() {
         nvs_get_str("joy_profile", joy_profile, sts);
         nvs_get_u8("ui_click_vol", ui_click_vol, sts);
         if (ui_click_vol > 3) ui_click_vol = 2;
+        nvs_get_u8("kbd_rep_delay", kbd_rep_delay, sts);
+        if (kbd_rep_delay > 3) kbd_rep_delay = 1;
         nvs_get_b("timex_video", timex_video, sts);
         nvs_get_u8("dma_mode", dma_mode, sts);
         nvs_get_b("mode16col_onoff", mode16col_onoff, sts);
@@ -2262,6 +2265,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"profile_slot", Config::profile_slot);
     nvs_set_str(buf,"joy_profile", Config::joy_profile.c_str());
     nvs_set_u8(buf,"ui_click_vol", Config::ui_click_vol);
+    nvs_set_u8(buf,"kbd_rep_delay", Config::kbd_rep_delay);
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
     nvs_set_str(buf,"mode16col_onoff", Config::mode16col_onoff ? "true" : "false");

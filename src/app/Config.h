@@ -872,6 +872,8 @@ public:
     // volume is (OSD::click), so it needs an attenuation of its own; Loud is what
     // the firmware always did.
     static uint8_t ui_click_vol;
+    // kbd_rep_delay: software auto-repeat delay, 0..3 = 250/500/750/1000 ms.
+    static uint8_t kbd_rep_delay;
     // Palette: 0=Default, 1=Grayscale
     static uint8_t palette;
     static uint8_t audio_driver;

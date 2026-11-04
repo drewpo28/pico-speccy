@@ -427,6 +427,7 @@
 // a slot that also carries the mounted tape/disks/IDE images and the paths.
 #define TXT_OPT_PROFILES     "Config profiles"
 #define TXT_OPT_UI_SOUND     "Menu sound"
+#define TXT_OPT_KBD_REP      "Key repeat delay"
 #define TXT_OPT_REPLACE_ROM  "Replace ZX rom"
 #define TXT_OPT_UPDATE_FW    "Update firmware"
 #define TXT_ROM_PICK         "Select ROM file"

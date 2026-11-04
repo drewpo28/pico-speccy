@@ -122,9 +122,7 @@ void repeat_me_for_input() {
         s_prev = r;
     }
     host_pads_apply();
-    static uint64_t t_rep = 0;
-    const uint64_t now = time_us_64();
-    if (now - t_rep > 150000) { repeat_handler(); t_rep = now; }
+    repeat_handler();   // keeps its own deadline (ESPectrum.cpp), as on the firmware
 }
 
 // ---- threads ------------------------------------------------------------------------
@@ -474,8 +472,9 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     // PICOSPECCY_KEYS="frame:Key,frame:Key,..." holds each key (an SDL scancode name:
     // Space, Return, A, F1, ...) from that presented frame for 6 frames — typing
     // without a display (SDL_VIDEODRIVER=dummy), alongside the shots above.
+    // "frame:Key:N" holds it N frames instead (auto-repeat tests).
     {
-        struct HK { uint32_t at; SDL_Scancode sc; };
+        struct HK { uint32_t at; SDL_Scancode sc; uint32_t hold; };
         static std::vector<HK> hk;
         static bool hkParsed = false;
         if (!hkParsed) {
@@ -489,8 +488,11 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
                     const std::string item = all.substr(p, e - p);
                     const size_t c = item.find(':');
                     if (c != std::string::npos) {
-                        const SDL_Scancode sc = SDL_GetScancodeFromName(item.substr(c + 1).c_str());
-                        if (sc != SDL_SCANCODE_UNKNOWN) hk.push_back({(uint32_t)atoi(item.c_str()), sc});
+                        const size_t c2 = item.find(':', c + 1);
+                        const uint32_t hold = c2 != std::string::npos ? (uint32_t)atoi(item.c_str() + c2 + 1) : 6u;
+                        const SDL_Scancode sc = SDL_GetScancodeFromName(
+                            item.substr(c + 1, c2 == std::string::npos ? std::string::npos : c2 - c - 1).c_str());
+                        if (sc != SDL_SCANCODE_UNKNOWN) hk.push_back({(uint32_t)atoi(item.c_str()), sc, hold});
                         else fprintf(stderr, "host: PICOSPECCY_KEYS: unknown key '%s'\n", item.c_str() + c + 1);
                     }
                     p = e + 1;
@@ -499,7 +501,7 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         }
         for (const HK& k : hk) {
             if (presented == k.at) key_event(k.sc, true);
-            if (presented == k.at + 6) key_event(k.sc, false);
+            if (presented == k.at + k.hold) key_event(k.sc, false);
         }
     }
     // PICOSPECCY_MBR=1 lists the card's partitions the way the menu's source picker
