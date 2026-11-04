@@ -1314,8 +1314,11 @@ Z80_COLD void Z80::doNMI(void) {
         DivMMC::automap = false;
         DivMMC::applyMapping();
     }
-    // MB-02+: ensure SRAM page 0 is mapped for NMI handler (BS-ROM 118 NMI menu)
-    if (MB02::enabled) {
+    // MB-02+: ensure SRAM page 0 is mapped for NMI handler (BS-ROM 118 NMI menu) -
+    // only when the NMI is the card's: beside esxDOS that is after BS-DOS booted
+    // (OSD::nmiAction sets nmi_bypass); otherwise the page hid esxDOS's 0x0066 trap
+    // and the LFN Browser never opened (hw 2026-11-04, the eLeMeNt's divSD + MB02+).
+    if (MB02::enabled && (!DivMMC::enabled || DivMMC::nmi_bypass)) {
         MB02::writePort17(0x60); // SRAM page 0, write enable
     }
     // Scorpion magic button: the hardware asserts 1FFD D1 (service page) with

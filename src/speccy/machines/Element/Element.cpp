@@ -14,6 +14,7 @@
 #include "speccy/machines/Element/ElmSid.h"
 #include "speccy/machines/Element/ElmFlash.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/devices/sound/SAASound.h"
 #include "ui/LEDIndicators.h"
@@ -686,6 +687,28 @@ int takeReset() {
     return k;
 }
 
+// The MB-02+ card's 512 KB on this machine: butter PSRAM, allocated once, registered with
+// the card (MB02::setExternalRam) so MB02::init never takes the URAM strip's pages.
+static uint8_t* s_mb02Ram;
+static bool mb02Ram() {
+    // The divSD's 512 KB (64 banks, DivMMC::banks() on this machine) ARE the MB02+ RAM
+    // on the board; with the banks in butter PSRAM they are one contiguous block, so the
+    // card simply pages the same bytes. Without them (esxDOS off, or the swap-file
+    // path) the card gets a block of its own.
+    uint8_t* base = (DivMMC::enabled && DivMMC::use_psram && DivMMC::banks() == 64) ? DivMMC::bank_ptr[0] : nullptr;
+    if (base) {
+        if (s_mb02Ram != base) Debug::log("[ELM] MB-02+ RAM = the divSD's 512 KB @ %p (shared)", base);
+        s_mb02Ram = base;
+    } else if (!s_mb02Ram) {
+        if (!Buffer::butterPoolReady()) return false;
+        s_mb02Ram = (uint8_t*)Buffer::palloc(32u * 16384u, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!s_mb02Ram) { Debug::log("[ELM] no PSRAM for the MB-02+ 512 KB"); return false; }
+        Debug::log("[ELM] MB-02+ RAM 512 KB @ %p (butter PSRAM, not the divSD's)", s_mb02Ram);
+    }
+    MB02::setExternalRam(s_mb02Ram);
+    return true;
+}
+
 // Phase E: the SetUp's registers -> Config. Runtime only, never Config::save(): the
 // SetUp is the Element's own configuration (FRAM), the NVS stays the user's. `live`
 // runs the hooks the settings menu would (and the subsystem reconcile); at boot the
@@ -718,6 +741,15 @@ static void applyRegs(const uint8_t* e, bool live) {
     if (Config::zcontroller != zc) {
         Config::zcontroller = zc; note(zc ? "zc" : "zc-off");
         if (live) { if (zc) DivMMC::zc_init(); else DivMMC::zc_shutdown(); }
+    }
+    // divSD + MB02+ (e_001 = 02): the MB-02+ card beside esxDOS, its 512 KB from butter
+    // PSRAM (mb02Ram), never the URAM strip. 00/01/03 = off.
+    if (e[0x001] <= 3) {
+        const bool mb = e[0x001] == 2;
+        if (Config::mb02 != (mb ? 1 : 0)) {
+            if (mb && !mb02Ram()) note("mb02-no-psram");
+            else { Config::mb02 = mb ? 1 : 0; subsys = true; note(mb ? "mb02" : "mb02-off"); }
+        }
     }
     // MonsterBlaster (bit 2) = the DAC ports here (#0F..#5F, dacWrite) AND the Covox
     // subsystem of the emulator; the SetUp's bit decides both.
@@ -766,7 +798,6 @@ static void validateRegs() {
     };
     uint8_t* e = s_r->e;
     if (e[0x000] == 2 || e[0x000] == 4 || e[0x000] > 9) revert(0x000, prev[0x000] <= 9 && prev[0x000] != 2 && prev[0x000] != 4 ? prev[0x000] : kDefaults[0], "machine");
-    if (e[0x001] == 2) revert(0x001, 1, "MB-02+");                 // its pages overlap the URAM here
     if (!(e[0x002] & 1)) revert(0x002, (uint8_t)(e[0x002] | 1), "ULA audio off");
     if (e[0x01A] != 0) revert(0x01A, 0, e[0x01A] == 1 ? "Sega pad" : "DE9 UART");
     if (e[0x01F] != 0) revert(0x01F, 0, "DVI");
@@ -811,6 +842,7 @@ void bootSettings() {
                e == f ? "FRAM" : "defaults", e[0x002], e[0x003], e[0x010], e[0x011], e[0x01D], e[0x02C],
                Config::joystick, (int)Config::timex_video, (int)Config::ulaplus, Config::gigascreen_onoff, Config::tsfm, (int)Config::SAA1099, (int)Config::zcontroller);
     applyRegs(e, false);
+    if (Config::mb02) MB02::init();      // setup()'s own MB02::init ran before the pools and refused here
     aasramWanted(e[0x038] & 1, "FRAM e_zxi_038");
     divsdWanted(e[0x001], "FRAM e_zxi_001");
     s_dmaBoot = Config::dma_mode != 0;
@@ -881,7 +913,7 @@ void syncFromSettings() {
     w[0x002] = a;
     w[0x02C] = Config::zcontroller ? (w[0x02C] ? w[0x02C] : 1) : 0;
     if (Config::esxdos == 0) { if (w[0x001] == 1 || w[0x001] == 2) w[0x001] = 0; }
-    else if (w[0x001] == 0 || w[0x001] == 3) w[0x001] = 1;
+    else if (w[0x001] <= 3) w[0x001] = Config::mb02 ? 2 : 1;
     w[0x038] = (uint8_t)((w[0x038] & ~1) | (Config::elm_aasram ? 1 : 0));
     if (Config::ayConfig == 0 || Config::ayConfig == 1)
         w[0x018] = (uint8_t)((w[0x018] & ~2) | (Config::ayConfig == 0 ? 2 : 0));
@@ -1279,6 +1311,11 @@ bool portOut(uint16_t a, uint8_t v) {
         return true;
     }
     if (gamaOut((uint8_t)a, v)) return true;   // Gama 80: #7F / #5F page the upper 32 KB
+    // divSD + MB02+: the WD2797 sits on #0F/#2F/#4F/#6F, the same low bytes as the
+    // SounDrive DACs - with the card on, those writes are the floppy controller's
+    // (hw 2026-11-04: BS-DOS's Restore/Read never reached the WD, "insert your system
+    // disk" forever). The board's FPGA decides the same way by e_zxi_001 = 02.
+    if (MB02::enabled && (((uint8_t)a & 0x9F) == 0x0F)) return false;
     switch ((uint8_t)a) {
     case 0x0F: dacWrite(0, v); return true;
     case 0x1F: dacWrite(1, v); return true;

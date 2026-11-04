@@ -195,7 +195,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // romset the same way Byte's do.
         const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || arch == A_ELM || isP3 || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             Debug::log("[MACH switch] MB-02+ disabled: not available on %s (its SRAM took the top %d pages of the strip)",

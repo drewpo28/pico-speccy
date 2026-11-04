@@ -10,7 +10,8 @@
 
 #define DIVMMC_ROM_SIZE  0x2000   // 8KB ESXDOS ROM
 #define DIVMMC_BANK_SIZE 0x2000   // 8KB per bank
-#define DIVMMC_NUM_BANKS 16       // 16 banks = 128KB RAM
+#include "app/Config.h"
+#define DIVMMC_NUM_BANKS 64       // the bank TABLE: 64 = 512 KB; banks() says how many are real
 #define DIVMMC_CACHE_SLOTS 3      // swap mode: number of cached bank buffers
 
 // DivMMC automap trap addresses (M1 cycle entry points)
@@ -60,11 +61,19 @@ public:
     // maps (NR 0xBB bits 1/0), RETN or reset; next_nmi_hold = an NMI is in
     // progress, no new one is accepted until both the button and automap drop.
     static bool next_nmi_btn;
+    // One NMI that is NOT the divMMC's: the next 0x0066 entry does not automap
+    // (the NMI chooser's "MB-02+ NMI" - the card's own handler at its page 0).
+    static bool nmi_bypass;
     static bool next_nmi_hold;
     static void nextRetn();       // Next: RETN unmaps (divmmc i_retn_seen)
 
     static uint8_t *esxdos_rom;   // 8KB ESXDOS ROM (dynamically allocated)
     static uint8_t* bank_ptr[DIVMMC_NUM_BANKS]; // direct pointer per bank (null = swapped out)
+    // How many 8 KB banks this machine's divMMC has: 16 (128 KB, the historical size)
+    // everywhere, 64 (512 KB) on the eLeMeNt ZX, whose divSD RAM is also the MB-02+
+    // card's 512 KB (MB02::setExternalRam aliases it: "512 KB DivSD RAM is shared with
+    // 512 KB MB02+ RAM", the Reference). Inline: Ports::output masks #E3 with it.
+    static inline uint8_t banks() { return Config::arch == A_ELM ? 64 : 16; }
 
     static bool use_psram;            // true = all banks in butter PSRAM (direct pointers)
     static int8_t hi_slot;            // swap mode: slot index of page0_hi bank (-1 if none)
@@ -342,6 +351,7 @@ __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
     if (!opcodeTrapPage(pc)) return;
     pend_after = 0;
     { extern uint8_t g_elm_nodiv; if (g_elm_nodiv && !automap) return; }   // eLeMeNt ZX: URAM on top
+    { extern bool g_mb02_page0; if (g_mb02_page0 && !automap && !conmem) { if (pc == DIVMMC_TRAP_0066) nmi_bypass = false; return; } }   // MB-02+ holds page 0 (its EPROM boots)
 
     // ZX Spectrum Next: the entry points are PROGRAMMABLE via nextreg
     // 0xB8-0xBB (NextZXOS reconfigures them right after its RAM check:
@@ -448,7 +458,9 @@ __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
 #endif
     // Entry points: map AFTER fetch, only if automap is currently OFF
     if (!automap) {
-        if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
+        if (pc == DIVMMC_TRAP_0066 && nmi_bypass) {
+            nmi_bypass = false;               // this NMI belongs to the MB-02+
+        } else if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
             pc == DIVMMC_TRAP_0038 || pc == DIVMMC_TRAP_0066 ||
             pc == DIVMMC_TRAP_04C6 || pc == DIVMMC_TRAP_0562) {
             pend_after |= 1;

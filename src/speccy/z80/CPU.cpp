@@ -622,10 +622,11 @@ void CPU::reset() {
         Ep::reset();
     }
 
-    // eLeMeNt ZX: no FDC, the disks are esxDOS over the SD card (backstop as above).
+    // eLeMeNt ZX: no Beta on its bus (backstop as above). MB-02+ stays: the SetUp's
+    // "divSD + MB02+" (e_zxi_001 = 02) is the card over the divSD's 512 KB (2026-11-04;
+    // this line cleared it right after Elm::bootSettings had set it).
     if (Z80Ops::isElm) {
         Config::betadisk = false;
-        Config::mb02 = false;
         Elm::reset();
     }
 

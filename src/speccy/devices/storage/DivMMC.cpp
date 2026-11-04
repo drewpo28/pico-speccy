@@ -126,6 +126,7 @@ bool DivMMC::conmem = false;
 bool DivMMC::mapram = false;
 uint8_t DivMMC::bank = 0;
 uint8_t *DivMMC::esxdos_rom = nullptr;
+bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
 bool DivMMC::divsd_mode = false;
@@ -407,7 +408,7 @@ void DivMMC::init() {
     }
 
     // Allocate DivMMC bank RAM: prefer butter PSRAM, fallback to swap
-    size_t divmmc_total = DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+    size_t divmmc_total = (size_t)banks() * DIVMMC_BANK_SIZE;
     size_t butter_used = (size_t)butter_pages * MEM_PG_SZ;
     size_t butter_free = butter_psram_size() > butter_used ? butter_psram_size() - butter_used : 0;
 
@@ -415,8 +416,8 @@ void DivMMC::init() {
         use_psram = true;
         uint8_t* base = PSRAM_DATA + butter_used;
         for (int i = 0; i < DIVMMC_NUM_BANKS; i++)
-            bank_ptr[i] = base + i * DIVMMC_BANK_SIZE;
-        Debug::log("DivMMC: %d banks in butter PSRAM @ %p", DIVMMC_NUM_BANKS, base);
+            bank_ptr[i] = i < banks() ? base + i * DIVMMC_BANK_SIZE : nullptr;
+        Debug::log("DivMMC: %d banks in butter PSRAM @ %p", banks(), base);
     } else {
         use_psram = false;
         // Allocate as many cache slots as possible (minimum 2)
@@ -448,7 +449,7 @@ void DivMMC::init() {
             swap_open = true;
         }
         memset(bank_ptr, 0, sizeof(bank_ptr));
-        Debug::log("DivMMC: %d banks via swap file (%d cache slots)", DIVMMC_NUM_BANKS, allocated);
+        Debug::log("DivMMC: %d banks via swap file (%d cache slots)", banks(), allocated);
     }
     clearAllBanks();
 
@@ -703,7 +704,7 @@ void DivMMC::reset() {
         static bool cleared_once = false;
         if (!cleared_once) {
             cleared_once = true;
-            for (int i = 0; i < DIVMMC_NUM_BANKS; i++)
+            for (int i = 0; i < banks(); i++)
                 if (bank_ptr[i]) memset(bank_ptr[i], 0, DIVMMC_BANK_SIZE);
         }
     }
@@ -749,7 +750,7 @@ void DivMMC::setRom(const uint8_t* rom) {
 
 void DivMMC::applyMapping() {
     if (conmem || automap) {
-        uint8_t b = bank & (DIVMMC_NUM_BANKS - 1);
+        uint8_t b = bank & (banks() - 1);
         if (mapram) {
             materialize(3);
             MemESP::page0_lo = bank_ptr[3];
@@ -870,7 +871,7 @@ void DivMMC::buildCSD_real(uint32_t sector_count) {
 void DivMMC::clearAllBanks() {
     if (use_psram) {
         // All banks are contiguous in butter PSRAM
-        memset(bank_ptr[0], 0, DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE);
+        memset(bank_ptr[0], 0, (size_t)banks() * DIVMMC_BANK_SIZE);
     } else {
         // Clear active buffers
         for (int i = 0; i < DIVMMC_CACHE_SLOTS; i++) {
@@ -887,7 +888,7 @@ void DivMMC::clearAllBanks() {
             memset(zeros, 0, sizeof(zeros));
             f_lseek(swap_file, 0);
             UINT bw;
-            for (size_t i = 0; i < DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE; i += sizeof(zeros))
+            for (size_t i = 0; i < (size_t)banks() * DIVMMC_BANK_SIZE; i += sizeof(zeros))
                 f_write(swap_file, zeros, sizeof(zeros), &bw);
         }
     }
@@ -931,7 +932,7 @@ void DivMMC::evict(int slot) {
 }
 
 uint8_t* DivMMC::snapBank(uint8_t b, bool write) {
-    if (!enabled || b >= DIVMMC_NUM_BANKS) return nullptr;
+    if (!enabled || b >= banks()) return nullptr;
     materialize(b);
     if (write && !use_psram)
         for (int i = 0; i < DIVMMC_CACHE_SLOTS; i++) if (active_bank[i] == b) slot_dirty[i] = true;
@@ -959,7 +960,7 @@ void DivMMC::materialize(uint8_t bank_idx) {
     }
 
     // Find slot: prefer free, then LRU (excluding the other needed bank)
-    uint8_t cur = bank & (DIVMMC_NUM_BANKS - 1);
+    uint8_t cur = bank & (banks() - 1);
     uint8_t other_needed = (bank_idx == cur) ? 3 : cur;
     int slot = find_victim(other_needed);
     if (slot < 0) return; // shouldn't happen

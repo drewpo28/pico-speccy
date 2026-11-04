@@ -652,8 +652,8 @@ trace had no sector 0 read, two root sectors, two SYS sectors and a stray cluste
 AA-SRAM 4 MB machine (e_038 = 01); on 2 MB it says "Out of Memory" on every personality, not emulated. Z-Controller
 (2026-11-03, bench): its own card beside the divSD — a partition (primary or logical) of the one SD card, or an image,
 Devices > Z-Controller — on DivMMC's shared SPI machine (storage-tape.md "Two cards on one SPI machine"); the SetUp's
-e_zxi_02C now simply sets it. MB-02+ stays off on the eLeMeNt (it would take the URAM strip's last 32 pages), so
-e_zxi_001 = 02 (divSD + MB02+) is still = 01 here.
+e_zxi_02C now simply sets it. MB-02+ on the eLeMeNt (2026-11-04): its 512 KB from butter PSRAM beside the URAM
+(`MB02::setExternalRam`), so e_zxi_001 = 02 (divSD + MB02+) now switches the card on; see storage-tape.md.
 **AA-SRAM (e_zxi_038, 2026-11-03, hw-confirmed DVp2w, AWORLD loads):** `Config::elm_aasram` (NVS) makes `wantedPages(A_ELM)` 256 (4 MB,
 512 URAM pages); the Protect pool follows the Reference table (ZX <= 512 KB: 128 / 384 pages at base 128; P1024: 64 at 128 /
 256 at 256; 4096: the whole URAM - "no Protect mode" - AWORLD's loader checks g_011/012 before it writes e_000 = 06

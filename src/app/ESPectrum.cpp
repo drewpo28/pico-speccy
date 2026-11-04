@@ -1318,10 +1318,9 @@ void ESPectrum::setup() {
   // Next / eLeMeNt ZX: esxDOS is whatever Devices > esxDOS holds. MachineSwitch sets
   // DivSD (raw card) on ENTRY, the mode NextZXOS boots from; a later Off / DivMMC /
   // DivIDE is the user's pick and survives the reboot (owner, 2026-11-02).
-  // eLeMeNt ZX: no FDC, esxDOS over the real card IS the disk system.
+  // eLeMeNt ZX: no Beta; MB-02+ is the SetUp's call (e_zxi_001 = 02, Elm::bootSettings).
   if (Config::arch == A_ELM) {
     Config::betadisk = false;
-    Config::mb02 = false;
   }
 
   //=======================================================================================
@@ -1879,6 +1878,9 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: Config::loadDiskMounts begin, freeHeap=%u", (unsigned)getFreeHeap());
   if (FileUtils::fsMount) {
     Config::loadDiskMounts();
+    // MB-02+ beside esxDOS: its boot EPROM takes page 0 only with a disk in drive A
+    // (MB02::applyMapping), and the drives were loaded AFTER the reset above.
+    if (MB02::enabled) MB02::applyMapping();
   }
   Debug::log("setup: Config::loadDiskMounts done, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: Config::loadDiskMounts done, freeHeap=%u", (unsigned)getFreeHeap());

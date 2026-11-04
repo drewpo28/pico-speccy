@@ -26,6 +26,13 @@ public:
     static void init();
     static void reset();
     static void applyMapping();
+    // The 512 KB of SRAM from OUTSIDE the ZX page strip (the eLeMeNt ZX: its strip is
+    // the Ultimate RAM, so the card's pages come from butter PSRAM instead —
+    // machines/Element). nullptr = the strip's top pages, as on every other machine.
+    static void setExternalRam(uint8_t* base512k);
+    // BS-DOS took this boot: the card's EPROM was paged at 0x0000 after the last reset
+    // (drive A held a disk). Beside esxDOS the NMI then belongs to the MB-02+.
+    static bool booted;
 
     // Port handlers
     static void writePort17(uint8_t data);
@@ -44,7 +51,8 @@ private:
 
     // SRAM pages use MemESP::ram[ram_base_idx + page] descriptors
     // These are already allocated by ESPectrum::setup() (heap/PSRAM/swap)
-    static int ram_base_idx;       // base index in MemESP::ram[] for MB-02 pages
+    static int ram_base_idx;       // base index in MemESP::ram[] for MB-02 pages; -1 = ext_ram
+    static uint8_t* ext_ram;       // setExternalRam
 
     static uint8_t* getPage(uint8_t page_idx);
 };

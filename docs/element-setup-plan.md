@@ -365,8 +365,7 @@ FRAM `#3FF0` растёт на каждое нажатие.
   эти шесть опций пишутся из NVS в FRAM (иначе нетронутая таблица SetUp включила бы UART/DMA и
   сбила пояс); дальше FRAM — единственный источник, как и для прежней группы.
 - **Неподдерживаемое → сообщение + откат** (`validateRegs` при RST 0 SetUp, снимок регистров
-  `s_preSetup` берётся в `enterSetup`): `e_000` 02/04/>09; `e_001 = 02` (MB-02+: страницы на
-  URAM) → 01; `e_002`.0 = 0 (ULA audio off) → 1; `e_01A` ≠ 0 (Sega / DE9 UART) → 0; `e_01F` DVI →
+  `s_preSetup` берётся в `enterSetup`): `e_000` 02/04/>09; `e_002`.0 = 0 (ULA audio off) → 1; `e_01A` ≠ 0 (Sega / DE9 UART) → 0; `e_01F` DVI →
   0; `e_02C = 02` (второй слот) → 01; `e_02D`.1 swap SD → 0; `e_030 ≥ 3` (20 МГц/OverClock) → 02;
   `e_031`.0 → 0; `e_03F` Diagnostic → 0. Регистр и FRAM возвращаются, тост «SetUp: not here: …»
   поднимается на первом кадре после сброса (внутри сброса его стирала перерисовка), лог «[ELM]
@@ -377,6 +376,40 @@ FRAM `#3FF0` растёт на каждое нажатие.
   (`900:Left Shift:14,904:R`) → лог «SetUp RST 0», «not supported here, kept as before: DVI,
   20 MHz / OverClock, OverClock», засев «FRAM seeded from the settings once». Меню личностей и
   `syncFromSettings` на стенде не прогонялись (навигация меню клавишами), только сборка.
+
+### Фаза F′. divSD + MB02+ (2026-11-04, hw-confirmed DVp2w «работает», `debug/DVp2w-elm-mb02-1.1.1`)
+
+Владелец: «а почему нельзя выбрать divSD+MB?». Причина была наша: `MB02::init` брал 512 КБ как
+последние 32 страницы полосы `MemESP::ram`, а на eLeMeNt вся полоса — URAM.
+- **Память по Reference** («512 KB DivSD RAM is shared with 512 KB MB02+ RAM»): на eLeMeNt у
+  divMMC 64 банка (`DivMMC::banks()`, 16 на остальных машинах; таблица `DIVMMC_NUM_BANKS` = 64),
+  и `Elm::mb02Ram` отдаёт карте те же 512 КБ (`MB02::setExternalRam`, прямой указатель, без пула).
+  Без esxDOS или в swap-режиме карта получает свой блок из butter PSRAM. `MB02::init` на eLeMeNt без
+  блока отказывает (его вызов в `setup()` до пулов), `Elm::bootSettings` после FRAM зовёт init сам.
+- `e_001 = 02` ↔ `Config::mb02` в обе стороны (applyRegs / syncFromSettings), откат «MB-02+» снят,
+  строка MB-02+ в Devices на eLeMeNt показана, MachineSwitch не выключает карту для A_ELM.
+- **hw 2026-11-04, «вставляю диск — ничего не происходит»**, три причины: (1) бэкстопы в `CPU::reset`
+  и `setup()` для A_ELM ставили `Config::mb02 = false` сразу после bootSettings (нашлось watchpoint'ом
+  gdb на хосте); (2) WD2797 `#0F/#2F/#4F/#6F` совпадает с ЦАП SounDrive — `Elm::portOut` забирал
+  записи, теперь при MB-02+ они идут контроллеру; (3) `Ports::dmaInput/dmaOutput` на eLeMeNt шли
+  коротким путём `input()/output()` без ожидания DRQ: DMA забирал 1023 байта раньше WD, статус lost
+  data, загрузчик BS-DOS (`#97B3`: Restore, DMA в `#8000`, `CP #18`) перечитывал сектор вечно.
+- **hw, «по F11 / Alt+F11 не попасть в SetUp»**: EPROM MB-02+ ложился на `#0000` поверх ROM SetUp;
+  `MB02::applyMapping` уступает страницу 0, пока `g_elm_nodiv`.
+- **Страница 0 вдвоём с esxDOS:** при сбросе EPROM берёт её только с диском в дисководе A (иначе
+  грузится esxDOS); пока страница 0 у карты (`g_mb02_page0`), divMMC не автомапится. Повторный
+  `applyMapping` после `loadDiskMounts` (диски грузятся после сброса).
+- **hw, «divSD+MB без диска: LFN Browser не открывается»**, две причины: (1) `Z80::doNMI` при MB-02+
+  всегда включал SRAM страницу 0 карты (вход в NMI-меню BS-ROM), это прятало ловушку esxDOS на
+  `#0066`; теперь только когда NMI карты (`!DivMMC::enabled || nmi_bypass`); (2) отложенный старт DMA
+  для MB-02+ касался любого I/O-порта, а esxDOS MB03+SD читает SD через DMA с `#EB`; теперь только
+  порты WD2797. Стенд: карта с SYS/NMI.SYS (`cardsys.img`), NMI → `.browse v1.02 NMI` в обоих режимах.
+- **NMI (владелец):** BS-DOS загрузился (`MB02::booted`, EPROM был на `#0000` после сброса) → NMI
+  его: `DivMMC::nmi_bypass` пропускает ловушку `#0066` один раз; иначе NMI esxDOS. Меню не нужно.
+- Стенд: System512KB.mbd в A → BS-DOS BASIC (`Prog:0 Vars:0 Free:41606`) на eLeMeNt и на 128K
+  (с esxDOS и без); без диска esxDOS и его NMI-браузер; с BS-DOS NMI даёт красный бордюр с
+  полосками — что делает NMI MB-02+ на самом деле, проверить на железе. BS-DOS 512KB занимает всю
+  общую память, рабочая память esxDOS при этом затирается (так и на плате по Reference).
 
 ### Фаза E. Хвосты §3.7, счётчики, (опц.) `roms/plus2a`, импорт полного дампа flash.
 

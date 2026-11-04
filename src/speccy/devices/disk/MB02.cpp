@@ -20,6 +20,13 @@ bool MB02::write_enabled = false;
 uint8_t* MB02::page0_composite = nullptr;
 uint8_t MB02::motor_state = 0;
 int MB02::ram_base_idx = -1;
+uint8_t* MB02::ext_ram = nullptr;
+bool MB02::booted = false;
+// Page 0 is the card's (boot EPROM or an SRAM page) right now: DivMMC::preOpcFetch
+// does not automap over it, so BS-DOS boots when the EPROM is in and esxDOS gets
+// page 0 back when BS-DOS pages the EPROM out (NMI / RST 8 entries, 2026-11-04).
+bool g_mb02_page0 = false;
+void MB02::setExternalRam(uint8_t* base512k) { ext_ram = base512k; }
 bool MB02::disk_changed = false;
 
 // MB-02+ needs Z80 DMA on port #0B, so ENABLING the card raises Config::dma_mode when
@@ -33,6 +40,7 @@ static bool s_dmaForced = false;
 
 void MB02::init() {
     enabled = false;
+    g_mb02_page0 = false;
     MemESP::mb02_write_gate = true;
     MemESP::mb02_page_dirty = nullptr;
     Z80DMA::mb02_deferred = false;
@@ -84,6 +92,17 @@ void MB02::init() {
         }
     }
 
+    if (ext_ram) {
+        // The eLeMeNt ZX: the strip is its URAM, the card's 512 KB are the divSD's
+        // (setExternalRam) - not zeroed here, esxDOS may be living in them.
+        ram_base_idx = -1;
+    } else if (Config::arch == A_ELM) {
+        // Never the strip there; Elm::bootSettings / applyRegs bring the external RAM
+        // first and init again.
+        Debug::log("MB02: eLeMeNt: no external 512 KB registered yet, stays off");
+        Config::mb02 = 0;
+        return;
+    } else {
     // Use MemESP::ram[] pages for MB-02 SRAM.
     // Spectrum 128K uses pages 0-7, +2 hidden ROM pages = 10 pages.
     // Pages 10+ are available. We need 32 pages (512KB).
@@ -108,6 +127,7 @@ void MB02::init() {
             // or the eviction write-back is skipped and the zeroing is lost.
             *MemESP::ram[ram_base_idx + i].dirty_ptr() = true;
         }
+    }
     }
 
     // Set up the MB-02 FDD instance (preserve existing disks on re-init)
@@ -147,7 +167,8 @@ void MB02::init() {
     Z80DMA::mb02_deferred = true;
 
     enabled = true;
-    Debug::log("MB02: enabled, ram[%d..%d], dma_mode=%d",
+    if (ext_ram) Debug::log("MB02: enabled, external 512 KB @ %p, dma_mode=%d", ext_ram, Config::dma_mode);
+    else Debug::log("MB02: enabled, ram[%d..%d], dma_mode=%d",
                ram_base_idx, ram_base_idx + MB02_NUM_PAGES - 1, Config::dma_mode);
 }
 
@@ -158,6 +179,7 @@ void MB02::reset() {
     ESPectrum::mb02_fdd.wd2797_mode = true;
 
     paging_reg = MB02_EPROM_ENABLE;
+    booted = false;
     floppy_reg = 0xFF;
     motor_state = 0;
     write_enabled = false;
@@ -166,13 +188,29 @@ void MB02::reset() {
 }
 
 uint8_t* MB02::getPage(uint8_t page_idx) {
-    if (page_idx >= MB02_NUM_PAGES || ram_base_idx < 0) return nullptr;
+    if (page_idx >= MB02_NUM_PAGES) return nullptr;
+    if (ext_ram) return ext_ram + (size_t)page_idx * MB02_PAGE_SIZE;   // a direct frame, no pool, no dirty flag
+    if (ram_base_idx < 0) return nullptr;
     return MemESP::ram[ram_base_idx + page_idx].materialize(0); // callers deref the pointer
 }
 
 void MB02::applyMapping() {
     bool sram_en = paging_reg & MB02_SRAM_ENABLE;
     bool eprom_en = paging_reg & MB02_EPROM_ENABLE;
+    // eLeMeNt ZX: page 0 belongs to the SetUp ROM (or Zone 0 URAM) while g_elm_nodiv,
+    // exactly as the divMMC window yields there (DivMMC.h). hw 2026-11-04: the card's
+    // boot EPROM came up over the SetUp ROM, so F11 / Alt+F11 showed the BS-DOS
+    // loader instead of the SetUp. The register is kept; the next reset re-applies.
+    g_mb02_page0 = false;
+    { extern uint8_t g_elm_nodiv; if (Config::arch == A_ELM && g_elm_nodiv) { MemESP::mb02_write_gate = true; MemESP::mb02_page_dirty = nullptr; return; } }
+    // Beside esxDOS, both want page 0 at reset and the one that maps first keeps it.
+    // Rule (2026-11-04): the boot EPROM takes it only when drive A holds a disk - a
+    // system disk in = BS-DOS boots, drive empty = esxDOS boots, instead of the loader
+    // sitting on "insert your system disk" with esxDOS locked out (hw, the eLeMeNt).
+    if (eprom_en && !sram_en && DivMMC::enabled && !ESPectrum::mb02_fdd.disk[0]) {
+        static bool once; if (!once) { once = true; Debug::log("MB02: boot EPROM skipped - drive A is empty, esxDOS boots"); }
+        eprom_en = false;
+    }
 
     write_enabled = (paging_reg & MB02_WRITE_ENABLE) != 0;
     // Beside esxDOS (allowed since 2026-11-03, the eLeMeNt's "divSD + MB02+" shape):
@@ -207,6 +245,8 @@ void MB02::applyMapping() {
         MemESP::page0_lo = page0_composite;
         MemESP::page0_hi = rom_ptr ? rom_ptr + 0x2000 : page0_composite;
         MemESP::divmmc_mapped = true;
+        g_mb02_page0 = true;
+        booted = true;                   // BS-DOS boots this time
         MemESP::divmmc_lo_rom = false;   // heap composite (write gate governs)
         MemESP::divmmc_lo_dirty = nullptr;
         MemESP::divmmc_hi_dirty = nullptr;
@@ -224,13 +264,14 @@ void MB02::applyMapping() {
         MemESP::page0_lo = p;
         MemESP::page0_hi = p + 0x2000;
         MemESP::divmmc_mapped = true;
+        g_mb02_page0 = true;
         MemESP::divmmc_lo_rom = false;   // MB-02 SRAM page (write gate governs)
         MemESP::divmmc_lo_dirty = nullptr;
         MemESP::divmmc_hi_dirty = nullptr;
         // The window is a POOL frame: writes through page0 must mark the page
         // dirty (writebyte's MB-02 branches) or its eviction write-back is
         // skipped → BS-DOS system/RAM-disk data loss.
-        MemESP::mb02_page_dirty = MemESP::ram[ram_base_idx + page].dirty_ptr();
+        MemESP::mb02_page_dirty = ram_base_idx >= 0 ? MemESP::ram[ram_base_idx + page].dirty_ptr() : nullptr;
         return;
     }
 

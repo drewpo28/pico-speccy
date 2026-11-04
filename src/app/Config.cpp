@@ -1179,6 +1179,7 @@ void Config::loadDiskMounts() {
                     std::string fn = s.substr(plen);
                     // Keep the remembered path in sync (authoritative for save()).
                     mb02DiskFile[i] = fn;
+                    Debug::log("mounts: mb02d%u.file=%s (mb02=%u)", (unsigned)i, fn.c_str(), (unsigned)Config::mb02);
                     // Only re-insert MB-02 disks when the interface is enabled.
                     // The path is persisted regardless of Config::mb02, so a disk
                     // remembered while MB-02+ was on lingers in the mounts file
@@ -1192,6 +1193,8 @@ void Config::loadDiskMounts() {
                     // MB-02+ is re-enabled (loadMb02DiskMounts) or on next boot.
                     if (!fn.empty() && Config::mb02 && FileUtils::waitVolumeReady(fn)) {
                         rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, i, fn);
+                        Debug::log("mounts: MB-02+ drive %u <- %s (%s)", (unsigned)i, fn.c_str(),
+                                   ESPectrum::mb02_fdd.disk[i] ? "ok" : "failed");
                         if (ESPectrum::mb02_fdd.disk[i])
                             ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
                     }

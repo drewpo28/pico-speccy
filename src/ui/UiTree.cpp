@@ -995,7 +995,6 @@ static const Node kMachine[] = {
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
     NM_RADIO(TXT_MACH_SAM,   SET_MACHINE, opt_mach_sam,   p_showSam),
     NM_RADIO(TXT_MACH_EP,    SET_MACHINE, opt_mach_ep,    p_showEp),
-    NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
@@ -1006,6 +1005,7 @@ static const Node kMachine[] = {
     NM_SUB  (NM_IND TXT_MACH_OPTS, kTsconf, p_tsconfActive),
     NM_SUB  (NM_IND TXT_MACH_EVO_OPTS, kEvoBase, p_evoBaseActive),
     NM_RADIO(TXT_MACH_NEXT,  SET_MACHINE, opt_mach_next,  p_showNext),
+    NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the
@@ -1226,10 +1226,12 @@ static bool p_esxRow() {
     return !devOwnBus() && !devProfi() && !p_plus3On() &&
            a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
 }
+// The eLeMeNt's "divSD + MB02+" (SetUp e_zxi_001 = 02): the card's 512 KB come from
+// butter PSRAM there, not from the URAM strip (MB02::setExternalRam), so its row shows.
 static bool p_mb02Row() {
     const ArchIdx a = devArch();
     const RomsetIdx r = devRomset();
-    return !devOwnBus() && !devPent() && !devProfi() && !p_plus3On() &&
+    return (!devOwnBus() || a == A_ELM) && !devPent() && !devProfi() && !p_plus3On() &&
            a != A_SCORP && a != A_TSCONF && a != A_ATM &&
            r != R_48K_BY && r != R_128K_BY;
 }

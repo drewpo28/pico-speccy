@@ -834,7 +834,7 @@ size_t featurePsramCost(FeatureId f) {
         case FEAT_MIDI:          return MidiSynth::bankPsramBytes();
         // esxDOS banks become direct butter-PSRAM pointers in use_psram mode.
         case FEAT_DIVMMC:        return DivMMC::use_psram
-                                     ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
+                                     ? (size_t)DivMMC::banks() * DIVMMC_BANK_SIZE : 0;
         default:                 return 0;
     }
 }

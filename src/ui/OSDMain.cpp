@@ -2372,6 +2372,14 @@ void OSD::nmiAction() {
         notify(" NMI locked by the program ", LEVEL_INFO, 1200);
         return;
     }
+    if (DivMMC::enabled && MB02::enabled && MB02::booted) {
+        // Both cards, and BS-DOS took this boot (a disk was in drive A at the reset):
+        // the NMI is the MB-02+'s - a plain NMI with the divMMC's 0x0066 trap skipped
+        // once, so the Z80 lands in whatever the card has paged at 0x0000. With drive
+        // A empty esxDOS booted and keeps its NMI (owner, 2026-11-04: no chooser).
+        DivMMC::nmi_bypass = true;
+        Z80::triggerNMI();
+    } else
     if (DivMMC::enabled) {
         // DivMMC NMI: automap at 0x0066 handled by preOpcFetch/postOpcFetch
         Z80::triggerNMI();

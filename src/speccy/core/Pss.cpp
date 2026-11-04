@@ -472,9 +472,9 @@ bool save(const string& path, const string& name) {
     if (DivMMC::enabled) {
         // SZX ZXSTDIVMMC: dwFlags (2 = paged in), chCurrentPage (#E3), chNumRamPages.
         w.begin("DMMC");
-        w.u32(DivMMC::automap ? 2 : 0); w.u8(DivMMC::snapControl()); w.u8(DIVMMC_NUM_BANKS);
+        w.u32(DivMMC::automap ? 2 : 0); w.u8(DivMMC::snapControl()); w.u8(DivMMC::banks());
         w.end();
-        for (uint8_t b = 0; b < DIVMMC_NUM_BANKS && w.ok; b++) {
+        for (uint8_t b = 0; b < DivMMC::banks() && w.ok; b++) {
             const uint8_t* p = DivMMC::snapBank(b, false);
             if (!p) break;
             w.begin("DMRP"); w.u16(0); w.u8(b); w.raw(p, 8192); w.end();

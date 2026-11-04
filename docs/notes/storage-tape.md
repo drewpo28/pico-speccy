@@ -1242,9 +1242,13 @@ partition 5 inside an extended container.
   `DivMMC::applyMapping`'s unmap branch calls it back instead of `recoverPage0`.
   `MB02::init` leaves a mapped divMMC window alone (a menu toggle while the guest sits in
   esxDOS). Bench: 128K + esxDOS DivSD + MB-02+ boots to BASIC, nothing more was tried —
-  BS-DOS beside esxDOS is the owner's to prove on hardware. NOT on the eLeMeNt: MB-02+
-  there would take the URAM strip's last 32 pages (`MB02::init` uses `MemESP::ram`), so
-  the e_zxi_001 = 02 mode still means "= 01" (see other-machines.md).
+  BS-DOS beside esxDOS: hw-confirmed DVp2w 2026-11-04 on the eLeMeNt (divSD + MB02+, e_zxi_001
+  = 02). There the card's 512 KB ARE the divSD's (the Reference: shared; DivMMC::banks() = 64 on the
+  eLeMeNt, MB02::setExternalRam). Page 0 at a reset: the boot EPROM only with a disk in drive A, else
+  esxDOS boots; while the card holds page 0 the divMMC does not automap (g_mb02_page0). The NMI is
+  the card's when BS-DOS booted (MB02::booted -> DivMMC::nmi_bypass, and Z80::doNMI pages SRAM 0
+  only then), esxDOS's otherwise. The DMA deferral for MB-02+ covers the WD2797 ports only (esxDOS
+  MB03+SD reads #EB by DMA). Details and the bugs found on the way: element-setup-plan.md "Фаза F′".
 - **Exclusions lifted**: the UiStage trio rule, `Subsystems::FEAT_ZCONTROLLER`'s
   "esxdos = 0, mb02 = 0" and its DivMMC credit, `ESPectrum::setup`'s `zc_init` gate,
   `Elm::applyRegs`'s "zc-held-by-esxdos". Kept: the +3 rule (DivMMC and ZC off there),

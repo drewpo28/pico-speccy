@@ -3812,7 +3812,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
       if (lo == 0xE3 && NextReg::portOn(NextReg::PE_DIVMMC)) {
         LED::touchW(LED::SD);
         if (!(Z80Ops::isNext && NextPorts::divE3Fast(data))) {
-          DivMMC::bank = data & (DIVMMC_NUM_BANKS - 1);
+          DivMMC::bank = data & (DivMMC::banks() - 1);
           if (data & 0x40) DivMMC::mapram = true;
           DivMMC::conmem = (data & 0x80) != 0;
           DivMMC::applyMapping();
@@ -4554,8 +4554,10 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
         if (address == 0x243B) { NextReg::selected = data; return; }
         if (address & 0x0001) { output(address, data); return; }
     }
-    // eLeMeNt ZX: its DACs, SD and ZXi ports are all odd and claimed in output().
-    if (Z80Ops::isElm && (address & 0x0001)) { output(address, data); return; }
+    // eLeMeNt ZX: its DACs, SD and ZXi ports are all odd and claimed in output() -
+    // except the MB-02+ WD2797 (divSD + MB02+), which needs the DRQ-paced path below
+    // (hw 2026-11-04: BS-DOS's sector reads never completed on the eLeMeNt).
+    if (Z80Ops::isElm && (address & 0x0001) && !(MB02::enabled && (address & 0x9F) == 0x0F)) { output(address, data); return; }
     if ((address & 0x0001) == 0) {
         // ULA port (0xFE): border + beeper
         port254 = data;
@@ -4604,7 +4606,10 @@ IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
     // eLeMeNt ZX the same: PF2026's SD driver reads every sector from #EB with the
     // Z80 DMA, and got 512 x #FF (an MBR with partition LBA -1, the card then
     // dropped by the host after a read past its end, 2026-11-02).
-    if (Z80Ops::isNext || Z80Ops::isElm) return input(address);
+    // The MB-02+ WD2797 data port is DRQ-paced (the block below) on the eLeMeNt too:
+    // the plain input() read handed the DMA 1023 bytes before the controller had
+    // them - "lost data", BS-DOS's loader re-read sector 1 forever (2026-11-04).
+    if (Z80Ops::isNext || (Z80Ops::isElm && !(MB02::enabled && (address & 0x9F) == 0x0F))) return input(address);
     if ((address & 0x0001) == 0) {
         // ULA port: keyboard + ear
         return 0xFF; // no keys pressed
