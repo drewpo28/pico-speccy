@@ -6,6 +6,7 @@
 #include "NgsMp3.h"
 #include "app/Config.h"
 #include "app/Debug.h"
+#include "app/FlashRoms.h"      // romsUsable(): NGS_ROM.c is in the tradeable .psramroms
 #include "ui/LEDIndicators.h"
 
 extern "C" {
@@ -2132,6 +2133,15 @@ bool GS::init(uint32_t ram_size_bytes) {
                    "pointer-backed; SPI PSRAM cannot) — General Sound off");
         Config::gs_enabled = 0;
         return gs_init_failed("NeoGS needs internal PSRAM");
+    }
+    // The NeoGS firmware image (NGS_ROM.c) lives in the tradeable .psramroms. Only a
+    // butter-less board trades it, but one whose module was swapped for a butter one
+    // after the trade has butter AND a spent range — refuse rather than run a GM.DLS
+    // bank as Z80 code.
+    if (s_ngs && !FlashRoms::romsUsable()) {
+        Debug::log("GS::init: NeoGS ROM traded for the GM.DLS bank - General Sound off");
+        Config::gs_enabled = 0;
+        return gs_init_failed("NeoGS ROM traded for GM.DLS");
     }
     setClock();
 

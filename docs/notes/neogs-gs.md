@@ -11,7 +11,9 @@ The pico-spec classic-menu changes (OSDMain/messages) were NOT ported — nm:: U
 only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
 
 - **New files**: `src/speccy/devices/gs/NGS_ROM.{c,h}` (sparse 512 KB fw 1.11 flash image,
-  regen via `tools/ngs_rom_pack.py full_ngs.rom`), `src/speccy/devices/gs/NgsSd.{cpp,h}`
+  regen via `tools/ngs_rom_pack.py full_ngs.rom`; since 2026-11-04 it sits in the
+  tradeable `.psramroms` — NeoGS needs butter anyway, and `GS::init` refuses it when
+  `!FlashRoms::romsUsable()`, see memory-sram-flash.md), `src/speccy/devices/gs/NgsSd.{cpp,h}`
   (SD ports #11-#14 → host SD via core1→core0 one-slot mailbox; card is
   always SDHC; core0 pumps `NgsSd::service()` from ESPectrum::loop + frame
   waits + GS host-port handlers).

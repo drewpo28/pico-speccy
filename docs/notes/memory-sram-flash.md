@@ -405,6 +405,21 @@ bootrom's `flash_range_erase` takes the block size as an argument and does the
 unaligned head and tail with sector erases. The SDK only requires offset and count to
 be 4 KB multiples, and `__gm_bank_size` is one by construction.
 
+**2026-11-04: the hard floor was hit** (m1p2 4 MB, after Enterprise + Quorum +
+Leningrad): extended window 1620 KB, 12 KB short. On a 4 MB image the floor means
+`__psramrom_start <= 0x10268000`; the code before it ended at 0x1026a654. The ~385 KB
+`free@hard` in the table above had been eaten by code since 2026-09-20. No ELF is left
+when the ASSERT fires, but the .map is: read `__psramrom_start` and `.flash_end` there.
+Fix: **`NGS_ROM.c` (NeoGS firmware, 88 KB) moved into `.psramroms`** — NeoGS already
+refuses to start without butter (`GS::init`), so it is unreachable on every board that
+can trade the range; `GS::init` now also refuses it when `!FlashRoms::romsUsable()` (a
+board traded, then fitted with a butter module). m1p2: `__psramrom_start` 0x10255000,
+window 1708 KB, **76 KB free@hard**. Rejected by the owner: making Quorum / Enterprise
+butter-only (both must run without PSRAM). Not done, for the next squeeze: other
+butter-only objects still below the range — NextVideo 28.8 KB, Ft812Render 23.4 KB,
+Ft812 14.2 KB, NextReg 10.6 KB, Sam 8.1 KB (CODE: check static ctors and every
+unconditional call first, see the Pico-Zx-Player comment in rp2350-memmap.ld).
+
 ## A GM.DLS bank bigger than the flash partition is still playable in PSRAM (hw-confirmed 2026-09-09)
 
 "The picker does not see DLSbyXG.bin, not even the one it converted itself." Nothing
