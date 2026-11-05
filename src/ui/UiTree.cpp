@@ -832,8 +832,8 @@ static const Option opt_mach_kay[] = {
 // Machine > Other: boards that fit no family row. The ZXM-Phoenix is modelled on the
 // Scorpion arch (the KAY paging family, ArchRom.h isKayRomset) but is not a KAY. Its
 // 2 MB comes from SD swap at worst, so it needs only the extended-RAM gate.
-static const Option opt_mach_other[] = {
-    { TXT_ROM_PHOENIX, NM_MACH(A_SCORP, R_PHOENIX), TXT_ROM_PHOENIX_S },
+static const Option opt_mach_phoenix[] = {
+    { TXT_ROM_PHOENIX_2MB, NM_MACH(A_SCORP, R_PHOENIX), TXT_ROM_PHOENIX_S },
 };
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
@@ -986,6 +986,7 @@ static const Node kMachine[] = {
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
+    NM_RADIO(TXT_ROM_PHOENIX, SET_MACHINE, opt_mach_phoenix, p_extRam),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
@@ -994,7 +995,6 @@ static const Node kMachine[] = {
     NM_SUB  (NM_IND TXT_MACH_EVO_OPTS, kEvoBase, p_evoBaseActive),
     NM_RADIO(TXT_MACH_NEXT,  SET_MACHINE, opt_mach_next,  p_showNext),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
-    NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
     // holding S during the boot R/M probe window.

@@ -401,15 +401,15 @@
 // Nemo KAY (St. Petersburg). Romsets of the Scorpion arch; the labels must read the
 // same as kRomsetUiName[R_KAY*] (ArchRom.h), which the info pages use.
 #define TXT_MACH_KAY         "Kay"
-#define TXT_MACH_OTHER       "Other"
 #define TXT_ROM_KAY256       "KAY256 Turbo"
 #define TXT_ROM_KAY256_S     "256T"
 #define TXT_ROM_KAY1024      "KAY1024"
 #define TXT_ROM_KAY1024_S    "1024"
 #define TXT_ROM_KAY2010      "KAY1024 v2010/v2018"
 #define TXT_ROM_KAY2010_S    "1024 v2010"
-#define TXT_ROM_PHOENIX      "ZXM-Phoenix 2 MB"
-#define TXT_ROM_PHOENIX_S    "Phoenix"
+#define TXT_ROM_PHOENIX      "ZXM-Phoenix"
+#define TXT_ROM_PHOENIX_2MB  "ZXM-Phoenix 2MB"
+#define TXT_ROM_PHOENIX_S    "2MB"
 
 // ── Options ────────────────────────────────────────────────────────────────────
 #define TXT_OPT_PREF_MACHINE "Preferred machine"
