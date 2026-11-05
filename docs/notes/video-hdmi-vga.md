@@ -1412,3 +1412,20 @@ TMDS FIFO (~160 ns) running dry; a strict sink loses lock on that.
 - Owed: Pentagon and 640x480 on the same build (the "only Next" claim is pre-fix), the
   other W boards (`m1p2ws`/`m2p2ws`: radio ≥ GPIO32, the pio0 preference falls back to
   the SDK search when pio0 is VGA's), and a long download for throughput.
+
+## Packed-pair modes in the x4 / x3 / x1.5 scalers (2026-11-05, x4 fix hw-confirmed DVp2w 2026-11-05)
+
+Pair modes (DS80 / ATM hires+text / GMX / TS TEXT / Timex hi-res) store one fb byte =
+pair slot (L, R), 2 source px. The integer scalers repeat whole BYTES, so:
+- **x2 (640x480, 720x576)**: byte -> 2 px = L R, exact 1:1.
+- **x3 (1280x720, 1440x576, 1024x768 x3, PIO)**: x3 page `[L L R R]` -> L L R / L R R,
+  source widths 2,1,1,2 (x1.5 cannot be integer); in an 8-px glyph cols 0,3,4,7 are
+  double, so the middle of a letter is fat. Inherent, no 4-word slot pattern fixes it
+  (even byte reads words 0..2, odd 1..3). The HSTX expander x3 still does
+  L R L | R L R (doubled glyph, the bug the PIO page fixed) — owed.
+- **x4 (1024x768 x4)**: the byte twice gave **L R L R** (owner: "lost the second
+  pixels"). Fix: `hdmi_pair_solid[256]` (heap 512 B, built in
+  `hdmi_set_profi_ds80_mode`): pair slot -> its (L,L) and (R,R) solid slots, so x4 emits
+  L L R R. Both the PIO ISR (x4 branch) and the expander `hdmi_big_line`. ISR +72 B,
+  SCRATCH_X 3908/4096. x4 still shows only the centre 256 of 320 bytes = 512 of 640
+  pair px. Test ELF `debug/DVp2w-x4pairs-1.1.2`.

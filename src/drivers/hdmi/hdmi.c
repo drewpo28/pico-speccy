@@ -42,6 +42,13 @@ static const uint16_t * volatile hdmi_vmap_cur = NULL;
 // hdmi_init() when that mode is live. A requested map (hdmi_set_vmap) wins.
 static uint16_t *hdmi_vmap_x4 = NULL;
 static uint32_t  hdmi_vmap_x4_kind = 0;   // which map hdmi_vmap_x4 holds (scale | rows | top)
+// Packed-pair modes (DS80/ATM/GMX/TS TEXT/Timex hi-res) in the x4 modes: an fb byte is
+// a pair slot (L, R), and x4 repeats the byte, which shows L R L R — every glyph
+// interleaved with itself. This maps a pair slot to the two SOLID slots of its halves,
+// low byte (L, L), high byte (R, R), so the x4 line is L L R R (each source pixel 2 px
+// wide). Built by hdmi_set_profi_ds80_mode; heap, 512 B, taken once and kept (the ISR
+// reads it); NULL = no heap, the line falls back to the repeated byte.
+static uint16_t *hdmi_pair_solid = NULL;
 // Scanline brightness level: 0=off, 1=darkest .. 4=lightest. Level 2 is the
 // legacy 0x202020 look and the default. Drives the gray of IDX_SCANLINE.
 static uint8_t hdmi_scanline_level = 2;
@@ -769,7 +776,15 @@ static int __attribute__((noinline)) __not_in_flash_func(hdmi_big_line)(
         const uint8_t *__restrict in = row + hdmi_big_fbx;   // fbx is a multiple of 4: x^2 holds
         const int cols = hdmi_big_cols;
         uint32_t *__restrict o = out + i;
-        if (hdmi_big_scale == 4) {
+        const uint16_t *__restrict ps = hdmi_pair_solid;
+        if (hdmi_big_scale == 4 && profi_ds80_active && ps) {
+            // Pair byte -> (L,L) and (R,R) solid slots: L L R R (see hdmi_pair_solid).
+            for (int x = 0; x < cols; x++) {
+                const uint s = ps[in[x ^ 2]], l = s & 0xFFu, r = s >> 8;
+                o[0] = la[l * 2]; o[1] = lb[l * 2 + 1]; o[2] = la[r * 2]; o[3] = lb[r * 2 + 1];
+                o += 4;
+            }
+        } else if (hdmi_big_scale == 4) {
             for (int x = 0; x < cols; x++) {
                 const uint idx = in[x ^ 2];
                 const uint32_t a = la[idx * 2], b = lb[idx * 2 + 1];
@@ -1371,6 +1386,16 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
             const uint32_t* __restrict in32  = (const uint32_t*)(input_buffer + modep->x4_offset);
             uint32_t* __restrict       out32 = (uint32_t*)output_buffer;
             const int words = scr_w >> 3;            // 4 source bytes -> 8 line bytes
+            const uint16_t* __restrict ps = hdmi_pair_solid;
+            if (profi_ds80_active && ps) {
+                // A pair byte -> its (L,L) and (R,R) solid slots: L L R R, not L R L R.
+                for (int i = 0; i < words; i++) {
+                    const uint32_t v = in32[i];      // fb x^2 order: bytes 2,3,0,1
+                    out32[2 * i]     = ps[(v >> 16) & 0xFFu] | (uint32_t)ps[v >> 24] << 16;
+                    out32[2 * i + 1] = ps[v & 0xFFu] | (uint32_t)ps[(v >> 8) & 0xFFu] << 16;
+                }
+                goto ex;
+            }
             for (int i = 0; i < words; i++) {
                 const uint32_t v = in32[i];
                 const uint32_t a = (v >> 16) & 0xFFFFu, b = v & 0xFFFFu;   // bytes 0,1 / 2,3 in order
@@ -2790,6 +2815,34 @@ void hdmi_set_profi_ds80_mode(bool active,
         }
 
 #endif // !HDMI_EXPANDER
+
+        // x4 pair -> solid slots (hdmi_pair_solid). A slot shows its FIRST writer in
+        // the (ink, paper) walk above (merged pairs keep the canonical entry), so the
+        // halves are taken from that writer, and the solid slot of colour c is the one
+        // whose first writer is (c, c) — pair_lut's diagonal unless c was merged away.
+        if (!hdmi_pair_solid) {
+            extern void* tryMalloc(size_t n);
+            hdmi_pair_solid = (uint16_t *)tryMalloc(256 * sizeof(uint16_t));
+            // Slots outside the pair table (border 255 etc.) stay themselves.
+            if (hdmi_pair_solid)
+                for (int i = 0; i < 256; i++) hdmi_pair_solid[i] = (uint16_t)(i | i << 8);
+        }
+        if (hdmi_pair_solid) {
+            uint8_t solid[16];
+            bool seen[256];
+            for (int c = 0; c < 16; c++) solid[c] = pair_lut[c * 17];
+            for (int pass = 0; pass < 2; pass++) {   // 0: find the solids, 1: fill
+                memset(seen, 0, sizeof(seen));
+                for (int ink = 0; ink < 16; ink++)
+                    for (int paper = 0; paper < 16; paper++) {
+                        const uint8_t slot = pair_lut[ink * 16 + paper];
+                        if (seen[slot]) continue;
+                        seen[slot] = true;
+                        if (pass == 0) { if (ink == paper) solid[ink] = slot; }
+                        else hdmi_pair_solid[slot] = (uint16_t)(solid[ink] | solid[paper] << 8);
+                    }
+            }
+        }
 
         hdmi_x3_resync(true);
         __dmb(); // ensure all conv_color writes are visible to core1 before flag is set
