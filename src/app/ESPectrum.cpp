@@ -758,6 +758,9 @@ static void assign_ram(int i, bool butterOnly = false) {
 #ifndef NEXT_SRAM46_MIN_FREE_KB
 #define NEXT_SRAM46_MIN_FREE_KB 0
 #endif
+#ifndef ELM_SRAM46_MIN_FREE_KB
+#define ELM_SRAM46_MIN_FREE_KB 0
+#endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
 static void donateZxPagesToFb() {
   if (!butter_psram_size()) return;
@@ -822,16 +825,21 @@ static void donateZxPagesToFb() {
   // of SRAM after this point, and at the ZX figure a Next boot ended with 9 KB free.
   if ((ZX_PSRAM_PAGES & 0x50) == 0x50) {
     bool keep46 = false;
-    const unsigned minKB = next ? NEXT_SRAM46_MIN_FREE_KB : ZX_SRAM46_MIN_FREE_KB;
+    // eLeMeNt ZX has its own threshold too (ELM_SRAM46_MIN_FREE_KB): its HGFX buffer takes
+    // 48 KB (+16 KB reserve) of heap lazily when core1 lags (ElmHgfx sramPromote); at the
+    // ZX figure HGFXAGON lost it and ran at the all-PSRAM speed (2026-11-05).
+    const bool elm = Config::arch == A_ELM ||
+                     (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM);
+    const unsigned minKB = next ? NEXT_SRAM46_MIN_FREE_KB : elm ? ELM_SRAM46_MIN_FREE_KB : ZX_SRAM46_MIN_FREE_KB;
     if (minKB) {
       size_t held = 0, after = 0;
       VIDEO::fbHeapPlan(&held, &after);          // donors so far: pages 0-3 (2/3 on Next)
       const long freeAfter = (long)getFreeHeap() + (long)held - (long)after;
       keep46 = freeAfter >= (long)minKB * 1024;
       Debug::log("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
-                 keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+                 keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : elm ? ", eLeMeNt" : "");
       Debug::log2SD("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
-                    keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+                    keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : elm ? ", eLeMeNt" : "");
     }
     if (!keep46) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
   }

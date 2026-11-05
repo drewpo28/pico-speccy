@@ -777,6 +777,16 @@ arithmetic, not a measurement: 9 KB final from >= 80 KB means >= 71 KB taken lat
 Tune from that line + `[NXV] video state took` on hw. Test ELF `debug/DVp2w-nx46-1.1.2`.
 NOT hw-tested.
 
+**eLeMeNt ZX has its own threshold, 2026-11-05 (owner):** its big SRAM claim comes even
+later than the Next's: the HGFX buffer (48 KB + 16 KB `SRAM_KEEP`, `ElmHgfx sramPromote`)
+is taken when core1 falls behind. At the ZX figure 4/6 stayed in SRAM and, with the
+NeoGS page cache, HGFXAGON lost the buffer and ran at the all-PSRAM speed after the
+main merge. `ELM_SRAM46_MIN_FREE_KB` (default 128, 0 = always donate) is used on `A_ELM`
+(or `pref_arch` of a fresh boot); log suffix `, eLeMeNt)`. 128 is arithmetic, not a
+measurement: 64 KB for HGFX + the ~25 KB setup takes after the decision + margin. GS::init
+skips the NeoGS page cache on the eLeMeNt (neogs-gs.md). Tune from the decision line +
+`[ELM] HGFX buffer ... heap free` on hw. Test ELF `debug/DVp2w-elm-sram46-1.1.2`. NOT hw-tested.
+
 
 **Revised the same day — read this first.** All eight pages in butter cost TheLink's
 16col dragon (P1024, 7 MHz) 6 ms a frame: cpu 20.9 ms / 41 FPS against 14.9 with the

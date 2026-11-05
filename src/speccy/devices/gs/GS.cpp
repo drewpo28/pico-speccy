@@ -2462,9 +2462,11 @@ bool GS::init(uint32_t ram_size_bytes) {
         // while the heap keeps NGS_SH_RESERVE free after every 16 KB copy. Never on
         // the Spectrum Next: its video state (~19.5 KB) and hot-page frames are
         // claimed AFTER this, and a 16 KB copy left the session with 4 KB of heap
-        // (hw 2026-11-04, 576p + NeoGS).
+        // (hw 2026-11-04, 576p + NeoGS). Nor on the eLeMeNt ZX: its HGFX buffer (48 KB +
+        // 16 KB reserve, ElmHgfx sramPromote) is claimed lazily later, and with the cache
+        // in its place HGFXAGON fell back to the all-PSRAM speed (2026-11-05).
         #define NGS_SH_RESERVE (64u * 1024u)
-        const bool shNext = Config::arch == A_NEXT;   // final here: setup's requestMachine ran
+        const bool shNext = Config::arch == A_NEXT || Config::arch == A_ELM;   // final here: setup's requestMachine ran
         memset(s_sh_page, 0, sizeof s_sh_page);
         memset(s_hot_pg, 0, sizeof s_hot_pg);
         memset(s_hot_hits, 0, sizeof s_hot_hits);

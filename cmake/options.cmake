@@ -120,6 +120,10 @@ set(ZX_SRAM46_MIN_FREE_KB "80" CACHE STRING "Keep ZX pages 4/6 in SRAM when this
 # pool) than a ZX one; at 80 a Next boot ended with 9 KB free (owner, 2026-11-05) and
 # its HOT_SRAM / SRAM-or-nothing video blocks had no room.
 set(NEXT_SRAM46_MIN_FREE_KB "120" CACHE STRING "Next: keep ZX pages 4/6 in SRAM when this much heap (KB) remains after the FB; 0 = never")
+# The same gate on an eLeMeNt ZX boot. Its HGFX buffer (48 KB + 16 KB SRAM_KEEP) is taken
+# from the heap LATER, when core1 lags (ElmHgfx sramPromote); with 4/6 kept at the ZX
+# figure HGFXAGON lost it and ran at the all-PSRAM speed (owner, 2026-11-05).
+set(ELM_SRAM46_MIN_FREE_KB "128" CACHE STRING "eLeMeNt ZX: keep ZX pages 4/6 in SRAM when this much heap (KB) remains after the FB; 0 = never")
 option(WD1793_IN_RAM "WD1793: keep the FDC step/read/write/_do code in SRAM (~6.8 KB). OFF since 2026-09-30: flash is fast enough now that the Z80 core is in SRAM" OFF)
 option(DIVMMC_HOT_IN_RAM "DivMMC/DivSD: keep the SD SPI read path (port 0xEB, mmc_read) in SRAM (~0.9 KB; every IN (EB) otherwise fetches flash code through the XIP cache the Next's butter RAM keeps busy)" ON)
 option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)

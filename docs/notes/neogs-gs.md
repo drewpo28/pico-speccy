@@ -1162,6 +1162,11 @@ only while 64 KB of heap stays free (`GS::init: NeoGS SRAM page cache N x 16 KB`
 and NEVER on the Spectrum Next: its video state (~19.5 KB) and hot frames are claimed
 after GS::init, and the first cut (48 KB reserve) left a 576p Next + NeoGS session
 with 4 KB of heap (hw 2026-11-04, Hardware Info "Free RAM 4 KB").
+Never on the eLeMeNt ZX either (2026-11-05): its HGFX buffer (48 KB + 16 KB reserve,
+`ElmHgfx.cpp sramPromote`) is claimed lazily when core1 lags, and with the cache in its
+place HGFXAGON dropped to the all-PSRAM speed after the main merge (owner: "без NeoGS
+идет отлично"). Same gate as the Next (`shNext`). Test ELF `debug/DVp2w-elm-sram46-1.1.2`,
+NOT hw-tested.
 Host: dragon fetches 98-99% from the copies, frames identical (animation phase only).
 Overlay terms raised: `.gsovl` 23 344 B, `.ngsovl` 7 656 B measured. Test ELFs
 `debug/DVp2w-sram46ngs-1.1.2` (plain) and `-ngsprof-` (PERF + GS_PERF: compare GS MHz).
