@@ -89,6 +89,9 @@ if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 # Every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON, "-16MB" in the
 # file name, adds ZXM-MoonSound with its embedded ROM); the W/WS boards are 16 MB only.
 $WTargets = @("MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
+# Other boards that exist with 16 MB flash only: no 4 MB image either, but they
+# keep the -16MB build dir like any non-W 16 MB image.
+$Only16Targets = @("ZERO2")
 
 # Build list of (target, display) pairs, then expand each into its flash types
 $BasePairs = @()
@@ -113,8 +116,9 @@ foreach ($Target in $Targets) {
 $BuildPairs = @()
 foreach ($P in $BasePairs) {
     $IsW = $WTargets -contains $P.Target
+    $Only16 = $IsW -or ($Only16Targets -contains $P.Target)
     foreach ($Ft in $FlashTypes) {
-        if ($IsW -and $Ft -ne 16) { continue }
+        if ($Only16 -and $Ft -ne 16) { continue }
         # 4 MB images keep the historic dir/log names; a 16 MB one appends -16MB
         # (the W/WS boards keep their plain names: they have no 4 MB twin).
         $Sfx = if ($Ft -eq 16 -and -not $IsW) { "-16MB" } else { "" }

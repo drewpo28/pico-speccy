@@ -118,6 +118,9 @@ HSTX_TARGETS="PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS"
 # with -16MB like every other 16 MB image; their build dir keeps the plain name).
 FLASH_TYPES="${FLASH_TYPES:-4 16}"
 W_TARGETS="MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
+# Other boards that exist with 16 MB flash only: no 4 MB image either, but they
+# keep the -16MB build dir like any non-W 16 MB image.
+ONLY16_TARGETS="ZERO2"
 
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
@@ -165,7 +168,7 @@ done
 BUILD_PAIRS=()
 for PAIR in "${BASE_PAIRS[@]}"; do
     IS_W=false
-    for W_T in $W_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
+    for W_T in $W_TARGETS $ONLY16_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
     for FT in $FLASH_TYPES; do
         if $IS_W && [ "$FT" != "16" ]; then continue; fi
         BUILD_PAIRS+=("${PAIR}:${FT}")
