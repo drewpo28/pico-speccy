@@ -30,6 +30,7 @@ Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR,
           FLASH_TYPES ("4 16" = both flash types, the default; "4" or "16" = one)
 Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS (default: all)
+          HOST = the SDL2 PC build in build-all/host (not part of "all")
 EOF
             exit 0 ;;
         *) POSITIONAL+=("$1"); shift ;;
@@ -127,6 +128,63 @@ if [ $# -gt 0 ]; then
     TARGETS="$*"
 else
     TARGETS="$ALL_TARGETS"
+fi
+
+# HOST is not a board: it is the SDL2 PC build (host/CMakeLists.txt, host/README.md)
+# in build-all/host, built here before the firmware pairs and never part of "all".
+# Any other name must be a known board — an unknown one used to fall through to the
+# default board in cmake/board.cmake and silently build (and copy) m2p2 images.
+BUILD_HOST=false
+FW_TARGETS=""
+for T in $TARGETS; do
+    if [ "$T" = "HOST" ]; then
+        BUILD_HOST=true
+    elif [[ " $ALL_TARGETS " == *" $T "* ]]; then
+        FW_TARGETS="$FW_TARGETS $T"
+    else
+        echo "Error: unknown target '$T' (known: $ALL_TARGETS HOST)"
+        exit 1
+    fi
+done
+TARGETS="${FW_TARGETS# }"
+
+HOST_FAILED=false
+if $BUILD_HOST; then
+    HOST_DIR="$SCRIPT_DIR/build-all/host"
+    HOST_LOG="$SCRIPT_DIR/build-all/logs/HOST.log"
+    mkdir -p "$HOST_DIR" "$(dirname "$HOST_LOG")"
+    $CLEAN && rm -rf "$HOST_DIR" && mkdir -p "$HOST_DIR"
+    echo "=== pico-speccy host (PC) build -> build-all/host ==="
+    HOST_START=$SECONDS
+    (
+        exec 9>"$HOST_DIR.lock"
+        command -v flock >/dev/null 2>&1 && flock -x 9 || true
+        # A cache from another generator makes cmake refuse to configure.
+        if [ -f "$HOST_DIR/CMakeCache.txt" ]; then
+            cached_gen=$(grep -m1 'CMAKE_GENERATOR:INTERNAL=' "$HOST_DIR/CMakeCache.txt" | cut -d= -f2)
+            if [ -n "$cached_gen" ] && [ "$cached_gen" != "$CMAKE_GENERATOR" ]; then
+                rm -rf "$HOST_DIR/CMakeCache.txt" "$HOST_DIR/CMakeFiles"
+            fi
+        fi
+        # No CMAKE_BUILD_TYPE: host/CMakeLists.txt picks RelWithDebInfo itself, and
+        # the firmware's MinSizeRel is not what a debuggable PC build wants.
+        host_args=(-S "$SCRIPT_DIR/host" -B "$HOST_DIR" -G "$CMAKE_GENERATOR")
+        [ -n "$CMAKE_MAKE_PROGRAM" ] && host_args+=(-DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM")
+        [ $HAVE_CCACHE = 1 ] && host_args+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+        cmake "${host_args[@]}" && cmake --build "$HOST_DIR" --parallel "$NPROC"
+    ) >"$HOST_LOG" 2>&1 && HOST_OK=true || HOST_OK=false
+    if $HOST_OK; then
+        echo "[OK]   HOST ($((SECONDS - HOST_START))s) -> build-all/host/pico-speccy"
+    else
+        echo "[FAIL] HOST ($((SECONDS - HOST_START))s)    (see $HOST_LOG)"
+        tail -n 20 "$HOST_LOG"
+        HOST_FAILED=true
+    fi
+    echo ""
+    if [ -z "$TARGETS" ]; then
+        $HOST_FAILED && exit 1
+        exit 0
+    fi
 fi
 
 # Build list of (target, display) pairs, then expand each into its flash types
@@ -413,6 +471,11 @@ if [ ${#FAILED[@]} -gt 0 ]; then
         IFS=':' read -r TARGET DISPLAY FLASH <<<"$PAIR"
         echo "  $ENTRY    (see $LOG_DIR/$(log_name_for "$TARGET" "$DISPLAY" "$FLASH").log)"
     done
+    exit 1
+fi
+if $HOST_FAILED; then
+    echo ""
+    echo "Failed: HOST    (see $HOST_LOG)"
     exit 1
 fi
 
