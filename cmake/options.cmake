@@ -115,6 +115,11 @@ set(ZX_PSRAM_PAGES "0x5F" CACHE STRING "ZX pages moved to butter PSRAM, block ma
 # takes their rows is at least this many KB; below it they go to butter as 0x50 says.
 # 0 = always follow ZX_PSRAM_PAGES. Decided per boot in ESPectrum.cpp donateZxPagesToFb.
 set(ZX_SRAM46_MIN_FREE_KB "80" CACHE STRING "Keep ZX pages 4/6 in SRAM when this much heap (KB) remains after the FB; 0 = never")
+# The same gate on a Spectrum Next boot. The Next session takes ~70 KB more SRAM AFTER
+# this point (NEXTVID::Reset: hot/cold video state, 640 tables, Layer 2 band, hot-page
+# pool) than a ZX one; at 80 a Next boot ended with 9 KB free (owner, 2026-11-05) and
+# its HOT_SRAM / SRAM-or-nothing video blocks had no room.
+set(NEXT_SRAM46_MIN_FREE_KB "120" CACHE STRING "Next: keep ZX pages 4/6 in SRAM when this much heap (KB) remains after the FB; 0 = never")
 option(WD1793_IN_RAM "WD1793: keep the FDC step/read/write/_do code in SRAM (~6.8 KB). OFF since 2026-09-30: flash is fast enough now that the Z80 core is in SRAM" OFF)
 option(DIVMMC_HOT_IN_RAM "DivMMC/DivSD: keep the SD SPI read path (port 0xEB, mmc_read) in SRAM (~0.9 KB; every IN (EB) otherwise fetches flash code through the XIP cache the Next's butter RAM keeps busy)" ON)
 option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)

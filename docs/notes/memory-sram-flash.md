@@ -767,6 +767,16 @@ COMPLETE` on a plain 48K/DVp2w boot: 177.9 → 151.4 KB with 4/6 donated). Decid
 donation time and not at the end of setup because >25 files cache `ram[i].direct()`
 pointers. Test ELF `debug/DVp2w-sram46-1.1.2`. NOT hw-tested.
 
+**Next has its own threshold, 2026-11-05:** at 80 KB a Next boot kept 4/6 in SRAM and
+ended with **9 KB free** (owner): NEXTVID::Reset (hot/cold video state, 640 tables,
+Layer 2 band, hot-page pool) takes its SRAM AFTER this decision, and its SRAM-or-nothing
+blocks then go without. `NEXT_SRAM46_MIN_FREE_KB` (default 120, 0 = always donate) is
+used when `next` is true in `donateZxPagesToFb`; the ZX figure stays 80. 120 is
+arithmetic, not a measurement: 9 KB final from >= 80 KB means >= 71 KB taken later, plus
+~40 KB of margin. The decision line now also goes to the UART (`..., Next)` suffix).
+Tune from that line + `[NXV] video state took` on hw. Test ELF `debug/DVp2w-nx46-1.1.2`.
+NOT hw-tested.
+
 
 **Revised the same day — read this first.** All eight pages in butter cost TheLink's
 16col dragon (P1024, 7 MHz) 6 ms a frame: cpu 20.9 ms / 41 FPS against 14.9 with the

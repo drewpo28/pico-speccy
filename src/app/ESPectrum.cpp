@@ -752,6 +752,9 @@ static void assign_ram(int i, bool butterOnly = false) {
 #ifndef ZX_SRAM46_MIN_FREE_KB
 #define ZX_SRAM46_MIN_FREE_KB 0
 #endif
+#ifndef NEXT_SRAM46_MIN_FREE_KB
+#define NEXT_SRAM46_MIN_FREE_KB 0
+#endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
 static void donateZxPagesToFb() {
   if (!butter_psram_size()) return;
@@ -812,17 +815,21 @@ static void donateZxPagesToFb() {
   // less → donate them as before and only 5/7 stay. 0 = always donate.
   // Measured here, before audio/tape/GS/MIDI/TS-Conf ring take their share — the
   // `setup: COMPLETE` heap comes out ~25 KB+ lower than this figure.
+  // Next has its own threshold (NEXT_SRAM46_MIN_FREE_KB): NEXTVID::Reset takes ~70 KB
+  // of SRAM after this point, and at the ZX figure a Next boot ended with 9 KB free.
   if ((ZX_PSRAM_PAGES & 0x50) == 0x50) {
     bool keep46 = false;
-#if ZX_SRAM46_MIN_FREE_KB > 0
-    size_t held = 0, after = 0;
-    VIDEO::fbHeapPlan(&held, &after);          // donors so far: pages 0-3 (2/3 on Next)
-    const long freeAfter = (long)getFreeHeap() + (long)held - (long)after;
-    keep46 = freeAfter >= (long)ZX_SRAM46_MIN_FREE_KB * 1024;
-    Debug::log2SD("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB)",
-                  keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024,
-                  (unsigned)ZX_SRAM46_MIN_FREE_KB);
-#endif
+    const unsigned minKB = next ? NEXT_SRAM46_MIN_FREE_KB : ZX_SRAM46_MIN_FREE_KB;
+    if (minKB) {
+      size_t held = 0, after = 0;
+      VIDEO::fbHeapPlan(&held, &after);          // donors so far: pages 0-3 (2/3 on Next)
+      const long freeAfter = (long)getFreeHeap() + (long)held - (long)after;
+      keep46 = freeAfter >= (long)minKB * 1024;
+      Debug::log("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
+                 keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+      Debug::log2SD("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
+                    keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+    }
     if (!keep46) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
   }
 }
