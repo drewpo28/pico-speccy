@@ -864,6 +864,16 @@ a UI page needs those offsets).
 
 ## The Devices menu shows the staged machine, one level per interface (2026-10-31, host-checked, NOT hw-tested)
 
+- **IDE schemes per machine (2026-11-04, owner):** the defaults stay (+3e -> +3e,
+  +3 divIDE -> divIDE, SAM -> Atom Lite, ATM2+ -> ATM, Profi on entry -> PROFI, SMUC
+  turns CMOS + NVRAM on). Each restriction is physical: ATM / PROFI are on-board, Atom
+  Lite is a SAM-bus card, +3e / divIDE have their driver only in that ROM. **NEMO is
+  NOT offered on ATM-Turbo 1/2/2+ on purpose**: their `#7FFD` is the loose decode (A15=0,
+  A1=0, `Atm::atmPortWriteEarly`), and NEMO drivers write its ports with B=0, so every
+  IDE register access would also page memory — on the real board too (NedoOS's
+  `LD BC,#00D0 : OUT (C),A`). ATM3 and BaseConf decode `#7FFD` strictly, hence NEMO there.
+  esxDOS and IDE no longer exclude each other (no shared port with NEMO / SMUC).
+
 - **2026-11-02, owner: what the machine lacks stays HIDDEN (no grey rows — a greyed
   variant was tried and rejected the same day), what it has is ALWAYS shown.** The
   gap was esxDOS on Next / eLeMeNt: hidden although both have a divMMC. `p_esxRow`
@@ -888,7 +898,7 @@ disk/interface rows (DivSD forced); Byte 48K no Beta; CMOS row hidden on 48K/128
 (Quorum 64 keeps it) and EP. `slotNodeFor` searches the new arrays by builder. Hw owed: disk hot keys and
 the F5 "which slot" path on each machine, a machine switch from inside the session.
 
-- **The raw window moved into the slot list (2026-11-01, owner's pick of 3 variants, NOT hw-tested, `debug/DVp2w-ide-source-1.1.1`):** the `SD card (raw)` submenu and its `act_ideSrc/Win/Mbr` rows are gone; the bullets above that name them are history. Enter on an IDE slot = `ideSourcePick` (UiActions.cpp): Image file / whole card / each MBR entry (type + size) / manual window, cursor on the current source; no readable card goes straight to the browser, an armed file mounts as before. Any card pick lands on read-only (`ideSetRaw`), F6 toggles Write with the default-No confirmation, F2 edits the window on a raw slot, F8 ejects. The row reads `SD card` / `SD part N` / `SD window`; that costs one MBR read per raw slot when the level is built. The image path still survives under a window, but nothing returns to it now: "Image file..." browses again.
+- **The raw window moved into the slot list (2026-11-01, owner's pick of 3 variants, NOT hw-tested, `debug/DVp2w-ide-source-1.1.1`):** the `SD card (raw)` submenu and its `act_ideSrc/Win/Mbr` rows are gone; the bullets above that name them are history. Enter on an IDE slot = `ideSourcePick` (UiActions.cpp): Image file / whole card / each MBR entry (type + size) / manual window, cursor on the current source; no readable card goes straight to the browser, an armed file mounts as before. Any card pick lands on read-only (`ideSetRaw`), F6 toggles Write with the default-No confirmation, F2 edits the window on a raw slot, F8 ejects. **Superseded 2026-11-03: F2 = write protect, F9 = CHS / SD window, F6 gone** (see "Two cards on one SPI machine"). The row reads `SD card` / `SD part N` / `SD window`; that costs one MBR read per raw slot when the level is built. The image path still survives under a window, but nothing returns to it now: "Image file..." browses again.
 - **Raw write, hw 2026-11-01 (owner, NEMO scheme, Write mode, window = FAT32 partition 2): the guest sees the partition and writes work.** WDC's "make bootable" then destroyed that FAT32 (`can't read superblock`, kernel `invalid access to FAT`): sector 0 and FSInfo intact, backup boot sector 6 and the head of FAT1 (sector 32) overwritten with high-entropy data. A guest sees a window as a disk with no MBR, so disk tools may write their own structures at its start; that is the tool, not an addressing bug (owner: no fault without the bootable step). Do not run such a tool on a window over a FAT partition you need. Whether FAT2 survived was not checked.
 - **Review fixes the same day (host-checked; hw on `debug/DVp2w-profi-ide3-1.1.1`, owner: "работает", not itemised; raw writes confirmed later, line above):**
   `openRaw`/`mbrParts` passed a `DWORD` to `GET_SECTOR_COUNT`, which stores a full `LBA_t`
@@ -910,3 +920,20 @@ the F5 "which slot" path on each machine, a machine switch from inside the sessi
   forced Off (resolveConstraints, MachineSwitch, setup, CPU::reset; images stay in Config), and
   ENTERING Profi turns a leftover scheme, or Off with a medium in a slot, into PROFI (an edge:
   NEMO picked on Profi afterwards stays, and so does a NEMO persisted across a reboot).
+
+## Software auto-repeat: 500 ms + ~30/s (2026-11-04, NOT hw-tested)
+
+All key repeat (menus, browser, guest PS/2 typematic) comes from `repeat_handler`
+(ESPectrum.cpp): PS/2 swallows repeated make codes and USB HID never sends any. It ran
+on the 150 ms housekeeping tick of `repeat_me_for_input`, so the delay was 600-750 ms
+and the rate 6.7/s, and for Up/Down worse: the repeat went through
+`kbdPushData(VK_MENU_UP)`, which made the twin the "last key" and re-armed the delay,
+so the 2nd step came at ~1.3 s. Now it keeps its own deadline (`KBD_REP_DELAY_US`
+500 ms, `KBD_REP_PERIOD_US` 33 ms = PC default), is polled on every input pump,
+injects directly (no `last_key_pressed` change, no Ctrl+J re-toggle), never catches up
+in a burst, and skips a step while the previous one is still queued
+(`Keyboard::virtualKeyPending`) so a slow consumer stops on release. F1..F12 still
+never repeat. Host: `PICOSPECCY_KEYS="frame:Key:N"` holds a key N frames.
+The delay is a setting: Interface > Key repeat delay (`Config::kbd_rep_delay`, nvs
+`kbd_rep_delay` 0..3 = 250/500/750/1000 ms, default 1), `SET_KBD_REP_DELAY` appended
+last; read at each press, so a change applies to the next hold. Host-checked the row.

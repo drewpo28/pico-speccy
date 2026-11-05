@@ -935,7 +935,7 @@ void featureSetEnabled(FeatureId f, bool on) {
             if (!on) Config::ide_scheme = 0;
             else {
                 if (Config::ide_scheme == 0) Config::ide_scheme = 1;    // default NEMO
-                Config::esxdos = 0;   // mutually exclusive with esxDOS DivMMC/DivIDE
+                // esxDOS stays: no shared port with NEMO / SMUC (UiStage resolveConstraints).
             }
             break;
         case FEAT_SAA:

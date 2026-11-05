@@ -595,7 +595,14 @@ static bool p_pentActive() {
 // Strictly Pentagon: a count cannot survive on another machine, so there is nothing to
 // come back and switch off here. ESPectrum::setup clamps it at boot and the commit's
 // resolveConstraints() forces it to Off whenever the staged machine is not Pentagon.
-static bool p_murmAvail() { return FileUtils::fsMount && p_pentActive(); }
+// Quorum 128/256/1024 are romsets of A_PENT with their own port map — no #AFF7 latch.
+static bool p_murmMachine() {
+    if (!p_pentActive()) return false;
+    const int32_t m = Stage::get(SET_MACHINE);
+    const RomsetIdx r = (m < 0) ? Config::romSet : (RomsetIdx)(m & 0xFF);
+    return !isQuorum128Romset(r);
+}
+static bool p_murmAvail() { return FileUtils::fsMount && p_murmMachine(); }
 
 // TS-Conf needs every RAM page pointer-backed for the render/DMA phases —
 // butter/QSPI PSRAM only (MURM1's PIO-SPI PSRAM is accessor-only and cannot
@@ -833,8 +840,8 @@ static const Option opt_mach_kay[] = {
 // Machine > Other: boards that fit no family row. The ZXM-Phoenix is modelled on the
 // Scorpion arch (the KAY paging family, ArchRom.h isKayRomset) but is not a KAY. Its
 // 2 MB comes from SD swap at worst, so it needs only the extended-RAM gate.
-static const Option opt_mach_other[] = {
-    { TXT_ROM_PHOENIX, NM_MACH(A_SCORP, R_PHOENIX), TXT_ROM_PHOENIX_S },
+static const Option opt_mach_phoenix[] = {
+    { TXT_ROM_PHOENIX_2MB, NM_MACH(A_SCORP, R_PHOENIX), TXT_ROM_PHOENIX_S },
 };
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
@@ -865,8 +872,8 @@ static const Option opt_mach_atm[] = {
 // SAM Coupe: internal 256K / 512K, plus the external megabytes (LEPR/HEPR).
 // Enterprise: EP64 (EXOS 2.0 + BASIC 2.0, 64K) / EP128 (EXOS 2.1 + BASIC 2.1, 128K).
 static const Option opt_mach_ep[] = {
-    { "64",   NM_MACH(A_ENT, R_EP64),  "64"  },
-    { "128",  NM_MACH(A_ENT, R_EP128), "128" },
+    { "EP64",   NM_MACH(A_ENT, R_EP64),  "EP64"  },
+    { "EP128",  NM_MACH(A_ENT, R_EP128), "EP128" },
 };
 // eLeMeNt ZX: the board's personalities (SetUp "Machine", e_zxi_000), one machine.
 static const Option opt_mach_elm[] = {
@@ -926,7 +933,7 @@ const char* murmuzavrTag() {
     // Only where the mode actually applies: the persisted pick survives a switch to
     // another machine, but ESPectrum::setup clamps the live count off there, so showing
     // the tag would advertise RAM the machine does not have.
-    if (!p_pentActive()) return nullptr;
+    if (!p_murmMachine()) return nullptr;
     // The STAGED count, so the subheader tracks the pick right away (the live MEM_PG_CNT
     // only follows on the reboot the commit asks for).
     const int32_t pg = Stage::get(SET_MEM_PG_CNT);
@@ -998,6 +1005,7 @@ static const Node kMachine[] = {
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
+    NM_RADIO(TXT_ROM_PHOENIX, SET_MACHINE, opt_mach_phoenix, p_extRam),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
@@ -1007,7 +1015,6 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_NEXT,  SET_MACHINE, opt_mach_next,  p_showNext),
     NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
-    NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
     // holding S during the boot R/M probe window.
@@ -1895,6 +1902,14 @@ static const Option opt_ui_click_vol[] = {
     { "Normal", 2 },
     { "Loud",   3 },
 };
+// Software auto-repeat delay (repeat_handler, ESPectrum.cpp), the PC typematic
+// steps; the rate after it stays ~30/s.
+static const Option opt_kbd_rep_delay[] = {
+    { "250 ms",  0 },
+    { "500 ms",  1 },
+    { "750 ms",  2 },
+    { "1000 ms", 3 },
+};
 
 // ── Interface ──────────────────────────────────────────────────────────────────
 // Everything about the firmware's own UI and indication, gathered in one submenu
@@ -1908,6 +1923,7 @@ static const Node kInterface[] = {
     NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaDither, p_themeSlate),
     NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
     NM_RADIO (TXT_OPT_UI_SOUND,     SET_UI_CLICK_VOL, opt_ui_click_vol, nullptr),
+    NM_RADIO (TXT_OPT_KBD_REP,      SET_KBD_REP_DELAY, opt_kbd_rep_delay, nullptr),
     NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),
     // LED indication is one group: the master toggle, its legend (a reference for
     // the indicators, so greyed while they are off) and the board's own SD LED,

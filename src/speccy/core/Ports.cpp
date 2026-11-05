@@ -4609,7 +4609,11 @@ IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
     // The MB-02+ WD2797 data port is DRQ-paced (the block below) on the eLeMeNt too:
     // the plain input() read handed the DMA 1023 bytes before the controller had
     // them - "lost data", BS-DOS's loader re-read sector 1 forever (2026-11-04).
-    if (Z80Ops::isNext || (Z80Ops::isElm && !(MB02::enabled && (address & 0x9F) == 0x0F))) return input(address);
+    // esxDOS's SPI data port #EB the same on every machine: an esxDOS driver that
+    // streams sectors with the Z80 DMA (the MB03+SD build, beside MB-02+) got 512 x #FF
+    // here (from the eLeMeNt ZX, 2026-11-02).
+    if (Z80Ops::isNext || (DivMMC::enabled && (address & 0xFF) == 0xEB) ||
+        (Z80Ops::isElm && !(MB02::enabled && (address & 0x9F) == 0x0F))) return input(address);
     if ((address & 0x0001) == 0) {
         // ULA port: keyboard + ear
         return 0xFF; // no keys pressed

@@ -43,7 +43,7 @@ src/
     z80/      Z80_JLS core, CPU (Z80Ops bus accessors + frame loop)
     core/     MemESP, Ports, Snapshot, RomOverlay, ArchRom.h, roms.h, loaders.h
     video/    Video (ULA/whole-line renderers), VidPrecalc
-    machines/ one module per machine — Plus3/, Profi/, TsConf/, Next/, Element/, ...
+    machines/ one module per machine — Plus3/, Profi/, TsConf/, Next/, Enterprise/, Element/, ...
     devices/  disk/ (wd1793, Upd765, DskImage, td0, MB02), storage/ (IDE, DivMMC, RTC,
               Nvram24), sound/ (AY, SAA, SN, OPN/OPL/OPLL, MIDI), gs/ (GS/NeoGS), tape/,
               zifi/ (guest NIC), Z80DMA
@@ -96,7 +96,7 @@ Each rule cost at least one hardware round; the story is in the notes file named
   `build-all/<BOARD>…`, never the shared `build/`; check the `build:` stamp and the link
   name before handing one out. The owner tests on DVp2w.
 - **Host bench:** `build-all/host/pico-speccy` runs the emulator headless with screenshots
-  and typed keys (see memory `elm-host-bench`); try a bug there first.
+  and typed keys (`host/README.md`); try a bug there first.
 - **Status words:** every finding is marked `hw-confirmed <date>` (and on what) or
   `NOT hw-tested`; keep that discipline in the notes.
 

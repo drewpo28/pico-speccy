@@ -405,6 +405,21 @@ bootrom's `flash_range_erase` takes the block size as an argument and does the
 unaligned head and tail with sector erases. The SDK only requires offset and count to
 be 4 KB multiples, and `__gm_bank_size` is one by construction.
 
+**2026-11-04: the hard floor was hit** (m1p2 4 MB, after Enterprise + Quorum +
+Leningrad): extended window 1620 KB, 12 KB short. On a 4 MB image the floor means
+`__psramrom_start <= 0x10268000`; the code before it ended at 0x1026a654. The ~385 KB
+`free@hard` in the table above had been eaten by code since 2026-09-20. No ELF is left
+when the ASSERT fires, but the .map is: read `__psramrom_start` and `.flash_end` there.
+Fix: **`NGS_ROM.c` (NeoGS firmware, 88 KB) moved into `.psramroms`** — NeoGS already
+refuses to start without butter (`GS::init`), so it is unreachable on every board that
+can trade the range; `GS::init` now also refuses it when `!FlashRoms::romsUsable()` (a
+board traded, then fitted with a butter module). m1p2: `__psramrom_start` 0x10255000,
+window 1708 KB, **76 KB free@hard**. Rejected by the owner: making Quorum / Enterprise
+butter-only (both must run without PSRAM). Not done, for the next squeeze: other
+butter-only objects still below the range — NextVideo 28.8 KB, Ft812Render 23.4 KB,
+Ft812 14.2 KB, NextReg 10.6 KB, Sam 8.1 KB (CODE: check static ctors and every
+unconditional call first, see the Pico-Zx-Player comment in rp2350-memmap.ld).
+
 ## A GM.DLS bank bigger than the flash partition is still playable in PSRAM (hw-confirmed 2026-09-09)
 
 "The picker does not see DLSbyXG.bin, not even the one it converted itself." Nothing
@@ -740,6 +755,27 @@ plain `DVp2-zx57-1.0.9`). Owner 2026-10-13: "на данный момент в �
 on. ATM EGA checked the same day: Golden Axe under NedoOS (ATM-Turbo 3, BIOS 1.07.13EC,
 osatm3sd_pico-speccy.trd) runs at 50 FPS with IDL ~10000 us — pages 1/3 in butter cost it
 nothing visible. Still owed: heap figure at 576p + NeoGS. The text below is the 0-3-only state.
+
+**Fourth revision 2026-11-04 (owner): pages 4/6 back in SRAM when the heap can afford
+it.** `ZX_SRAM46_MIN_FREE_KB` (cmake/options.cmake, default 80, 0 = old behaviour):
+`donateZxPagesToFb` asks `VIDEO::fbHeapPlan` what the heap holds once the FB is rebuilt
+WITHOUT the 4/6 donor (its rows then come off the heap, ~32 KB at 360 wide); >= the
+threshold → 4/6 are not donated (all of 4-7 SRAM), else donated as before. One line
+`setup: pages 4/6 stay in SRAM|-> butter: free heap after FB NKB` in the SD log. The
+figure is taken before audio/tape/GS/MIDI/TS-Conf ring (~25 KB+ more by `setup:
+COMPLETE` on a plain 48K/DVp2w boot: 177.9 → 151.4 KB with 4/6 donated). Decided at
+donation time and not at the end of setup because >25 files cache `ram[i].direct()`
+pointers. Test ELF `debug/DVp2w-sram46-1.1.2`. NOT hw-tested.
+
+**Next has its own threshold, 2026-11-05:** at 80 KB a Next boot kept 4/6 in SRAM and
+ended with **9 KB free** (owner): NEXTVID::Reset (hot/cold video state, 640 tables,
+Layer 2 band, hot-page pool) takes its SRAM AFTER this decision, and its SRAM-or-nothing
+blocks then go without. `NEXT_SRAM46_MIN_FREE_KB` (default 120, 0 = always donate) is
+used when `next` is true in `donateZxPagesToFb`; the ZX figure stays 80. 120 is
+arithmetic, not a measurement: 9 KB final from >= 80 KB means >= 71 KB taken later, plus
+~40 KB of margin. The decision line now also goes to the UART (`..., Next)` suffix).
+Tune from that line + `[NXV] video state took` on hw. Test ELF `debug/DVp2w-nx46-1.1.2`.
+NOT hw-tested.
 
 
 **Revised the same day — read this first.** All eight pages in butter cost TheLink's

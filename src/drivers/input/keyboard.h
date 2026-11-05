@@ -213,6 +213,9 @@ public:
    */
   int virtualKeyAvailable();
 
+  /** Queued virtual keys, WITHOUT pumping input (virtualKeyAvailable() does). */
+  int virtualKeyPending() const { return m_vkCount; }
+
   /**
    * @brief Gets a virtual key from the queue.
    *

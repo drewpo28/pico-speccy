@@ -176,7 +176,12 @@ volatile uint32_t g_kbd_us = 0;        // processKeyboard() per frame ([NEG2])
 volatile uint32_t g_mix_us = 0;        // audio synth+mix block per frame ([NEG2])
 volatile uint32_t g_aud_flat_frames = 0; // frames whose mixed L buffer was one constant (silence/DC) — [PERF] aud:
 
-volatile static uint32_t tickKbdRep = 0;
+// Software typematic (repeat_handler below). PC standard: 250..1000 ms delay
+// (Interface > Key repeat delay, default 500), then ~30 characters/s (the
+// Windows/PS-2 "fastest" default the OSes set at boot).
+#define KBD_REP_DELAY_US  ((Config::kbd_rep_delay + 1u) * 250000u)
+#define KBD_REP_PERIOD_US  33333u
+volatile static uint32_t tickKbdRep = 0;   // time_us_32() of the next repeat
 volatile static fabgl::VirtualKey last_key_pressed = fabgl::VirtualKey::VK_NONE;
 
 fabgl::VirtualKey get_last_key_pressed(void) { return last_key_pressed; }
@@ -215,11 +220,13 @@ void kbdPushData(fabgl::VirtualKey virtualKey, bool down) {
     if (ctrlPressed && virtualKey == fabgl::VirtualKey::VK_J) {
       Config::CursorAsJoy = !Config::CursorAsJoy;
     }
+    // The newest key pressed is the one that repeats (PC typematic). The VK_MENU_*
+    // twins are not keys of their own: repeat_handler derives them from the arrow.
     if (last_key_pressed != virtualKey &&
-        last_key_pressed != fabgl::VirtualKey::VK_MENU_UP &&
-        last_key_pressed != fabgl::VirtualKey::VK_MENU_DOWN) {
+        !(virtualKey >= fabgl::VirtualKey::VK_MENU_UP &&
+          virtualKey <= fabgl::VirtualKey::VK_MENU_BS)) {
       last_key_pressed = virtualKey;
-      tickKbdRep = time_us_32();
+      tickKbdRep = time_us_32() + KBD_REP_DELAY_US;
     }
   } else {
     ///        switch (virtualKey) {
@@ -242,30 +249,42 @@ void kbdPushData(fabgl::VirtualKey virtualKey, bool down) {
   }
 }
 
+// Software typematic, polled from repeat_me_for_input() on every input pump (not
+// from its 150 ms housekeeping tick: that quantised the delay to 600-750 ms and the
+// rate to 6.7/s). Before 2026-11-04 it was slower still for Up/Down: the repeat
+// went through kbdPushData(VK_MENU_UP), which made the twin the "last key" and
+// re-armed the 500 ms delay, so the 2nd step came only after ~1.3 s.
 void repeat_handler(void) {
-  fabgl::VirtualKey v = last_key_pressed;
+  const fabgl::VirtualKey v = last_key_pressed;
+  if (v == fabgl::VirtualKey::VK_NONE) return;
   // Never auto-repeat the OSD hotkeys. Auto-repeat is for cursor/character keys; on
   // F1..F12 it turns ONE lost key-up into an endless re-trigger, because
-  // last_key_pressed is only cleared by a key-up and tickKbdRep is deliberately not
-  // re-armed below — so after the initial 500 ms the key is re-pushed on every 150 ms
-  // tick. A USB keyboard behind a hub that drops its release report made F1 reopen
-  // the menu forever (hw 2026-07-31: one runInternal per tick until reset).
+  // last_key_pressed is only cleared by a key-up. A USB keyboard behind a hub that
+  // drops its release report made F1 reopen the menu forever (hw 2026-07-31: one
+  // runInternal per tick until reset).
   if (v >= fabgl::VirtualKey::VK_F1 && v <= fabgl::VirtualKey::VK_F12) return;
-  if (v != fabgl::VirtualKey::VK_NONE) {
-    if (tickKbdRep == 0) {
-      if (v == fabgl::VirtualKey::VK_UP) {
-        kbdPushData(fabgl::VirtualKey::VK_MENU_UP, true);
-      } else if (v == fabgl::VirtualKey::VK_DOWN) {
-        kbdPushData(fabgl::VirtualKey::VK_MENU_DOWN, true);
-      }
-      kbdPushData(v, true);
-    } else {
-      uint32_t t2 = time_us_32();
-      if (t2 - tickKbdRep > 500000) {
-        tickKbdRep = 0;
-      }
-    }
-  }
+  const uint32_t now = time_us_32();
+  if ((int32_t)(now - tickKbdRep) < 0) return;
+  // Next step one period after the due time, but never a burst to catch up after
+  // a stall (a slow redraw, an SD access): re-anchor on now instead.
+  uint32_t next = tickKbdRep + KBD_REP_PERIOD_US;
+  if ((int32_t)(now - next) >= 0) next = now + KBD_REP_PERIOD_US;
+  tickKbdRep = next;
+  fabgl::Keyboard *kbd = ESPectrum::PS2Controller.keyboard();
+  if (!kbd) return;
+  // The previous repeat is still unread: skip this one rather than queue it, so a
+  // consumer slower than the rate stops the moment the key is let go instead of
+  // replaying the backlog (what PC typematic + an OS input queue also avoid).
+  if (kbd->virtualKeyPending()) return;
+  // The twin goes first, as kbdExtraMapping queues it on a real press (UiGame
+  // collapses the pair). Injected directly, not via kbdPushData: a repeat must not
+  // change last_key_pressed / the deadline, nor re-run the press-edge hotkeys
+  // (Ctrl+J would toggle the cursor joystick 30 times a second).
+  if (v == fabgl::VirtualKey::VK_UP)
+    kbd->injectVirtualKey(fabgl::VirtualKey::VK_MENU_UP, true);
+  else if (v == fabgl::VirtualKey::VK_DOWN)
+    kbd->injectVirtualKey(fabgl::VirtualKey::VK_MENU_DOWN, true);
+  kbd->injectVirtualKey(kbd->manageCAPSLOCK(v), true);
 }
 
 //=======================================================================================
@@ -733,6 +752,12 @@ static void assign_ram(int i, bool butterOnly = false) {
 #ifndef ZX_PSRAM_PAGES
 #define ZX_PSRAM_PAGES 0x5F
 #endif
+#ifndef ZX_SRAM46_MIN_FREE_KB
+#define ZX_SRAM46_MIN_FREE_KB 0
+#endif
+#ifndef NEXT_SRAM46_MIN_FREE_KB
+#define NEXT_SRAM46_MIN_FREE_KB 0
+#endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
 static void donateZxPagesToFb() {
   if (!butter_psram_size()) return;
@@ -786,7 +811,30 @@ static void donateZxPagesToFb() {
     if (next) VIDEO::fbDonate(p0 + 2u * MEM_PG_SZ, 2u * MEM_PG_SZ, 0x0Cu);   // pages 2/3 only
     else      VIDEO::fbDonate(p0, 4u * MEM_PG_SZ, 0x0Fu);
   }
-  if ((ZX_PSRAM_PAGES & 0x50) == 0x50) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
+  // Pages 4/6 stay in SRAM when the heap can afford it (owner, 2026-11-04): without
+  // their donor the FB takes those rows (~32 KB at 360 wide) off the heap instead, so
+  // ask what the heap holds after THAT rebuild. At least ZX_SRAM46_MIN_FREE_KB left
+  // → keep 4/6 (all of 4-7 in SRAM, the pre-2026-10-13 layout for those pages);
+  // less → donate them as before and only 5/7 stay. 0 = always donate.
+  // Measured here, before audio/tape/GS/MIDI/TS-Conf ring take their share — the
+  // `setup: COMPLETE` heap comes out ~25 KB+ lower than this figure.
+  // Next has its own threshold (NEXT_SRAM46_MIN_FREE_KB): NEXTVID::Reset takes ~70 KB
+  // of SRAM after this point, and at the ZX figure a Next boot ended with 9 KB free.
+  if ((ZX_PSRAM_PAGES & 0x50) == 0x50) {
+    bool keep46 = false;
+    const unsigned minKB = next ? NEXT_SRAM46_MIN_FREE_KB : ZX_SRAM46_MIN_FREE_KB;
+    if (minKB) {
+      size_t held = 0, after = 0;
+      VIDEO::fbHeapPlan(&held, &after);          // donors so far: pages 0-3 (2/3 on Next)
+      const long freeAfter = (long)getFreeHeap() + (long)held - (long)after;
+      keep46 = freeAfter >= (long)minKB * 1024;
+      Debug::log("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
+                 keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+      Debug::log2SD("setup: pages 4/6 %s: free heap after FB %ldKB (threshold %uKB%s)",
+                    keep46 ? "stay in SRAM" : "-> butter", freeAfter / 1024, minKB, next ? ", Next" : "");
+    }
+    if (!keep46) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
+  }
 }
 
 // One line with everything a machine-switch bug hides in: the paging latches that

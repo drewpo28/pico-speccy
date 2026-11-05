@@ -193,6 +193,7 @@ NM_BOOL_ACCESS(uiVgaPal,  ui_vga_solid)
 NM_BOOL_ACCESS(uiCorners, ui_rounded)
 NM_INT_ACCESS (uiTheme,   ui_theme)
 NM_INT_ACCESS (uiClickVol, ui_click_vol)
+NM_INT_ACCESS (kbdRepDelay, kbd_rep_delay)
 NM_INT_ACCESS (joyType,   joystick)
 NM_BOOL_ACCESS(tabFire,   TABasfire1)
 NM_INT_ACCESS (esxdos,    esxdos)
@@ -1059,6 +1060,14 @@ static bool stagedIsTc2068() {
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
+// Murmuzavr hangs off the real Pentagon's #AFF7 latch. Quorum 128/256/1024 are romsets
+// of A_PENT with their own port map (machines/Quorum.h), so they do not count.
+static bool stagedIsMurmuzavrMachine() {
+    if (!stagedIsPentagon()) return false;
+    const int32_t m = staged(SET_MACHINE);
+    const RomsetIdx r = (m >= 0) ? (RomsetIdx)(m & 0xFF) : Config::romSet;
+    return !isQuorum128Romset(r);
+}
 
 static void resolveConstraints(CommitReport& rep) {
     // Bounded: each rule only ever turns something OFF, so it cannot oscillate, but the
@@ -1490,7 +1499,7 @@ static void resolveConstraints(CommitReport& rep) {
         // Profi (which spends another ~80 KB of its own) it OOM-panicked at boot.
         // ESPectrum::setup clamps the same way, so a config that predates this rule
         // still boots; this is what makes the menu agree with it.
-        if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsPentagon())
+        if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsMurmuzavrMachine())
             changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
 
         // Fast load and tape wear cannot both be true: the in-ROM trap fills a block
@@ -1912,20 +1921,11 @@ void commit(CommitReport& rep) {
     for (uint16_t id = 1; id < SET_COUNT; id++)
         if (rebootDirty(id)) rep.needsReboot = true;
 
-    // General Sound and DivIDE both decode ports 0xB3/0xBB (OSDMain.cpp:3262), so turning
-    // GS on turns DivIDE off. Config::esxdos is not a staged setting yet, so this writes
-    // it directly; once the Devices branch stages it, this becomes an ordinary force().
-    // esxDOS and IDE share ports 0xEB/0xE7/0xA3. ideDialog turns esxDOS off when a scheme
-    // is selected, but never the reverse — so enabling esxDOS with NEMO/PROFI already on
-    // left both decoding the same ports. Config::ide_scheme is not staged (IDE is a modal),
-    // hence the direct write.
-    if (bmGet(g_dirty, SET_ESXDOS) && g_val[SET_ESXDOS] && Config::ide_scheme != 0) {
-        Config::ide_scheme = 0;
-        IDE::close();
-        IdeSubsys::syncFromState();
-        rep.constrained++;
-        if (!rep.note) rep.note = " IDE turned off: esxDOS needs the same ports ";
-    }
+    // esxDOS and IDE are not exclusive (owner, 2026-11-04): esxDOS answers #E3/#E7/#EB
+    // (DivIDE: #A3-#BF with A0=A1=1), NEMO needs A1=A2=0 and SMUC A0=0, so neither
+    // collides. The schemes that DO share a port — PROFI (#xxEB), the +3 divIDE
+    // (#A3-#BF), +3e, ATM and the Atom Lite — live on machines where esxDOS is forced
+    // off already (resolveConstraints / MachineSwitch / the setup backstops).
 
     // SMUC answers on a Scorpion and on TS-Conf (a ZXBUS card there, which is
     // what Wild Commander's IDEsmuc panel drivers expect) — everywhere else
@@ -1938,6 +1938,9 @@ void commit(CommitReport& rep) {
             if (!rep.note) rep.note = " SMUC is a Scorpion / TS-Conf card ";
     }
 
+    // General Sound and DivIDE both decode ports 0xB3/0xBB (OSDMain.cpp:3262), so turning
+    // GS on turns DivIDE off. Config::esxdos is not a staged setting yet, so this writes
+    // it directly; once the Devices branch stages it, this becomes an ordinary force().
     if (bmGet(g_dirty, SET_GS_MODE) && g_val[SET_GS_MODE] && Config::esxdos == 2) {
         Config::esxdos = 0;
         rep.constrained++;

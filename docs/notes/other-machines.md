@@ -250,6 +250,7 @@ the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
   dd10 revA in the romset is a scrambled/bad dump. NB `getByteContention`
   indexes romDd11[offset-512] with offset up to 0x3FFF — reads past the
   512-byte array for addr ≥ 0xC400; pre-existing, not touched.
+
 ## Enterprise 64/128 (A_ENT, 2026-10-30, phase 0, host-tested, NOT hw-tested)
 
 Plan + status: `docs/enterprise-plan.md`. Model = ep128emu (Istvan Varga). Machine >
@@ -396,6 +397,27 @@ EXOS keeps it on — `Dave::tapeFb/setTapeIn`, a level edge at #B6 runs Dave to 
 after 4 chunks on the host too (needs 128K?, EXOS 2.0's tape code = 2.1's).
 SAVE (2026-10-31): Dave's left output -> `EpTapeRec` -> `/pico-speccy/tapes/EPnnnn.tap`. Fast load: `Ep::tapeFastHalt` at EXOS's own EI/HALT pulse measurement, plan "Fast tape load" (EPTE, ep128emu .tap, CSW, WAV; MP3 in real time). I/O is charged now (3 T + 1 T tail), Nick runs in parts so port writes land on their slot, `.pss` covers the EP (PSEP/PSEF, `epd` lines). Those four are host-tested only. Not itemised on hw: the tape audible from the speaker, the EPTE/WAV test
 tapes, Enter-rewind in the tape browser.
+**Tape + EXDOS fixes (2026-11-04, hw-confirmed DVp2w on `debug/DVp2w-ep-tapefix5-1.1.1`, owner: "работает"):**
+(1) the SAVE recorder took fast-loaded frames for a SAVE (no IN #B6 there, tape feedback on the
+left output) and stopped the deck mid-load (Bruce Lee EP64 hung, F11 then "Saved EP0005.tap"):
+`tapeFastHalt` marks the frame a tape read, and a recording STARTS only with a remote up NOW and no
+#B6 read for 100 frames. (2) FILE:'s `:DIR`/`:CD` answered even under EXDOS (EXOS asks the ROMs in
+an order a warm F11 can change: the SD root listed under a mounted disk) — declined when EXDOS is on
+and FILE: is not the default. (3) Both launch one-shots are consumed at every reset; launchResume
+arms the FILE: flag only for setup's EXDOS re-reset. (4) EXDOS leaving the bus at a reset zeroes
+FF:3FF8 (EXOS's warm-start word, ROM 0x004B): a warm start kept EXDOS's devices and RAM and ran
+into segment B0 (eject + F11 hung). A mount from the slot picker without EXDOS toasts "F11: reset to
+start EXDOS". Amaurote_48K.tap needs 128K (pages segment FA itself) — not a bug.
+Host hooks: `PICOSPECCY_EP_LIVETAPE` / `_LIVEDISK` / `_LIVEMOUNT` ("frame:" = eject) `="frame:/path"`,
+`PICOSPECCY_EP_F11="f1,f2h"` — the menu flows on a running EP without a menu (EP_TYPE re-arms after them; `h` = Alt+F11 Hard).
+**No false SAVE, Soft/Hard reset (2026-11-04, host-tested, NOT hw-tested, `debug/DVp2w-ep-reset-1.1.1`):**
+(1) International Karate+ Reloaded recorded EP0007.tap mid-load: its loader keeps the motor off > 2 s
+between chunks and reads #B6 only a frame after the next remote-on, so the 2 s rule alone passed. Rule
+now, like a real deck: a deck PLAYING a tape never records (the remote resumes the tape before
+`frameEnd`); SAVE needs no tape in, or one played to its end / stopped. BASIC SAVE without a tape
+still records. (2) F11 is the RESET button = EXOS warm start: a game that stored its own address at
+FF:3FF8 gets control back (Cyrus Chess) — authentic, kept. Alt+F11 on the EP offers Soft (warm) /
+Hard (cold: `Ep::coldStart` zeroes FF:3FF8 first, EXOS logo).
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 
@@ -541,10 +563,20 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
 - Window 0 is Quorum's (`p3special = 3`): #00 D0 shadow RAM / D5 SYS ROM / D6 write
   protect (`g_atm_ro`) / D7 TR-DOS ROM vs shadow RAM; writes under visible ROM go to the
   shadow page (`wrOverlay`). #00 cleared by reset and the NMI ack; a snapshot load sets
-  #A0 (`Quorum::afterSnapshot`, from LoadSnapshot). WD1793 on #80-#83 / #85 (mapped to
+  #A0 (`Quorum::afterSnapshot`, from LoadSnapshot) — except a .pss with `PSQU`, below. WD1793 on #80-#83 / #85 (mapped to
   the Beta SYS register via `Ports::fdcSysWrite`); the Beta #1F family, other even
   ports, #F7 and the printer are swallowed. #7E extended keyboard = `quorumKeys()`
   (ESPectrum.cpp, ZXMAK2 map, only keys with no Spectrum-matrix twin; F-keys stay ours).
+- **.pss keeps the Quorum state (2026-11-04, host-tested only, NOT hw-tested):** record
+  `PSQU` = u8 ver 1, #00, #80FD, #7FFD as last written (256/1024 page bits), #85, flags
+  (b0 #80FD written); `Quorum::snapLoad` applies it after the Pentagon/48K memory map and
+  the `afterSnapshot()` that follows keeps it. Pages: the Q64 also writes page 1 (its
+  shadow RAM; file order 5, 2, 0, 1), the 256/1024 all `quorumRamPages` (16/64), not 8.
+  Older Quorum files (3 / 8 pages, no PSQU) still load: the rest gets the power-on
+  pattern, #00 = #A0 as before. Export to .szx/.z80/.sna lists "Quorum #00 / shadow
+  RAM" (and "RAM above 128K") as dropped. Host bench: Q128+ saved in the SYS menu
+  (#00 = 0) resumes in it and "1" boots BASIC 128 — the old loader hung on the same file;
+  Q64 and Q1024 round trips resume too.
 - ROMs: QU4V93T4 (Q64) + QU7V42 (Q128), `tools/rom_pack.py quorum` = 1 raw SYS page +
   5 overlays, 22 967 B; `rom_verify.py` checks them.
 - **Quorum 128 CP/M boots (hw 2026-10-29, owner: NC for Quorum v2.3 on `kv_cpm (System 3.1

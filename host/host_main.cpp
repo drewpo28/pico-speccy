@@ -125,9 +125,7 @@ void repeat_me_for_input() {
         s_prev = r;
     }
     host_pads_apply();
-    static uint64_t t_rep = 0;
-    const uint64_t now = time_us_64();
-    if (now - t_rep > 150000) { repeat_handler(); t_rep = now; }
+    repeat_handler();   // keeps its own deadline (ESPectrum.cpp), as on the firmware
 }
 
 // ---- threads ------------------------------------------------------------------------

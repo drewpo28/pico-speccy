@@ -262,6 +262,9 @@ public:
         }
         uint32_t n = mem_pg_cnt;
         if (n > 64 && !(a == A_PENT || a == A_P512 || a == A_P1024)) n = 64;
+        // Quorum 128/256/1024 are romsets of A_PENT without the #AFF7 latch: their
+        // RAM is quorumRamPages() <= 64, a Murmuzavr pick only grew the strip.
+        if (n > 64 && a == A_PENT && isQuorum128Romset(rs == R_NONE ? romSetPent : rs)) n = 64;
         // GMX requires live QSPI (butter) PSRAM — without it requestMachine falls
         // the pick back to Yellow, so the strip must not grow either.
         if (a == A_SCORP && isScorpGmxRomset(rs == R_NONE ? romSetScorp : rs) &&
@@ -890,6 +893,8 @@ public:
     // volume is (OSD::click), so it needs an attenuation of its own; Loud is what
     // the firmware always did.
     static uint8_t ui_click_vol;
+    // kbd_rep_delay: software auto-repeat delay, 0..3 = 250/500/750/1000 ms.
+    static uint8_t kbd_rep_delay;
     // Palette: 0=Default, 1=Grayscale
     static uint8_t palette;
     static uint8_t audio_driver;

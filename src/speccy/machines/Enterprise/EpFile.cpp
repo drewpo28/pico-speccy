@@ -92,6 +92,15 @@ static void launchPrefersFile() {
 // A disk image in A:, then a reset into EXDOS (the ROM joins the bus at reset
 // while a disk is in): the Sam::launchDisk shape. EXDOS runs EXDOS.INI off the disk
 // if it has one, else the user is at IS-BASIC with A: as the default device.
+// EXDOS is put on the bus by a reset with a disk in a drive (Ep::reset), never by a
+// mount: until then EXOS sends :DIR and LOAD to FILE: (the SD card) — which read as
+// "the disk is mounted but I see the card" (hw 2026-11-04, after tape launches, which
+// boot without EXDOS on purpose). launchDisk resets right after and drops the toast.
+void diskMountNote() {
+    if (Config::arch == A_ENT && !exdosOn())
+        OSD::notify(" F11: reset to start EXDOS ", LEVEL_INFO, 3000);
+}
+
 bool launchDisk(const std::string& path) {
     DiskSlots::slotMount(IFACE_EP, 0, path);
     if (!EpFdc::mounted(0)) return false;
@@ -104,6 +113,7 @@ bool launchDisk(const std::string& path) {
         MachineSwitch::commit(A_ENT, Config::romSetEp);   // resets, or reboots and never returns
     } else {
         ESPectrum::resetForLoad();
+        OSD::cancelNotify();                // the reset just put EXDOS on: no "F11" toast
     }
     Config::epKeepTmp = false;              // reached only without a reboot
     return true;
@@ -202,6 +212,11 @@ static bool command() {
     }
     for (char& c : word) if (c >= 'a' && c <= 'z') c = (char)(c - 32);
     if (word != "DIR" && word != "CD") return false;
+    // With EXDOS on the bus the disk owns :DIR / :CD unless FILE: is the default
+    // device: whichever ROM EXOS asks first answers, and that order is not fixed (after
+    // a warm F11 FILE: answered and listed the SD card under a mounted disk, hw
+    // 2026-11-04). Declining passes the command on down the chain to EXDOS.
+    if (exdosOn() && !s_defFile) return false;
     s_outPos = 0;
     if (word == "DIR") listDir(resolveDir(arg));
     else if (arg.empty()) s_out = "FILE: " + s_dir + "\r\n";
@@ -606,6 +621,7 @@ static bool    s_byRemote = false;
 // True if the remote was up at any point of this frame (one-shot): the frame EXOS
 // drops it in still carries the end of the chunk.
 static bool s_remoteSeen = false;
+bool tapeRemoteNow() { return s_remote != 0; }
 bool tapeRemoteUp() { const bool r = s_remote != 0 || s_remoteSeen; s_remoteSeen = false; return r; }
 void tapeRemote(uint8_t bits) {
     bits &= 3;
@@ -671,7 +687,11 @@ void launchResume() {
         tapeLaunchArm(!(EpFdc::anyMounted() && !exdosOn()));   // else setup's re-reset is the reset
         return;
     }
-    launchPrefersFile(); armFor(buf, autostart);   // the EXDOS re-reset in setup consumes it
+    // The flag is for setup's EXDOS re-reset (a disk mounted, EXDOS not on yet); without
+    // one FILE: is the default already, and a flag left standing would hit the NEXT
+    // reset — a later Enter on a disk image came up with FILE: under EXDOS.
+    if (EpFdc::anyMounted() && !exdosOn()) launchPrefersFile();
+    armFor(buf, autostart);
 }
 
 } // namespace Ep
