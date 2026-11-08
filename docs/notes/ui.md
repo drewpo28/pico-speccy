@@ -29,6 +29,16 @@ MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations g
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+## Menu > Browser = the F5 file manager (2026-11-08, host-checked, NOT hw-tested)
+
+Root row before Snapshots (`act_browser`, shown with an SD card). The F5 branch of
+`do_OSD` moved verbatim into `OSD::loadAnyFile()`; the hot key calls it, and the row
+calls `nm::requestBrowserAfterClose()`: the menu closes and `runInternal` runs it
+AFTER the session handed everything back (not nested: launches reset machines and
+open the disk-slot menu themselves). The flag is cleared before the call (so that
+slot menu does not re-run it), on "Cancel" in the apply prompt, and skipped after a
+machine switch. Host bench: F1, Down x2, Enter -> "Open File" at SD:/.
+
 ## The right pane's Description block (2026-10-14, partly hw-seen)
 
 Under a radio/bool row's options the right pane draws a `Description` block for the

@@ -17,6 +17,7 @@
 // ── top level ──────────────────────────────────────────────────────────────────
 #define TXT_HELP            "Help"
 #define TXT_MACHINE         "Machine"
+#define TXT_BROWSER         "Browser"
 #define TXT_SNAPSHOTS       "Snapshots"
 #define TXT_SNAP_FROMFILE   "Load from file"
 #define TXT_SNAP_SLOTS      "Quick slots"

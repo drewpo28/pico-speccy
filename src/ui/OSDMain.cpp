@@ -2411,6 +2411,345 @@ void OSD::nmiAction() {
     }
 }
 
+// The F5 file manager (HK_LOAD_ANY): location chooser, the SD browser, then the
+// launch by type. Its own function so the menu row Menu > Browser runs the very
+// same flow (nm:: queues it for after the menu session closes, UiNav.cpp).
+// Runs inside do_OSD's guards on both paths.
+void OSD::loadAnyFile() {
+    if (!FileUtils::fsMount) return;
+#if ZIFI_NET_CLIENT
+    // When networking is available, F5 first offers a location picker IN the
+    // browser window (Local / Remote / Web Archives / Add Remote). The gate is
+    // cheap (no blocking ESP round-trip); the network actions check the WiFi link
+    // themselves. With networking off, fall straight through to the SD browser.
+    // The label is the "root": backing out of the SD browser returns here (below)
+    // rather than closing the OSD, so the locations chooser is always reachable.
+    // On a fresh F5 press, restore the last browse location across all sources
+    // (g_f5_restore); the goto re-entry skips it so back-out lands on the chooser.
+    if (f5HasChooser()) g_f5_restore = true;
+    f5_locations:
+    if (f5HasChooser()) {
+        if (!f5Locations()) {                // chose a non-Local action or cancelled
+            if (OSD::net_launch_close) OSD::net_launch_close = false;
+            OSD::net_close_all = false;      // Esc-close consumed → reset
+            if (VIDEO::OSD) OSD::drawStats();
+            return;
+        }
+        lastLocSet("L");                     // Local (SD) chosen → record as last location
+        // fall through to the SD browser below.
+    }
+#endif
+    string mFile;
+    string fname;
+    string ext;
+    bool fromZip = false;
+
+    // Loop to allow re-opening the browser after ZIP cancel
+    bool forcePopup = false;
+    f5_retry:
+#if ZIFI_NET_CLIENT
+    // From locations: show a ".." even at the SD root → returns "" → locations.
+    OSD::fd_root_parent = f5HasChooser();
+#endif
+    mFile = nm::browseFile(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE);
+#if ZIFI_NET_CLIENT
+    OSD::fd_root_parent = false;             // don't leak into other browser uses
+    // ".." at the SD root → locations chooser. Esc ("") just closes the browser
+    // (as before) — it does NOT climb a level.
+    if (mFile == "\x02UP") goto f5_locations;
+#endif
+    if (mFile != "") {
+        // X prefix = extract ZIP to current folder
+        if (mFile[0] == 'X') {
+            fname = FileUtils::ALL_Path + mFile.substr(1);
+            OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING, LEVEL_INFO, 0);
+            int count = ZipExtract::extractAll(fname, FileUtils::ALL_Path);
+            if (count > 0) {
+                char msg[40];
+                snprintf(msg, sizeof(msg), " Extracted %d file(s) ", count);
+                OSD::osdCenteredMsg(msg, LEVEL_INFO, 1000);
+            } else {
+                OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
+            }
+            goto f5_retry;
+        }
+        // M + trailing '/' = F2 on a folder: play the folder and its subfolders.
+        if (mFile[0] == 'M' && mFile.back() == '/' && pp::available()) {
+            nm::playerStandalone(FileUtils::ALL_Path + mFile.substr(1));
+            goto f5_retry;
+        }
+        // P prefix = F5 pressed on a disk/image — force the slot picker.
+        if (mFile[0] == 'P') forcePopup = true;
+        fname = FileUtils::ALL_Path + mFile.substr(1);
+        ext = FileUtils::getLCaseExt(fname);
+        fromZip = false;
+
+        // ZIP archive — extract and replace fname/ext/mFile. Also an archive
+        // under an image name (defenders_of_the_earth.dsk from zxart = a
+        // ZIP holding the .dsk): mounting the archive itself as a +3 disk.
+        // A gzip-wrapped image (LYRA3.dsk = gzip of a SAM MGT): unwrap to
+        // /tmp and go on with the inner file. .vgz/.vgm stay the player's.
+        if (ext != "vgz" && ext != "vgm" && FileUtils::isGzipByMagic(fname)) {
+            string gzFname = ZipExtract::gunzipToTemp(fname);
+            if (gzFname.empty()) {
+                OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
+                if (VIDEO::OSD) OSD::drawStats();
+                return;
+            }
+            fname = gzFname;
+            ext = FileUtils::getLCaseExt(fname);
+            mFile = mFile.substr(0, 1) + fname.substr(fname.rfind('/') + 1);
+            fromZip = true;
+        }
+        if (ext != "zip" && FileUtils::isZipByMagic(fname)) ext = "zip";
+        if (ext == "zip") {
+            // (The Gigascreen prevFB lease that used to be taken here now
+            // lives inside ZipExtract::extract, so every entry point gets it.)
+            string zipFname = ZipExtract::extract(fname, DISK_ALLFILE);
+            if (zipFname.empty()) {
+                OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
+                if (VIDEO::OSD) OSD::drawStats();
+                return;
+            }
+            if (zipFname == "\x1b") {
+                // User cancelled ZIP selection — reopen file dialog
+                goto f5_retry;
+            }
+            fname = zipFname;
+            ext = FileUtils::getLCaseExt(fname);
+            // Reconstruct mFile with prefix for Tape::LoadTape compatibility
+            string zipBase = fname.substr(fname.rfind('/') + 1);
+            mFile = mFile.substr(0, 1) + zipBase;
+            fromZip = true;
+        }
+
+        // Pico-Zx-Player: Enter / F2 on any music file. An .mp3 can also be an
+        // MP3-encoded tape: F5 ('P') loads it as one, like the Tape menu.
+        if (pp::available() && pp::playableExt(ext) &&
+                !(ext == "mp3" && mFile[0] == 'P')) {
+            nm::playerStandalone(fname);
+#if ZIFI_NET_CLIENT
+            // The player's F5 may have gone to the network (Web Archives /
+            // Remote): a launch there closes the OSD, Esc there too.
+            if (OSD::net_launch_close || OSD::net_close_all) {
+                OSD::net_launch_close = false;
+                OSD::net_close_all = false;
+                if (VIDEO::OSD) OSD::drawStats();
+                return;
+            }
+#endif
+            goto f5_retry;
+        }
+        if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "ept" || ext == "wav" || ext == "mp3") {
+            // Tape — sync TAP_Path: /tmp/ for ZIP, ALL_Path for normal files
+            FileUtils::TAP_Path = fromZip ? "/tmp/" : FileUtils::ALL_Path;
+            Config::save();
+            // Respect the Auto-start toggle: with auto-start off, force the
+            // "L" (load-only) key so flashload never runs the program — the
+            // machine lands at BASIC. WAV/MP3 always play inside LoadTape.
+            // Don't press Play here: leaving the tape STOPPED until the guest
+            // polls keeps F8 stats out of tape mode while it's merely mounted.
+            if (!Config::tape_autostart && mFile.size() > 0)
+                mFile[0] = 'L';
+            Tape::LoadTape(mFile);
+            // Enterprise: no loader snapshot — type LOAD "TAPE:" and let the
+            // remote start the deck (EpFile.cpp).
+            if (Config::arch == A_ENT && Config::tape_autostart) Ep::launchTape();
+        }
+        else if (FileUtils::ifaceForExt(ext) == IFACE_BETA) {
+            // TR-DOS disk. Enter in the browser mounts into Drive A;
+            // F5 in the browser opens the slot picker, where Enter mounts
+            // into the focused slot and the popup stays open for more
+            // operations until Esc closes it back to the file dialog.
+            if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+            if (forcePopup) {
+                Config::driveWP[0] = true;
+                // The slot chooser is a level of the menu.
+                nm::runDiskSlots(IFACE_BETA, fname.c_str());
+                forcePopup = false;
+                goto f5_retry;
+            }
+            rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
+            if (ESPectrum::fdd.disk[0])
+                // TD0 is read-only (no write-back) → always WP regardless of the slot flag.
+                ESPectrum::fdd.disk[0]->writeprotect =
+                    Config::driveWP[0]
+                    || ESPectrum::fdd.disk[0]->IsTD0File
+                    ;
+            Config::save();
+        }
+        else if (ext == "com" || ext == "128" || (ext == "bas" && Config::arch == A_ENT)) {
+            // Enterprise program (EXOS header, machine code or IS-BASIC):
+            // EXOS loads it through FILE: from its own folder.
+            Ep::launchFile(fname);
+        }
+        else if (FileUtils::ifaceForPath(fname) == IFACE_EP) {
+            // An Enterprise disk image (FAT12): Enter mounts it in A: and
+            // resets into EXDOS, F5 opens the slot picker.
+            if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+            if (forcePopup) {
+                nm::runDiskSlots(IFACE_EP, fname.c_str());
+                forcePopup = false;
+                goto f5_retry;
+            }
+            if (!Ep::launchDisk(fname))
+                OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+        }
+        else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
+            // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,
+            // F5 opens the slot picker.
+            if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+            if (forcePopup) {
+                nm::runDiskSlots(IFACE_SAM, fname.c_str());
+                forcePopup = false;
+                goto f5_retry;
+            }
+            if (!Sam::launchDisk(fname))
+                OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+        }
+        else if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {
+            // A +3 disk. The image is only meaningful on a +3, so mounting one
+            // from another machine switches to the +3 and resets into it — the
+            // analogue of what the TR-DOS path does with betadisk + bootTrdos.
+            if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+            if (forcePopup) {
+                nm::runDiskSlots(IFACE_PLUS3, fname.c_str());
+                forcePopup = false;
+                goto f5_retry;
+            }
+            const bool needSwitch = !Config::isPlus3();
+            DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
+            Config::save();
+            if (needSwitch) {
+                // commit() reboots on some boards and never returns; the mount
+                // above is already persisted, so Config::loadDiskMounts puts the
+                // disk back either way.
+                MachineSwitch::commit(A_128K, R_P3);
+                return;
+            }
+        }
+        else if (ext == "mbd") {
+            // MB-02+ disk — Enter mounts into Drive 1, F5 opens the popup.
+            if (MB02::enabled) {
+                if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+                if (forcePopup) {
+                    Config::mb02WP[0] = true;
+                    // The slot chooser is a level of the menu.
+                    nm::runDiskSlots(IFACE_MB02, fname.c_str());
+                    forcePopup = false;
+                    goto f5_retry;
+                }
+                rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, 0, fname);
+                if (ESPectrum::mb02_fdd.disk[0])
+                    ESPectrum::mb02_fdd.disk[0]->writeprotect = Config::mb02WP[0];
+                ESPectrum::mb02_fdd.diskLoadedCyl = -1;
+                ESPectrum::mb02_fdd.diskLoadedSide = -1;
+                MB02::signalDiskChange();
+                Config::save();
+            } else {
+                OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
+            }
+        }
+        else if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx" || ext == "nex" || ext == "snx" || ext == "bas") {
+            // Snapshot (.spg = TS-Conf program, switches the machine)
+            if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
+            Config::save();
+            if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
+                if (!snapshotLoadReported())   // ... already named the reason
+                    OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+            } else if (!fromZip) {
+                // An RZX is a replay, not a machine to resume at the next
+                // boot: it stays the Alt+Backspace reload, nothing more.
+                Config::ram_file = (ext == "rzx") ? NO_RAM_FILE : fname;
+                Config::last_ram_file = fname;
+            }
+        }
+        else if (ext == "dck") {
+            // Timex DOCK cartridge — mount it and boot the TC2068 on it.
+            if (!fromZip) FileUtils::ROM_Path = FileUtils::ALL_Path;
+            Config::save();
+            if (loadDckCart(fname)) return;   // clean exit into the running machine
+        }
+        else if (ext == "rom" || ext == "bin") {
+            // Up to 16 KB: a ZX Interface 2 cartridge on the 48K. Bigger: an ALF
+            // cartridge. Both lazy-mount from SD (no flash) and switch in place.
+            FILINFO fi;
+            if (f_stat(fname.c_str(), &fi) == FR_OK && fi.fsize <= If2::MAX_SIZE) {
+                if (If2::insert(fname)) return;
+            } else if (loadAlfCart(fname)) return;   // clean exit into the running machine
+        }
+        else if (ext == "mmc" || ext == "hdf" || ext == "vhd" || ext == "hdd" || ext == "img") {
+            const bool ataImage = ext == "vhd" || ext == "hdd" || ext == "img";
+            // On a +3e the hard disk hangs off the machine's OWN IDE interface
+            // (DivMMC is forced off there), so an .hdf goes to hd0 of that —
+            // this is the IDEDOS disk the +3e ROM boots from. Same for the
+            // +3 (divIDE), whose ROM reaches its disk over the divIDE taskfile.
+            if (((Config::isPlus3e() || Config::isPlus3Div()) && ext != "mmc")
+                || (ataImage && Config::esxdos != 2 && Config::ide_scheme)) {
+                FileUtils::IMG_Path = FileUtils::ALL_Path;
+                if (forcePopup) {
+                    nm::runDiskSlots(IFACE_IDE, fname.c_str());
+                    Config::save();
+                    ESPectrum::reset();
+                    forcePopup = false;
+                    return;
+                }
+                DiskSlots::slotMount(IFACE_IDE, 0, fname);
+                Config::save();
+                ESPectrum::reset();
+            }
+            // DivMMC/DivIDE image — Enter loads into hd0 (slot 0); F5 opens
+            // the slot popup which mounts in-place and keeps the popup open.
+            // A full ESPectrum::reset() runs after everything is settled.
+            else if (DivMMC::enabled && (!ataImage || DivMMC::divide_mode)) {
+                FileUtils::IMG_Path = FileUtils::ALL_Path;
+                if (forcePopup) {
+                    // The slot chooser is a level of the menu.
+                    nm::runDiskSlots(IFACE_ESX, fname.c_str());
+                    Config::save();
+                    ESPectrum::reset();
+                    forcePopup = false;
+                    return;
+                }
+                Config::esxdos_hdf_image[0] = fname;
+                DivMMC::init();
+                Config::save();
+                ESPectrum::reset();
+            } else {
+                OSD::osdCenteredMsg(ataImage ? "Enable DivIDE or IDE first" : OSD_IMG_NEEDS_ESXDOS, LEVEL_WARN);
+            }
+        }
+        else if (ext == "dls") {
+            // GM.DLS soundbank — convert to a GMWB bank in CONFIG_DIR and flash
+            // it, the same pipeline as Audio→MIDI→GM.DLS→"Convert a .dls".
+            if (!fromZip) FileUtils::DLS_Path = FileUtils::ALL_Path;
+            string outBin = osdConvertDlsToBank(fname);
+            if (!outBin.empty()) {
+                // Enabling GM.DLS (mode 4) is the RAM-heavy engine → gate it
+                // through the SRAM budget manager, like the MIDI menu does.
+                if (Config::midi == 4 || OSD::featureBudgetGate(Subsystems::FEAT_MIDI)) {
+                    uint8_t prev_midi = Config::midi;
+                    Config::midi = 4;
+                    Config::midi_bank = outBin;
+                    Midi::enabled = prev_midi; Midi::deinit();
+                    Midi::enabled = 4; Midi::init();
+                    MidiSubsys::request(true);
+                    Config::save();
+                    // applyBankLive() loads THIS freshly-converted bank: live on PSRAM
+                    // (no reboot), else false → it must be written to flash at early boot.
+                    if (MidiSynth::applyBankLive()) {
+                        osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
+                    } else if (OSD::msgDialog("DLS Wavetable", MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
+                        osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
+                        OSD::esp_hard_reset();   // no PSRAM: provisionAtBoot writes it pre-video
+                    }
+                }
+            }
+        }
+    }
+    if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+}
+
 void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
     VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
@@ -2941,337 +3280,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // Quick Save — save to current persist slot without dialog (same as F4 + F4)
             persistSave(Config::persist_slot);
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_ANY) {
-#if ZIFI_NET_CLIENT
-            // When networking is available, F5 first offers a location picker IN the
-            // browser window (Local / Remote / Web Archives / Add Remote). The gate is
-            // cheap (no blocking ESP round-trip); the network actions check the WiFi link
-            // themselves. With networking off, fall straight through to the SD browser.
-            // The label is the "root": backing out of the SD browser returns here (below)
-            // rather than closing the OSD, so the locations chooser is always reachable.
-            // On a fresh F5 press, restore the last browse location across all sources
-            // (g_f5_restore); the goto re-entry skips it so back-out lands on the chooser.
-            if (f5HasChooser()) g_f5_restore = true;
-            f5_locations:
-            if (f5HasChooser()) {
-                if (!f5Locations()) {                // chose a non-Local action or cancelled
-                    if (OSD::net_launch_close) OSD::net_launch_close = false;
-                    OSD::net_close_all = false;      // Esc-close consumed → reset
-                    if (VIDEO::OSD) OSD::drawStats();
-                    return;
-                }
-                lastLocSet("L");                     // Local (SD) chosen → record as last location
-                // fall through to the SD browser below.
-            }
-#endif
-            string mFile;
-            string fname;
-            string ext;
-            bool fromZip = false;
-
-            // Loop to allow re-opening the browser after ZIP cancel
-            bool forcePopup = false;
-            f5_retry:
-#if ZIFI_NET_CLIENT
-            // From locations: show a ".." even at the SD root → returns "" → locations.
-            OSD::fd_root_parent = f5HasChooser();
-#endif
-            mFile = nm::browseFile(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE);
-#if ZIFI_NET_CLIENT
-            OSD::fd_root_parent = false;             // don't leak into other browser uses
-            // ".." at the SD root → locations chooser. Esc ("") just closes the browser
-            // (as before) — it does NOT climb a level.
-            if (mFile == "\x02UP") goto f5_locations;
-#endif
-            if (mFile != "") {
-                // X prefix = extract ZIP to current folder
-                if (mFile[0] == 'X') {
-                    fname = FileUtils::ALL_Path + mFile.substr(1);
-                    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING, LEVEL_INFO, 0);
-                    int count = ZipExtract::extractAll(fname, FileUtils::ALL_Path);
-                    if (count > 0) {
-                        char msg[40];
-                        snprintf(msg, sizeof(msg), " Extracted %d file(s) ", count);
-                        OSD::osdCenteredMsg(msg, LEVEL_INFO, 1000);
-                    } else {
-                        OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
-                    }
-                    goto f5_retry;
-                }
-                // M + trailing '/' = F2 on a folder: play the folder and its subfolders.
-                if (mFile[0] == 'M' && mFile.back() == '/' && pp::available()) {
-                    nm::playerStandalone(FileUtils::ALL_Path + mFile.substr(1));
-                    goto f5_retry;
-                }
-                // P prefix = F5 pressed on a disk/image — force the slot picker.
-                if (mFile[0] == 'P') forcePopup = true;
-                fname = FileUtils::ALL_Path + mFile.substr(1);
-                ext = FileUtils::getLCaseExt(fname);
-                fromZip = false;
-
-                // ZIP archive — extract and replace fname/ext/mFile. Also an archive
-                // under an image name (defenders_of_the_earth.dsk from zxart = a
-                // ZIP holding the .dsk): mounting the archive itself as a +3 disk.
-                // A gzip-wrapped image (LYRA3.dsk = gzip of a SAM MGT): unwrap to
-                // /tmp and go on with the inner file. .vgz/.vgm stay the player's.
-                if (ext != "vgz" && ext != "vgm" && FileUtils::isGzipByMagic(fname)) {
-                    string gzFname = ZipExtract::gunzipToTemp(fname);
-                    if (gzFname.empty()) {
-                        OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
-                        if (VIDEO::OSD) OSD::drawStats();
-                        return;
-                    }
-                    fname = gzFname;
-                    ext = FileUtils::getLCaseExt(fname);
-                    mFile = mFile.substr(0, 1) + fname.substr(fname.rfind('/') + 1);
-                    fromZip = true;
-                }
-                if (ext != "zip" && FileUtils::isZipByMagic(fname)) ext = "zip";
-                if (ext == "zip") {
-                    // (The Gigascreen prevFB lease that used to be taken here now
-                    // lives inside ZipExtract::extract, so every entry point gets it.)
-                    string zipFname = ZipExtract::extract(fname, DISK_ALLFILE);
-                    if (zipFname.empty()) {
-                        OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
-                        if (VIDEO::OSD) OSD::drawStats();
-                        return;
-                    }
-                    if (zipFname == "\x1b") {
-                        // User cancelled ZIP selection — reopen file dialog
-                        goto f5_retry;
-                    }
-                    fname = zipFname;
-                    ext = FileUtils::getLCaseExt(fname);
-                    // Reconstruct mFile with prefix for Tape::LoadTape compatibility
-                    string zipBase = fname.substr(fname.rfind('/') + 1);
-                    mFile = mFile.substr(0, 1) + zipBase;
-                    fromZip = true;
-                }
-
-                // Pico-Zx-Player: Enter / F2 on any music file. An .mp3 can also be an
-                // MP3-encoded tape: F5 ('P') loads it as one, like the Tape menu.
-                if (pp::available() && pp::playableExt(ext) &&
-                        !(ext == "mp3" && mFile[0] == 'P')) {
-                    nm::playerStandalone(fname);
-#if ZIFI_NET_CLIENT
-                    // The player's F5 may have gone to the network (Web Archives /
-                    // Remote): a launch there closes the OSD, Esc there too.
-                    if (OSD::net_launch_close || OSD::net_close_all) {
-                        OSD::net_launch_close = false;
-                        OSD::net_close_all = false;
-                        if (VIDEO::OSD) OSD::drawStats();
-                        return;
-                    }
-#endif
-                    goto f5_retry;
-                }
-                if (ext == "tap" || ext == "tzx" || ext == "pzx" || ext == "csw" || ext == "ept" || ext == "wav" || ext == "mp3") {
-                    // Tape — sync TAP_Path: /tmp/ for ZIP, ALL_Path for normal files
-                    FileUtils::TAP_Path = fromZip ? "/tmp/" : FileUtils::ALL_Path;
-                    Config::save();
-                    // Respect the Auto-start toggle: with auto-start off, force the
-                    // "L" (load-only) key so flashload never runs the program — the
-                    // machine lands at BASIC. WAV/MP3 always play inside LoadTape.
-                    // Don't press Play here: leaving the tape STOPPED until the guest
-                    // polls keeps F8 stats out of tape mode while it's merely mounted.
-                    if (!Config::tape_autostart && mFile.size() > 0)
-                        mFile[0] = 'L';
-                    Tape::LoadTape(mFile);
-                    // Enterprise: no loader snapshot — type LOAD "TAPE:" and let the
-                    // remote start the deck (EpFile.cpp).
-                    if (Config::arch == A_ENT && Config::tape_autostart) Ep::launchTape();
-                }
-                else if (FileUtils::ifaceForExt(ext) == IFACE_BETA) {
-                    // TR-DOS disk. Enter in the browser mounts into Drive A;
-                    // F5 in the browser opens the slot picker, where Enter mounts
-                    // into the focused slot and the popup stays open for more
-                    // operations until Esc closes it back to the file dialog.
-                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
-                    if (forcePopup) {
-                        Config::driveWP[0] = true;
-                        // The slot chooser is a level of the menu.
-                        nm::runDiskSlots(IFACE_BETA, fname.c_str());
-                        forcePopup = false;
-                        goto f5_retry;
-                    }
-                    rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
-                    if (ESPectrum::fdd.disk[0])
-                        // TD0 is read-only (no write-back) → always WP regardless of the slot flag.
-                        ESPectrum::fdd.disk[0]->writeprotect =
-                            Config::driveWP[0]
-                            || ESPectrum::fdd.disk[0]->IsTD0File
-                            ;
-                    Config::save();
-                }
-                else if (ext == "com" || ext == "128" || (ext == "bas" && Config::arch == A_ENT)) {
-                    // Enterprise program (EXOS header, machine code or IS-BASIC):
-                    // EXOS loads it through FILE: from its own folder.
-                    Ep::launchFile(fname);
-                }
-                else if (FileUtils::ifaceForPath(fname) == IFACE_EP) {
-                    // An Enterprise disk image (FAT12): Enter mounts it in A: and
-                    // resets into EXDOS, F5 opens the slot picker.
-                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
-                    if (forcePopup) {
-                        nm::runDiskSlots(IFACE_EP, fname.c_str());
-                        forcePopup = false;
-                        goto f5_retry;
-                    }
-                    if (!Ep::launchDisk(fname))
-                        OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
-                }
-                else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
-                    // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,
-                    // F5 opens the slot picker.
-                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
-                    if (forcePopup) {
-                        nm::runDiskSlots(IFACE_SAM, fname.c_str());
-                        forcePopup = false;
-                        goto f5_retry;
-                    }
-                    if (!Sam::launchDisk(fname))
-                        OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
-                }
-                else if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {
-                    // A +3 disk. The image is only meaningful on a +3, so mounting one
-                    // from another machine switches to the +3 and resets into it — the
-                    // analogue of what the TR-DOS path does with betadisk + bootTrdos.
-                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
-                    if (forcePopup) {
-                        nm::runDiskSlots(IFACE_PLUS3, fname.c_str());
-                        forcePopup = false;
-                        goto f5_retry;
-                    }
-                    const bool needSwitch = !Config::isPlus3();
-                    DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
-                    Config::save();
-                    if (needSwitch) {
-                        // commit() reboots on some boards and never returns; the mount
-                        // above is already persisted, so Config::loadDiskMounts puts the
-                        // disk back either way.
-                        MachineSwitch::commit(A_128K, R_P3);
-                        return;
-                    }
-                }
-                else if (ext == "mbd") {
-                    // MB-02+ disk — Enter mounts into Drive 1, F5 opens the popup.
-                    if (MB02::enabled) {
-                        if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
-                        if (forcePopup) {
-                            Config::mb02WP[0] = true;
-                            // The slot chooser is a level of the menu.
-                            nm::runDiskSlots(IFACE_MB02, fname.c_str());
-                            forcePopup = false;
-                            goto f5_retry;
-                        }
-                        rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, 0, fname);
-                        if (ESPectrum::mb02_fdd.disk[0])
-                            ESPectrum::mb02_fdd.disk[0]->writeprotect = Config::mb02WP[0];
-                        ESPectrum::mb02_fdd.diskLoadedCyl = -1;
-                        ESPectrum::mb02_fdd.diskLoadedSide = -1;
-                        MB02::signalDiskChange();
-                        Config::save();
-                    } else {
-                        OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
-                    }
-                }
-                else if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx" || ext == "nex" || ext == "snx" || ext == "bas") {
-                    // Snapshot (.spg = TS-Conf program, switches the machine)
-                    if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
-                    Config::save();
-                    if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
-                        if (!snapshotLoadReported())   // ... already named the reason
-                            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
-                    } else if (!fromZip) {
-                        // An RZX is a replay, not a machine to resume at the next
-                        // boot: it stays the Alt+Backspace reload, nothing more.
-                        Config::ram_file = (ext == "rzx") ? NO_RAM_FILE : fname;
-                        Config::last_ram_file = fname;
-                    }
-                }
-                else if (ext == "dck") {
-                    // Timex DOCK cartridge — mount it and boot the TC2068 on it.
-                    if (!fromZip) FileUtils::ROM_Path = FileUtils::ALL_Path;
-                    Config::save();
-                    if (loadDckCart(fname)) return;   // clean exit into the running machine
-                }
-                else if (ext == "rom" || ext == "bin") {
-                    // Up to 16 KB: a ZX Interface 2 cartridge on the 48K. Bigger: an ALF
-                    // cartridge. Both lazy-mount from SD (no flash) and switch in place.
-                    FILINFO fi;
-                    if (f_stat(fname.c_str(), &fi) == FR_OK && fi.fsize <= If2::MAX_SIZE) {
-                        if (If2::insert(fname)) return;
-                    } else if (loadAlfCart(fname)) return;   // clean exit into the running machine
-                }
-                else if (ext == "mmc" || ext == "hdf" || ext == "vhd" || ext == "hdd" || ext == "img") {
-                    const bool ataImage = ext == "vhd" || ext == "hdd" || ext == "img";
-                    // On a +3e the hard disk hangs off the machine's OWN IDE interface
-                    // (DivMMC is forced off there), so an .hdf goes to hd0 of that —
-                    // this is the IDEDOS disk the +3e ROM boots from. Same for the
-                    // +3 (divIDE), whose ROM reaches its disk over the divIDE taskfile.
-                    if (((Config::isPlus3e() || Config::isPlus3Div()) && ext != "mmc")
-                        || (ataImage && Config::esxdos != 2 && Config::ide_scheme)) {
-                        FileUtils::IMG_Path = FileUtils::ALL_Path;
-                        if (forcePopup) {
-                            nm::runDiskSlots(IFACE_IDE, fname.c_str());
-                            Config::save();
-                            ESPectrum::reset();
-                            forcePopup = false;
-                            return;
-                        }
-                        DiskSlots::slotMount(IFACE_IDE, 0, fname);
-                        Config::save();
-                        ESPectrum::reset();
-                    }
-                    // DivMMC/DivIDE image — Enter loads into hd0 (slot 0); F5 opens
-                    // the slot popup which mounts in-place and keeps the popup open.
-                    // A full ESPectrum::reset() runs after everything is settled.
-                    else if (DivMMC::enabled && (!ataImage || DivMMC::divide_mode)) {
-                        FileUtils::IMG_Path = FileUtils::ALL_Path;
-                        if (forcePopup) {
-                            // The slot chooser is a level of the menu.
-                            nm::runDiskSlots(IFACE_ESX, fname.c_str());
-                            Config::save();
-                            ESPectrum::reset();
-                            forcePopup = false;
-                            return;
-                        }
-                        Config::esxdos_hdf_image[0] = fname;
-                        DivMMC::init();
-                        Config::save();
-                        ESPectrum::reset();
-                    } else {
-                        OSD::osdCenteredMsg(ataImage ? "Enable DivIDE or IDE first" : OSD_IMG_NEEDS_ESXDOS, LEVEL_WARN);
-                    }
-                }
-                else if (ext == "dls") {
-                    // GM.DLS soundbank — convert to a GMWB bank in CONFIG_DIR and flash
-                    // it, the same pipeline as Audio→MIDI→GM.DLS→"Convert a .dls".
-                    if (!fromZip) FileUtils::DLS_Path = FileUtils::ALL_Path;
-                    string outBin = osdConvertDlsToBank(fname);
-                    if (!outBin.empty()) {
-                        // Enabling GM.DLS (mode 4) is the RAM-heavy engine → gate it
-                        // through the SRAM budget manager, like the MIDI menu does.
-                        if (Config::midi == 4 || OSD::featureBudgetGate(Subsystems::FEAT_MIDI)) {
-                            uint8_t prev_midi = Config::midi;
-                            Config::midi = 4;
-                            Config::midi_bank = outBin;
-                            Midi::enabled = prev_midi; Midi::deinit();
-                            Midi::enabled = 4; Midi::init();
-                            MidiSubsys::request(true);
-                            Config::save();
-                            // applyBankLive() loads THIS freshly-converted bank: live on PSRAM
-                            // (no reboot), else false → it must be written to flash at early boot.
-                            if (MidiSynth::applyBankLive()) {
-                                osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
-                            } else if (OSD::msgDialog("DLS Wavetable", MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
-                                osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
-                                OSD::esp_hard_reset();   // no PSRAM: provisionAtBoot writes it pre-video
-                            }
-                        }
-                    }
-                }
-            }
-            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+            OSD::loadAnyFile();
         } else if (hkIdx == Config::HK_TAPE_PLAY) {
             // Start / Stop .tap reproduction
             if (Tape::tapeStatus == TAPE_STOPPED) {

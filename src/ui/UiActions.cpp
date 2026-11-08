@@ -671,6 +671,13 @@ void persist_key(int32_t tag, uint8_t key) {
     }
 }
 
+// Menu > Browser: the F5 file manager. It runs after the menu closes (as from the
+// hot key), not nested in it: its launches reset machines and open their own menus.
+void act_browser() {
+    if (!FileUtils::fsMount) return;
+    requestBrowserAfterClose();
+}
+
 // Snapshots > Load from file: the F2 flow, and the F2 hot key runs this very
 // function — it was a hot key with no menu row of its own, which is how it went
 // missing when the classic cascade was deleted.

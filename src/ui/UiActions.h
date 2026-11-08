@@ -130,6 +130,7 @@ void act_debugPoke();
 // The standalone twin is the boot-time entrance (held S in the R/M probe).
 void act_gameScwong();
 void gameScwongStandalone();
+void act_browser();                             // Menu > Browser = F5 (UiActions.cpp)
 void act_player();                              // Menu > Pico-Zx-Player (UiPlayer.cpp)
 void playerStandalone(const std::string& path); // F5: play a file, own gfx session
 

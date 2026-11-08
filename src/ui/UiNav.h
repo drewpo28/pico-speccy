@@ -54,6 +54,9 @@ inline const Node* dynOwner()      { Level& L = curLevel();
 
 // An action that restarted the machine (or launched something) asks the menu to close.
 void        requestClose();
+// Menu > Browser: close the menu, then run the F5 file manager (OSD::loadAnyFile)
+// once the session has ended — the browser is a full-screen flow of its own.
+void        requestBrowserAfterClose();
 
 void        buildVisible(Level& L);
 const Node* subVisibleChild(const Node* n, int i);  // i-th VISIBLE child of a K_SUB

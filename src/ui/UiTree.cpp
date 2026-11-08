@@ -2084,6 +2084,7 @@ static const Node kSnapshots[] = {
 static const Node kRoot[] = {
     NM_SUB   (TXT_HELP,      kHelp,     nullptr),
     NM_SUB   (TXT_MACHINE,   kMachine,  nullptr),
+    NM_ACTION(TXT_BROWSER,   act_browser, p_hasSD),   // = F5 (OSD::loadAnyFile)
     NM_SUB   (TXT_SNAPSHOTS, kSnapshots, p_hasSD),
     NM_SUB   (TXT_HW,        kHardware, nullptr),
     NM_SUB   (TXT_VIDEO,     kVideo,    nullptr),
