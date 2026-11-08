@@ -193,7 +193,7 @@ typedef struct
     // .cpm (Quorum CP/M raw image): the PRO geometry with plain IDs 1..5 on every
     // track, track 0 included. Read only together with IsProFile.
     bool proPlainIds;
-    // Raw CP/M image by extension (.atm .kdi .odi .od2 .qdi .fdd .xdi,
+    // Raw CP/M image by extension (.atm .kdi .odi .od2 .qdi .fdd .sco .xdi,
     // RawCpmImage.h). 16 x 256 ones run on the TRD path, the rest on the PRO
     // path (IsProFile + proPlainIds). Makes rvmWD1793IsCpmDisk true either way.
     bool IsRawCpm;

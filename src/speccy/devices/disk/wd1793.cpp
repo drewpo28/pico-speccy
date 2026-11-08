@@ -2131,8 +2131,8 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
 
     uint8_t diskType;
 
-    // Raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .xdi, RawCpmImage.h):
-    // geometry from the file size. 16 x 256 goes down the TRD path below (the
+    // Raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .sco .xdi, RawCpmImage.h):
+    // geometry from the file size. 16 x 256 (.atm/.sco) goes down the TRD path below (the
     // owner's ATM image mounted that way as .trd), everything else down the
     // PRO/MBD synthetic-MFM path.
     char rawExt[8];

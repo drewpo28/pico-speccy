@@ -300,7 +300,7 @@ static bool viewableExt(const string& lcext) {
 static bool infoKnownExt(const string& e) {
     static const char* const kExt[] = { "tap", "tzx", "pzx", "csw", "ept", "trd", "scl", "sna", "z80",
         "szx", "spg", "pss", "rzx", "fdi", "dsk", "mgt", "sad", "udi", "hdf", "pro", "mbd", "td0", "hdd",
-        "atm", "kdi", "odi", "od2", "qdi", "fdd", "xdi", "cpm",
+        "atm", "kdi", "odi", "od2", "qdi", "fdd", "sco", "xdi", "cpm",
         "img", "vhd", "mmc", "zip", "gz" };
     for (const char* k : kExt) if (e == k) return true;
     return false;

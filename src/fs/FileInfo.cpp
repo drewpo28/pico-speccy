@@ -1144,12 +1144,12 @@ static void viewPRO(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     info += "Track 0/0 IDs: 1,2,3,4,9\n"; lines++;
 }
 
-// ---- raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .xdi) ----
+// ---- raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .sco .xdi) ----
 static void viewRawCpm(const string& ext, FSIZE_t fileSize, string& info, int& lines) {
     // Same probe as rvmWD1793InsertDisk (RawCpmImage.h).
     static const struct { const char* ext; const char* name; } kName[] = {
         {"atm", "ATM-Turbo"}, {"kdi", "Korvet / Byte-01"}, {"odi", "Orion"},
-        {"od2", "Orion"}, {"qdi", "Quorum"}, {"fdd", "Vector-06C"}, {"xdi", "Custom"} };
+        {"od2", "Orion"}, {"qdi", "Quorum"}, {"fdd", "Vector-06C"}, {"sco", "Scorpion"}, {"xdi", "Custom"} };
     const char* who = "Raw";
     for (const auto& n : kName) if (ext == n.ext) who = n.name;
     const RawCpmGeom g = rawCpmGeometry(ext.c_str(), (uint32_t)fileSize);
