@@ -193,6 +193,10 @@ typedef struct
     // .cpm (Quorum CP/M raw image): the PRO geometry with plain IDs 1..5 on every
     // track, track 0 included. Read only together with IsProFile.
     bool proPlainIds;
+    // Raw CP/M image by extension (.atm .kdi .odi .od2 .qdi .fdd .xdi,
+    // RawCpmImage.h). 16 x 256 ones run on the TRD path, the rest on the PRO
+    // path (IsProFile + proPlainIds). Makes rvmWD1793IsCpmDisk true either way.
+    bool IsRawCpm;
     // TD0 (Teledisk) flag. Streamed track-by-track from SD to avoid holding the
     // whole (potentially ~1 MB) image in RAM. Packed images (lowercase "td"
     // magic) are LZH-decompressed once into a temp file on the SD card at insert;

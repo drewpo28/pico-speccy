@@ -7,6 +7,7 @@
 using namespace std;
 
 #include "FileInfo.h"
+#include "speccy/devices/disk/RawCpmImage.h"
 #include "speccy/core/Pss.h"
 #include "speccy/core/Rzx.h"
 #include "speccy/machines/If2.h"
@@ -1143,6 +1144,25 @@ static void viewPRO(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     info += "Track 0/0 IDs: 1,2,3,4,9\n"; lines++;
 }
 
+// ---- raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .xdi) ----
+static void viewRawCpm(const string& ext, FSIZE_t fileSize, string& info, int& lines) {
+    // Same probe as rvmWD1793InsertDisk (RawCpmImage.h).
+    static const struct { const char* ext; const char* name; } kName[] = {
+        {"atm", "ATM-Turbo"}, {"kdi", "Korvet / Byte-01"}, {"odi", "Orion"},
+        {"od2", "Orion"}, {"qdi", "Quorum"}, {"fdd", "Vector-06C"}, {"xdi", "Custom"} };
+    const char* who = "Raw";
+    for (const auto& n : kName) if (ext == n.ext) who = n.name;
+    const RawCpmGeom g = rawCpmGeometry(ext.c_str(), (uint32_t)fileSize);
+    char line[48];
+    snprintf(line, sizeof(line), "%s CP/M floppy\n", who);
+    info += line; lines++;
+    snprintf(line, sizeof(line), "%dT %dS  %d sec x %dB", g.cyls, g.sides, g.spt, g.secSize);
+    info += line; info += "\n"; lines++;
+    if ((uint32_t)g.cyls * g.sides * g.spt * g.secSize != (uint32_t)fileSize) {
+        info += "Size fits no known layout\n"; lines++;
+    }
+}
+
 // ---- HDD (raw hard-disk image, no header) ----
 static void viewHDD(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     uint32_t total_lba = (uint32_t)(fileSize / 512);
@@ -1268,6 +1288,7 @@ static void viewInfoAs(const string& path, const string& title, const string& no
     else if (ext == "udi") viewUDI(&f, fileSize, info, lines);
     else if (ext == "hdf") viewHDF(&f, fileSize, info, lines);
     else if (ext == "pro") viewPRO(&f, fileSize, info, lines);
+    else if (rawCpmIsExt(ext.c_str())) viewRawCpm(ext, fileSize, info, lines);
     else if (ext == "mbd") viewMBD(&f, fileSize, info, lines);
     else if (ext == "td0") viewTD0(&f, fileSize, info, lines);
     else if (ext == "hdd" || ext == "img") viewHDD(&f, fileSize, info, lines);

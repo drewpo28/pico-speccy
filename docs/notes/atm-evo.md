@@ -108,7 +108,8 @@ MM_ATM450 / MM_ATM710, io.cpp, atm.cpp, drawers.cpp) and **MAME sinclair/atm.cpp
     ATM1 1.04rs `CALL #F864` at #1727 (ret #172A, after CP/M is decrypted to #C000).
     Guarded by ROM in window 0 + the exact return address. 2+ NOT hw-confirmed, ATM1 fix
     NOT hw-tested. A Web-catalog launch of a CP/M floppy (`rvmWD1793IsCpmDisk`: FDI with
-    512/1024-byte track-0 sectors, or .pro; UDI/TD0 not detected) takes the CP/M path.
+    512/1024-byte track-0 sectors, .pro, or a raw CP/M image .atm/.kdi/.odi/.od2/.qdi/.fdd/.xdi
+    — `IsRawCpm`, 2026-11-08; UDI/TD0 not detected) takes the CP/M path.
   - Log lines: `[ATM] boot TR-DOS via the 128 menu`, `128 menu reached...`, `TR-DOS
     prompt: typed RUN`, `BIOS boot menu call, ret=...`.
 - **Hw check owed (nothing has run)**: ATM2 BIOS boot to its menu (PEN=0 → BIOS in

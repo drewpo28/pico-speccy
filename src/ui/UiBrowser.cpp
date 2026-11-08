@@ -21,6 +21,7 @@
 // costs the same RAM as an empty one.
 
 #include "OSDNewMenu.h"
+#include "speccy/devices/disk/RawCpmImage.h"
 
 
 #include <string.h>
@@ -259,6 +260,8 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "trd" || lcext == "scl" || lcext == "fdi"
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";
+    if (lcext == "pro" || lcext == "cpm"
+     || rawCpmIsExt(lcext.c_str()))                         return "CP/M disk";
     if (lcext == "dsk")                                     return "+3 / SAM disk";
     if (lcext == "mgt" || lcext == "sad")                   return "SAM Coupe disk";
     if (lcext == "hdd" || lcext == "img") return "Raw disk image";
@@ -297,6 +300,7 @@ static bool viewableExt(const string& lcext) {
 static bool infoKnownExt(const string& e) {
     static const char* const kExt[] = { "tap", "tzx", "pzx", "csw", "ept", "trd", "scl", "sna", "z80",
         "szx", "spg", "pss", "rzx", "fdi", "dsk", "mgt", "sad", "udi", "hdf", "pro", "mbd", "td0", "hdd",
+        "atm", "kdi", "odi", "od2", "qdi", "fdd", "xdi", "cpm",
         "img", "vhd", "mmc", "zip", "gz" };
     for (const char* k : kExt) if (e == k) return true;
     return false;

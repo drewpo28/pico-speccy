@@ -444,6 +444,23 @@ rulings, not open work — do NOT reopen them without a new request:
 Its whole keyboard goes through the ZX-Evo AVR PS/2 scancode log (Gluk reg `#F0`,
 type 2 — `ZxEvoAvr.cpp`), which WC being usable at all now confirms on hardware.
 
+## Raw CP/M floppy images: .atm .kdi .odi .od2 .qdi .fdd .xdi (2026-11-08, NOT hw-tested)
+
+The SteinBlume set (era-cg.su/steinblume — ATM-Turbo, Korvet/Byte-01, Orion, Quorum,
+Vector-06C, "experimental"). All are headerless sector dumps (cyl by cyl, side 0 then
+side 1, IDs 1..N); the site was not reachable from the dev box, so the layout is the
+owner's report plus the known .pro/.cpm format. `RawCpmImage.h` picks the geometry
+from the file size: the extension's native format first (.atm = 16 x 256, the rest
+5 x 1024), then 9/10/18 x 512, 10 x 1024, 26 x 256 over 77..84/40 cylinders, 1-2 sides;
+no exact fit = native format, 2 sides, cylinders rounded up.
+- 16 x 256 (.atm) runs on the plain TRD path (owner: an ATM .atm renamed to .trd mounted
+  and ran a .com under ATM CP/M) but with the geometry from the size, not the TR-DOS
+  disk-info byte, and **never** `trdMaybeInjectBoot` (it would write into CP/M data).
+- Everything else = the .cpm branch: `IsMBDFile + IsProFile + proPlainIds`, any
+  sector size, writable, deferred f_sync.
+- `IsRawCpm` makes `rvmWD1793IsCpmDisk` true, so an F5 launch on ATM boots CP/M.
+- .xdi may carry its own geometry in a way we do not know; it is size-probed like the rest.
+
 ## FDI copy protection — physical damage emulation (`src/speccy/devices/disk/wd1793.cpp`)
 
 An FDI sector flagged with a **bad data CRC** was unreadable on the source

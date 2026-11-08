@@ -1067,6 +1067,7 @@ void ZipExtract::cleanup() {
     const char* exts[] = {
         ".sna", ".z80", ".p", ".tap", ".tzx", ".pzx", ".csw", ".wav", ".mp3",
         ".trd", ".scl", ".udi", ".fdi", ".td0", ".mbd", ".pro", ".cpm", ".dsk",
+        ".atm", ".kdi", ".odi", ".od2", ".qdi", ".fdd", ".xdi",
         ".mmc", ".hdf", ".hdd", ".vhd", ".iso", ".rom", ".bin", NULL
     };
     for (int i = 0; exts[i]; i++) {

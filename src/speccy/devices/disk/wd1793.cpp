@@ -40,6 +40,7 @@ THE SOFTWARE.
 #include "app/messages.h"
 #include "speccy/z80/z80.h"
 #include "td0.h"
+#include "RawCpmImage.h"
 #include "drivers/psram/psram_spi.h"
 #include "trdos_boot.h"
 #include "app/Buffer.h"
@@ -2130,6 +2131,20 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
 
     uint8_t diskType;
 
+    // Raw CP/M images (.atm .kdi .odi .od2 .qdi .fdd .xdi, RawCpmImage.h):
+    // geometry from the file size. 16 x 256 goes down the TRD path below (the
+    // owner's ATM image mounted that way as .trd), everything else down the
+    // PRO/MBD synthetic-MFM path.
+    char rawExt[8];
+    rawCpmLcExt(Filename.c_str(), rawExt);
+    const bool rawCpm = rawCpmIsExt(rawExt);
+    const RawCpmGeom rawGeom = rawCpm
+        ? rawCpmGeometry(rawExt, (uint32_t)f_size(wd->disk[UnitNum]->Diskfile))
+        : RawCpmGeom{ 0, 0, 0, 0 };
+    const bool rawCpmTrd = rawCpm && rawGeom.secSize == 256 && rawGeom.spt == 16
+                        && rawGeom.cyls <= 83;
+    wd->disk[UnitNum]->IsRawCpm = rawCpm;
+
     char magic[8];
     UINT br;
     //fread(&magic, 1, 8, wd->disk[UnitNum]->Diskfile);
@@ -2634,6 +2649,35 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
                tracks, sides, spt, secSize);
         return true;
 
+    } else if (rawCpm && !rawCpmTrd) {
+        // Raw CP/M image (RawCpmImage.h): the PRO path with plain IDs 1..N on
+        // every track, any sector size / count the file size implies.
+        wd->disk[UnitNum]->IsSCLFile = false;
+        wd->disk[UnitNum]->IsUDIFile = false;
+        wd->disk[UnitNum]->IsFDIFile = false;
+        wd->disk[UnitNum]->IsMBDFile = true;
+        wd->disk[UnitNum]->IsProFile = true;
+        wd->disk[UnitNum]->proPlainIds = true;
+        wd->disk[UnitNum]->sclDataOffset = 0;
+
+        wd->disk[UnitNum]->tracks = rawGeom.cyls - 1;
+        wd->disk[UnitNum]->sides = rawGeom.sides;
+        wd->disk[UnitNum]->mbdSectorsPerTrack = rawGeom.spt;
+        wd->disk[UnitNum]->mbdSectorSize = rawGeom.secSize;
+        wd->disk[UnitNum]->writeprotect = 0;
+
+        wd->disk[UnitNum]->t0s1_info = 0;
+        wd->disk[UnitNum]->cursectbufpos = 0xff;
+        wd->control |= kRVMWD177XPower0 << UnitNum;
+        wd->disk[UnitNum]->fname = Filename;
+        wd->diskLoadedCyl = -1;
+        wd->diskLoadedSide = -1;
+        rvmWD1793UpdateFastmode(wd);
+
+        printf("Raw CP/M .%s: %d tracks, %d sides, %d sec/trk, %d bytes/sec\n",
+               rawExt, rawGeom.cyls, rawGeom.sides, rawGeom.spt, rawGeom.secSize);
+        return true;
+
     } else {
         wd->disk[UnitNum]->IsSCLFile = false;
         wd->disk[UnitNum]->IsUDIFile = false;
@@ -2649,6 +2693,11 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         // fread(&diskType,1,1,wd->disk[UnitNum]->Diskfile);
         f_lseek(wd->disk[UnitNum]->Diskfile,2048 + 227);
         f_read(wd->disk[UnitNum]->Diskfile, &diskType, 1, &br);
+        // A raw CP/M image in TR-DOS geometry has no TR-DOS disk-info sector:
+        // that byte is CP/M data. Take the geometry from the file size.
+        if (rawCpmTrd)
+            diskType = rawGeom.sides == 2 ? (rawGeom.cyls > 40 ? 0x16 : 0x17)
+                                          : (rawGeom.cyls > 40 ? 0x18 : 0x19);
     }
 
     switch(diskType) {
@@ -2687,7 +2736,10 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     }
 
     // Check if we have more tracks than on a standard disk
-    if (!wd->disk[UnitNum]->IsSCLFile) {
+    if (rawCpmTrd) {
+      wd->disk[UnitNum]->tracks = rawGeom.cyls - 1;
+      wd->disk[UnitNum]->sides = rawGeom.sides;
+    } else if (!wd->disk[UnitNum]->IsSCLFile) {
       // Get file size
       f_lseek(wd->disk[UnitNum]->Diskfile, 0);
       long diskbytes = f_size(wd->disk[UnitNum]->Diskfile);
@@ -2708,7 +2760,8 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     // inject a "boot" file if the image lacks one, so TR-DOS autostarts.
     if (!wd->disk[UnitNum]->IsSCLFile && !wd->disk[UnitNum]->IsUDIFile &&
         !wd->disk[UnitNum]->IsFDIFile && !wd->disk[UnitNum]->IsMBDFile &&
-        !wd->disk[UnitNum]->IsProFile && !wd->disk[UnitNum]->IsTD0File) {
+        !wd->disk[UnitNum]->IsProFile && !wd->disk[UnitNum]->IsTD0File &&
+        !rawCpm) {   // never write a TR-DOS boot file into a CP/M image
         trdMaybeInjectBoot(wd->disk[UnitNum]);
     }
 
@@ -2981,7 +3034,7 @@ static void fdiFlushTrack(rvmWD1793 *wd) {
 // Called on demand when cylinder/side changes, same as udiLoadTrack.
 bool rvmWD1793IsCpmDisk(rvmwdDisk *disk) {
     if (!disk || !disk->Diskfile) return false;
-    if (disk->IsProFile) return true;
+    if (disk->IsProFile || disk->IsRawCpm) return true;
     if (!disk->IsFDIFile) return false;
     // FDI track header: 4 B data offset, 2 reserved, 1 sector count, then 7 B per
     // sector (C H R N flags off16). TR-DOS formats 256-byte sectors (N = 1).
