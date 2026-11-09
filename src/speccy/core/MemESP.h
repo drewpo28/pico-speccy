@@ -336,6 +336,13 @@ public:
     static uint8_t* ramCurrent[8];
     static void nextContendRefresh();   // Next: ramContended[] from mmu[] (NextReg::contendRecalc)
     static bool ramContended[8];
+    // What the NO-MREQ cycles (IR / INC rr / the extra T of many instructions) and the
+    // I/O cycles see. ramContended everywhere except the +2A/+3, whose gate array
+    // contends MREQ cycles only: no no-MREQ and no port contention (Fuse
+    // ula_contention_no_mreq = 0 there; ZXMAK2 UlaPlus3 subscribes neither). Set in
+    // CPU::reset; one extra load on the generic paths, no machine test in them.
+    static const bool* busContended;
+    static const bool noBusContention[8];
 
     // Plug a 16K block into 16K bank s16 (0..3) — both 8K slots at once.
     // A nullptr block (accessor-mode bank from sync()) keeps BOTH slots null:

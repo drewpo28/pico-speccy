@@ -725,6 +725,8 @@ int ram_pages = 2, butter_pages = 0, psram_pages = 0, swap_pages = 0;
 
 uint8_t* MemESP::ramCurrent[8];
 bool MemESP::ramContended[8];
+const bool MemESP::noBusContention[8] = {};
+const bool* MemESP::busContended = MemESP::ramContended;
 
 uint8_t MemESP::notMore128 = 0;
 uint32_t MemESP::page0ram = 0;

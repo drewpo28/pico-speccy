@@ -1060,12 +1060,12 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   } else {
     // // ULA ports (A0=0): ULA always applies contention during display area
     // // Non-ULA ports (A0=1): contention only if port address maps to contended memory
-    // bool earlyContend = ((address & 0x0001) == 0) ? !(Z80Ops::isPentagon || PROFI) : MemESP::ramContended[rambank];
+    // bool earlyContend = ((address & 0x0001) == 0) ? !(Z80Ops::isPentagon || PROFI) : MemESP::busContended[rambank];
     // VIDEO::Draw(1, earlyContend); // I/O Contention (Early)
     // Early contention depends on ADDRESS (contended memory?), not port type
     // Wiki: ULA port non-contended addr = N:1,C:3; contended addr = C:1,C:3
     //        Non-ULA contended addr = C:1,C:1,C:1,C:1; non-contended = N:4
-    VIDEO::Draw(1, MemESP::ramContended[rambank]); // I/O Contention (Early)
+    VIDEO::Draw(1, MemESP::busContended[rambank]); // I/O Contention (Early)
   }
 
   // TS-Conf register file: any port #nnAF, register = high address byte.
@@ -1130,7 +1130,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
       (((address & 0xFF) == 0x6B && NextReg::portOn(NextReg::PE_DMA6B)) ||
        ((address & 0xFF) == 0x0B && NextReg::portOn(NextReg::PE_DMA0B)))) {
     LED::touchR(LED::DMA);
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     Z80DMA::nextZ80Mode = ((address & 0xFF) == 0x0B);   // a read sets the latch too (zxnext.vhd 1816)
     const uint8_t v = Z80DMA::readPort();
     if (Z80DMA::nxPending) NextPorts::dmaPollSkip();   // the poll loop itself: skip to the next byte
@@ -1143,7 +1143,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // too). One byte test here, the protocol in flash (PiMusica.cpp).
   if (!PROFI && g_pimus_on && (address & 0xFB) == 0x63) {
     uint8_t v;
-    if (PiMusica::portRead((uint8_t)address, v)) { ioContentionLate(MemESP::ramContended[rambank]); return v; }
+    if (PiMusica::portRead((uint8_t)address, v)) { ioContentionLate(MemESP::busContended[rambank]); return v; }
   }
 
   if (MEM_PG_CNT > 64 && !Z80Ops::isTsconf && address == 0xAFF7) {
@@ -1287,7 +1287,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // would otherwise read back as keyboard rows.
   if (Z80Ops::isTc2068) {
     uint8_t tData;
-    if (tc2068PortRead(address, &tData)) { ioContentionLate(MemESP::ramContended[rambank]); return tData; }
+    if (tc2068PortRead(address, &tData)) { ioContentionLate(MemESP::busContended[rambank]); return tData; }
     // The Timex ULA is FULLY decoded — it answers only when the low byte is 0xFE
     // (MAME ts2068_io `map(0xfe,0xfe).select(0xff00)`, Fuse PERIPH_TYPE_ULA_FULL_DECODE
     // for every Timex machine). A 48K or a TC2048 decodes A0 alone (MAME keeps
@@ -1295,7 +1295,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // even port the machine's own software touches reads back keyboard rows. There is
     // no floating bus either (Fuse: spectrum_unattached_port_none), hence 0xFF.
     if ((address & 0x0001) == 0 && p8 != 0xFE) {
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return 0xFF;
     }
   }
@@ -1371,7 +1371,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
         data ^= 0x40;
     }
   } else {
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     // +3e IDE (see p3eIde above). Ahead of ZiFi, whose windows overlap it.
     if (p3eIde(address)) {
       LED::touchR(LED::IDE);
@@ -1483,7 +1483,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
       uint8_t a8 = address & 0xFF;
       if (a8 == 0xB3 || a8 == 0xBB) {
         LED::touchR(LED::GS);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return (a8 == 0xB3) ? GS::hostReadB3() : GS::hostReadBB();
       }
     }
@@ -1501,7 +1501,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
         (g_timex_machine || !(address & 0x0100))) {
       LED::touchR(LED::TIMEX);
       TMX_TRACE('r', 0xFF, VIDEO::timex_port_ff);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return VIDEO::timex_port_ff;
     }
     // Z80 DMA / zxnDMA port read: listen on both 0x0B and 0x6B
@@ -1510,7 +1510,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
         (Z80Ops::isNext && (((address & 0xFF) == 0x6B && NextReg::portOn(NextReg::PE_DMA6B)) ||
                             ((address & 0xFF) == 0x0B && NextReg::portOn(NextReg::PE_DMA0B))))) {
       LED::touchR(LED::DMA);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       Z80DMA::nextZ80Mode = ((address & 0xFF) == 0x0B);   // a read sets the latch too (zxnext.vhd 1816)
       return Z80DMA::readPort();
     }
@@ -1522,7 +1522,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
       uint8_t lo = address & 0xFF;
       if ((lo & 0x9F) == 0x0F) { // WD2797 registers
         FDDStep_MB02(true); // force step — WD2797 needs step advancement for Seek/Restore
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         uint8_t r = (lo >> 5) & 3;
         // FDD lamp/glyph/hum now come from rvmWD1793::fdd_active_decay (set by the
         // WD1793 state machine on genuine activity — see wd1793.h/.cpp), not from
@@ -1532,7 +1532,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
       }
       if (lo == 0x13) { // Floppy status (poll — not counted as access)
         FDDStep_MB02(true);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return MB02::readPort13();
       }
     }
@@ -1619,8 +1619,8 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     //   #2FFD  main status register (read only)      #3FFD  data register
     // (Fuse machines/machines_periph.c upd765_ports; both are mask 0xF002.)
     if (Z80Ops::isP3) {
-      if ((address & 0xF002) == 0x2000) return Plus3Fdc::readStatus();
-      if ((address & 0xF002) == 0x3000) return Plus3Fdc::readData();
+      if ((address & 0xF002) == 0x2000) { VIDEO::Draw(3, false); return Plus3Fdc::readStatus(); }
+      if ((address & 0xF002) == 0x3000) { VIDEO::Draw(3, false); return Plus3Fdc::readData(); }
     }
 
     // Beta-128 ports: accessible when TR-DOS ROM is paged in,
@@ -3074,7 +3074,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // Wiki: ULA port non-contended addr = N:1,C:3; contended addr = C:1,C:3
     //       Non-ULA contended addr = C:1,C:1,C:1,C:1; non-contended = N:4
     // Matches Ports::input behavior for symmetry.
-    VIDEO::Draw(1, MemESP::ramContended[rambank]); // I/O Contention (Early)
+    VIDEO::Draw(1, MemESP::busContended[rambank]); // I/O Contention (Early)
   }
   uint8_t a8 = (address & 0xFF);
   p_states = CPU::tstates;
@@ -3238,7 +3238,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // ALF uses incomplete decoding (A7=0, A0=1) for the bank latch, so the
     // same OUT also hits MB-02 FDC (#0F/#2F/#4F/#6F), DMA (#0B/#6B), Beta-128
     // and other A7=0 odd-port peripherals. Take the bank-select exclusively.
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     return;
   }
   // IDE/HDD — NEMO scheme. Enabled on ANY machine when the user selects NEMO
@@ -3280,7 +3280,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   if (!PROFI && g_pimus_on && (address & 0xFB) == 0x63) {
     LED::touchW(LED::AY);
     PiMusica::portWrite((uint8_t)address, data);
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     return;
   }
   if (oplfm && (address & 0x00FC) == 0x00C4) {
@@ -3290,7 +3290,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // at the exact sample positions, so timing is unchanged.
     LED::touchW(LED::AY); // music-note glyph: VGM playback = a stream of writes
     ESPectrum::OPLPortWrite(address & 3, data);
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     return;
   }
   // ZXM-MoonSound wavetable ports #7E/#7F — see the read side. The address
@@ -3299,7 +3299,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     LED::touchW(LED::AY);
     if (address & 1) ESPectrum::MoonWaveData(data);
     else             moonpcm->writeAddr(data);
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
     return;
   }
   // YM2413/OPLL (VGM-player card): address port #C0, data port #C1 (VGM cmd
@@ -3312,7 +3312,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     if (opll_lo == 0xC0 || opll_lo == 0xC1) {
       LED::touchW(LED::AY); // music-note glyph
       ESPectrum::OPLLPortWrite(opll_lo & 1, data);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
   }
@@ -3328,7 +3328,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
       LED::touchW(LED::AY); // music-note glyph
       if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
       snChip->write(sn_lo == 0xC2 ? 1 : 0, data);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
   }
@@ -3338,11 +3338,11 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // paging byte (the trap OPL3 and NEMO are placed above the same branch for).
   if (Z80Ops::isTc2068) {
     if (tc2068PortWrite(address, data)) {
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
     if ((address & 0x0001) == 0 && (address & 0xFF) != 0xFE) {
-      ioContentionLate(MemESP::ramContended[rambank]);   // decodes nowhere on this machine
+      ioContentionLate(MemESP::busContended[rambank]);   // decodes nowhere on this machine
       return;
     }
   }
@@ -3468,7 +3468,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
       if (address == 0xBF3B) {
         LED::touchW(LED::ULAPLUS);
         VIDEO::ulaplus_reg = data;
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
       if (address == 0xFF3B) {
@@ -3496,7 +3496,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
             VIDEO::ulaPlusDisable();
           }
         }
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
     }
@@ -3556,7 +3556,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         ESPectrum::lastCovoxVal = l;
         ESPectrum::lastCovoxValR = r;
         ESPectrum::CovoxGetSample();
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
     }
@@ -3573,14 +3573,14 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         LED::touchW(LED::GS);
         if (a8 == 0xB3) GS::hostWriteB3(data);
         else            GS::hostWriteBB(data);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
       // NeoGS control port GSCTR (#33): reset / NMI / LED
       if (GS::neogs && a8 == 0x33) {
         LED::touchW(LED::GS);
         GS::hostWriteCtrl(data);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
     }
@@ -3592,7 +3592,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
       Z80DMA::nextZ80Mode = (a8 == 0x0B);   // the mode latch (zxnext.vhd 1817); read only on Next / zxnDMA
       LED::touchW(LED::DMA);
       Z80DMA::writePort(data);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
     // Next: port 0xFF is the Timex/SCLD register, decoded on the full low
@@ -3601,7 +3601,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     if (Z80Ops::isNext && a8 == 0xFF) {
       if (NextReg::portOn(NextReg::PE_FF)) NextReg::writePortFF(data);
       else nextPortFFOverride(data);  // VHDL drops it; we do not (see the helper)
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
     // Timex SCLD video mode register (port 0x00FF, bit 8 clear)
@@ -3648,7 +3648,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
           VIDEO::DrawBorder();
           VIDEO::timexHiresColour();
       }
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
     // SAA1099 Sound Chip — the #FF family, register select on A8:
@@ -3741,7 +3741,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
           }
         }
         LED::touchW(LED::AY);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
       // AlexZor VGM-plugin TSFM select: its YM2203 commands write #F0 (first
@@ -3760,14 +3760,14 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
           AySound::ts_fm_enabled = true;
         }
         LED::touchW(LED::AY);
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
     }
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
     // MB-02+ ports: FDC (#0F/#2F/#4F/#6F), floppy control (#13), memory paging (#17)
@@ -3783,7 +3783,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         if (reg == 0 && Z80DMA::mb02_deferred && Z80DMA::transfer_active) {
             Z80DMA::executeTransfer();
         }
-        ioContentionLate(MemESP::ramContended[rambank]);
+        ioContentionLate(MemESP::busContended[rambank]);
         return;
       }
       if (lo == 0x13) { // Floppy control (motor/drive select — housekeeping)
@@ -3879,7 +3879,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     if (PROFI && MemESP::romInUse == 0 && !out_has_any_disk
         && (address & 0xE3) == 0x03) {
       profi_fdc_busy = 1;
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
 
@@ -3924,7 +3924,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
                      Z80::getRegSP());
         }
       }
-      ioContentionLate(MemESP::ramContended[rambank]);
+      ioContentionLate(MemESP::busContended[rambank]);
       return;
     }
 
@@ -4098,7 +4098,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
 #if RTC_PORT_TRACE
           Debug::log("[RTC-AS OUT] sel<-%02X pc=%04X", data, Z80::getRegPC());
 #endif
-          ioContentionLate(MemESP::ramContended[rambank]);
+          ioContentionLate(MemESP::busContended[rambank]);
           return;
         }
         if ((lo8 | 0x40) == 0xDF) { // #DF/#9F (DS)
@@ -4106,12 +4106,12 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
 #if RTC_PORT_TRACE
           Debug::log("[RTC-DS OUT] sel=%02X <-%02X pc=%04X", RTC::dbgSel(), data, Z80::getRegPC());
 #endif
-          ioContentionLate(MemESP::ramContended[rambank]);
+          ioContentionLate(MemESP::busContended[rambank]);
           return;
         }
       }
     }
-    ioContentionLate(MemESP::ramContended[rambank]);
+    ioContentionLate(MemESP::busContended[rambank]);
   }
   // Pentagon #EFF7 (page0ram/notMore128). The old loose Pentagon decode
   // (address & 0x1008)==0 (= A12=0 & A3=0) COLLIDES with low ports whose bit3
@@ -4160,7 +4160,9 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   //   #7FFD  (address & 0xC002) == 0x4000      #1FFD  (address & 0xF002) == 0x1000
   // The paging lock (#7FFD D5) gates BOTH ports, and a locked write is dropped whole
   // (spec128_memoryport_write / specplus3_memoryport2_write).
-  if (Z80Ops::isP3 && Plus3::portWrite(address, data)) return;
+  // The late 3 T of the I/O cycle are owed here like on every other early return
+  // (uncontended: the +3 has no port contention).
+  if (Z80Ops::isP3 && Plus3::portWrite(address, data)) { VIDEO::Draw(3, false); return; }
   // 128K, Pentagon
   // ==================================================================
   // ALF shares the 128K codepath but uses port #5F (A7=0, A0=1) for its ROM-bank
@@ -4511,7 +4513,8 @@ void Ports::ulaIoContendRecalc() {
     g_ula_io_contend = !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion ||
                          Config::isLeningrad() || Config::isQuorum64() ||
                          Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend) ||
-                         (Z80Ops::isNext && !(NEXTVID::contend & 2)));
+                         (Z80Ops::isNext && !(NEXTVID::contend & 2)) ||
+                         Z80Ops::isP3);   // +2A/+3: no I/O contention at all (MemESP.h busContended)
 }
 
 IRAM_ATTR void Ports::ioContentionLate(bool contend) {

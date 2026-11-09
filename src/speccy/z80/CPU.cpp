@@ -497,6 +497,9 @@ void CPU::reset() {
     }
 
     Leningrad::apply();
+    // +2A/+3: MREQ-only contention (MemESP.h busContended); the ULA port joins it in
+    // ulaIoContendRecalc.
+    MemESP::busContended = Z80Ops::isP3 ? MemESP::noBusContention : MemESP::ramContended;
     Ports::ulaIoContendRecalc();
 
     // 16col is Pentagon-only — auto-disable when switching to non-Pentagon arch.
@@ -2067,7 +2070,7 @@ IRAM_ATTR void Z80Ops::addressOnBusIR(int32_t wstates) {
     return addressOnBus_generic((uint16_t)((Z80::getRegI() << 8) | Z80::getRegR()), wstates);
 }
 static IRAM_ATTR __attribute__((noinline)) void addressOnBus_generic(uint16_t address, int32_t wstates) {
-    if (MemESP::ramContended[address >> 13]) {
+    if (MemESP::busContended[address >> 13]) {
         for (int idx = 0; idx < wstates; idx++)
             VIDEO::Draw(1, true);
     } else
