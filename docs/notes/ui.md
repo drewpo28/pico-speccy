@@ -758,6 +758,18 @@ the OSD HID page showed `handler = generic gamepad`, `last len = 4`.
 - OSD HID page: a `pad rpt id= len= btn=` line + field offsets, and the `dec:` lines.
 - Cost: .bss +552 B (`pad_layout` 60 B x 8 interfaces), code in flash.
 
+## SNES pad on the DB9 (NESPAD): X/Y/L/R reach the pad map (2026-11-09, host-checked, NOT hw-tested)
+
+The NESPAD PIO clocks 16 bits and `nespad_read()` keeps 12 per pad, so a SNES pad on the
+same DB9 (m1/m2 boards only; DVp2/DVp2w have no NESPAD) always delivered `DPAD_X/Y/LT/RT`,
+but `nespad_tick1` (main.cpp) ignored them: 8 buttons only. Now it pushes the USB pads'
+VKs: `DPAD_X`→`VK_JOY_X`, `DPAD_Y` (the SNES **A** button)→`VK_JOY_Y`, L→`VK_JOY_Z`,
+R→`VK_JOY_C`. Defaults kept as for USB (owner 2026-11-09): X = Joy.X (Kempston bit 6), the
+rest None. Pad 2 (`nespad_tick2`) still 8 buttons: `gamepad2_bits` has no X/Y/L/R.
+Host: the bench runs `host_pad.cpp`, not `nespad_tick1`; Joystick > Test lighting and a
+C→key map were checked there with `PICOSPECCY_PAD` (host/README.md). The firmware lines
+were only compiled (MURM2_W).
+
 ## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
 
 The user-visible data root is **`/pico-speccy`** (`SPEC_DIR_ROOT`, holding

@@ -52,6 +52,7 @@ void process_kbd_report(hid_keyboard_report_t const* report, hid_keyboard_report
 void host_pads_event(const SDL_Event& e);   // host_pad.cpp
 void host_pads_sample();
 void host_pads_apply();
+uint32_t host_presented = 0;   // presented-frame count: PICOSPECCY_KEYS / _PAD timing
 void repeat_handler(void);
 
 extern const char* host_sd_path;
@@ -460,6 +461,7 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     static const char* shots = getenv("PICOSPECCY_SHOTS");
     static uint32_t presented = 0;
     ++presented;
+    host_presented = presented;
     auto save = [&](const std::string& fn) {
         SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(pix, w, h, 32, pitch, SDL_PIXELFORMAT_ARGB8888);
         if (s) { SDL_SaveBMP(s, fn.c_str()); SDL_FreeSurface(s); fprintf(stderr, "host: saved %s\n", fn.c_str()); }

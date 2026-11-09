@@ -500,6 +500,15 @@ static void nespad_tick1(void) {
         if (Config::secondJoy != 1) joyPushData(fabgl::VirtualKey::VK_DPAD_RIGHT, false);
         if (Config::joy2cursor) joyPushData(sel ? fabgl::VirtualKey::VK_K : fabgl::VirtualKey::VK_RIGHT, false);
     }
+
+    // SNES pad on the same DB9: the PIO reads 16 clocks, so its 4 extra buttons are
+    // already in nespad_state (a plain NES pad never sets them). Same VKs as the USB
+    // pads (pad_apply in hid_app.cpp), so the joystick definition / profiles can bind them.
+    // DPAD_Y is the SNES "A" button, DPAD_X its "X".
+    if ((pressed | released) & DPAD_X)  kbdPushData(fabgl::VirtualKey::VK_JOY_X, (cur & DPAD_X)  != 0);
+    if ((pressed | released) & DPAD_Y)  kbdPushData(fabgl::VirtualKey::VK_JOY_Y, (cur & DPAD_Y)  != 0);
+    if ((pressed | released) & DPAD_LT) kbdPushData(fabgl::VirtualKey::VK_JOY_Z, (cur & DPAD_LT) != 0);
+    if ((pressed | released) & DPAD_RT) kbdPushData(fabgl::VirtualKey::VK_JOY_C, (cur & DPAD_RT) != 0);
 }
 
 static void nespad_tick2(void) {
