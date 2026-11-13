@@ -9,6 +9,9 @@
 #include <SDL.h>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 #include "host_kbd_prelude.h"
 
@@ -117,6 +120,39 @@ void apply2(uint32_t cur) {
     gamepad2_bits.right = cur & P_RIGHT;
 }
 
+// PICOSPECCY_PAD="frame:Btn[:N],..." holds pad 1's button Btn (Up Down Left Right A B
+// X Y L1 R1 L2 R2 Start Select) from that presented frame for N frames (default 6):
+// pad tests without a controller, on the same clock as PICOSPECCY_KEYS / _SHOTS.
+struct ScriptedPress { uint32_t at, hold, bit; };
+std::vector<ScriptedPress> s_script;
+
+void parse_script() {
+    const char* spec = getenv("PICOSPECCY_PAD");
+    if (!spec) return;
+    static const struct { const char* name; uint32_t bit; } kNames[] = {
+        {"Up", P_UP}, {"Down", P_DOWN}, {"Left", P_LEFT}, {"Right", P_RIGHT},
+        {"A", P_A}, {"B", P_B}, {"X", P_X}, {"Y", P_Y}, {"L1", P_L1}, {"R1", P_R1},
+        {"L2", P_L2}, {"R2", P_R2}, {"Start", P_START}, {"Select", P_SELECT},
+    };
+    std::string all(spec);
+    size_t p = 0;
+    while (p < all.size()) {
+        size_t e = all.find(',', p);
+        if (e == std::string::npos) e = all.size();
+        const std::string item = all.substr(p, e - p);
+        p = e + 1;
+        const size_t c = item.find(':');
+        if (c == std::string::npos) continue;
+        const size_t c2 = item.find(':', c + 1);
+        const std::string name = item.substr(c + 1, c2 == std::string::npos ? std::string::npos : c2 - c - 1);
+        uint32_t bit = 0;
+        for (const auto& n : kNames) if (name == n.name) bit = n.bit;
+        if (!bit) { fprintf(stderr, "host: PICOSPECCY_PAD: unknown button '%s'\n", name.c_str()); continue; }
+        const uint32_t hold = c2 != std::string::npos ? (uint32_t)atoi(item.c_str() + c2 + 1) : 6u;
+        s_script.push_back({(uint32_t)atoi(item.c_str()), hold, bit});
+    }
+}
+
 }  // namespace
 
 // SDL thread: hot-plug events and one sample per presented frame.
@@ -124,7 +160,15 @@ void host_pads_event(const SDL_Event& e) {
     if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED) reopen();
 }
 void host_pads_sample() {
-    for (int i = 0; i < 2; i++) s_state[i].store(sample(s_pad[i]), std::memory_order_relaxed);
+    static bool parsed = false;
+    if (!parsed) { parsed = true; parse_script(); }
+    extern uint32_t host_presented;   // host_main.cpp
+    const uint32_t f = host_presented;
+    uint32_t scripted = 0;
+    for (const ScriptedPress& s : s_script)
+        if (f >= s.at && f < s.at + s.hold) scripted |= s.bit;
+    for (int i = 0; i < 2; i++)
+        s_state[i].store(sample(s_pad[i]) | (i == 0 ? scripted : 0u), std::memory_order_relaxed);
 }
 
 // core0 (repeat_me_for_input): turn changes into the firmware's pad events.

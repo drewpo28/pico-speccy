@@ -444,6 +444,37 @@ rulings, not open work — do NOT reopen them without a new request:
 Its whole keyboard goes through the ZX-Evo AVR PS/2 scancode log (Gluk reg `#F0`,
 type 2 — `ZxEvoAvr.cpp`), which WC being usable at all now confirms on hardware.
 
+## Raw CP/M floppy images: .atm .kdi .odi .od2 .qdi .fdd .sco .xdi (2026-11-08, NOT hw-tested)
+
+The SteinBlume set (era-cg.su/steinblume, "CP/M Disk Image Explorer", ex "ATM CP/M
+Explorer", v1.3.2 2019). Its own docs were read from the install package
+(`steinblume_install_full.zip`): `Formats.txt` (DPB table per machine),
+`xdi_settings/*.ini` (presets), `SteinBlume.en.po` (file filter, Orion presets).
+- **No format has a file header**: all are plain sector dumps, cylinder after
+  cylinder, side 0 then side 1, IDs 1..N. Checked on its Korvet system images
+  (`sys/korvet/*.bin`, 819200): the empty directory (E5) sits at logical track 2
+  (CP/M, off=2) / 3 (MDOS, off=3) of 5 x 1024, i.e. the interleaved layout.
+- .xdi = "eXperimental Disk Image": SteinBlume asks for DPB/geometry in a dialog or
+  loads an .ini; nothing is stored in the image. DIAnalyzer writes .xdi dumps of
+  FDI/TD0 data.
+- Geometry (Formats.txt / presets): ATM and Scorpion (.sco, software skew 2)
+  80x2x16x256 = 655360; Profi/Korvet/Orion/Quorum/Vector 80x2x5x1024 = 819200;
+  Vector presets 82/83 cyl; Orion presets 82x2x5x512 (410k), 82x2x5x1024,
+  82x2x10x1024; .od2 "Orion2 CP/M HD" 85x2x10x1024 = 1740800. Formats.txt gives
+  Vector "Size 0A0000" with TrkNum A0 x 5 x 1024 — inconsistent, the presets say
+  819200; we follow the presets.
+- .ohi (Orion HARD-disk partition) is in its filter too; not a floppy, not mounted.
+- `RawCpmImage.h` probes the size: the machine's native formats double-sided first
+  (sizes are ambiguous across sides: 82x2x5x512 = 82x1x5x1024), then every format.
+  No exact fit = native format, 2 sides, cylinders rounded up (max 85).
+- 16 x 256 (.atm/.sco) runs on the plain TRD path (owner: an ATM .atm renamed to .trd
+  mounted and ran a .com under ATM CP/M) with the geometry from the size, not the
+  TR-DOS disk-info byte, and **never** `trdMaybeInjectBoot` (it would write into
+  CP/M data).
+- Everything else = the .cpm branch: `IsMBDFile + IsProFile + proPlainIds`, any
+  sector size (10 x 1024 fits DISK_TRACK_BUF_SZ, unbulked), writable, deferred f_sync.
+- `IsRawCpm` makes `rvmWD1793IsCpmDisk` true, so an F5 launch on ATM boots CP/M.
+
 ## FDI copy protection — physical damage emulation (`src/speccy/devices/disk/wd1793.cpp`)
 
 An FDI sector flagged with a **bad data CRC** was unreadable on the source

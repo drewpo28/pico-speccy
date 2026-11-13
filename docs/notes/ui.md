@@ -29,6 +29,16 @@ MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations g
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+## Menu > Browser = the F5 file manager (2026-11-08, host-checked, NOT hw-tested)
+
+Root row before Snapshots (`act_browser`, shown with an SD card). The F5 branch of
+`do_OSD` moved verbatim into `OSD::loadAnyFile()`; the hot key calls it, and the row
+calls `nm::requestBrowserAfterClose()`: the menu closes and `runInternal` runs it
+AFTER the session handed everything back (not nested: launches reset machines and
+open the disk-slot menu themselves). The flag is cleared before the call (so that
+slot menu does not re-run it), on "Cancel" in the apply prompt, and skipped after a
+machine switch. Host bench: F1, Down x2, Enter -> "Open File" at SD:/.
+
 ## The right pane's Description block (2026-10-14, partly hw-seen)
 
 Under a radio/bool row's options the right pane draws a `Description` block for the
@@ -747,6 +757,18 @@ the OSD HID page showed `handler = generic gamepad`, `last len = 4`.
   Remap hw-confirmed 2026-11-04 (m1p2).
 - OSD HID page: a `pad rpt id= len= btn=` line + field offsets, and the `dec:` lines.
 - Cost: .bss +552 B (`pad_layout` 60 B x 8 interfaces), code in flash.
+
+## SNES pad on the DB9 (NESPAD): X/Y/L/R reach the pad map (2026-11-09, host-checked, NOT hw-tested)
+
+The NESPAD PIO clocks 16 bits and `nespad_read()` keeps 12 per pad, so a SNES pad on the
+same DB9 (m1/m2 boards only; DVp2/DVp2w have no NESPAD) always delivered `DPAD_X/Y/LT/RT`,
+but `nespad_tick1` (main.cpp) ignored them: 8 buttons only. Now it pushes the USB pads'
+VKs: `DPAD_X`→`VK_JOY_X`, `DPAD_Y` (the SNES **A** button)→`VK_JOY_Y`, L→`VK_JOY_Z`,
+R→`VK_JOY_C`. Defaults kept as for USB (owner 2026-11-09): X = Joy.X (Kempston bit 6), the
+rest None. Pad 2 (`nespad_tick2`) still 8 buttons: `gamepad2_bits` has no X/Y/L/R.
+Host: the bench runs `host_pad.cpp`, not `nespad_tick1`; Joystick > Test lighting and a
+C→key map were checked there with `PICOSPECCY_PAD` (host/README.md). The firmware lines
+were only compiled (MURM2_W).
 
 ## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
 

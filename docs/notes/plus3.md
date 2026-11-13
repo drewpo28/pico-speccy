@@ -47,6 +47,27 @@ so raw.githubusercontent.com is the way to any of this.
   opens 3 T-states earlier (Fuse's offset 4 vs 1), which is not modelled.
   Frame timing is the 128K's exactly; there is no floating bus (unattached ports read
   0xFF) and no ULA snow.
+- **Checked against ZXMAK2 `UlaPlus3.cs` (2026-11-09, `ula128+3.tap`, host bench).** Same in both: 70908 T, 228 T/line, first contended T 14361 (ZXMAK2:
+  paper line 63, tact 64, IntBegin 66 → 14361), pattern `1,0,7,6,5,4,3,2`, INT 32 T at
+  frame T 0, border write at T-2 as on 128K early. **Ours differs in two places:**
+  (1) `addressOnBus_generic` contends the no-MREQ cycles (IR / INC rr / extra cycles)
+  on a +3 — ZXMAK2 subscribes no `RdNoMreq`/`WrNoMreq` for the +3; (2) I/O is contended
+  (early `ramContended[rambank]` in `Ports::input/output` + late `g_ula_io_contend`) —
+  ZXMAK2's +3 has no port contention at all. ZXMAK2 itself is wrong on which pages are
+  contended (odd ones, the 128K rule) and gives the +3 a 128K floating bus; ours (pages
+  4-7, 0xFF) follows Fuse there.
+- **FIXED 2026-11-09 hw-confirmed 2026-11-09 on DVp2w (`debug/DVp2w-p3timing-1.1.2.elf`,
+  `ula128+3.tap`):** `MemESP::busContended` = what no-MREQ and I/O cycles see — `ramContended`
+  on every machine, an all-false array on the +3 (set in `CPU::reset`); `addressOnBus_generic`
+  and every `ramContended[rambank]` in Ports.cpp read it; `ulaIoContendRecalc` turns the
+  ULA-port late contention off for `isP3`. Also: the +3 paging write and the uPD765 reads
+  returned without the late 3 T of the I/O cycle (OUT #7FFD took 9 T, not 12) — they now
+  `VIDEO::Draw(3,false)` like the ATM/Quorum early returns. `ula128+3.tap` (I=#FE → bank 7,
+  ~4700 `OUT (C),r` to #02FE per frame) went from noise in the side border to the full
+  "ULA128 ... TEST" border picture; `ula128.tap` on 128K is pixel-identical before/after.
+  Cost: Ports::input +64 B, output +132 B RAM, +4 B .data. Bench note: press Enter on the
+  Loader for ONE frame (`PICOSPECCY_KEYS="400:Return:1"`) — with flashload the test sees a
+  held key and quits to BASIC, leaving a black border.
 - **Beta, MB-02+, Timex, DivMMC and the Z-Controller are forced OFF on a +3** — the first
   three collide on the port map, the last two automap on addresses inside the +3's own
   four ROMs. Enforced in three places, the same shape Profi uses: the menu's

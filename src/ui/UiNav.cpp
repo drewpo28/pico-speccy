@@ -67,6 +67,9 @@ void DynRows::badgeLast(const char* txt, bool active) {
 
 void requestClose() { S.quit = true; }
 
+static bool s_browserAfterClose = false;
+void requestBrowserAfterClose() { s_browserAfterClose = true; S.quit = true; }
+
 // ── level helpers ──────────────────────────────────────────────────────────────
 
 void buildVisible(Level& L) {
@@ -853,6 +856,7 @@ resume:
         const int c = uiChoice(q, btns, 3, 0, /*esc=*/2);
         if (c == 2) {                          // Cancel: back into the menu
             S.quit = false;
+            s_browserAfterClose = false;       // ...and the queued browser is off
             drawFrameOnce();
             markDirty(D_ALL);
             flushDirty();
@@ -904,6 +908,14 @@ resume:
     gfxEnd();
     // A session must hand back every byte it took: this pair is the leak detector.
     Debug::log("runInternal: done heap=%u (in %u) largest=%u", (unsigned)getFreeHeap(), (unsigned)heapIn, (unsigned)getLargestAllocatable());
+
+    // Menu > Browser: the F5 flow, after the session handed everything back.
+    // Not after a machine switch / reboot (rep above); cleared first so a menu
+    // the browser opens itself (the disk slot picker) does not run it again.
+    if (s_browserAfterClose) {
+        s_browserAfterClose = false;
+        if (!rep.machineSwitched) OSD::loadAnyFile();
+    }
 }
 
 void run() { runInternal(nullptr); }

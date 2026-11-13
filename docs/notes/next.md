@@ -60,7 +60,8 @@ Ported from the pico-next donor branch (`~/github/pico-next`,
   opcodes → `NextReg::write`. Line IRQ (0x22/0x23) in `isActiveINT`; while
   armed, CPU::loop skips the exec_nocheck/FlushOnHalt fast paths. zxnDMA #6B
   always on in Next mode. Turbo = nextreg 0x07 → `ESPectrum::multiplicator`
-  (28 MHz NOT real-time at 504 MHz host — accepted best-effort). 60Hz via
+  (28 MHz runs at full speed on the 504 MHz host — owner, hw DVp2, 2026-11;
+  the old "NOT real-time" note predates the 2026-10-16 Videoland work). 60Hz via
   nextreg 0x05 bit2 → 228×262 frame.
 - **Video** (`src/speccy/machines/Next/NextVideo.*`, NEXTVID): scanline renderer — VIDEO::Draw
   swaps to `NEXTVID::Tick` in Next mode, EndFrame short-circuits. Layers:
@@ -92,12 +93,13 @@ Machine `A_NEXT` (RP2350 + butter ≥2MB): Z80N, NextReg (`src/NextReg.cpp`),
 **zx_go** (conorarmstrong/zx_go, VHDL_CONFORMANCE.md; их pkg/memory/next.go +
 pkg/next/wire.go = разжёванный zxnext.vhd — читать ПЕРЕД гаданием).
 
-- **CPU speed cap**: nextreg 0x07 клампится `Config::next_clk_cap` (NVS
-  `next_clk_cap`, по умолч. 2 = 14 MHz; Machine → Spectrum Next → Options →
-  CPU cap, AC_LIVE, хук `NextReg::applySpeed()` — близнец TS-Conf
-  `tsconf_clk_cap`). 28 MHz в меню есть, но пока не real-time; программное
-  значение хранится, read-back отдаёт actual в битах 5:4. Был compile-time
-  `NEXTREG_MAX_TURBO=2` до 2026-09-25.
+- **CPU speed cap**: nextreg 0x07 клампится `Config::next_clk_cap`, который
+  с 2026-10-30 зафиксирован на 3 = 28 MHz (без потолка): пункта меню нет, в NVS
+  не хранится (`Config.cpp`). Хук `NextReg::applySpeed()` остался (близнец
+  TS-Conf `tsconf_clk_cap`); программное значение хранится, read-back отдаёт
+  actual в битах 5:4. 28 MHz на 504 MHz идёт в полную скорость (владелец, hw
+  DVp2, 2026-11). История: потолок по умолч. 14 MHz из NVS + пункт меню до
+  2026-10-30; compile-time `NEXTREG_MAX_TURBO=2` до 2026-09-25.
 - **TBBLUE boot chain** (2026-08-09): с `/TBBLUE.FW` на SD бут идёт через
   вшитый 8K bootrom (`src/roms/next/tbblue_loader.c`, GPLv3, из zx_go) →
   config mode → NextZXOS; без файла — прямой бут enNextZX.rom (fallback).

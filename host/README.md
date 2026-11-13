@@ -111,6 +111,10 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   framebuffer rows of `VIDEO::vga`, palette and packed-pair (DS80/GMX) modes.
 * `PICOSPECCY_SHOT=file.bmp:N` saves the N-th presented frame,
   `PICOSPECCY_SHOTS=prefix:N` every N-th one as `prefix_<frame>.bmp`.
+* `PICOSPECCY_KEYS="frame:Key[:N],..."` holds keyboard keys,
+  `PICOSPECCY_PAD="frame:Btn[:N],..."` pad 1's buttons (Up Down Left Right A B X Y
+  L1 R1 L2 R2 Start Select; X/Y/L1/R1/L2/R2 = VK_JOY_X/Y/Z/C/L2/R2), on the same
+  presented-frame clock as the shots: menu and Joystick > Test runs without a pad.
 
 ## Checked so far (Linux, Xvfb + `SDL_AUDIODRIVER=disk`)
 
