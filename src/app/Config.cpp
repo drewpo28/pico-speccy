@@ -14,6 +14,8 @@
 #include "speccy/machines/If2.h"
 #include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
 #include "speccy/roms/kay/kay_banks.h"
+#include "speccy/roms/hobbit/hobbit_banks.h"   // PK Hobbit ROM roles — this TU only (same reason)
+#include "speccy/machines/Hobbit.h"
 #include "speccy/roms/quorum/quorum_banks.h"   // Quorum ROM roles — this TU only (same reason)   // Nemo KAY bank tables — this TU only (same reason)
 #include "fs/FileUtils.h"
 #include "ESPectrum.h"
@@ -380,6 +382,7 @@ bool Config::isQuorumKvRaster() {
 bool Config::trdosBaseOwnedByMachine() {
     if (arch == A_TSCONF || arch == A_ATM) return true;
     if (arch == A_48K && isQuorum64Romset(romSet48)) return true;     // Quorum: own TR-DOS
+    if (arch == A_48K && isHobbitRomset(romSet48)) return true;       // Hobbit: its DOS page
     if (arch == A_PENT && isQuorum128Romset(romSetPent)) return true;
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
                                isScorpEvoRomset(romSetScorp) ||
@@ -595,6 +598,21 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             const quorum_rom_bank_t* t = gb_rom_qu64o_banks;
             MemESP::rom[0].assign_rom(t[0].data);
             MemESP::registerOverlay(t[0].data, t[0].overlay);
+            break;
+        }
+        case R_48K_HBMAIN: case R_48K_HBBASIC: case R_48K_HBFORTH: {
+            // PK Hobbit (machines/Hobbit.h): rom[0] = the stock 48K ROM (the SINCLAIR
+            // page of every dump), rom[4] = its DOS page; LOGO and the two shadow
+            // pages are mapped by Hobbit.cpp, which also registers the overlays.
+            const hobbit_rom_bank_t* t =
+                romSet48 == R_48K_HBFORTH ? gb_rom_hbforth_banks
+#if HOBBIT_ALL_ROMS
+              : romSet48 == R_48K_HBBASIC ? gb_rom_hbbasic_banks
+#endif
+              : gb_rom_hbmain_banks;   // (4 MB image: the V2.9 dump is not in it)
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::rom[4].assign_rom(t[0].data);
+            Hobbit::bind(t);
             break;
         }
         case R_TC2068:

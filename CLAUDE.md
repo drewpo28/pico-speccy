@@ -43,7 +43,7 @@ src/
     z80/      Z80_JLS core, CPU (Z80Ops bus accessors + frame loop)
     core/     MemESP, Ports, Snapshot, RomOverlay, ArchRom.h, roms.h, loaders.h
     video/    Video (ULA/whole-line renderers), VidPrecalc
-    machines/ one module per machine — Plus3/, Profi/, TsConf/, Next/, Enterprise/, ...
+    machines/ one module per machine — Plus3/, Profi/, TsConf/, Next/, Enterprise/, Hobbit, ...
     devices/  disk/ (wd1793, Upd765, DskImage, td0, MB02), storage/ (IDE, DivMMC, RTC,
               Nvram24), sound/ (AY, SAA, SN, OPN/OPL/OPLL, MIDI), gs/ (GS/NeoGS), tape/,
               zifi/ (guest NIC), Z80DMA
@@ -112,7 +112,7 @@ Each rule cost at least one hardware round; the story is in the notes file named
 | `pentagon.md` | Pentagon 1024SL turbo, 16col, Murmuzavr RAM, screen position |
 | `plus3.md` | +3 / +3e / +3 divIDE, uPD765, .dsk, IDEDOS, mouse |
 | `timex.md` | Timex SCLD, TC2048, TC2068 |
-| `other-machines.md` | Didaktik, Leningrad, Byte ROM test, Quorum, IF2, SAM Coupe, Enterprise |
+| `other-machines.md` | Didaktik, Leningrad, Byte ROM test, Quorum, IF2, SAM Coupe, Enterprise, PK Hobbit |
 | `neogs-gs.md` | General Sound / NeoGS, host interface, ZX-DMA, mixer |
 | `sound.md` | AY/TSFM, OPL3/OPLL/SN/CMS (VGM), SAA1099, MoonSound, PI-CARD MUSICA |
 | `video-hdmi-vga.md` | HDMI PIO/HSTX, VGA, TMDS, audio islands, Gigascreen, borders, 630 MHz |

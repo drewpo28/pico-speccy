@@ -109,6 +109,11 @@ inline void write8(uint16_t a, uint8_t v) {
     if (p && p != kOpen) p[a & 0x1FFF] = v;
 }
 
+// The opcode fetch from a mapped slot (both fetch paths of the Z80 core). Out of line
+// and in flash: the PK Hobbit borrows the slot hook for its SINCLAIR configurations
+// and needs to see every M1 below #4000 (machines/Hobbit.h).
+uint8_t fetch8(uint16_t a);
+
 // Port #F4 write. Port #FF bit 7 changes come through decWrite().
 void writeHsr(uint8_t v);
 void decWrite(uint8_t dec);

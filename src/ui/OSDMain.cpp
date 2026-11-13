@@ -187,6 +187,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Quorum.h"
+#include "speccy/machines/Hobbit.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
@@ -2352,6 +2353,8 @@ static uint8_t hotkeyChooser(const string& menu) {
 }
 
 void OSD::nmiAction() {
+    // PK Hobbit: the machine has no NMI button — the hot key is its SHADOW MODE key.
+    if (g_hobbit) { Hobbit::shadowKey(); return; }
     if (Z80Ops::isNext) {
         // The Next has two NMI buttons (zxnext.vhd 6348-6349: F9 = M1, F10 =
         // Drive), each enabled by its own NR 0x06 bit. One hot key picks the one
@@ -2851,6 +2854,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         : " Quorum keys (F1-F6, arrows, BS): OFF ", LEVEL_INFO, 900);
             return;
         }
+        if (g_hobbit) {
+            Hobbit::keysMode = (uint8_t)((Hobbit::keysMode + 1) % 3);
+            notify(Hobbit::keysMode == Hobbit::KEYS_EDIT ? " Hobbit keys: BS, arrows, RAlt=Rus/Lat "
+                 : Hobbit::keysMode == Hobbit::KEYS_ALL  ? " Hobbit keys: + F1-F8, Ins/Del/Home/End/PgUp/PgDn "
+                                                         : " Hobbit keys: OFF (ZX combos) ", LEVEL_INFO, 1200);
+            return;
+        }
         if (Config::arch == A_NEXT) {
             Config::next_ext_keys = !Config::next_ext_keys;
             Config::save();
@@ -3307,7 +3317,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 || ((Z80Ops::is48 || Z80Ops::is128) && MB02::enabled)
                                 || Z80Ops::isP3
                                 || Z80Ops::isTsconf
-                                || Z80Ops::isAtm)
+                                || Z80Ops::isAtm
+                                || g_hobbit)          // PK Hobbit: Beta on board
                         && Tape::tapeStatus != TAPE_LOADING
                     && !DivMMC::enabled
                     ;
@@ -6939,6 +6950,10 @@ static void buildEmulatorInfoText() {
         pos += infoAppend(buf, pos, bufsz, " XT keyboard    : On\n");
     if (g_quorum && Quorum::fkeysToGuest)
         pos += infoAppend(buf, pos, bufsz, " Quorum ext keys: On\n");
+    if (g_hobbit)
+        pos += infoAppend(buf, pos, bufsz, " Hobbit keys    : %s\n",
+                          Hobbit::keysMode == Hobbit::KEYS_EDIT ? "BS + arrows"
+                        : Hobbit::keysMode == Hobbit::KEYS_ALL  ? "All" : "Off");
     if (Z80Ops::isTsconf)
         pos += infoAppend(buf, pos, bufsz, " PS/2 keys      : %s\n",
                           ZxEvoAvr::keysMode() == ZxEvoAvr::KEYS_ON  ? "ON"
@@ -7330,7 +7345,7 @@ static void buildEmulatorInfoText() {
 
         // TR-DOS — available for Pentagon or Byte 128K
         {
-            bool trdos_available = (Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte);
+            bool trdos_available = (Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte) || g_hobbit;
             if (trdos_available) {
                 pos += infoAppend(buf, pos, bufsz, " TR-DOS         : On");
                 if (Config::trdosFastMode) {
@@ -7338,7 +7353,9 @@ static void buildEmulatorInfoText() {
                 }
                 pos += infoAppend(buf, pos, bufsz, "\n");
 
-                {
+                if (g_hobbit)   // its own DOS ROM (5.03 / 5.04T patched), not the menu's pick
+                    pos += infoAppend(buf, pos, bufsz, "  ROM            : Hobbit\n");
+                else {
                     // Indexed BY THE VALUE, so the order here is Config::trdosBios's,
                     // not the menu's display order (6.11e is 4, 5.04T 5, Custom stays 3).
                     static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e", "5.04T" };

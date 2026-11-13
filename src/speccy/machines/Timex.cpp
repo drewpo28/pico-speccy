@@ -18,6 +18,8 @@ See Timex.h for the model and the references.
 // that includes roms.h for one symbol drags in private copies of the rest and
 // leaves them for --gc-sections to clean up (see the GMX bank-table trap).
 #include "speccy/roms/timex/timex_roms.h"
+#include "speccy/machines/Hobbit.h"   // fetch8: the Hobbit's opcode-fetch hook
+#include "speccy/z80/CPU.h"           // g_hobbit
 
 extern "C" uint8_t g_timex_mmu = 0;
 
@@ -64,6 +66,11 @@ static void rebuild() {
         }
     }
     g_timex_mmu = (hsr != 0) ? 1 : 0;
+}
+
+uint8_t fetch8(uint16_t a) {
+    if (g_hobbit) return Hobbit::m1(a);
+    return read8(a);
 }
 
 void writeHsr(uint8_t v) {

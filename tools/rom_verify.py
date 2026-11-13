@@ -267,5 +267,32 @@ for tag, roles in QUORUM_ROMSETS:
         got = qu_sym(b) if o == 'nullptr' else apply_overlay(qu_sym(b), arr('quorum/quorum_roms.c', o))
         check('Quorum %s role %d' % (tag, ri), got, dump('quorum/src/' + f)[i * 16384:(i + 1) * 16384])
 
+# PK Hobbit: every dump's DOS / LOGO / monitor page through hobbit_banks.h, the
+# SINCLAIR page against the stock 48K ROM, and each whole image's CRC.
+print("Hobbit romsets (through hobbit_banks.h):")
+hb_h = open(os.path.join(R, 'hobbit/hobbit_banks.h')).read()
+hb_48 = dump('48k/src/sinclair_48k.bin')
+def hb_sym(sym):
+    try: return arr('hobbit/hobbit_roms.c', sym)
+    except SystemExit: pass
+    return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_sinclair_48k': hb_48,
+            'gb_rom_1_sinclair_128k': s128_1}[sym]
+from rom_pack import HOBBIT_IMAGES, HOBBIT_ROLES
+for tag, f, crc in HOBBIT_IMAGES:
+    img = dump('hobbit/src/' + f)
+    check('Hobbit %s CRC32' % f, '%08X' % (zlib.crc32(img) & 0xffffffff), '%08X' % crc)
+    check('Hobbit %s SINCLAIR page' % tag, img[:16384], hb_48)
+    body = hb_h.split('gb_rom_%s_banks[' % tag, 1)[1].split('};', 1)[0]
+    rows = re.findall(r'\{ (\w+), (\w+), (\d+) \}', body)
+    for ri, (b, o, zl) in enumerate(rows):
+        if b == 'nullptr':   # a page of #FF, not stored
+            got = b'\xff' * 16384
+        elif int(zl):        # raw deflate
+            z = hb_sym(b)
+            got = zlib.decompress(z, -15) if len(z) == int(zl) else b''
+        else:
+            got = hb_sym(b) if o == 'nullptr' else apply_overlay(hb_sym(b), arr('hobbit/hobbit_roms.c', o))
+        check('Hobbit %s %s' % (tag, HOBBIT_ROLES[ri]), got, img[(ri + 1) * 16384:(ri + 2) * 16384])
+
 print("\n%s" % ("FAILED: " + ", ".join(fails) if fails else "all ROM images verified"))
 sys.exit(1 if fails else 0)

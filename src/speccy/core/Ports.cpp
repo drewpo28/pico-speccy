@@ -92,6 +92,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/Quorum.h"   // Quorum early port dispatch
+#include "speccy/machines/Hobbit.h"   // PK Hobbit early port dispatch
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Scorpion.h"
 #include "speccy/machines/Pentagon.h"
@@ -1262,6 +1263,11 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   if (__builtin_expect(g_quorum != 0, 0)) {
     uint8_t qData;
     if (Quorum::portIn(address, &qData)) { VIDEO::Draw(3, false); return qData; }
+  }
+  // PK Hobbit: #0F and, in the shadow configurations, the 8255s (machines/Hobbit.cpp).
+  if (__builtin_expect(g_hobbit != 0, 0)) {
+    uint8_t hData;
+    if (Hobbit::portIn(address, &hData)) { VIDEO::Draw(3, false); return hData; }
   }
   // Scorpion Turbo+ speed toggle. The clock is switched by READING a port, not by
   // writing one: MAME's scorpiontb_state::scorpion_io installs
@@ -3166,6 +3172,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // WD1793 on #80-#85; every even port but #FE is swallowed (the board decodes
   // 1xx11xx0 for the ULA), as are the Beta-128 ports it does not have.
   if (__builtin_expect(g_quorum != 0, 0) && Quorum::portOut(address, data)) { VIDEO::Draw(3, false); return; }
+  if (__builtin_expect(g_hobbit != 0, 0) && Hobbit::portOut(address, data)) { VIDEO::Draw(3, false); return; }
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
@@ -4511,7 +4518,7 @@ IRAM_ATTR void Ports::pitGenSound(uint8_t *buf, int bufsize) {
 bool g_ula_io_contend = true;
 void Ports::ulaIoContendRecalc() {
     g_ula_io_contend = !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion ||
-                         Config::isLeningrad() || Config::isQuorum64() ||
+                         Config::isLeningrad() || Config::isQuorum64() || Config::isHobbit() ||
                          Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend) ||
                          (Z80Ops::isNext && !(NEXTVID::contend & 2)) ||
                          Z80Ops::isP3);   // +2A/+3: no I/O contention at all (MemESP.h busContended)

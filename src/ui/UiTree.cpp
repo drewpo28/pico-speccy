@@ -741,6 +741,14 @@ static const Option opt_mach_leningrad[] = {
 // romsets of the Pentagon arch (uncontended 128K, own port map and ROM manager).
 // 256/512/1024 need pages past 8, i.e. extended-RAM backing — the Pentagon 512K/1024K
 // gate, rebuilt per call for the same reason (mach_pentOpts).
+// PK Hobbit (machines/Hobbit.h): three ROM dumps, each a romset of the 48K arch.
+static const Option opt_mach_hobbit[] = {
+    { TXT_ROM_HBMAIN,     NM_MACH(A_48K, R_48K_HBMAIN),  TXT_ROM_HBMAIN_S },
+    { TXT_ROM_HBFORTH,    NM_MACH(A_48K, R_48K_HBFORTH), TXT_ROM_HBFORTH },
+#if HOBBIT_ALL_ROMS   // 16 MB images (cmake/board.cmake)
+    { TXT_ROM_HBBASIC,    NM_MACH(A_48K, R_48K_HBBASIC), TXT_ROM_HBBASIC_S },
+#endif
+};
 static const Option* mach_quorumOpts(uint8_t& cnt) {
     static Option opts[7];
     uint8_t n = 0;
@@ -974,6 +982,7 @@ static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_DIDAKTIK, SET_MACHINE, opt_mach_didaktik, nullptr),
     NM_RADIO  (TXT_MACH_LENINGRAD, SET_MACHINE, opt_mach_leningrad, nullptr),
     NM_RADIO_D(TXT_MACH_QUORUM,   SET_MACHINE, mach_quorumOpts,   nullptr),
+    NM_RADIO  (TXT_MACH_HOBBIT,   SET_MACHINE, opt_mach_hobbit,   nullptr),
     NM_RADIO_D(TXT_MACH_PENTAGON, SET_MACHINE, mach_pentOpts,     nullptr),
     // Machine-dependent options sit right under their machine, indented so the
     // grouping reads at a glance (they also only show while that machine is
@@ -1198,7 +1207,7 @@ static bool p_plus3On() { return isPlus3Romset(devRomset()); }
 static bool p_betaBuiltIn() {
     const ArchIdx a = devArch();
     return devPent() || devProfi() || a == A_SCORP || a == A_TSCONF || a == A_ATM ||
-           isQuorum64Romset(devRomset());
+           isQuorum64Romset(devRomset()) || isHobbitRomset(devRomset());
 }
 static bool p_betaOptional() { return !p_betaBuiltIn(); }
 static bool p_diskBeta() {

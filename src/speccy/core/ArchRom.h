@@ -99,7 +99,10 @@
     X(R_QU1024,         "Quorum1024",       "Quorum 1024")  \
     X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)") \
     X(R_EP64,           "EP64",             "Enterprise 64")  \
-    X(R_EP128,          "EP128",            "Enterprise 128")
+    X(R_EP128,          "EP128",            "Enterprise 128") \
+    X(R_48K_HBMAIN,     "48Khbmain",        "Hobbit 4.4")           \
+    X(R_48K_HBBASIC,    "48Khbbasic",       "Hobbit 2.9")           \
+    X(R_48K_HBFORTH,    "48Khbforth",       "Hobbit FORTH")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -245,6 +248,12 @@ inline bool isQuorum128Romset(RomsetIdx r) {
 inline uint8_t quorumRamPages(RomsetIdx r) {
     return r == R_QU1024 ? 64 : r == R_QU256 ? 16 : 8;
 }
+
+// PK Hobbit (InterCompex): romsets of A_48K, one per ROM dump (machines/Hobbit.h):
+// main1 (V4.4, LOGO), basic = w3 (V2.9, TR-DOS 5.03), forth. The w1 / w2 / w4 / bk31
+// dumps are in the tree but not built (tools/rom_pack.py HOBBIT_IMAGES).
+// Appended at the END of the table (Pss writes the index).
+inline bool isHobbitRomset(RomsetIdx r) { return r >= R_48K_HBMAIN && r <= R_48K_HBFORTH; }
 
 // "Is the GMX firmware live?" — one romset today (ProfRom GMX v5.44), but the question
 // is asked from a dozen places (CPU::reset's g_scorp_gmx, the butter/traded fallbacks

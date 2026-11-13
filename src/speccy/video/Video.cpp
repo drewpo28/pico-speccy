@@ -68,7 +68,8 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "app/ESPectrum.h"
 #include "speccy/devices/sound/MoonSplit.h"
 #include "speccy/machines/Leningrad.h"   // Leningrad raster anchors + bottom-border flush
-#include "speccy/machines/Quorum.h"      // Quorum 64 raster anchor
+#include "speccy/machines/Quorum.h"
+#include "speccy/machines/Hobbit.h"      // Quorum 64 raster anchor
 // ZXM-MoonSound wave half on core1 (MoonSplit.h): once per rendered guest
 // line, tell core1 how far the guest has got — one test and one store.
 #if MOONSOUND
@@ -5469,7 +5470,7 @@ bool VIDEO::snowAllowed() {
     return Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT &&
            Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF &&
            Config::arch != A_ATM && Config::arch != A_NEXT && !Config::isPlus3() &&
-           !Config::isLeningrad() && !Config::isQuorum64();
+           !Config::isLeningrad() && !Config::isQuorum64() && !Config::isHobbit();
 }
 
 void VIDEO::Reset() {
@@ -5535,6 +5536,10 @@ void VIDEO::Reset() {
             if (isQuorum64Romset(Config::romSet48)) {
                 tStatesScreen += Quorum::kPaperDelta64;
                 tStatesBorder += Quorum::kPaperDelta64;
+            }
+            if (isHobbitRomset(Config::romSet48)) {       // PLM D9 (machines/Hobbit.h TIMING)
+                tStatesScreen += Hobbit::kPaperDelta;
+                tStatesBorder += Hobbit::kPaperDelta;
             }
         }
         VsyncFinetune[0] = 0;

@@ -32,6 +32,7 @@
 #include "app/Col16Trace.h"
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/Quorum.h"   // Quorum DOS edges + NMI acknowledge
+#include "speccy/machines/Hobbit.h"   // PK Hobbit DOS leave edge, NMI acknowledge, RETN
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Enterprise/Ep.h"   // ED FE: the FILE: device trap
 #include "speccy/machines/Enterprise/EpFast.h"   // the fetch of an Enterprise (MEMGATES_EP)
@@ -926,6 +927,12 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
         if (ESPectrum::trdos ? REG_PCh >= 0x40 : REG_PCh == 0x3D) Quorum::trdosEdge(REG_PCh);
         return;
     }
+    // PK Hobbit: windows 0/1 are Hobbit's; its DOS flip-flop drops on a fetch from RAM
+    // (the enter edge is its opcode-fetch hook, Hobbit::m1).
+    if (g_hobbit) {
+        if ((g_hobbit & 2) && REG_PCh >= 0x40) Hobbit::dosLeave();
+        return;
+    }
     if (Z80Ops::isEnt) return;      // Enterprise: no Beta, no #3Dxx trap
     if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
         if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
@@ -1336,6 +1343,8 @@ Z80_COLD void Z80::doNMI(void) {
     // Quorum: the NMI acknowledge clears #00 (ZXMAK2 BusNmiAck, SpeccyP) — on the
     // 128 that puts the SYS ROM's NMI service at #0066.
     if (g_quorum) Quorum::nmiAck();
+    // PK Hobbit: the NMI sets the ES flip-flop — SHADOW-A at #0066 whatever #0F says.
+    if (g_hobbit) Hobbit::nmiAck();
     // ZX-Evo BaseConf (znmi.v): the M1 at #0066 reads #00 — the FPGA drives a NOP
     // onto the bus (drive_00) — and RAM page #FF replaces window 0 only after that
     // M1 (in_nmi rises at its refresh), until OUT (#BE). So the handler in page #FF
@@ -1367,6 +1376,7 @@ Z80_COLD void Z80::doNMIDOS(void) {
     // Quorum: window 0 is the machine's too, and its BASIC NMI handler already
     // offers TR-DOS (Caps Shift held) — a plain NMI.
     if (g_quorum) { nmi(); return; }
+    if (g_hobbit) { doNMI(); return; }   // PK Hobbit: every NMI is the shadow system's
 
     // Save current state
     nmiDos_savedRomInUse = MemESP::romInUse;
@@ -1801,7 +1811,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
             // LD HL,0x08E7 / CALL 0x6815 -> pages the EX-ROM in and JP (HL)).
             // hw 2026-09-12: that is why the TC2068 reached its copyright screen
             // and then fell apart on its own with no input.
-            opCode = Timex::read8(REG_PC);
+            opCode = Timex::fetch8(REG_PC);
         } else
         opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC);
         }
@@ -4131,6 +4141,7 @@ void Z80::decodeED(void) {
         case 0x7D:
         { /* RETN */
             ffIFF1 = ffIFF2;
+            if (__builtin_expect(g_hobbit != 0, 0)) Hobbit::retn(REG_PC);   // /OUTSHAD at #0063
             // zxnext.vhd 4111: while the Multiface is active its RETN pages the
             // MF out and does NOT reach the divMMC (divmmc_retn_seen).
             const bool mfRetn = Z80Ops::isNext && NextMf::active();

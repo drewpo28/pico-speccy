@@ -110,6 +110,13 @@ endif()
 # reads it from the SD card (src/speccy/devices/sound/MoonRom.h).
 set(MOONSOUND 1)
 add_compile_definitions(MOONSOUND=${MOONSOUND} YRW801_BUILTIN=${YRW801_BUILTIN})
+# HOBBIT_ALL_ROMS: the PK Hobbit V2.9 dump (13 KB) beside V4.4 LOGO and FORTH —
+# 16 MB only, the 4 MB image is too close to the GM.DLS floor.
+if(FLASH_16MB)
+    add_compile_definitions(HOBBIT_ALL_ROMS=1)
+else()
+    add_compile_definitions(HOBBIT_ALL_ROMS=0)
+endif()
 # GM_BANK_BUILTIN: the GM.DLS bank embedded in flash (src/speccy/roms/gmbank).
 add_compile_definitions(GM_BANK_BUILTIN=${GM_BANK_BUILTIN})
 

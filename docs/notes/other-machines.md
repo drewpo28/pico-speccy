@@ -639,3 +639,216 @@ their own machine underneath (Byte, Timex, Didaktik, Leningrad, Quorum 64) have 
 slot; the predicate is deliberately `If2::live()`'s own test (`isStock48()`), so the
 row exists exactly where the cartridge can stay plugged in. Opening a .rom in F5 still
 works from any machine — `If2::insert` switches to the stock 48K itself.
+
+## PK Hobbit (2026-11-13, host-tested, NOT hw-tested, uncommitted)
+
+Machine → Hobbit: three romsets `R_48K_HB*` of A_48K, one per ROM dump (github.com/bw2012/
+pk-hobbit `rom/`). All machine code is `src/speccy/machines/Hobbit.{h,cpp}` (flash; the
+full model and its sources are in the header of Hobbit.h — read it first). `g_hobbit`
+(bit 0 machine, bit 1 DOS flip-flop up) is the one test in Ports input/output,
+check_trdos, doNMI and RETN. Supersedes the 2026-08 `drew-hobbit` branch (`HobbitPager`,
+page-0 window + `hobbit_*` hooks in MemESP): nothing of it was kept.
+- **What the old branch guessed and the ROM settles** (each cost a hw round there):
+  "port #0C bit 7 = font overlay" is the 8255 D25 MODE WORD — #0C/#0D/#0E are the three
+  control registers in the shadow configurations, and a mode word clears the latches, so
+  `OUT (#0C),#80` = configuration 0 (SHADOW-A's stub #5B03 reads the Sinclair font that
+  way). "#3F00-#3FFF always shadow" is the DOS writing UNDER its ROM (#3FFF = the
+  configuration to return to; its own code runs from ROM at #3Exx-#3Fxx). "No Beta-style
+  DOS exit" is wrong: the #3Dxx flip-flop ORs 2 into the configuration and a fetch from
+  #4000+ clears it, as Architectura.pdf says. Only #3C00-#3CFF really is RAM in the
+  SINCLAIR configurations (the #3C3E-#3C7D helpers run across OUT (#0F) there).
+- **Port #05 reads the configuration bus behind the ES gate** (found in the FORTH dump:
+  its boot stub self-tests 0 / 5 / 7 after OUT (#0C),#80 / OUT (#0F),#2D / #2F, and its
+  NMI entry reads it with ES up to learn what was interrupted). That self-test passing is
+  the best evidence the model has. #06 = D25.A read back (border), FE D5 = /INT (PA5).
+- **ES (the NMI flip-flop) forces SHADOW-A only while #0F D7 = 1** (third round,
+  2026-11-13; replaces "6 and 3/5 stay themselves", which was the same rule seen through
+  three values): with ES up the service writes #3E (SHADOW-B texts), #3D (RAM), #B8 (back
+  to SHADOW-A) and MAGIC OPTION writes #38 — every one that must NOT become 7 has D7 = 0.
+  Cleared by the RETN at #0063 fetched in configuration 7.
+- **MAGIC OPTION (SYSTEM PAGE key O) hung** (owner saw it on hw, same on the bench):
+  SHADOW-A #1165 builds on the program's stack `PUSH AF / LD A,#38 / OUT (#0F),A / POP
+  AF / RET`, then #3D2F, then #0063, and RETs into it with ES up. It needs SINCLAIR
+  after the OUT (the D7 rule above) and the DOS trap at #3D2F **with D7 = 0** — the trap
+  is NOT gated by D7 (the model had it gated, from the documents' wording). The DOS ROM
+  then runs NOP / RET at #3D2F and lands on its own #0063: NOP NOP NOP and at #0066
+  `LD A,#B8 / OUT (#0F)` + the TR-DOS magic handler; the fetch of #0064 is what drops
+  ES there (the model drops it at the trap). Bench: a blank TRD in A: gets `boot` + `@`
+  (192 sectors) and BASIC continues. With no disk the DOS prints with a broken font and
+  returns — not looked into. NOT hw-tested.
+- **The whole SYSTEM PAGE walked on the bench** (keys K A D H C W O P I R G Z X): K, A,
+  D, H, P, I, X toggle; G / Z open their prompts; C returns at once with PRINTER OFF
+  (SHADOW-A #1798, by design); R = RESTART is `RST 0` only if the word at RAM #0000 in
+  configuration 5 is #6D52, else nothing (#11F9, by design); W = WRITE MACROS does
+  nothing with an empty EDIT line (SHADOW-B #1240), otherwise turns red and waits on #0F
+  for one of eight framing keys (#48 #44 #43 #46 #45 #47 #4D #52) — a dead end until
+  those keys existed (below).
+- **Framing keys** (the 48 keys outside the Spectrum's 40; table A.5, docs/sys/36_37.gif):
+  with #0F D4 = 1 the scanner passing a held one in a SINCLAIR configuration is an NMI;
+  SHADOW-A #007D reads #0F there and wants **the key's number with D7 = 1** (its DEC A
+  is only its own 0-based numbering: #48 Del, #59-#5C cursors, #54 Break, #6C Page in
+  SHADOW-B #0F6C are table numbers minus one). SHADOW-B #1016 turns the key into a
+  Spectrum combo from the 6-byte table at #0341, sets #0F = #C8 (D5 = 0: NMI on IN
+  (#FE)) and answers the ROM's KEY-SCAN reads itself. A cursor key must be seen on four
+  scanner passes running (#0F54), so the NMI has to repeat every 128 lines while the key
+  is held — one NMI per PC key event moved the cursor only after a 0.8 s hold.
+- **Port #05 D5-D7 = register D46**: the half-row the last IN (#FE) addressed, through
+  PLM D7's priority encoder (Architectura p.7: A11, A12, A15, A14, A13, A10, A9; none =
+  7). SHADOW-B #0E8E reads it to know which half-row to answer for. Without it Backspace
+  reached the handler and nothing reached BASIC. Every reader masks (#07 / #E0).
+- **Why Backspace typed "00" in LOGO** (owner, hw): Caps Shift + 0 means nothing to the
+  shadow's decoder — the Hobbit edits with Del and the cursor keys. So on this machine
+  the PC's Backspace and arrows ARE those keys (`ESPectrum hobbitKeys` ->
+  `Hobbit::frameKey`), and **Alt+~ cycles** `Hobbit::keysMode`: Backspace + arrows +
+  Right Alt = Rus/Lat (default; owner asked for the key after the hw test, 2026-11-13) / + F1-F8 = Cat Open# Move Lprint Verify Over Bright Paper (the macro keys),
+  Ins Edit, Del Del, Home Rus/Lat, End Break, PgUp Register, PgDn Page / OFF = the 48K
+  combos (games that read #FE for Caps Shift + 5..8 need OFF: a framing arrow reaches
+  them only through the shadow system). Not saved in the config.
+- **FORTH knows no Symbol Shift**: it reads only the scanner, so "." came out as "M".
+  PC punctuation ( . , / = - [ ] : ( ) * + < > @ # $ & ) is shown ON THE SCANNER as the
+  Hobbit's own key instead of the core keys, with no NMI (the matrix combo still serves
+  #FE readers). `13 .` answers `13 Ok` on the bench. Table A.5's quote keys (#51 #54
+  #57) are unreadable in the scan and are not mapped.
+- **Interception addresses**: SHADOW-A's table (#1EE4 V4.4, #1E1E V2.9, #1EEB FORTH — the
+  same 28 in all) holds RETURN addresses; the M1 that raises /INSHAD is the instruction
+  ending there (`kTrap`, derived by disassembling the Sinclair ROM; none is a jump).
+  #0008 = RST 8 and #12AC = the shadow API (function number in I), #1296 = the copyright
+  call, which is how the power-on menu (1. BASIC 2. LOGO 3. CP/M 4. DOS) appears.
+- **How it sits in the memory model, with no new hook in a hot path**: SINCLAIR
+  configurations borrow the Timex SCLD slot hook (`g_timex_mmu` + `Timex::rd[0/1]`), so
+  both fetch paths reach flash `Timex::fetch8` → `Hobbit::m1` (DOS trap, interceptions)
+  and writes are dropped (`Timex::wr` null). Slot 1 is an SRAM image of ROM #2000-#3FFF
+  with <b>'s #3C00 page copied in at every remap (it cannot change in between: SINCLAIR
+  write-protects the shadow RAM). DOS / LOGO: flash ROM + `wrOverlay` to the shadow RAM,
+  overlay registered for the DOS page. Pages: 1 shadow RAM, 3 SINCLAIR image +
+  interception bitmap, 4 monitor, 6 LOGO / FORTH (the 48K runs on 5, 2, 0).
+  `Timex::fetch8` replaced the inline `Timex::read8` on the TC2068's fetch paths: its
+  DOCK / EX-ROM code now takes one flash call per opcode — **TC2068 hw re-check owed**.
+- **NMI must land one instruction later, not at the frame edge** (the core polls
+  `activeNMI` between frames on a 48K): an interception stores the return address and
+  `m1()` calls `Z80::doNMI()` in place of that fetch, returning SHADOW-A's byte at #0066;
+  same for IN (#FE) with #0F D5 = 0 from ROM code. From RAM code that NMI still waits for
+  the frame edge (nothing hooks a fetch above #4000) — the shadow system's keyboard modes
+  1/2 under a RAM program are therefore NOT right.
+- **Alt+F10 (NMI hot key) = shadow function #52** "выход в теневое меню": `nmiAck` stacks
+  the PC as an RST 8 would, sets I = #52, the NMI stacks #000B; I is restored at the RETN.
+  SYSTEM PAGE / NETWORK PAGE open and take keys on the host. The framing keys (PAGE /
+  SHADOW MODE #6D, REGISTER #5E, RUS/LAT #6C, cursors...) are not modelled.
+  Dead ends, do not retry: PAGE twice and REGISTER → PAGE as injected scan codes (the
+  handler SHADOW-B #0F6C takes #6D, but after REGISTER the system switches to #0F = #C8
+  and polls through IN (#FE) NMIs; without the keyboard ROMs D49 / D54 the scanner's
+  timing is guesswork).
+- **Port #0F read = the key scanner, and it must RUN** (2026-11-13, second round): PB0-6
+  = the number of the key being scanned = the low 7 bits of the line counter (one key a
+  line), PB7 = that key is down; numbers are table A.5's, a core key = row * 8 + (5 -
+  bit), row 0 = the #7F half-row. A constant hung shadow function #4F (it waits for a
+  change, SHADOW-A #01CE) — that was the FORTH dump's blank screen — and FORTH reads its
+  whole keyboard this way, waiting for exact numbers (#71 / #73 / #3D).
+- **The #E000 ("CP/M") screen is the 8251's /DTR pin**: function #4F writes command #94
+  to #35 with D1 set for #4000 and clear for #E000 (nets VV51_DTR / VV51_RTS on the
+  schematic). `uartControl` follows the mode / sync / command sequence (boot: 02 02 40
+  3C E6 9B 96). FORTH V6.4 runs on that screen; configuration 3 is kept as a second
+  way in (Architectura) but nothing was seen to use it.
+- Timing: no contention, no floating bus, no snow (CPU and video alternate slots,
+  Architectura p.14). **The PLM dumps ARE published: `cpld/` of the same repo** (D7, D8,
+  D9 as 556RT2-*.TXT / .JED, the keyboard ROM D49 as 556RT5.*) — an earlier line here
+  said "no dump, the INT position cannot be derived"; I had not looked in that folder
+  (owner pointed at it, 2026-11-13). From D9 (I5-I0 = X, 4 T a character; I14-I6 = Y):
+  line = 56 characters = 224 T, frame = 312 lines; paper Y 0-191 / X 1-32; blanking X
+  38-47, Y 220-244 (border 9 chars left, 5 right, 67 lines above, 28 below); **/INT at Y
+  246, X 48-55 = 32 T, so the paper starts 14596 T after the INT, 260 T later than a
+  48K** (`Hobbit::kPaperDelta`, `kIntLen` 32). NOT hw-tested (emulator on DVp2w) and not
+  measured on a real Hobbit. The key scanner's number = Y & #7F and Y restarts at 312.
+- **D7 + D8 read against pcb/1.pdf** (pin names; write-up in `Hobbit.h` TIMING). They
+  confirm: the port decode, the 28 interception addresses (identical to SHADOW-A's
+  table), #0064 = /OUTSHAD only in configuration 7, interceptions and key NMIs only in
+  configurations 0/1, `ENCFG = PB7 & ES` (the D7 rule), and that the DOS flip-flop
+  while set holds the NMI latch and ES cleared (why MAGIC OPTION's jump to #3D2F ends
+  the shadow state). They REFUTE two props of the first round, both removed with every
+  bench scenario still passing: "#3C00-#3CFF reads as RAM in SINCLAIR" (it is ROM; the
+  #3C3E helpers only ever switch between SHADOW-A / SHADOW-B / RAM with ES up) and "a
+  write under the DOS ROM lands in the shadow RAM" (writes below #4000 are allowed only
+  in configurations 3-7). Not followed: the schematic sets the DOS flip-flop on a #3Dxx
+  fetch in ANY configuration; the model keeps Architectura's "SINCLAIR only".
+- **An NMI must not be injected between a prefix and its opcode** (bench, 2026-11-13;
+  the owner's "LOGO keyboard over-sensitive, repeats on the slightest press" is very
+  likely this — not confirmed on hw). The framing-key NMI is raised from the opcode
+  fetch hook at an arbitrary moment, and every byte after DD / FD / ED / CB comes
+  through the same hook: taken there, the NMI stacked the middle of the ROM's
+  `BIT 5,(IY+1)` (#10B0 -> return #10B1) and BASIC then ran `RLC C / LD L,(HL)`. Seen
+  as a ghost repeat of the last character, a lost Backspace or arrow, ~1 run in 3 and
+  only at some key timings. `midInstruction()` in `m1()`. How it was found: the realtime
+  bench was flaky, an uncapped `HOBBIT_TRACE=2` build with a 1-frame sweep of the key
+  times gave one bad run, and its NMI line showed the odd return address. Also there:
+  one NMI latch — a key cannot ask while an interception is pending.
+  DivMMC and MB-02+ are switched off
+  for the session on a Hobbit (they live in window 0 and on ROM entry points).
+- ROMs: `tools/rom_pack.py hobbit` — SINCLAIR page of every dump = the stock 48K ROM
+  (checked, not stored). **Three romsets are built (owner, 2026-11-13)**: `main1` = Hobbit
+  4.4 (LOGO), `basic` (= `w3`) = Hobbit 2.9 (TR-DOS 5.03; its LOGO page is 16 KB of #FF —
+  not stored, an empty socket through `Timex::kOpen`), `forth` = Hobbit FORTH. The
+  w1 / w2 / w4 / bk31 dumps stay in `roms/hobbit/src` but are commented out of
+  `HOBBIT_IMAGES`: they differ from main1 by SHADOW-A #000F (#0E / #12 / #0D / #1F —
+  my guess: the network number) and, w2, by a slightly different monitor build.
+  **Storage (2026-11-13, third round)**: LOGO / FORTH and the monitor pages are raw
+  DEFLATE (`hobbit_banks.h` `zlen`), inflated by miniz `tinfl` into idle RAM pages when
+  the machine is selected (4 = monitor, 6 = LOGO / FORTH; the ~11 KB inflate state comes
+  from `tryMalloc` — a failure is logged and the machine will not boot); the DOS page
+  stays an overlay over TR-DOS 5.04T, which deflate cannot beat. A ROM page that lives
+  in RAM is write-safe because every ROM configuration routes writes to the shadow RAM
+  (`wrOverlay`). Flash: main1 29.4 KB + forth 31.8 KB + basic 13.4 KB.
+  **4 MB images carry main1 + forth** (owner: FORTH matters more than V2.9);
+  `HOBBIT_ALL_ROMS` = 16 MB adds V2.9. DVp2 4 MB: `.flash_end` 0x10264D2C,
+  `__psramrom_start` 0x10265000 = 12 KB to the hard floor (raw pages would have been
+  0.7 KB over). Other 4 MB boards NOT built. `rom_verify.py` checks the three byte
+  for byte (inflating what is deflated).
+- Host bench results: all dumps boot (the four unbuilt ones were run before they were dropped); V4.4: menu items 1 (BASIC), 2 (LOGO "Привет !"),
+  4 (DOS `A>`), and with dune.trd in drive A the DOS runs `boot` (no WD1793 changes were
+  needed — the old branch's track-0 and index-pulse patches are NOT ported). V2.9 goes
+  straight to TR-DOS 5.03 (drive present → DOS, Architectura p.3). FORTH dump: BASIC,
+  DOS and item 2 — "Forth V6.4 (c) MD 1992", typing works.
+- **.pss** (host-tested): record `PSHB` = u8 ver 1, #0F, flags (ES, DOS flip-flop,
+  #E000 screen, pending IN (#FE) NMI), 8251 control state, u16 pending interception;
+  the shadow RAM is the 4th page (RAM page 1, the Quorum 64 slot). A file without it
+  (a plain 48K's) loads with #0F = #B8 and the shadow RAM LEFT ALONE — the power-on
+  pattern there would wipe the NMI vector at #3C00. Round trips checked: saved in
+  FORTH (configuration 4, #E000) and inside SYSTEM PAGE (ES up), the latter loaded in
+  a fresh process. Export to .szx/.z80/.sna lists "Hobbit #0F / shadow RAM" as dropped.
+- Tape auto-run from F5 (owner on hw 2026-11-13: "autoload does not work"): `FileZ80::loader48()`
+  resets the machine and resumes a 48K snapshot inside LD-BYTES, but the reset leaves the Hobbit
+  in the boot-menu configuration (#0F = #FF, SHADOW-A in window 0), so the snapshot's PC ran
+  monitor code and the old prompt stayed on screen. `loader48()` now ends with
+  `Hobbit::afterSnapshot()` (#0F = #B8, as after a .z80). Host: a two-line BASIC .tap runs from
+  F5 Run. `debug/DVp2w-hobbit8-1.1.2.elf`, NOT hw-tested. Open: the fast-load trap at PC #056B
+  does not look at the configuration, so a mounted tape + LOGO/monitor code passing that address
+  could trigger it; not seen, not guarded.
+- F8 stats / corner FDD lamp / info page (owner 2026-11-13): the three `hasFdd` / `trdos_available`
+  tests did not know the machine; `g_hobbit` added to each (the info page names the DOS ROM
+  "Hobbit" instead of the menu's TR-DOS pick). Host: third F8 mode shows the WD1793 line.
+  `debug/DVp2w-hobbit9-1.1.2.elf`, NOT hw-tested.
+- **CP/M (menu item 3) boots, host 2026-11-13, NOT hw-tested** (`debug/DVp2w-hobbit10-1.1.2.elf`).
+  The loader is in the DOS ROM at #0805 (stub copied to #5B00 by SHADOW-B #1F1F, entered
+  through #3D2F): probes the drives, READ ADDRESS, wants 80 x 2 x 5 x 1024 with IDs 1-5,
+  128-byte records numbered per cylinder, record 0 = header ("Cp" at 0, entry at 9-10, load
+  address at #0C-#0D, record count at #0E); then #0F = #AF, #35 = #9C (screen at #E000),
+  #0F = #2B (configuration 3) and a jump to the entry. Our `.cpm` raw format is exactly this.
+  Test disk: no original Hobbit CP/M image was found; github.com/ajfa/hobbit-intercompex-mame
+  (release v1.0, `cpm-hobbit.img`, renamed `.cpm`) carries DR CP/M 2.2 with a NEW BIOS written
+  for that author's MAME driver. It booted at once but DIR printed empty entries: the model
+  swallowed the VG93 ports in the shadow configurations. PLM D8 says otherwise (D7 code E =
+  #1F/#3F/#5F/#7F, code 2 = #FF): VG93 write in configurations 2-7, read in 2-6 (in 7 the
+  read is D24.C: joystick + DRQ/INTRQ), #FF read = D24.C in 2-7, #FF write = D25.C (drive,
+  /MR, HLT, side) in 2 and 3 only; SINCLAIR has none of it. `Hobbit::portIn/portOut` now
+  follow that. Bench: DIR, STAT, `SAVE 1 XYZ.COM` (written to the image), Backspace, ".".
+  The original "Beta" CP/M of the machine is still untested — no image.
+- Not done: no "Reset to" chooser (`Hobbit::bootRom` exists,
+  unused), network, printer, NETWORK PAGE items (page opens, nothing behind it), NMI on
+  any core key (#0F D3 = 0), #0F D6 (scan off) for real keys and Caps Lock on the default
+  PC layout.
+- `-DHOBBIT_TRACE=ON`: `[HOBBIT] cfg ...` on every configuration change (first 400; `=2` on the host: no cap) and
+  unknown ports in the shadow configurations.
+- Cost, DVp2w 16 MB MinSizeRel, per-symbol nm diff: RAM +39 B in all (Ports::input +40,
+  check_trdos +48, decodeED +16, exec_nocheck -16, five veneers 40, state 22;
+  Ports::output -112 is GCC's own doing); flash +118.7 KB with every dump. Third round
+  (keys, MAGIC, PLMs): RAM +10 B, all Hobbit state, no RAM code moved; DVp2 4 MB has 8 KB left
+  to the hard floor (`__psramrom_start` 0x10266000).
