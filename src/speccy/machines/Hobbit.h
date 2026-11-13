@@ -165,6 +165,8 @@ extern uint8_t keysMode;
 // #FE, so this one raises no NMI: it is what the scanner (#0F) shows INSTEAD of the
 // core keys — FORTH reads only the scanner and knows no Symbol Shift.
 void frameKey(uint8_t code, uint8_t sym);
+// Rus/Lat of whatever is running: BASIC (shadow #3CFB D3), LOGO 4.4 (#6316), FORTH = Lat.
+bool rusMode();
 // For a "Reset to" chooser (not wired yet): after ESPectrum::reset() — BASIC without
 // the power-on menu, the DOS, LOGO. The monitor has not run then.
 enum Boot : uint8_t { BOOT_MENU, BOOT_BASIC, BOOT_DOS, BOOT_LOGO };

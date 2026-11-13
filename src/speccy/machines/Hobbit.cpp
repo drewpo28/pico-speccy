@@ -68,6 +68,7 @@ static bool    s_dos = false;     // the #3Dxx flip-flop
 static uint8_t s_uartNext = 1;    // 0 command, 1 mode, 2.. sync characters still to come + 1
 static bool    s_scrE000 = false;
 static uint8_t s_cfg = 0xFF;      // the configuration remap() last built
+static bool s_ranLang = false;       // configuration 4 (LOGO / FORTH) has been entered since the reset
 static bool s_snapRestored = false;   // Pss::load restored #0F & co.: afterSnapshot keeps them
 static bool s_hadDiv = false, s_hadMb02 = false;   // the cards as the previous machine had them
 // The hot key calls the shadow system's function #52, "выход в теневое меню"
@@ -203,6 +204,7 @@ static void remap() {
         VIDEO::gigascreenAutoFlip();
     }
     g_hobbit = (uint8_t)(1 | (s_dos ? 2 : 0));
+    if (cfg == 4) s_ranLang = true;
     s_cfg = cfg;
 #if HOBBIT_TRACE
     { static uint16_t n = 0;
@@ -250,6 +252,7 @@ void reset() {
     s_dos = false;
     s_uartNext = 1;
     s_scrE000 = false;
+    s_ranLang = false;
     s_snapRestored = false;
     s_apiCall = false;
     s_apiRestoreI = false;
@@ -426,7 +429,20 @@ uint8_t m1(uint16_t pc) {
     return Timex::rd[pc >> 13][pc & 0x1FFF];
 }
 
+// Rus/Lat. BASIC: the shadow system's flag, #3CFB D3 (SHADOW-B toggles D3 and D6
+// together: #106A V4.4, #106D FORTH, #0FC8 V2.9). LOGO 4.4 keeps its own in #6316
+// (3 = Rus, 0 = Lat; found by diffing RAM across presses of the key) and starts in
+// Rus. FORTH reads the scanner itself and has no such mode: Lat.
+bool rusMode() {
+    if (!g_hobbit) return false;
+    if (s_ranLang) return Config::romSet48 == R_48K_HBMAIN && MemESP::ram[5].direct()[0x6316 - 0x4000] != 0;   // not readbyte(): it drags romPeek out of RAM
+    return (shadow()[0x3CFB] & 0x08) != 0;
+}
+
 void frameKey(uint8_t code, uint8_t sym) {
+    // A sign key is a framing key like any other: BASIC gets it only through the NMI
+    // (the PC key presses nothing on the matrix while the Hobbit keys are on).
+    if (!code) code = sym;
     if (code != s_fkey) s_fkeyLine = 0xFFFF;
     s_fkey = code;
     s_symKey = sym;
@@ -482,7 +498,7 @@ bool portIn(uint16_t address, uint8_t* out) {
         // #10C4) and reads the whole keyboard this way. The numbers are table A.5's:
         // a core key is row * 8 + (5 - bit), row 0 = the #7F half-row ... 7 = #FE.
         // A framing key's NMI: the scanner was on that key (SHADOW-A #007D).
-        if (s_fkeyLatch) { *out = s_fkeyLatch; s_fkeyLatch = 0; return true; }
+            if (s_fkeyLatch) { *out = s_fkeyLatch; s_fkeyLatch = 0; return true; }
         const uint8_t n = (uint8_t)(scanY() & 0x7F);
         uint8_t v = n;
         if (s_fkey && n == s_fkey) v |= 0x80;

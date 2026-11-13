@@ -841,6 +841,57 @@ page-0 window + `hobbit_*` hooks in MemESP): nothing of it was kept.
   /MR, HLT, side) in 2 and 3 only; SINCLAIR has none of it. `Hobbit::portIn/portOut` now
   follow that. Bench: DIR, STAT, `SAVE 1 XYZ.COM` (written to the image), Backspace, ".".
   The original "Beta" CP/M of the machine is still untested — no image.
+- **LOGO / FORTH commands, host 2026-11-14, NOT hw-tested** (`debug/DVp2w-hobbit11-1.1.2.elf`).
+  LOGO 4.4 is "LOGO-R": Russian primitives (ПИШИ, ПЕЧАТАЙ, ВПЕРЕД/ВП, НАПРАВО/ПР, ПОВТОРИ,
+  ЭТО ... КОНЕЦ, СЛОЖИ, КОРЕНЬ; the table is in the LOGO page from ~#3300, KOI-8 capitals mixed
+  with Latin look-alikes) and it STARTS in Rus (cursor "P"; "C" = Lat). Bench: arithmetic,
+  `ПОВТОРИ 4 [ВПЕРЕД 50 НАПРАВО 90]` draws the square, `ПИШИ "ПРИВЕТ`, `ЭТО КВ :Н` ... `КОНЕЦ`
+  then `КВ 30` / `КВ 60`. FORTH V6.4: `2 3 + .`, `10 3 * 4 - .`, `7 DUP * .`, `100 7 /MOD . .`,
+  `HEX` / `DECIMAL` all answer right.
+  Keys found by pressing every key number (a temporary host hook, removed): the firmware's
+  numbers are table A.5's except **#5E types "+"** (A.5: Register; #4E, A.5's "+", is Х in Rus
+  and nothing in Lat), #6A is the double quote, #57 "£", #68 / #69 nothing. Rus-only letters
+  have keys of their own: Х #4E, Ъ #51, Ж #53, Э #54, Б #57, Ю #58. So the PC punctuation
+  table now depends on Rus/Lat (`Hobbit::rusMode()` = shadow RAM byte #3CDB D3 clear; found by
+  diffing <b> across presses of Rus/Lat — the disassembly's #3CFB is the same variable seen
+  through an offset I did not resolve): Rus follows the PC's JCUKEN ([ ] ; ' , . = Х Ъ Ж Э Б
+  Ю, "." and "," on the "/" key, the double quote on Shift+2 or Shift+', [ ] on Shift+[ ]),
+  Lat keeps the signs. FORTH always takes the Lat table. PgUp no longer sends #5E.
+  Open: ";" in FORTH (needed for `: name ... ;`) — no key number and no Caps/Symbol Shift
+  combination produced it on the bench; ";" in LOGO Lat mode types "O". Shifted PC keys
+  (Shift+2, Shift+') could not be driven from the host key script: hw only.
+- CP/M on hw (owner's screenshot 2026-11-14, DVp2w): the ajfa disk boots to `a>`
+  (**hw-confirmed**: the ROM loader + configuration 3 + the #E000 screen); DIR / writes not
+  reported yet. Its banner "Rus/Lat: F2" is that BIOS author's MAME key map — ours is Right
+  Alt (works on hw) or Home in the "all keys" mode; F2 there is Open#.
+- **Shift + key and signs in BASIC (owner on hw 2026-11-14: "Shift+ + - не работает";
+  `debug/DVp2w-hobbit12-1.1.2.elf`, host-tested, NOT hw-tested).** Three faults in the round
+  above: (1) the keyboard layer reports keys, not characters — VK_PLUS / VK_ASTERISK /
+  VK_COLON ... never arrive, Shift + "=" is VK_EQUALS with a Shift down — so `hobbitKeys`
+  now decodes Shift + = 8 9 0 ; ' , . 2 3 4 6 7 [ ] / itself; (2) in BASIC a sign key did
+  nothing or doubled (";:"): signs are now framing keys WITH the NMI (`frameKey`: code =
+  sym), and while one is down the whole matrix is released (the generic layer's own Symbol
+  Shift combination and the PC Shift as Caps Shift are both wrong here); (3) the Rus/Lat
+  source: `#3CDB` of the line above was shadow STACK residue that happened to track LOGO —
+  wrong in BASIC ("." typed "@"). Now: BASIC = shadow #3CFB D3 (the disassembly's variable),
+  LOGO 4.4 = its own byte #6316 (3 Rus / 0 Lat, found by diffing RAM across toggles), FORTH =
+  Lat; "a language is running" = configuration 4 entered since the reset (`s_ranLang`).
+  Bench, real host keys: `1-2+3*5"7./:8` in BASIC and FORTH, `1-2+3*5"7Ю.:8` in LOGO Rus;
+  after Rus/Lat BASIC types ю х ж. RAM +1 B. Still open: ";" (FORTH: none; LOGO Lat "OO").
+- **The local network (owner asked 2026-11-14; nothing modelled).** KR580VV51A D26 at #34
+  data / #35 control, selected by PLM D8 in configurations 6 and 7 only (terms 23, 24).
+  Synchronous: mode #3C, sync characters #E6 #9B; clock from counter D36, put on the net's
+  clock line by the MASTER machine through a jumper in its plug (the user's manual: 5-pin
+  DIN NETCNT / GND / NETCLK / MASTER / NETDAT, 56 kbit/s, up to 31 machines, the teacher's
+  machine chosen by the plug). The 8251's SYNDET in HUNT mode is the third NMI source,
+  enabled in SINCLAIR and LOGO: a frame on the wire interrupts the pupil's machine into
+  SHADOW-A. /DTR doubles as the #E000-screen switch, D24 PC5 reads MASTER. SHADOW-B's
+  NETWORK PAGE: MASTER MACHINE, S SEND, R RECEIVE, V LPRINT->NET, M MEMORY, P PICTURE, B
+  BASIC, L LETTER, E BORDER EFFECTS, A ACTIVATE, N NUMBER, F FREE RECEIVE, Y NET LIST, W
+  WRITE BUFFER. 8251 code: 16 port accesses in SHADOW-A, 3 in SHADOW-B, 18 in the DOS ROM
+  (#0A86, the 348-byte loader the CP/M boot copies to #E480 when IN (#FF) D6 is set — a
+  boot over the wire instead of the disk), none in LOGO. Emulating it needs a second machine
+  on a link; not started.
 - Not done: no "Reset to" chooser (`Hobbit::bootRom` exists,
   unused), network, printer, NETWORK PAGE items (page opens, nothing behind it), NMI on
   any core key (#0F D3 = 0), #0F D6 (scan off) for real keys and Caps Lock on the default

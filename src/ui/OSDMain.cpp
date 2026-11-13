@@ -2857,7 +2857,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         if (g_hobbit) {
             Hobbit::keysMode = (uint8_t)((Hobbit::keysMode + 1) % 3);
             notify(Hobbit::keysMode == Hobbit::KEYS_EDIT ? " Hobbit keys: BS, arrows, RAlt=Rus/Lat "
-                 : Hobbit::keysMode == Hobbit::KEYS_ALL  ? " Hobbit keys: + F1-F8, Ins/Del/Home/End/PgUp/PgDn "
+                 : Hobbit::keysMode == Hobbit::KEYS_ALL  ? " Hobbit keys: + F1-F8, Ins/Del/Home/End/PgDn "
                                                          : " Hobbit keys: OFF (ZX combos) ", LEVEL_INFO, 1200);
             return;
         }
