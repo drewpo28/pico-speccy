@@ -91,7 +91,7 @@ if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 $WTargets = @("MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
-$Only16Targets = @("ZERO2")
+$Only16Targets = @()   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
 
 # Build list of (target, display) pairs, then expand each into its flash types
 $BasePairs = @()

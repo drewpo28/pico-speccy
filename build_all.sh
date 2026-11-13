@@ -121,7 +121,7 @@ FLASH_TYPES="${FLASH_TYPES:-4 16}"
 W_TARGETS="MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
-ONLY16_TARGETS="ZERO2"
+ONLY16_TARGETS=""   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
 
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
