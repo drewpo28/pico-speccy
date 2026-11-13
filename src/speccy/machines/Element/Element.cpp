@@ -72,8 +72,12 @@ static void divsdWanted(uint8_t e001, const char* who);
 // here, so the upper 64 pages sit in ram[96..127], which only divRAM would take.
 static void protectPool(uint32_t* base, uint32_t* n) {
     const uint8_t p = s_r->e[0x000];
-    if (p == 8)      { *n = fullPages();          *base = 0; }   // the Reference: "no Protect mode" on the 4096, the whole URAM
-    else if (p == 7) { *n = aasram() ? 256 : 64;  *base = aasram() ? 256 : 128; }
+    // The Reference: "no Protect mode" on the 4096, the whole URAM - but numbered from the
+    // same first page as the other personalities (poolIndex wraps): HGFXZOOM unpacks its
+    // picture into pages 0-5 and only THEN writes e_zxi_000 = 05; started on 08 with the
+    // pool at 0 it then read pages nobody wrote (stripes for the fox, hw 2026-11-13).
+    if (p == 8)      { *n = fullPages();          *base = 128; }
+    else if (p == 7) { *n = aasram() ? 256 : 64;  *base = 128; }   // base 256 with AA-SRAM until 2026-11-13: the same fault from an 07 start
     else             { *n = aasram() ? 384 : 128; *base = 128; }
 }
 static uint32_t protectPages() { uint32_t b, n; protectPool(&b, &n); return n; }
@@ -124,11 +128,14 @@ static void framCount(uint16_t off) {
     f[off] = (uint8_t)v; f[off + 1] = (uint8_t)(v >> 8); f[off + 2] = (uint8_t)(v >> 16); f[off + 3] = (uint8_t)(v >> 24);
     ElmFlash::framDirty();
 }
-static uint16_t s_slotPage[8];        // HGFX Area: its 8K step in the Zone
+uint16_t slotPage[8];                 // HGFX Area: its 8K step in the Zone
 uint8_t* wrKind;
+static const uint8_t s_vramHi0 = 0x40;
+const uint8_t* vramHi = &s_vramHi0;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
 enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC, W_FLASH, W_FRAM };
+static_assert(W_CHUNKY == WK_CHUNKY && W_VRAM == WK_VRAM, "Element.h WK_*");
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void readHookUpdate();
@@ -243,11 +250,31 @@ void busWrite(uint16_t a, uint8_t v) {
 // Here a piece stays inside one 256-byte page at both ends, so the page kinds hold;
 // the latch ends disarmed, as the last write of the per-byte path leaves it.
 uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
-    if (!g_elm_vram_rd || !s_r || !Hgfx::reg(Hgfx::REG_MASK)) return 0;
+    if (!s_r || !Hgfx::reg(Hgfx::REG_MASK)) return 0;
     uint32_t c = n;
     if (c > 0x100u - (src & 0xFF)) c = 0x100u - (src & 0xFF);
     if (c > 0x100u - (dst & 0xFF)) c = 0x100u - (dst & 0xFF);
-    if (s_r->win[src >> 8] != W_VRAM || s_r->win[dst >> 8] != W_VRAM) return 0;
+    const uint8_t sk = s_r->win[src >> 8];
+    if (s_r->win[dst >> 8] != W_VRAM) return 0;
+    if (!g_elm_vram_rd) {
+        // Outside COPY mode the window takes plain bytes: HGFXCUBE clears its 6144 bytes
+        // every frame with #E000 -> #E001. Read and store a byte at a time (the overlap
+        // replicates), the HGFX side gets the piece as one byte run.
+        if (sk != W_NONE && sk != W_VRAM) return 0;
+        const uint32_t left = CPU::tstates < CPU::statesInFrame ? (CPU::statesInFrame - CPU::tstates) / (cycles ? cycles : 1) + 1 : 1;
+        if (c > left) c = left;
+        if ((src < 0x4000 || dst < 0x4000) && MemESP::divmmc_mapped) return 0;
+        uint8_t buf[256];
+        for (uint32_t k = 0; k < c; k++) {
+            buf[k] = MemESP::readbyte((uint16_t)(src + k));
+            MemESP::writebyte((uint16_t)(dst + k), buf[k]);
+        }
+        Hgfx::writeVramRun((uint16_t)(dst - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
+        uint32_t t = c * cycles;
+        while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
+        return c;
+    }
+    if (sk != W_VRAM) return 0;
     // Not past the frame's end: the caller closes the frame between pieces.
     const uint32_t left = CPU::tstates < CPU::statesInFrame ? (CPU::statesInFrame - CPU::tstates) / (cycles ? cycles : 1) + 1 : 1;
     if (c > left) c = left;
@@ -327,7 +354,7 @@ static void fdmaRun(int set, bool wide24) {
             else if (suram) { if (sp) memcpy(buf, sp, c); else memset(buf, 0xFF, c); }
             else for (uint32_t k = 0; k < c; k++) buf[k] = MemESP::readbyte((uint16_t)(sa + k));
             if (duram) { if (dp) memcpy(dp, buf, c); }
-            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(s_slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), buf, c);
+            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), buf, c);
             else {
                 if (kind == W_VRAM) Hgfx::writeVramRun((uint16_t)(da - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
                 for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(da + k), buf[k]);   // under the window too
@@ -383,7 +410,7 @@ static void lcu2Publish() {
 
 static uint32_t poolIndex(uint16_t page) {   // Protect: the pool wraps like the board's page decode
     uint32_t b, n; protectPool(&b, &n);
-    return b + ((n & (n - 1)) ? page % n : (page & (n - 1)));
+    return (b + ((n & (n - 1)) ? page % n : (page & (n - 1)))) & (fullPages() - 1);
 }
 static uint8_t* uramPtr(uint16_t page) {
     const uint8_t mode = uramMode();
@@ -514,7 +541,7 @@ void remap() {
                        : isFl ? (ElmFlash::ensure() ? ElmFlash::page(s_r->e[0x00F], s_z[z].page[a]) : nullptr)
                        : isFr ? (ElmFlash::ensure() ? ElmFlash::fram() : nullptr)
                        : uramPtr(s_z[z].page[a]);
-            if (isHg) { hg |= 1u << slot; s_slotPage[slot] = hgStep; }
+            if (isHg) { hg |= 1u << slot; slotPage[slot] = hgStep; }
             if (!p) { wp |= 1u << slot; p = (uint8_t*)MemESP::ram[0].direct(); }
             MemESP::ramCurrent[slot] = p;
             mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
@@ -577,7 +604,7 @@ void nmiTaken(uint16_t pc) {
     s_r->g[0x082] = (uint8_t)(pc >> 8);
 }
 
-bool memWrite(uint16_t a, uint8_t v) {
+bool memWriteCold(uint16_t a, uint8_t v) {
     // A write elsewhere (a CALL's return address, a PUSH) leaves the latch armed: clearing
     // it there turned HE2025's sprite blits into ATTR dots on hardware (2026-11-02).
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
@@ -659,7 +686,7 @@ bool memWrite(uint16_t a, uint8_t v) {
         lcu2Publish();
         return true;
     case W_CHUNKY:
-        Hgfx::chunkyWrite(s_slotPage[a >> 13] * 0x2000u + (a & 0x1FFF), v);
+        Hgfx::chunkyWrite(slotPage[a >> 13] * 0x2000u + (a & 0x1FFF), v);
         return true;
     }
     return false;
@@ -920,7 +947,7 @@ void bootSettings() {
     divsdWanted(e[0x001], "FRAM e_zxi_001");
     s_dmaBoot = Config::dma_mode != 0;
     s_zifiBoot = Config::zifi_enabled != 0;
-    Debug::log("[ELM] URAM %u MB (%s)", (unsigned)(MEM_PG_CNT / 64), aasram() ? "AA-SRAM" : "no AA-SRAM");
+    Debug::log("[ELM] URAM %u MB (%s), personality %02X at power-up", (unsigned)(MEM_PG_CNT / 64), aasram() ? "AA-SRAM" : "no AA-SRAM", e[0x000]);
 }
 
 // e_zxi_038 bit 0 = the AA-SRAM 2 MB pack: the page strip is laid out at boot, so the
@@ -1019,6 +1046,7 @@ void reset() {
     if (s_powered) memcpy(s_keep, s_r->e, sizeof s_keep);
     memset(s_r, 0, sizeof(Regs));
     wrKind = s_r->win;
+    vramHi = &s_r->g[0x021];
     // Memory-register windows at their documented defaults.
     s_zone = 0;
     memset(s_z, 0, sizeof(s_z));

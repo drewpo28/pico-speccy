@@ -56,6 +56,10 @@ void armPersonality();
 void cpuFlags();
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
+bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM)
+enum { WK_VRAM = 1, WK_CHUNKY = 6 };         // wrKind of the HGFX VRAM / chunky windows
+extern const uint8_t* vramHi;                 // g_zxi_021: the VRAM window's high address byte
+extern uint16_t slotPage[8];                  // chunky window: its 8K step per slot
 void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY
 extern volatile uint8_t g_elm_vram_rd;        // non-zero while memRead is wanted (COPY mode)
 bool fastReadOk();                            // the fast read path may bypass memRead

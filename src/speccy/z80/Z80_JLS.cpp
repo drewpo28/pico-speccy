@@ -1610,8 +1610,10 @@ IRAM_ATTR void Z80::execute() {
 // so the shared loop carries on from the very next instruction.
 IRAM_ATTR __attribute__((noinline, optimize("O2"))) void Z80::exec_nocheck_ts() {
     while (CPU::tstates < CPU::stFrame) {
-        if (__builtin_expect(g_ts_fastmem != 2, 0)) return;
         const uint16_t pc = REG_PC;
+        // Level 2 serves every address, level 1 (Next without its own loop, eLeMeNt
+        // HGFX) only 0x4000+: below it the shared loop takes the instruction.
+        if (__builtin_expect(!(g_ts_fastmem > tsFastLo8(pc)), 0)) return;
         tsFastTick(4);
         if (__builtin_expect(g_ts_memcyc != 0, 0) && !tsMemNoDram(pc)) tsFastTick(TsConf::cpuMemMiss(pc, true));   // DRAM model: a cache miss
         opCode = MemESP::ramCurrent[pc >> 13][pc & 0x1fff];
@@ -1743,9 +1745,13 @@ IRAM_ATTR void Z80::exec_nocheck() {
         }
         // Whole-address fast path (TS-Conf / ATM / 16col): its own loop. Not with
         // DivMMC (its automap is decided per fetch) or a PC breakpoint.
-        if (g_ts_fastmem == 2 && nbp <= 0 && !divmmc) {
+        // Level 1 (0x4000+ only: eLeMeNt HGFX, the Next while its own loop is off)
+        // runs there too while the PC is above the divMMC / ROM windows: the shared
+        // loop below cost HGFXZOOM ~45 ARM instructions of fetch per Z80 instruction
+        // (PC profile 2026-11-13: 47% of core0 in this function).
+        if (nbp <= 0 && (g_ts_fastmem == 2 ? !divmmc : g_ts_fastmem > tsFastLo8(REG_PC))) {
             exec_nocheck_ts();
-            if (g_ts_fastmem == 2) continue;   // slice ended (the while test exits)
+            if (g_ts_fastmem == 2 || CPU::tstates >= CPU::stFrame) continue;   // slice ended (the while test exits)
         }
 #endif
 

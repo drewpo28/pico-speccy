@@ -3,6 +3,7 @@
 // renderers split the work; nothing reads the pixels back but the chunky windows, which
 // take the direct path (docs/element-zx-plan.md).
 #include "speccy/machines/Element/ElmHgfx.h"
+#include "speccy/machines/Element/Element.h"
 #include <string.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -18,6 +19,9 @@
 volatile bool g_elm_c1_live;
 size_t getFreeHeap(void);
 
+#if PERF_HIST
+void pcprof_dump();
+#endif
 namespace Hgfx {
 
 uint8_t mode, g20;
@@ -614,7 +618,9 @@ uint8_t* chunkyRead(uint32_t off) {
     return s_buf ? srcBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1)) : nullptr;
 }
 
-void chunkyWrite(uint32_t off, uint8_t v) {
+// Out of the flash: a Z80 loop that stores a pixel at a time (HGFXZOOM's rotating fox,
+// LD (HL),A per pixel) came here through two flash calls a byte.
+ELM_HOT void chunkyWrite(uint32_t off, uint8_t v) {
     if (!s_buf) return;
     s_fbDirty = true;
     if ((s_r[REG_VP] & 0x10) && !v) return;
@@ -1230,6 +1236,9 @@ void frameEnd() {
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
                    s_pDraws ? s_pDrawUs / s_pDraws : 0, s_pDraws, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1]);
+#if PERF_HIST
+        ::pcprof_dump();   // core0 PC sampler (PcProf.cpp): only the Next and the EP dumped it
+#endif
         s_pPush = s_pWaitUs = s_pDrop = 0;
         s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = s_pCmdUs = 0;
     }
@@ -1335,4 +1344,28 @@ ELM_HOT void core1Pump() {
 }
 void paletteLost() { s_palDirty = true; s_palAll = true; }
 
+}
+
+// The CPU's write hook (CPU.cpp, a window with a kind): the chunky window is taken here,
+// in RAM; every other kind is Element.cpp's memWriteCold in flash.
+namespace Elm {
+ELM_HOT bool memWrite(uint16_t a, uint8_t v) {
+    const uint8_t k = wrKind[a >> 8];
+    if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
+    if (k == WK_CHUNKY) {
+        Hgfx::chunkyWrite(slotPage[a >> 13] * 0x2000u + (a & 0x1FFF), v);
+        return true;
+    }
+    // The VRAM window outside COPY mode (no read latch to consult): HGFXCUBE fills its
+    // faces a byte at a time. The store lands in RAM too (false).
+    if (k == WK_VRAM && !g_elm_vram_rd && Hgfx::s_r[Hgfx::REG_MASK]) {
+#if HOST_BUILD
+        static const bool vlog = getenv("PICOSPECCY_ELMVLOG") != nullptr;
+        if (vlog) return memWriteCold(a, v);
+#endif
+        Hgfx::writeVram((uint16_t)(a - ((uint16_t)*vramHi << 8)), v, false, 0xFFFF);
+        return false;
+    }
+    return memWriteCold(a, v);
+}
 }

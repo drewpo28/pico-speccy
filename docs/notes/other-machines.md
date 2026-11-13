@@ -749,6 +749,51 @@ CMD 2 (clear, mask 1F) every frame: 20.7k VRAM bytes a frame. What was wrong and
   PSRAM clear and the draw's PSRAM reads of empty cells), `renderFrame`'s HGFX 1 loop into RAM, a Next-style render
   skip when core0 waited for core1 (never two frames in a row).
 
+**HGFX perf round 4: HGFXZOOM (HGFXDEM2) and HGFXCUBE (2026-11-13, bench pictures + `PICOSPECCY_ELM_CHECK` 0 bad; zoom1 on hw: owner "местами не дотягивает до 50 фпс", HGFXCUBE the same; speed hw-confirmed DVp2w 2026-11-13 on zoom3; zoom5 = + the Protect pool base fix, hw-confirmed DVp2w 2026-11-13 (owner: "работает, комить"; AWORLD / TS-Conf / Next not itemised), `debug/DVp2w-elm-zoom5-1.1.2` + `-prof-` = PERF_TRACE + PERF_HIST PC sampler).**
+The rotating fox stores a pixel at a time at 14 MHz (asks 20): `LD A,(HL)` from a page under #4000, `EXX`,
+`LD (HL),A` into the chunky window at #20xx, OffsetY written once per row (hot loop #9E18-#9E24, ~4700 pixels an
+emulated frame). Every store went `poke8_generic` (RAM) -> `Elm::memWrite` (flash, the whole window switch) ->
+`Hgfx::chunkyWrite` (flash), and those two flash functions share the XIP cache with the PSRAM bytes they touch.
+- `Elm::memWrite` is now a RAM front in ElmHgfx.cpp (`.dmaovl`): the chunky kind (`WK_CHUNKY`, `Elm::slotPage`) calls
+  `Hgfx::chunkyWrite` (also in the overlay), every other kind goes on to `Elm::memWriteCold` (the old body, flash).
+  Overlay content 5960 -> 6128 B (zoom1, the build the owner ran).
+- zoom2, HGFXCUBE: every frame it clears the 6144-byte VRAM window with a Z80 DMA #E000 -> #E001 outside COPY mode
+  (per byte: `Elm::busWrite` flash -> `memWriteCold` flash -> `writeVram`) and fills its faces with ~1400 CPU stores
+  into the window (the same flash switch). `Elm::dmaCopy` now also takes a plain piece (dst = VRAM window, src plain
+  RAM or the window, not COPY): bytes read and stored one at a time so the overlap replicates, the HGFX side gets
+  `writeVramRun`. The RAM front of `memWrite` takes the VRAM window too when the COPY latch is off (`WK_VRAM`,
+  `Elm::vramHi`). Overlay content 6184 B, AUTO window 6144 -> 6400 (PERF 6912): +256 B SRAM.
+- hw logs 2026-11-13 (zoom2-prof, 504 MHz, personality 05 = Pentagon raster, so the full rate is 48.83 Hz, not 50):
+  HGFXCUBE cpu 13-14 ms (max ~20.7 once a second, the same spike shows idle: the log itself), realFPS 47.6-48.5 = at
+  speed. HGFXZOOM cpu 20.9-21.3 ms, realFPS 45.1-45.7. PC profile of ZOOM (the sampler now dumps from the `[HGFX] 60f`
+  line too): `Z80::exec_nocheck` 47%, the decode handlers ~15%, `peek8_generic` 4.6%, `poke8_generic` 2.4%,
+  `chunkyWrite` 2.4%, `Elm::memWrite` 0.7% - the memory hooks were NOT the cost, the shared fetch loop was (~45 ARM
+  instructions a Z80 instruction; eLeMeNt is level 1 with divSD on, so it never reached `exec_nocheck_ts`).
+- zoom3 (hw: speed confirmed, TS-Conf / ATM / Next NOT re-run): `exec_nocheck_ts` serves level 1 too while the PC is at #4000+ (it returns to the shared
+  loop for an instruction below; `exec_nocheck` enters it for level 1 with any divMMC state). Shared code: TS-Conf /
+  ATM / 16col keep the same test order, a Next without `g_next_fastrd` now also runs there. RAM +36 B.
+- zoom3 on hw (owner 2026-11-13): "сейчас по скорости отлично" for CUBE and ZOOM (no numbers). Two faults in that
+  session: (1) ZOOM after a cold start drew stripes with noise instead of the fox, fine after F11; (2) CUBE once
+  started with a green paper, not repeated, cause NOT found.
+- (1) is not a perf regression: the board had booted on personality 08 (left from AWORLD). ZOOM's loader unpacks the
+  picture into Protect-pool pages 0-5 and only then HGFZOOM4 writes e_zxi_000 = 05, which moved the pool from base 0
+  (08: "no Protect mode", the whole URAM) to base 128: the demo read pages nobody wrote. The write also reached the
+  FRAM, so after F11 the machine was an 05 and the two agreed. Reproduced on the bench (FRAM byte 0 = 08 + AA-SRAM).
+  Fix (zoom4, bench only, NOT hw-tested): on 08 the pool is still the whole URAM but numbered from page 128 like the
+  others (`protectPool` base 128, `poolIndex` wraps at fullPages). AWORLD on 08 + AA-SRAM still reaches its intro on
+  the bench (it writes e_zxi_000 = 06 itself).
+- zoom4 on hw: the same stripes after power-up. The board does not power up on 08 but (very likely) on 07: with
+  AA-SRAM the 07 pool sat at base 256 against 128 for the rest, the same fault from another start. Reproduced on the
+  bench (FRAM 07 + AA-SRAM gives the owner's picture exactly, the "DRAM power-on pattern" of untouched pages). zoom5
+  (hw-confirmed DVp2w 2026-11-13): every personality's pool starts at page 128; the boot line now prints the power-up
+  personality (`[ELM] URAM .. MB (..), personality NN at power-up`).
+- The idle-loop skip (NextIdle) is Next-only; these demos wait on an HGFX status port poll (`IN A,(C)` / `AND 1` /
+  `JR NZ`), which it would not match anyway. Not the limit in either log.
+- A PERF_HIST build needs `-DNXOVL_WIN_SIZE=57344` (the sampler does not fit the AUTO 51840; the linker's hint of
+  32768 is stale).
+- The read side (`peek8_generic`) is RAM all the way; level 2 fast reads (below #4000) are the Next's and are tied to
+  its divMMC plug, not taken. Bench tape: scratch `mkzoom.py` (BASIC loop with `LOAD ""CODE` + the five HGFZOOMn.COD).
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

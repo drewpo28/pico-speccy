@@ -307,9 +307,11 @@ if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
     # veneers, several per guest byte) + the packed byte runs: content 5 696 B,
     # PERF_TRACE ~5 870. +240 B the same day (the Z80 DMA loop hands eLeMeNt COPY
     # pieces to Elm::dmaCopy): content 5 936 B; the PERF counters no longer fit 6144.
-    set(DMAOVL_WIN_SIZE_EFFECTIVE 6144)
+    # 6144 -> 6400 the same day: Elm::memWrite's RAM front (chunky and VRAM windows) +
+    # Hgfx::chunkyWrite, content 6 184 B (PERF_TRACE ~6 420).
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 6400)
     if (PERF_TRACE)
-        set(DMAOVL_WIN_SIZE_EFFECTIVE 6656)
+        set(DMAOVL_WIN_SIZE_EFFECTIVE 6912)
     endif()
 else()
     set(DMAOVL_WIN_SIZE_EFFECTIVE ${DMAOVL_WIN_SIZE})
