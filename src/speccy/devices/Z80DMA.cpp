@@ -1150,6 +1150,14 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
     while (byte_counter > 0 && transfer_active) {
         transfer_started = true;
 
+        // eLeMeNt ZX: an HGFX COPY inside the VRAM window goes as a run (Elm::dmaCopy).
+        uint32_t done = 0;
+        if (__builtin_expect(Z80Ops::isElm, 0) && !port_a_is_io && !port_b_is_io && port_a_inc == 1 && port_b_inc == 1)
+            done = Elm::dmaCopy(transfer_dir ? cur_port_a : cur_port_b, transfer_dir ? cur_port_b : cur_port_a,
+                                byte_counter, port_a_cycles + port_b_cycles);
+        if (done) {
+            cur_port_a += done; cur_port_b += done; byte_counter -= done;
+        } else {
         uint8_t val;
         // Memory cycles deliberately take NO ULA contention (`false`): a 2+2-cycle
         // DMA writing contended RAM would phase-lock onto the 48K/128K wait pattern
@@ -1176,6 +1184,7 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
         cur_port_a += port_a_inc;
         cur_port_b += port_b_inc;
         byte_counter--;
+        }
 
         // Handle frame boundary mid-transfer
         if (CPU::tstates >= CPU::statesInFrame) {

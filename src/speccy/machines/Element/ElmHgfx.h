@@ -15,10 +15,10 @@ enum { WIDTH = 256, HEIGHT = 192, BUF1 = 0x10000, BUF_SIZE = 0x20000, COLOURS = 
 enum { HRXC_TABLE = 0x3C00, HRXC_BYTES = 96 };   // HRXC: 32 colours at #7C00 of the screen
 
 // The bit-level rules, firmware-free for tools/elm_hgfx_test.cpp.
-static inline uint8_t planar(uint8_t oldPix, uint8_t newPix, uint8_t mask) {
+__attribute__((always_inline)) static inline uint8_t planar(uint8_t oldPix, uint8_t newPix, uint8_t mask) {
     return (uint8_t)((oldPix & ~mask) | (newPix & mask));
 }
-static inline uint8_t zxRow(uint16_t off) {     // offset in a 6144-byte ZX layout -> y
+__attribute__((always_inline)) static inline uint8_t zxRow(uint16_t off) {     // offset in a 6144-byte ZX layout -> y
     return (uint8_t)(((off >> 11) << 6) | (((off >> 5) & 7) << 3) | ((off >> 8) & 7));
 }
 
@@ -42,12 +42,15 @@ void    loadState(const uint8_t* regs, const uint8_t* colours);   // at a mode s
 // src: the window offset the Z80 READ before this write (COPY takes its pixels from
 // there), 0xFFFF = the write's own offset.
 void    writeVram(uint16_t off, uint8_t v, bool wasRead = true, uint16_t src = 0xFFFF);
+void    writeVramRun(uint16_t off, const uint8_t* p, uint32_t n);   // plain bytes in a row (FastDMA)
+void    copyRun(uint16_t off, uint16_t src, uint32_t n);   // n COPY writes in a row, each read at src + i
 void    writeReg(uint8_t reg, uint8_t v);
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F
 uint8_t reg(uint8_t r);
 uint8_t* chunkyRead(uint32_t off);
 void    chunkyWrite(uint32_t off, uint8_t v);
+void    chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n);   // n chunkyWrite calls in a row
 void    drain();              // core0: wait until core1 has run everything queued
 void    direct(bool on);      // chunky windows mapped: no queue, the guest reads the pixels
 void    core1Pump();          // core1 loop, while g_elm_c1_live

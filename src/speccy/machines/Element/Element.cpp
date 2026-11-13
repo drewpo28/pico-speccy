@@ -238,6 +238,29 @@ void busWrite(uint16_t a, uint8_t v) {
     if (s_r && s_r->win[a >> 8] && memWrite(a, v)) return;
     MemESP::writebyte(a, v);
 }
+// HGFXAGON copies ~7000 bytes of the window a frame by Z80 DMA in COPY mode: per byte
+// that was busRead + busWrite + memWrite, three flash calls from the RAM byte loop.
+// Here a piece stays inside one 256-byte page at both ends, so the page kinds hold;
+// the latch ends disarmed, as the last write of the per-byte path leaves it.
+uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
+    if (!g_elm_vram_rd || !s_r || !Hgfx::reg(Hgfx::REG_MASK)) return 0;
+    uint32_t c = n;
+    if (c > 0x100u - (src & 0xFF)) c = 0x100u - (src & 0xFF);
+    if (c > 0x100u - (dst & 0xFF)) c = 0x100u - (dst & 0xFF);
+    if (s_r->win[src >> 8] != W_VRAM || s_r->win[dst >> 8] != W_VRAM) return 0;
+    // Not past the frame's end: the caller closes the frame between pieces.
+    const uint32_t left = CPU::tstates < CPU::statesInFrame ? (CPU::statesInFrame - CPU::tstates) / (cycles ? cycles : 1) + 1 : 1;
+    if (c > left) c = left;
+    if ((src < 0x4000 || dst < 0x4000) && MemESP::divmmc_mapped) return 0;
+    const uint16_t base = (uint16_t)s_r->g[0x021] << 8;
+    Hgfx::copyRun((uint16_t)(dst - base), (uint16_t)(src - base), c);
+    // The stores land in RAM too, byte by byte: an overlapping copy replicates.
+    for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(dst + k), MemESP::readbyte((uint16_t)(src + k)));
+    s_rdArmed = false;
+    uint32_t t = c * cycles;
+    while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
+    return c;
+}
 static void fdWrite(uint32_t a, bool uram, uint8_t v) {
     if (uram) { uint8_t* p = uramByte(a); if (p) *p = v; return; }
     busWrite((uint16_t)a, v);
@@ -265,7 +288,57 @@ static void fdmaRun(int set, bool wide24) {
         Debug::log("[FDMA] par=%02X/%02X len=%X s=%X d=%X sb=%X ss=%X db=%X ds=%X fv=%02X hreg vp=%02X oy=%d", par, par2, len, s, d, sbatch, sskip, dbatch, dskip, fv, Hgfx::reg(0), Hgfx::reg(7) | Hgfx::reg(8) << 8);
 #endif
     uint32_t sn = 0, dn = 0;
-    for (uint32_t i = 0; i < len; i++) {
+    // The plain transfer (no floating step, upwards) goes in pieces that stay inside one
+    // batch and, at both ends, one 256-byte page of the Z80 space or one 8K page of the
+    // URAM, so what a piece reads and where it lands is decided once. FDMATEST: 20.7k
+    // bytes a frame into the VRAM window; Another World: 128k bytes a game frame, URAM ->
+    // URAM and URAM -> the HGFX 7 chunky window, which the per-byte dispatcher below
+    // (uramPtr, busWrite, memWrite, chunkyWrite for every byte) ran at 15-20 FPS.
+    const bool plain = !sfl && !dfl && !down;
+    for (uint32_t i = 0; plain && i < len; ) {
+        const uint32_t sa = s & amask, da = d & amask;
+        uint8_t buf[256];
+        uint32_t c = len - i;
+        if (c > sizeof buf) c = sizeof buf;
+        if (c > sbatch - sn) c = sbatch - sn;
+        if (c > dbatch - dn) c = dbatch - dn;
+        const uint32_t droom = duram ? 0x2000u - (da & 0x1FFF) : 0x100u - (da & 0xFF);
+        if (c > droom) c = droom;
+        if (!fill) {
+            const uint32_t sroom = suram ? 0x2000u - (sa & 0x1FFF) : 0x100u - (sa & 0xFF);
+            if (c > sroom) c = sroom;
+        }
+        // Where the bytes come from and go to in host memory, for the overlap test: a
+        // destination that starts inside the source replicates, byte by byte.
+        const uint8_t* sp = fill ? nullptr : suram ? uramByte(sa) : MemESP::ramCurrent[(sa >> 13) & 7] + (sa & 0x1FFF);
+        uint8_t* dp = duram ? uramByte(da) : MemESP::ramCurrent[(da >> 13) & 7] + (da & 0x1FFF);
+        const uint8_t kind = duram ? W_NONE : s_r->win[(da >> 8) & 0xFF];
+        bool fast = fill || suram || !g_elm_vram_rd;                  // a COPY read latch is per byte
+        if (!fill && !suram && sa < 0x4000 && MemESP::divmmc_mapped) fast = false;
+        if (sp && dp && dp > sp && dp < sp + c) fast = false;
+        if (!duram) {
+            if (da < 0x4000 && (MemESP::divmmc_mapped || kind == W_NONE)) fast = false;   // ROM, divMMC: the generic rules
+            if (kind == W_VRAM) { if (!Hgfx::reg(Hgfx::REG_MASK) || g_elm_vram_rd) fast = false; }
+            else if (kind == W_CHUNKY) { if (!fill && !suram && ((s_hgfxSlots >> ((sa >> 13) & 7)) & 1)) fast = false; }
+            else if (kind != W_NONE) fast = false;
+        }
+        if (fast) {
+            if (fill) memset(buf, fv, c);
+            else if (suram) { if (sp) memcpy(buf, sp, c); else memset(buf, 0xFF, c); }
+            else for (uint32_t k = 0; k < c; k++) buf[k] = MemESP::readbyte((uint16_t)(sa + k));
+            if (duram) { if (dp) memcpy(dp, buf, c); }
+            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(s_slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), buf, c);
+            else {
+                if (kind == W_VRAM) Hgfx::writeVramRun((uint16_t)(da - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
+                for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(da + k), buf[k]);   // under the window too
+            }
+        } else for (uint32_t k = 0; k < c; k++)
+            fdWrite((da + k) & amask, duram, fill ? fv : fdRead((sa + k) & amask, suram));
+        s += c; d += c; i += c;
+        if ((sn += c) == sbatch) { sn = 0; s += sskip; }
+        if ((dn += c) == dbatch) { dn = 0; d += dskip; }
+    }
+    for (uint32_t i = 0; !plain && i < len; i++) {
         const uint8_t b = fill ? fv : fdRead((sfl ? s >> 8 : s) & amask, suram);
         fdWrite((dfl ? d >> 8 : d) & amask, duram, b);
         if (sfl) s = down ? s - sskip : s + sskip;

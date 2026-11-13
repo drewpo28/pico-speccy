@@ -695,6 +695,60 @@ reboot-class: `Elm::rebootWanted()` makes the SetUp restart `esp_hard_reset` lik
 pages) reaches its menu on the bench with the pack. ZC on a second card partition: done 2026-11-03 (above).
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
+**HGFX perf round 1: FDMATEST (2026-11-13, bench self-checked; hw-confirmed DVp2w the same day on `debug/DVp2w-elm-fdma1-1.1.2`, owner: "FDMATEST - отлично", no numbers given).**
+Start on DVp2w (owner): 35 FPS, IDL -5..-6k. The demo draws 12 sprites a frame in HGFX 1, each as 6 FastDMA
+transfers of 288 bytes (mask + 5 bitplanes, 6 bytes a row, INK mode through PlanarMask), double-buffered (VP 06 / 01),
+CMD 2 (clear, mask 1F) every frame: 20.7k VRAM bytes a frame. What was wrong and what changed:
+- **The hot helpers were FLASH calls.** At -Os `e16`, `rowOf`, `zxRow`, `put8` stayed out of line, so the RAM-resident
+  `execVram` / `execRun` reached them through veneers several times per guest byte (objdump of the 2026-11-05 ELF).
+  Now `ELM_INL` (always_inline); only the slow per-pixel path (`pxGet`, `pxPlanar`, `inWindow`) still calls flash.
+  `.dmaovl` content 4008 -> 5696 B (PERF 5928), AUTO window 5120 -> 6144: 1 KB less heap where the window is
+  loaded (eLeMeNt, DMA card / MB-02+ machines).
+- **Packed byte runs** (`Q_BYTES`, `byteAppend` / `execBytes`): consecutive plain writes (INK / ATTR) are one queue
+  entry, header + bytes four to a word, up to 32; a single byte stays a `Q_VRAM` word. 20.7k entries overflowed the
+  16k queue every frame (core0 spinning on core1); now ~3.5k entries, and core1 does the row geometry once per row chunk.
+- **FastDMA plain pieces** (`fdmaRun`): no floating step, upwards, Z80 space -> pieces inside one batch and one 256-byte
+  page at both ends; a piece into the VRAM window (not COPY, mask != 0, not under the divMMC, source and
+  destination apart) goes to `Hgfx::writeVramRun` whole. Everything else keeps the per-byte dispatcher.
+- **CMD 1 / 2 by words**; CLEAR does not store a word that is already clear (its PSRAM line stays clean, no write-back).
+- **ZX layer under HGFX**: `zxLine` two word stores a cell (the `nib` table), the mix copies four ZX pixels at once
+  where the four HGFX pixels are index 0.
+- Bench: `PICOSPECCY_ELM_CHECK=1` runs every byte run through `execBytes` AND the per-byte `execVram` and compares the
+  buffer (`[ELMCHK]`): 0 mismatches over ~4 M runs (FDMATEST, HE2025, HGFXCUBE, HGFXSPRI). The bench itself is NOT
+  frame-deterministic on HGFX programs (base vs base differs), so frame diffs prove nothing there.
+- PERF line: `[HGFX] 60f: ... c1 engine N us/fr (entries, cmd N us)`; `cmd` is new (the CLEAR / COPY_ALL cost).
+- **Round 2, HGFXAGON (same day; hw-confirmed DVp2w 2026-11-13 on `debug/DVp2w-elm-hgfx2-1.1.2`, owner: "да, отлично", no numbers given).** The demo is
+  a parallax scroll: per frame CMD 1 (COPY_ALL 0 -> 1), CMD 2 (mask 70), ~6900 bytes of COPY by Z80 DMA inside the
+  window (pc 824C, three blocks), ~850 single writes each after an OffsetY write. Owner: slow before round 1 too, and
+  the hw log shows buffer 0 in SRAM (`6 of 6 blocks`), so not the heap this time (the 13:54 log of an older build, after
+  a NeoGS browser session, did show `5 of 6 blocks, heap free 61480`: the promote needs 6 x 8 KB + 16 KB). Two core0 costs
+  found: (1) in COPY mode the WHOLE fast memory path was off (`[TSF] fast memory path off`), although only reads need
+  the latch hook; now `tsFastRdFor` takes just the read level to 0 on the eLeMeNt and fetch + writes stay at level 1.
+  (2) every DMA byte was `busRead` + `busWrite` + `memWrite`, flash calls from the RAM loop; now `Elm::dmaCopy`
+  (window -> window, both ends +1, COPY on, mask != 0) hands pieces of up to a page to `Hgfx::copyRun`, charges the
+  time and stops at the frame end. `.dmaovl` content 5936 B (PERF 6168: the AUTO window is 6656 under PERF_TRACE).
+  core1 on this demo is at the PSRAM floor for the displayed buffer (COPY_ALL writes 48 KB into it, the draw reads it
+  back): if the PERF line says core1 is still the limit, that buffer is the lever, not the code.
+- **Round 3, Another World (AWORLD.APP; same day; hw-confirmed DVp2w 2026-11-13 on the same `hgfx2` ELF, owner: "да, отлично").** Owner: 15-20 FPS.
+  The player runs at 14 MHz in HGFX 7 (mode 9, 360x288, 8 bpp, one buffer, chunky window) and shows a new picture every
+  third frame; each one is 128k bytes of 24-bit FastDMA: one URAM -> URAM block of #FA00 (the 320x200 work buffer) and
+  five blocks URAM -> the chunky window (batch #140, skip #28). All of it went through the per-byte dispatcher
+  (`uramPtr` with its pool modulo, `busWrite`, `memWrite`, `chunkyWrite` per byte). Now `fdmaRun`'s piece path covers
+  every plain transfer (no floating step, upwards): a piece of up to 256 bytes inside one batch and one page at both
+  ends (256 B of the Z80 space, 8K of the URAM) is read into a stack buffer and stored at once: `memcpy` into the
+  URAM, `Hgfx::chunkyWriteRun`, `writeVramRun`, or `MemESP::writebyte` for plain RAM at #4000+. A destination that
+  starts inside the source (the replicating copy), the COPY read latch, ROM / divMMC below #4000 and every other
+  window kind keep the per-byte path. **Clean-frame skip** (`s_fbDirty`, `frameEnd`): where the picture is HGFX alone
+  (360/720-wide modes, or g_zxi_020 bit 2 = no ZX under; no HAM, no pair frame) a frame with no write to the buffers,
+  registers or colours is not posted to core1; every tenth is drawn anyway. The 360-wide draw reads 8 bpp directly.
+- Bench recipe for AWORLD: copy AWORLD.APP/.BAS/.COD to the card root, BAS + COD -> TAP as usual, FRAM
+  (`<root>/pico-speccy/roms/element/fram.bin`, offset = register number) byte 0 = 08 (Pentagon 4096) and byte #38 |= 1
+  (AA-SRAM), `elm_aasram=true` in the nvs; keys `2500:Space,3200:Return,4000:Space,4600:Return` reach the intro.
+  Put the FRAM back afterwards: the other test tapes expect personality 07.
+- Next levers if the PERF log still shows core1 over 20 ms: a per-row "cells that may be non-zero" bitmap (skip the
+  PSRAM clear and the draw's PSRAM reads of empty cells), `renderFrame`'s HGFX 1 loop into RAM, a Next-style render
+  skip when core0 waited for core1 (never two frames in a row).
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

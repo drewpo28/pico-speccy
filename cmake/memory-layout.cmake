@@ -302,7 +302,15 @@ endif()
 # a Next boot gets it back as base heap instead of a sub-4 KB island between two
 # resident windows; TS-Conf + VDAC2 and the DMA card exclude each other for it.
 if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
-    set(DMAOVL_WIN_SIZE_EFFECTIVE 5120)   # classic loop 3 272 measured + eLeMeNt HGFX hot path
+    # classic loop 3 272 measured + eLeMeNt HGFX hot path. 5120 -> 6144 on 2026-11-13:
+    # the HGFX path with its helpers forced inline (they were flash calls through
+    # veneers, several per guest byte) + the packed byte runs: content 5 696 B,
+    # PERF_TRACE ~5 870. +240 B the same day (the Z80 DMA loop hands eLeMeNt COPY
+    # pieces to Elm::dmaCopy): content 5 936 B; the PERF counters no longer fit 6144.
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 6144)
+    if (PERF_TRACE)
+        set(DMAOVL_WIN_SIZE_EFFECTIVE 6656)
+    endif()
 else()
     set(DMAOVL_WIN_SIZE_EFFECTIVE ${DMAOVL_WIN_SIZE})
 endif()

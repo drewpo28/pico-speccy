@@ -54,6 +54,10 @@ static uint8_t s_lagFrames, s_lagWindow;
 static uint8_t s_sramRetry;         // half-second windows before a refused move is tried again
 // The hot path sits in the Z80 DMA window: always loaded on this machine.
 #define ELM_HOT __attribute__((section(".time_critical.dmaloop"), noinline))
+// The helpers of that path are forced inline: at -Os GCC left e16 / rowOf / zxRow / put8
+// as functions in FLASH, reached from the RAM code through veneers, several per guest
+// byte (objdump of the 2026-11-05 build), on the XIP port the PSRAM buffers share.
+#define ELM_INL static inline __attribute__((always_inline))
 static uint8_t* s_col;              // the colour table, PSRAM
 static struct Hot {                 // read per pixel: heap
     uint8_t map[256], pidx[256], zxp[16], line[720], line2[720], slots[720];
@@ -87,10 +91,11 @@ static uint8_t s_pairHold;
 static uint8_t s_r[REG_COUNT];      // as the guest wrote them, core0
 static uint8_t s_e[REG_COUNT];      // as the engine has reached them in the queue
 static inline int16_t s16(uint8_t r) { return (int16_t)(s_r[r] | (s_r[r + 1] << 8)); }
-static inline int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
+ELM_INL int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
 // The core1 queue: core0 writes s_qw, core1 s_qr, both free-running. In PSRAM, one
 // frame of a heavy demo is ~8000 entries. Bits 31..29 kind, the rest as below.
-enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29 };
+enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29,
+                 Q_BYTES = 5u << 29 };
 static uint32_t* s_q;
 static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
 static bool s_direct;               // chunky windows are mapped: the engine stays on core0
@@ -99,7 +104,23 @@ static bool s_direct;               // chunky windows are mapped: the engine sta
 // pattern along a row with an overlapping LDIR (read at HL, write at HL+2), and the
 // ROM's scroll copies a line up the same way; the pixels come from the READ's position.
 static uint16_t s_runOff, s_runLen, s_runSrc;
+// Consecutive plain writes (INK / ATTR) are one entry too: a header (offset, count,
+// the read flag) and the bytes four to a word. FDMATEST blits 12 sprites a frame as 72
+// FastDMA transfers of 288 bytes, 6 a row: 20.7k single entries overflowed the 16k
+// queue every frame and core1 redid the row geometry per byte.
+enum { BRUN_MAX = 32 };
+static uint32_t s_bData[BRUN_MAX / 4];
+static uint16_t s_bOff;
+static uint8_t s_bLen;
+static bool s_bRead;
 static bool s_live, s_palDirty, s_palAll;
+// Anything the picture depends on was written since the last frame was posted. A frame
+// with nothing new is not drawn again where the picture is HGFX alone (no ZX layer under
+// it, no HAM, no pair frame): Another World shows a new picture every third frame and
+// the draw of 360x288 from PSRAM is most of a frame of core1. Every tenth frame is drawn
+// anyway (a toast's carve going away, a video mode change).
+static bool s_fbDirty = true;
+static uint8_t s_cleanRun;
 static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
 static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH, s_bpp = 8;
@@ -112,6 +133,7 @@ static void sramOff(bool keep);
 int vramPages() { return 6144 / 256; }
 
 void setMode(uint8_t m) {
+    s_fbDirty = true;
     drain();
     sramOff(true);
     // Selecting a mode clears both buffers. The Reference does not say so; SAM2HGFX
@@ -154,15 +176,15 @@ static inline void pxPlanar(uint8_t* row, int x, uint8_t v, uint8_t m) {
     }
 }
 
-static inline uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
-static inline uint8_t* rowOf(int n, int y) {
+ELM_INL uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
+ELM_INL uint8_t* rowOf(int n, int y) {
     if (s_sramOn[n]) return s_sram[n * SRAM_PER + (y >> SRAM_SHIFT)] + (y & (SRAM_ROWS - 1)) * 256;
     return bufN(n) + (uint32_t)y * s_stride;
 }
 static inline uint8_t* dstBuf() { return bufN((s_r[REG_VP] >> 1) & 1); }
 static inline uint8_t* srcBuf() { return bufN((s_r[REG_VP] >> 2) & 1); }
-static inline int dstE() { return (s_e[REG_VP] >> 1) & 1; }
-static inline int srcE() { return (s_e[REG_VP] >> 2) & 1; }
+ELM_INL int dstE() { return (s_e[REG_VP] >> 1) & 1; }
+ELM_INL int srcE() { return (s_e[REG_VP] >> 2) & 1; }
 static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
 bool ensure() {
@@ -181,11 +203,11 @@ bool ensure() {
     return s_buf && s_hot;
 }
 
-static inline bool queued() { return s_q && !s_direct && g_elm_c1_live; }
+ELM_INL bool queued() { return s_q && !s_direct && g_elm_c1_live; }
 
 // Everything queued has run and the last frame is on screen. Bounded: core1 never waits
 // for core0, so only a dead core1 ends here.
-static inline void pushRaw(uint32_t e);
+ELM_INL void pushRaw(uint32_t e);
 void drain();
 
 // In and out of SRAM: the pixels travel. Only with the queue empty.
@@ -228,6 +250,7 @@ static void sramPromote() {
 }
 
 static inline void runFlush();
+static void runFlushHot();
 void drain() {
     if (!g_elm_c1_live) return;
     runFlush();
@@ -243,10 +266,10 @@ void drain() {
 
 #if PERF_TRACE
 static uint32_t s_pWaitUs, s_pPush, s_pDrop;          // core0
-static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN;   // core1
+static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN, s_pCmdUs;   // core1
 #endif
 
-static inline void pushRaw(uint32_t e) {
+ELM_INL void pushRaw(uint32_t e) {
 #if PERF_TRACE
     s_pPush++;
     if (s_qw - s_qr >= Q_N) {
@@ -261,7 +284,7 @@ static inline void pushRaw(uint32_t e) {
     s_qw = s_qw + 1;
 }
 // A two-word entry lands whole: core1 sees s_qw move once.
-static inline void pushRaw2(uint32_t e, uint32_t e2) {
+ELM_INL void pushRaw2(uint32_t e, uint32_t e2) {
 #if PERF_TRACE
     s_pPush++;
 #endif
@@ -271,13 +294,40 @@ static inline void pushRaw2(uint32_t e, uint32_t e2) {
     __sync_synchronize();
     s_qw = s_qw + 2;
 }
-static inline void runFlush() {
+// A whole byte run lands at once, like the two-word entry.
+ELM_INL void pushBytes() {
+    const uint32_t n = s_bLen, words = (n + 3) >> 2;
+    s_bLen = 0;
+    const uint8_t* b = (const uint8_t*)s_bData;
+    if (n == 1) { pushRaw(Q_VRAM | s_bOff | (uint32_t)b[0] << 16 | (s_bRead ? 1u << 24 : 0)); return; }
+#if PERF_TRACE
+    s_pPush++;
+#endif
+    while (Q_N - (s_qw - s_qr) < words + 1) { }
+    s_q[s_qw & (Q_N - 1)] = Q_BYTES | s_bOff | (n - 1) << 16 | (s_bRead ? 1u << 24 : 0);
+    for (uint32_t w = 0; w < words; w++) s_q[(s_qw + 1 + w) & (Q_N - 1)] = s_bData[w];
+    __sync_synchronize();
+    s_qw = s_qw + words + 1;
+}
+ELM_HOT static void runFlushHot() {
     if (s_runLen) { pushRaw2(Q_RUN | s_runOff | (uint32_t)s_runLen << 16, s_runSrc); s_runLen = 0; }
+    if (s_bLen) pushBytes();
+}
+ELM_INL void runFlush() { if (s_runLen | s_bLen) runFlushHot(); }
+ELM_INL void byteAppend(uint16_t off, uint8_t v, bool wasRead) {
+    if (s_bLen && s_bLen < BRUN_MAX && off == (uint16_t)(s_bOff + s_bLen) && wasRead == s_bRead) {
+        ((uint8_t*)s_bData)[s_bLen++] = v;
+        return;
+    }
+    runFlush();
+    s_bOff = off; s_bRead = wasRead; s_bLen = 1;
+    ((uint8_t*)s_bData)[0] = v;
 }
 static inline void push(uint32_t e) { runFlush(); pushRaw(e); }
 
 void reset() {
     const bool was = s_live;
+    s_fbDirty = true;
     drain();
     // The planes a program does not touch must not show the last program's picture
     // (HGFXAGON after Tetris).
@@ -300,7 +350,7 @@ void loadState(const uint8_t* regs, const uint8_t* colours) {
     memcpy(s_r, regs, REG_COUNT);
     memcpy(s_e, regs, REG_COUNT); s_e20 = g20;
     memcpy(s_col, colours, COLOURS);
-    s_palDirty = true;
+    s_palDirty = true; s_fbDirty = true;
 }
 
 static inline bool inWindow(int x, int y) {
@@ -312,11 +362,11 @@ static inline bool inWindow(int x, int y) {
     return x >= wx && y >= wy && x < wx + ww && y < wy + wh;
 }
 
-static inline uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
-static inline void wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
+ELM_INL uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+ELM_INL void wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
 
 // The 8 pixels of a write at once, 8 bits per pixel, all on screen, no window.
-static inline void put8(uint8_t* d, uint32_t lo, uint32_t hi, uint32_t bl, uint32_t bh, uint8_t m) {
+ELM_INL void put8(uint8_t* d, uint32_t lo, uint32_t hi, uint32_t bl, uint32_t bh, uint8_t m) {
     const uint32_t m8 = m * 0x01010101u, ml = bl & m8, mh = bh & m8;
     if (ml == ~0u) wr32(d, lo); else if (ml) wr32(d, (rd32(d) & ~ml) | (lo & ml));
     if (mh == ~0u) wr32(d + 4, hi); else if (mh) wr32(d + 4, (rd32(d + 4) & ~mh) | (hi & mh));
@@ -381,6 +431,46 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src
 static volatile uint32_t s_pRuns, s_pRunBytes;         // core1
 #endif
 
+// A run of plain writes: the row, the masks and the colours once per row chunk, then
+// two word stores a byte.
+ELM_HOT static void execBytes(uint16_t off, const uint8_t* p, uint32_t n, bool wasRead) {
+    if (!s_buf) return;
+    const uint8_t pm = s_e[REG_MODE];
+    if (s_bpp != 8 || (s_e[REG_VP] & 8) || (pm == 1 && wasRead)) {
+        for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), p[i], wasRead, 0xFFFF);
+        return;
+    }
+#if PERF_TRACE
+    s_pRuns = s_pRuns + 1; s_pRunBytes = s_pRunBytes + n;
+#endif
+    const int bpl = s_w / 8;
+    const bool linear = (s_e20 & 1) || s_w != WIDTH;
+    const uint8_t m = s_e[REG_MASK];
+    const uint32_t i8 = s_e[REG_INDEX] * 0x01010101u, p8 = s_e[REG_PAPER] * 0x01010101u;
+    const uint32_t* nib = s_hot->nib;
+    while (n) {
+        const uint32_t col = off % (uint32_t)bpl, room = (uint32_t)bpl - col, c = n < room ? n : room;
+        const int row = linear ? off / bpl : zxRow(off);
+        const int y = row + e16(REG_OY), x = (int)col * 8 + e16(REG_OX);
+        if (y >= 0 && y < s_h && x >= 0 && x + (int)c * 8 <= s_w) {
+            s_use[dstE()] = s_use[dstE()] + 16 * c;
+            uint8_t* d = rowOf(dstE(), y) + x;
+            if (pm == 0) {
+                for (uint32_t i = 0; i < c; i++, d += 8) {
+                    const uint8_t v = p[i];
+                    if (v) put8(d, i8, i8, nib[v >> 4], nib[v & 15], m);
+                }
+            } else {
+                for (uint32_t i = 0; i < c; i++, d += 8) {
+                    const uint32_t bl = nib[p[i] >> 4], bh = nib[p[i] & 15];
+                    put8(d, (i8 & bl) | (p8 & ~bl), (i8 & bh) | (p8 & ~bh), ~0u, ~0u, m);
+                }
+            }
+        } else for (uint32_t i = 0; i < c; i++) execVram((uint16_t)(off + i), p[i], wasRead, 0xFFFF);
+        off = (uint16_t)(off + c); p += c; n -= c;
+    }
+}
+
 // A run of COPY writes: n bytes from off, a row at a time. In the ZX layout too: the
 // 32 bytes of an aligned group share the row (zxRow keeps bits 5+), so the per-byte
 // path, 7800 iterations a frame on HGFXAGON, was 9 ms of core1 for the same bytes.
@@ -419,6 +509,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static voi
 }
 
 ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src) {
+    s_fbDirty = true;
     if (src == 0xFFFF) src = off;
     if (queued()) {
         if (wasRead && s_r[REG_MODE] == 1) {        // the byte does not matter, COPY takes the cache
@@ -428,8 +519,31 @@ ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src) {
             s_runOff = off; s_runSrc = src; s_runLen = 1;
             return;
         }
-        push(Q_VRAM | off | (uint32_t)v << 16 | (wasRead ? 1u << 24 : 0));
+        byteAppend(off, v, wasRead);
     } else execVram(off, v, wasRead, src);
+}
+
+// core0: n COPY writes in a row (Z80 DMA inside the window), the same as n writeVram
+// calls with wasRead and the mode on COPY.
+void copyRun(uint16_t off, uint16_t src, uint32_t n) {
+    s_fbDirty = true;
+    if (!queued()) { for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), 0, true, (uint16_t)(src + i)); return; }
+    while (n) {
+        if (!(s_runLen && s_runLen < 0x1FFF && off == (uint16_t)(s_runOff + s_runLen) && src == (uint16_t)(s_runSrc + s_runLen))) {
+            runFlush();
+            s_runOff = off; s_runSrc = src;
+        }
+        const uint32_t c = n < 0x1FFFu - s_runLen ? n : 0x1FFFu - s_runLen;
+        s_runLen = (uint16_t)(s_runLen + c);
+        off = (uint16_t)(off + c); src = (uint16_t)(src + c); n -= c;
+    }
+}
+
+// core0: n plain bytes in a row of the window (FastDMA), never a COPY.
+ELM_HOT void writeVramRun(uint16_t off, const uint8_t* p, uint32_t n) {
+    s_fbDirty = true;
+    if (queued()) for (uint32_t i = 0; i < n; i++) byteAppend((uint16_t)(off + i), p[i], false);
+    else for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), p[i], false, 0xFFFF);
 }
 
 // The whole-buffer commands: instant here, busy for their documented time.
@@ -437,6 +551,7 @@ static void execCmd(uint8_t c) {
     if (!s_buf || (c != 1 && c != 2)) return;
     const uint8_t m = s_e[REG_MASK];
     const int dn = dstE(), sn = srcE();
+    const uint32_t m8 = m * 0x01010101u;         // every stride is a multiple of 4
     if (c == 1 && (dn == sn || !s_b1)) return;
     s_use[dn] = s_use[dn] + (uint32_t)s_stride * s_h * 2;
     if (c == 1) s_use[sn] = s_use[sn] + (uint32_t)s_stride * s_h;
@@ -445,9 +560,14 @@ static void execCmd(uint8_t c) {
         if (c == 1) {
             const uint8_t* q = rowOf(sn, y);
             if (m == 0xFF) memcpy(d, q, (size_t)s_stride);
-            else for (int i = 0; i < s_stride; i++) d[i] = planar(d[i], q[i], m);
+            else for (int i = 0; i < s_stride; i += 4) wr32(d + i, (rd32(d + i) & ~m8) | (rd32(q + i) & m8));
         } else if (m == 0xFF) memset(d, 0, (size_t)s_stride);
-        else for (int i = 0; i < s_stride; i++) d[i] &= (uint8_t)~m;
+        // A word that is clear already is not stored: its PSRAM line stays clean and
+        // costs no write-back (a sprite demo clears a mostly black screen every frame).
+        else for (int i = 0; i < s_stride; i += 4) {
+            const uint32_t w = rd32(d + i);
+            if (w & m8) wr32(d + i, w & ~m8);
+        }
     }
 }
 
@@ -455,12 +575,14 @@ static void execCmd(uint8_t c) {
 // rows) between drawing phases thousands of times a run, and core1 executing the
 // previous phase's writes under the new layout put 8-pixel dashes on wrong rows.
 void setG20(uint8_t v) {
+    s_fbDirty = true;
     g20 = v;
     if (queued()) push(Q_REG | (uint32_t)REG_COUNT << 8 | v); else s_e20 = v;
 }
 
 void writeReg(uint8_t r, uint8_t v) {
     if (r >= REG_COUNT) return;
+    s_fbDirty = true;
     s_r[r] = v;
     if (r == REG_CMD && (v == 1 || v == 2))
         s_busyUntil = now() + ((uint64_t)(v == 1 ? 6144 : 3500) << ESPectrum::multiplicator);
@@ -494,9 +616,26 @@ uint8_t* chunkyRead(uint32_t off) {
 
 void chunkyWrite(uint32_t off, uint8_t v) {
     if (!s_buf) return;
+    s_fbDirty = true;
     if ((s_r[REG_VP] & 0x10) && !v) return;
     uint8_t* d = dstBuf() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1));
     *d = planar(*d, v, s_r[REG_MASK]);
+}
+
+void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {
+    if (!s_buf) return;
+    s_fbDirty = true;
+    const uint8_t m = s_r[REG_MASK];
+    const bool skip0 = s_r[REG_VP] & 0x10;
+    uint32_t o = (off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1);
+    uint8_t* base = dstBuf();
+    while (n) {
+        const uint32_t c = n < BUF_SIZE - o ? n : BUF_SIZE - o;       // the buffer wraps
+        uint8_t* d = base + o;
+        if (m == 0xFF && !skip0) memcpy(d, p, c);
+        else for (uint32_t i = 0; i < c; i++) { if (skip0 && !p[i]) continue; d[i] = planar(d[i], p[i], m); }
+        p += c; n -= c; o = (o + c) & (BUF_SIZE - 1);
+    }
 }
 
 // Hardware slots: 0..15 stay the ZX colours (the layer under index 0), the UI block
@@ -570,8 +709,11 @@ static void zxLine(const uint8_t* scr, int y, uint8_t* out) {
         uint8_t bits = scr[b + c];
         if (flash && (a & 0x80)) bits = (uint8_t)~bits;
         const uint8_t br = (a & 0x40) ? 8 : 0;
-        const uint8_t ink = (a & 7) | br, pap = ((a >> 3) & 7) | br;
-        for (int i = 0; i < 8; i++, bits <<= 1) *out++ = (bits & 0x80) ? ink : pap;
+        const uint32_t i8 = ((a & 7) | br) * 0x01010101u, p8 = (((a >> 3) & 7) | br) * 0x01010101u;
+        const uint32_t bl = s_hot->nib[bits >> 4], bh = s_hot->nib[bits & 15];
+        wr32(out, (i8 & bl) | (p8 & ~bl));
+        wr32(out + 4, (i8 & bh) | (p8 & ~bh));
+        out += 8;
     }
 }
 
@@ -902,7 +1044,8 @@ static void renderFrame() {
                 }
             } else {
                 const int skip = (360 - xres) / 2;
-                for (int x = 0; x < xres; x++) H->slots[x] = H->map[pxGet(p, x + skip)];
+                if (s_bpp == 8) for (int x = 0; x < xres; x++) H->slots[x] = H->map[p[x + skip]];
+                else for (int x = 0; x < xres; x++) H->slots[x] = H->map[pxGet(p, x + skip)];
                 outDirect(r, 0, H->slots, xres);
             }
         }
@@ -939,7 +1082,11 @@ static void renderFrame() {
         if (feature == 2) { hamLine(q, WIDTH, y, H->slots); outDirect(y0 + y, x0, H->slots, WIDTH); continue; }
         if (under) {
             zxLine(VIDEO::grmem, y, H->line);
-            for (int x = 0; x < WIDTH; x++) H->slots[x] = q[x] ? H->map[q[x]] : H->line[x];
+            // Four pixels of index 0 are four pixels of the ZX layer as they stand.
+            for (int x = 0; x < WIDTH; x += 4) {
+                if (!rd32(q + x)) { wr32(H->slots + x, rd32(H->line + x)); continue; }
+                for (int k = x; k < x + 4; k++) H->slots[k] = q[k] ? H->map[q[k]] : H->line[k];
+            }
         } else {
             for (int x = 0; x < WIDTH; x++) H->slots[x] = H->map[q[x]];
         }
@@ -1036,6 +1183,7 @@ void frameEnd() {
         Debug::log("[ELM] extra video %s (mode %u key %d rad %d)", want ? "on" : "off", mode, keyBottom != nullptr, (int)radastan);
     }
     if (!s_live) return;
+    if (s_palDirty || !s_palValid) s_fbDirty = true;
     const bool was = s_pair;
     if (s_pair || mode == 4) drain();       // the pair tables are rewritten under the frame
     frameSetup();
@@ -1052,6 +1200,12 @@ void frameEnd() {
         if (s_lagFrames >= 15) sramPromote();
         s_lagWindow = s_lagFrames = 0;
         s_use[0] = s_use[1] = 0;
+    }
+    {
+        const bool alone = mode >= 3 && !s_pair && s_r[REG_FEATURE] != 2 &&
+                           ((s_w >= 360 && s_w != 512) || (g20 & 4));
+        if (alone && !s_fbDirty && s_cleanRun < 9) { s_cleanRun++; runFlush(); return; }
+        s_fbDirty = false; s_cleanRun = 0;
     }
     // core1 still on the last frame: the machine waits for it. Dropping the frame instead
     // let core0 run ten frames ahead and showed one in ten (HGFXAGON: 5 of 60, in jerks).
@@ -1072,12 +1226,12 @@ void frameEnd() {
     static uint32_t n;
     if (++n == 60) {
         n = 0;
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u) draw %uus x%u fill=%u | runs %u/fr %uB sram=%u%u",
-                   s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60,
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u fill=%u | runs %u/fr %uB sram=%u%u",
+                   s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
                    s_pDraws ? s_pDrawUs / s_pDraws : 0, s_pDraws, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1]);
         s_pPush = s_pWaitUs = s_pDrop = 0;
-        s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = 0;
+        s_pDrawUs = s_pDraws = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = s_pCmdUs = 0;
     }
 #endif
 }
@@ -1108,7 +1262,45 @@ ELM_HOT void core1Pump() {
         switch (e & (7u << 29)) {
         case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24), 0xFFFF); break;
         case Q_REG:  if ((uint8_t)(e >> 8) == REG_COUNT) s_e20 = (uint8_t)e; else s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
-        case Q_CMD:  execCmd((uint8_t)e); break;
+        case Q_CMD:  {
+#if PERF_TRACE
+            const uint32_t c0 = time_us_32();
+#endif
+            execCmd((uint8_t)e);
+#if PERF_TRACE
+            s_pCmdUs = s_pCmdUs + (time_us_32() - c0);
+#endif
+            break;
+        }
+        case Q_BYTES: {                     // the bytes follow, four to a word
+            const uint32_t nb = ((e >> 16) & 31) + 1, words = (nb + 3) >> 2;
+            uint32_t tmp[BRUN_MAX / 4];
+            for (uint32_t w = 0; w < words; w++) tmp[w] = s_q[(s_qr + 1 + w) & (Q_N - 1)];
+#if HOST_BUILD
+            // Bench self-check (PICOSPECCY_ELM_CHECK): the run against the per-byte path.
+            static const bool check = getenv("PICOSPECCY_ELM_CHECK") != nullptr;
+            static uint8_t* snap; static uint32_t s_chk, s_bad;
+            const int cn = dstE(); const size_t rb = (size_t)s_stride, all = rb * (size_t)s_h;
+            if (check && !snap) snap = (uint8_t*)malloc(0x20000 * 2);
+            if (check) for (int y = 0; y < s_h; y++) memcpy(snap + y * rb, rowOf(cn, y), rb);
+#endif
+            execBytes((uint16_t)e, (const uint8_t*)tmp, nb, e & (1u << 24));
+#if HOST_BUILD
+            if (check) {
+                uint8_t* after = snap + 0x20000;
+                for (int y = 0; y < s_h; y++) { memcpy(after + y * rb, rowOf(cn, y), rb); memcpy(rowOf(cn, y), snap + y * rb, rb); }
+                for (uint32_t i = 0; i < nb; i++) execVram((uint16_t)((uint16_t)e + i), ((const uint8_t*)tmp)[i], e & (1u << 24), 0xFFFF);
+                bool same = true;
+                for (int y = 0; y < s_h && same; y++) same = !memcmp(after + y * rb, rowOf(cn, y), rb);
+                s_chk++;
+                if (!same && s_bad++ < 20) Debug::log("[ELMCHK] MISMATCH off=%04X n=%u mode=%u pm=%u m=%02X bpp=%d w=%d", (unsigned)(uint16_t)e, (unsigned)nb, mode, s_e[REG_MODE], s_e[REG_MASK], s_bpp, s_w);
+                if (!(s_chk & 0x3FFF)) Debug::log("[ELMCHK] %u runs checked, %u bad", (unsigned)s_chk, (unsigned)s_bad);
+                (void)all;
+            }
+#endif
+            s_qr = s_qr + words;
+            break;
+        }
         case Q_RUN:  {                       // two words: the second is the read offset
             s_qr = s_qr + 1;
             execRun((uint16_t)e, (e >> 16) & 0x1FFF, (uint16_t)s_q[s_qr & (Q_N - 1)]);
