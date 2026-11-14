@@ -10,6 +10,7 @@ enum HostMenuCmd {
     HOST_MENU_SD_FOLDER,   // the user asked to pick a folder
     HOST_MENU_SD_PICKED,   // the folder dialog returned: host_menu_take_folder()
     HOST_MENU_SETTINGS,
+    HOST_MENU_GRAB,        // toggle the keyboard grab (host_kbdgrab.cpp)
     HOST_MENU_EXIT,
 };
 
@@ -27,3 +28,8 @@ bool host_menu_dirty();
 // Starts the folder dialog; HOST_MENU_SD_PICKED follows when it closes with a choice.
 void host_menu_pick_folder(SDL_Window* win, const std::string& start);
 bool host_menu_take_folder(std::string& out);
+
+// Keyboard grab (host_kbdgrab.cpp): the desktop's shortcuts go to the emulator.
+void host_kbdgrab_init(SDL_Window* win);
+void host_kbdgrab_set(SDL_Window* win, bool on);
+bool host_kbdgrab_on();

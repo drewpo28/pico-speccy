@@ -171,6 +171,7 @@ const Item kItems[] = {
     {"SD Card Folder...", "",   HOST_MENU_SD_FOLDER},
     {nullptr,             "",   HOST_MENU_NONE},       // separator
     {"Settings",          "F1", HOST_MENU_SETTINGS},
+    {"Grab Keyboard",     "Ctrl+Alt+G", HOST_MENU_GRAB},
     {nullptr,             "",   HOST_MENU_NONE},
     {"Exit",              "",   HOST_MENU_EXIT},
 };

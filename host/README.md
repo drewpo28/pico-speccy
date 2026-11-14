@@ -28,6 +28,16 @@ emulator); elsewhere the host draws the bar itself (`host_menu.cpp`), keys Up/Do
 Enter/Esc work while it is open, and the folder dialog is `zenity` or `kdialog`.
 There is no bar in full screen.
 
+The window grabs the keyboard while it has the focus, so the desktop's shortcuts
+(GNOME: Alt+F1..F10, Super+F1, Alt+Tab, Super) reach the emulator. **Ctrl+Alt+G**
+(or File > Grab Keyboard) gives the keyboard back and takes it again; the window
+title shows the state; `PICOSPECCY_NOGRAB=1` starts without the grab. Under GNOME
+on Wayland the X11 window announces itself to mutter (`host_kbdgrab.cpp`, needs
+libx11-dev at build time); if the shortcuts still go to the desktop, allow it by
+hand: `gsettings set org.gnome.mutter.wayland xwayland-grab-access-rules
+"['pico-speccy']"`. Ctrl+Alt+F1..F12 (VT switch) cannot be grabbed. Confirmed on
+Ubuntu (GNOME 50, Wayland session) 2026-11-14, without the gsettings rule.
+
 ### Windows
 
 Cross-built from Linux with mingw-w64 (posix threads) and the SDL2 mingw development

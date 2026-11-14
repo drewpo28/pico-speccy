@@ -702,6 +702,9 @@ int main(int argc, char** argv) {
     if (!ren) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     host_menu_init(win);
+    host_kbdgrab_init(win);
+    // The grab starts with the first focus (PICOSPECCY_NOGRAB=1: only on Ctrl+Alt+G).
+    bool grabPending = !getenv("PICOSPECCY_NOGRAB");
     {   // the monitor's refresh, until the presents measure it (V-Sync on)
         SDL_DisplayMode dm;
         if (win && SDL_GetWindowDisplayMode(win, &dm) == 0 && dm.refresh_rate >= 30 && dm.refresh_rate <= 240) {
@@ -732,16 +735,21 @@ int main(int argc, char** argv) {
                 key_event(SDL_SCANCODE_F1, true);
                 f1Release = SDL_GetTicks() + 100;
                 break;
+            case HOST_MENU_GRAB: host_kbdgrab_set(win, !host_kbdgrab_on()); break;
             case HOST_MENU_EXIT: s_quit = true; break;
             default: break;
             }
             if (eaten) continue;
             host_pads_event(e);
             if (e.type == SDL_QUIT) s_quit = true;
+            else if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED && grabPending) {
+                grabPending = false;
+                host_kbdgrab_set(win, true);
+            }
             else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
                 // Alt+Enter toggles full screen; that Enter (down and up) never reaches
                 // the emulator. The Alt itself has already gone through as usual.
-                static bool enterEaten = false;
+                static bool enterEaten = false, gEaten = false;
                 const SDL_Scancode sc = e.key.keysym.scancode;
                 const bool enter = sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER;
                 if (enter && e.type == SDL_KEYDOWN && (e.key.keysym.mod & KMOD_ALT)) {
@@ -753,6 +761,14 @@ int main(int argc, char** argv) {
                     enterEaten = true;
                 } else if (enter && e.type == SDL_KEYUP && enterEaten) {
                     enterEaten = false;
+                } else if (sc == SDL_SCANCODE_G && e.type == SDL_KEYDOWN && (e.key.keysym.mod & KMOD_CTRL) &&
+                           (e.key.keysym.mod & KMOD_ALT)) {
+                    // Ctrl+Alt+G gives the keyboard back to the desktop (and takes it again).
+                    grabPending = false;
+                    host_kbdgrab_set(win, !host_kbdgrab_on());
+                    gEaten = true;
+                } else if (sc == SDL_SCANCODE_G && e.type == SDL_KEYUP && gEaten) {
+                    gEaten = false;
                 } else key_event(sc, e.type == SDL_KEYDOWN);
             }
         }
