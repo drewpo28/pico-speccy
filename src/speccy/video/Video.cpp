@@ -354,6 +354,8 @@ static __attribute__((noinline)) void profi_ds80_driver_set(bool active, const u
 // running app's palette, which was that toggle's default.)
 static uint32_t* s_samPairPal = nullptr;   // SAM mode 3 pair palette, 16 words of heap (samPairSync)
 static void samPairPush();
+static const uint8_t* s_samPairLut = nullptr;
+static bool s_samPairLutDirty = false;
 static uint32_t profi_palette_ui_saved[16];
 static bool     profi_palette_ui_saved_valid = false;
 
@@ -4070,9 +4072,10 @@ void VIDEO::getBmpPalette(uint8_t* out) {
 void VIDEO::getPairSlotReverse(uint8_t* out) {
     bool seen[256] = {};
     memset(out, 0, 256);
+    const uint8_t* lut = (sam_pair_live && s_samPairLut && !profi_palette_ui_saved_valid) ? s_samPairLut : &profi_pair_lookup[0][0];
     for (int ink = 0; ink < 16; ink++)
         for (int paper = 0; paper < 16; paper++) {
-            uint8_t slot = profi_pair_lookup[ink][paper];
+            uint8_t slot = lut[ink * 16 + paper];
             if (seen[slot]) continue;
             seen[slot] = true;
             out[slot] = (uint8_t)((ink << 4) | paper);
@@ -7405,13 +7408,19 @@ void VIDEO::blPairForceOff() { blPairOff(); }
 bool VIDEO::sam_pair_live = false;
 static bool     s_samPairRefused = false;
 
+// The owner's own pair table (eLeMeNt HRXC: slots by the pairs a picture has), or the
+// shared one. Its (c, c) entries must be the shared table's: the overlays draw solids.
 static void samPairPush() {
-    profi_ds80_driver_set(true, s_samPairPal, &VIDEO::profi_pair_lookup[0][0]);
+    s_samPairLutDirty = false;
+    profi_ds80_driver_set(true, s_samPairPal, s_samPairLut ? s_samPairLut : &VIDEO::profi_pair_lookup[0][0]);
 }
+// Takes effect at the next samPairSync (one driver push for table and colours).
+void VIDEO::samPairLut(const uint8_t* lut) { s_samPairLut = lut; s_samPairLutDirty = true; }
 
 static void samPairOff() {
     if (!VIDEO::sam_pair_live) return;
     VIDEO::sam_pair_live = false;
+    s_samPairLut = nullptr; s_samPairLutDirty = false;
     profi_ds80_driver_set(false, nullptr, nullptr);
     Graphics8BitPalette::ds80_active = false;
     // the machine's own slots back (SAM: the CLUT; Enterprise: the 128 Nick colours)
@@ -7430,7 +7439,7 @@ bool VIDEO::samPairSync(bool want, const uint32_t rgb12[12], const uint32_t* rgb
     if (sam_pair_live) {
         // A full-screen menu owns the pair palette: leave it alone until it hands back.
         if (profi_palette_ui_saved_valid) return true;
-        if (memcmp(pal, s_samPairPal, sizeof(pal)) == 0) return true;
+        if (!s_samPairLutDirty && memcmp(pal, s_samPairPal, sizeof(pal)) == 0) return true;
         memcpy(s_samPairPal, pal, sizeof(pal));
         samPairPush();
         return true;

@@ -38,6 +38,7 @@ void    setPersonality(uint8_t p);
 // AA-SRAM, AY stereo, scan lines, DMA, time zone, UART) is written into its e_zxi
 // register and the FRAM, so the SetUp shows it and the power-up keeps it.
 void    syncFromSettings();
+void    syncTurbo(uint8_t m);      // the turbo hot key -> e_zxi_030 + FRAM
 // The two buttons of the board on the PC keyboard. EXTRA = Win+F11 ("ZX + F11" in the
 // User Manual): a short press does what e_zxi_020 says, holding it 1.5 s with
 // e_zxi_021 = 01 opens the "Spectrum menu" (rainbow in the border) where 1-8 pick the

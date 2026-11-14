@@ -848,6 +848,65 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   source ... and CHUNKY access") also hid the bars, but lost TETRIS's background picture and HGFNICCC's 3D part;
   chunky writes stay on bit 1. The video peeking in at the bottom and sliding up after ~1450 frames is the demo.
 - HGFXHAM8.TAP never showed a picture: a shared tape flash-load bug, see storage-tape.md "Tape polarity, long blocks".
+- **HRXCIMGS (zxart 392307, "HiRes Indexed Color pictures"; owner on the host 2026-11-14 against the zxart shot; fixed
+  on the bench, owner on the host build 2026-11-14 after round 2: "сейчас отлично"; NOT hw-tested, test ELF
+  `debug/DVp2w-elm-hrxc4-1.1.2`).** Each picture is two HRXC screens under
+  KeyLayer, key index 16: the top screen has PAPER 0 (index 16) everywhere and draws with its 16 INKs, the bottom one
+  shows through with INK and PAPER, three colours an 8x4 cell. Both tables hold the same 16 colours. Meter: the two
+  tape blocks of a picture composed in python (`cmp.py`: top over bottom, key 16, BGR table) against the bench frame,
+  pixels that differ. Four faults, in the order found:
+  1. Blocks of the wrong colour: `keyIs` applied the ZX / HRC rule "black has no bright" (key & 7 == 0 takes every
+     colour with & 7 == 0) to the HRXC index, so 0, 8 and 24 went transparent with 16. The Reference: in HRXC the key
+     "is determined by a colour index, not by a colour content"; now an exact match in mode 2.
+  2. Dark dots, always the RIGHT pixel of a pair (700-1400 px a picture): the shared pair table has 250 slots for
+     256 pairs (210 with HDMI audio) and gives up fixed ones, `(0..5, 8) -> (.., 0)`. HRXC now deals the slots by the
+     picture (`pairLutUpdate`: the pairs the last frame drew keep theirs, the rarest go to the nearest EARLIER pair,
+     because the drivers show a shared slot in the colours of its first pair in table order); `VIDEO::samPairLut`
+     hands the table to the driver with the next `samPairSync`, `getPairSlotReverse` (screenshots) follows it, the
+     (c, c) slots stay the shared table's. The pictures use 177-235 colour pairs: exact without HDMI audio, with it
+     up to ~40 rare pairs are still approximated.
+     **Round 2 (owner: "in LIMSHOWM's fades a wrong palette still flickers by, hard to notice").** The counts were kept
+     by SLOT, and a fade deals the slots again almost every frame, so the table was built for the frame before: single
+     pixels in a neighbour's colour for one frame (yellow dots in a dark cloud). They are now counted by table index
+     (`s_cnt2`, 64 x 64 uint16 = 8 KB of heap while mode 2 is up) and folded to slots inside `pairPalette`, with the
+     palette of the frame about to be drawn, before `samPairSync`. Meter: `PICOSPECCY_SHOTS_FROM / _TO` (new, host)
+     for every frame of one picture's fade-in, show and fade-out, `flash2.py` counts pixels that jump > 24 and are back
+     within 12 a frame later: 9 frames / 1678 px before, 0 after (561 and 1161 frames). The same meter on a 128x96
+     downscale saw nothing; a picture-level "outlier frame" count does not see single pixels.
+     Dead ends: slots pinned to table indices (`hrxcPalette`: every index starts in one black slot and has to move as
+     the fade parts them, and pictures of more than 16 colours came out posterised); waiting for core1's redraw after
+     a palette push (the spikes were identical with and without it: they were in the table, not in the timing).
+  3. The border: BORDER 0 came out blue / green / beige. In the pair frame it is a slot of the picture's palette, a new
+     palette deals the slots again and nobody repainted it; `frameEnd` now repaints when `pairBorder` moves. With all
+     16 colours the picture's, black is the darkest of them (dark green on the waterfall), not #000000.
+  4. Fades: the bottom screen is drawn through its OWN table now (indices 32..63, Reference: "every screen uses its own
+     colour palette"), latched together with the top one's (`Regs::hrxc` is both); read live it was a fade step ahead
+     and the frame asked for up to 31 colours. `pairPalette` folds equal colours first (not in HRC, whose pair index is
+     the ZX index: folding black 0 / 8 there shifted TOCHIHRC's title colours), the key index is left out of the count,
+     and the count covers every cell of both screens instead of one in three of the top one.
+  After it: 0 differing pixels on all six pictures. The grey-looking frame at the start of each picture is the
+  program's own fade-in (every channel climbs from 0 to its target). Dead end: decoding one tape block alone looks
+  far worse than the fault (it is one layer of two). Re-run: TOCHIHRC, HRCDEMO, KLAYTEST, ELTHRXC as before; WOWDEMO
+  NOT re-run.
+- **TOCHIHRC (zxart 539642) and Gigascreen in HRC (owner 2026-11-14; bench, NOT hw-tested).** The demo part is a fixed
+  1-pixel chequer of INK and PAPER (bitmap #55 / #AA) whose attributes swap every frame, and the program writes
+  g_zxi_008 = 2; the pair frame has no blend, so it showed stripes. HRC now follows the owner's Gigascreen switch as
+  the ZX screen does: "On" draws HRC 256 wide, each pixel the mean of its two HRC pixels in this frame and the one
+  before (g_zxi_008 = 1: this screen and the other VRAM), on the HAM palette machinery (`hrcMixRow`, `rgbLine`; the
+  frame before is kept in the idle HGFX buffer as INK << 4 | PAPER). Off keeps the 512 px pair frame. **Auto** (owner:
+  "only where it flickers, as with pages 5 and 7") mixes while the picture flickers: `hrcFlicker` counts the cells
+  whose attribute differs from the frame before and equals the one before that (the shown screen, so a #7FFD bit 3
+  flip every frame counts too); 48+ cells four frames running turn the mix on, 25 frames without turn it off. Bench:
+  Tochi's title stays in the pair frame, the demo part mixes, one switch each way. A flicker made of bitmaps alone
+  under the same attributes is not seen.
+  Dead end: following g_zxi_008 alone - the title page is 512 px text and went soft (owner: "точно неправильно").
+  **Hot keys against the SetUp (owner 2026-11-14: Alt+PgUp did nothing in Tochi and in the SetUp; bench).** The
+  Gigascreen key answered "not in this video mode" under the extra video (`paper_hold`) and never told the SetUp:
+  under the extra video it now just cycles the setting (HRC reads it, nothing to arm), and both paths end in
+  `Elm::syncFromSettings` (e_zxi_01D + FRAM; bench: 03 -> 00 -> 01, Tochi mixes after the second press). The turbo
+  key (`OSD::setTurbo`) writes e_zxi_030 + FRAM through `Elm::syncTurbo` (28 MHz = 05); that one is NOT bench-run.
+  The menu rows already went through `syncFromSettings` (UiStage); these two were the hot keys that change a shared
+  setting behind it.
 - HW128X512's seam is the picture's own wrap (a 512-line collage through a 256-line window), not the offset register.
 
 **PF2026 sound and WOWDEMO colours (owner on the bench build, 2026-11-14: "звук очень странный", wrong colours; fixed on the bench, NOT hw-tested).**

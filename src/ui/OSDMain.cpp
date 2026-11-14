@@ -2320,6 +2320,7 @@ void OSD::setTurbo(uint8_t m) {
     // guest's next write to it takes the clock back (TsConf::applyZclk).
     Config::turbo = ESPectrum::multUser;
     Config::save();
+    if (Config::arch == A_ELM) Elm::syncTurbo(m);
     static const char* const mhz[4] =
         { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
     // See the VK_F11 handler in ESPectrum.cpp: routed through
@@ -3228,6 +3229,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 notify(kGs[Config::gigascreen_onoff], LEVEL_INFO, 1200);
                 return;
             }
+            if (Config::arch == A_ELM && VIDEO::paper_hold) {
+                // eLeMeNt extra video (HRC, HGFX): no prev-FB and no blend slots there,
+                // HRC mixes on its own from the setting (Hgfx::giga); the generic
+                // machinery arms itself when the ZX screen is back (gigascreenModeGate).
+                Config::gigascreen_onoff = (Config::gigascreen_onoff + 1) % 3;
+                VIDEO::gigascreen_auto_countdown = 0;
+                Config::save();
+                Elm::syncFromSettings();
+                static const char* const kGs[3] = { " Gigascreen: Off ", " Gigascreen: On ", " Gigascreen: Auto " };
+                notify(kGs[Config::gigascreen_onoff], LEVEL_INFO, 1200);
+                return;
+            }
             if (VIDEO::gigascreenModeIncompatible()) {
                 notify(" Gigascreen: not in this video mode ", LEVEL_WARN, 1800);
                 return;
@@ -3272,6 +3285,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                              : OSD_GIGASCREEN_OFF;
             notify(menu, LEVEL_INFO, 900);
             Config::save();
+            if (Config::arch == A_ELM) Elm::syncFromSettings();   // the SetUp's e_zxi_01D follows the hot key
         } else if (hkIdx == Config::HK_MAX_SPEED || KeytoESP == fabgl::VK_NUMLOCK) {
         ESPectrum::maxSpeed = !ESPectrum::maxSpeed;
         std::string menu = ESPectrum::maxSpeed ? OSD_MAXSPEED_ON : OSD_MAXSPEED_OFF;

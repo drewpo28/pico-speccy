@@ -559,7 +559,11 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     }
     std::string base;
     if (shot && presented == parse(shot, base)) save(base);
-    if (shots) { const uint32_t n = parse(shots, base); if (n && presented % n == 0) save(base + "_" + std::to_string(presented) + ".bmp"); }
+    // PICOSPECCY_SHOTS_FROM / _TO bound the frames PICOSPECCY_SHOTS saves (every frame of
+    // a fade without gigabytes of the frames before it).
+    static const uint32_t shFrom = getenv("PICOSPECCY_SHOTS_FROM") ? (uint32_t)atoi(getenv("PICOSPECCY_SHOTS_FROM")) : 0;
+    static const uint32_t shTo = getenv("PICOSPECCY_SHOTS_TO") ? (uint32_t)atoi(getenv("PICOSPECCY_SHOTS_TO")) : 0xFFFFFFFFu;
+    if (shots && presented >= shFrom && presented <= shTo) { const uint32_t n = parse(shots, base); if (n && presented % n == 0) save(base + "_" + std::to_string(presented) + ".bmp"); }
     SDL_UnlockTexture(tex);
 
     // "Sharp bilinear": enlarge by an integer factor with nearest sampling (every source

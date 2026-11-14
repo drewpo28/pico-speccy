@@ -32,9 +32,14 @@ uint16_t radOffset;
 const uint8_t* keyTop;
 const uint8_t* keyBottom;
 const uint8_t* hrxcTable;
+uint8_t giga, gigaAuto;
+const uint8_t* gigaOther;
 
+// ZX and HRC: black has no bright, so key 0 takes colour 8 too (and back). HRXC: the
+// key is one index of the 32, "determined by a colour index, not by a colour content"
+// (Reference); the ZX rule there made 0, 8 and 24 transparent under key 16 (HRXCIMGS).
 static inline bool keyIs(uint8_t c) {
-    return c == keyColour || (!(keyColour & 7) && !(c & 7));   // black has no bright
+    return c == keyColour || (mode != 2 && !(keyColour & 7) && !(c & 7));
 }
 
 static uint8_t* s_buf;              // 128K, PSRAM
@@ -73,6 +78,10 @@ static struct Hot {                 // read per pixel: heap
     // slot was given, and which indices sit on a nearest colour rather than their own.
     uint32_t slotCol[168];
     uint8_t mapK[256], approx[256], claim[168];
+    // HRXC's own pair table (pairLutUpdate): the pairs the last frame drew, counted.
+    uint16_t cnt[256];
+    uint8_t lut[256];
+    bool lutOn;
 }* s_hot;
 static uint8_t s_cube[168];
 // HAM8 colours (owner's choice 2, 2026-11-02): a median-cut palette of the picture on
@@ -91,6 +100,9 @@ static uint16_t* s_hamTmp;              // counts + bin order, then the boxes: P
 static uint8_t s_hamHold;
 static bool s_hamCubeOn;                // the slots hold the cube
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
+// HRXC: the pairs of the last frame by TABLE INDEX (64 x 64, the bottom screen's are
+// +32), heap, only while mode 2 is up. See pairLutUpdate.
+static uint16_t* s_cnt2;
 static uint8_t s_pairHold;
 static uint8_t s_r[REG_COUNT];      // as the guest wrote them, core0
 static uint8_t s_e[REG_COUNT];      // as the engine has reached them in the queue
@@ -194,7 +206,7 @@ static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 bool ensure() {
     if (!s_hot) {
         s_hot = (Hot*)tryMalloc(sizeof(Hot));
-        if (s_hot) memset(s_hot->mapK, 0xFF, sizeof s_hot->mapK);
+        if (s_hot) { memset(s_hot->mapK, 0xFF, sizeof s_hot->mapK); memset(s_hot->cnt, 0, sizeof s_hot->cnt); s_hot->lutOn = false; }
         if (s_hot) for (int n = 0; n < 16; n++)
             s_hot->nib[n] = ((n & 8) ? 0xFFu : 0) | ((n & 4) ? 0xFF00u : 0) | ((n & 2) ? 0xFF0000u : 0) | ((n & 1) ? 0xFF000000u : 0);
     }
@@ -744,6 +756,7 @@ static void hrLine(const uint8_t* scr, int y, bool indexed, uint8_t* out) {
 
 // The pair frame has 16 colours, four of them the ZX 12..15. `hist` picks the other
 // twelve, `rgbOf` maps every source index to the nearest.
+static void pairLutUpdate();
 static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
     uint32_t pal[16]; uint32_t* h = s_hot->h;
     memcpy(h, hist, n * sizeof(uint32_t));
@@ -755,7 +768,14 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
     // HRXC (owner 2026-11-14): all sixteen pair colours are the picture's when it uses
     // more than twelve; the ZX 12..15 the overlays count on come back with a calmer one.
     const int room = mode == 2 ? 16 : 12;
-    if (n <= 32) {
+    if (n <= 64) {
+        // The same colour under several indices is one colour (HRXC: INK and PAPER
+        // halves, two screens): without this the merge below ran every frame. Not HRC:
+        // its pair index IS the ZX index, and black 0 / 8 folded moved the rest.
+        if (mode != 1) for (int k = 1; k < n; k++) {
+            if (!h[k]) continue;
+            for (int j = 0; j < k; j++) if (h[j] && rgbOf[j] == rgbOf[k]) { h[j] += h[k]; h[k] = 0; break; }
+        }
         int used = 0;
         for (int k = 0; k < n; k++) if (h[k]) used++;
         while (used > room) {
@@ -823,13 +843,14 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
             pal[bs] = want[bc];
         }
     }
-    s_pair = VIDEO::samPairSync(true, pal, full ? pal + 12 : nullptr);
     memcpy(s_hot->pal, pal, sizeof(pal));
     for (int k = 0; k < n; k++) {
         uint32_t bd = ~0u; int b = 0;
         for (int i = 0; i < 16; i++) { const uint32_t d = dist(pal[i], rgbOf[k]); if (d < bd) { bd = d; b = i; } }
         s_hot->pidx[k] = (uint8_t)b;
     }
+    if (mode == 2) pairLutUpdate();      // with the new slots, before the driver gets both
+    s_pair = VIDEO::samPairSync(true, pal, full ? pal + 12 : nullptr);
 }
 
 // g_zxi_020 bit 1: the border shows HGFX colour index 0..7 (the #FE value) instead of
@@ -867,12 +888,78 @@ static inline void putCarved(uint8_t* row, int fx, uint8_t v, int nc, int (*cx)[
 }
 
 // One fb row from 2 output px per byte, colours in l[].
-static void outPair(int fy, int x0, const uint8_t* l, int bytes) {
+static void outPair(int fy, int x0, const uint8_t* l, int bytes, const uint8_t* lut = &VIDEO::profi_pair_lookup[0][0]) {
     uint8_t* row = VIDEO::vga.frameBuffer[fy];
     int cx[8][2];
     const int nc = VIDEO::rowCarves(fy, cx);
     for (int x = 0; x < bytes; x++)
-        putCarved(row, x0 + x, VIDEO::profi_pair_lookup[l[x * 2]][l[x * 2 + 1]], nc, cx);
+        putCarved(row, x0 + x, lut[l[x * 2] * 16 + l[x * 2 + 1]], nc, cx);
+}
+
+// The pair driver has fewer slots than 16 x 16 pairs (250, 210 with HDMI audio), and the
+// shared table gives up fixed ones: right pixel 8 after a left 0..5, bright on another
+// bright. A photo in 16 colours uses those like any other pair (HRXCIMGS: dark dots, the
+// right pixel of a pair in the colour of slot 0; owner 2026-11-14) but not all 240 mixed
+// pairs, so HRXC deals the slots by the picture: the pairs the last frame drew keep
+// theirs, the rarest go to the nearest pair that stays. The driver shows a shared slot
+// in the colours of its FIRST pair in table order, hence a target before the pair.
+// The (c, c) slots stay where the shared table has them (overlays, border).
+static void pairLutUpdate() {
+    Hot* H = s_hot;
+    const uint8_t* std = &VIDEO::profi_pair_lookup[0][0];
+    if (!s_cnt2) s_cnt2 = (uint16_t*)tryCalloc(8192);
+    if (!s_pair || !s_cnt2) { H->lutOn = false; if (s_cnt2) memset(s_cnt2, 0, 8192); return; }
+    // Counted by table index and brought to slots HERE, through the palette of the frame
+    // about to be drawn: kept by slot they were a frame late whenever the slots were
+    // dealt again, and in a fade that is most frames - single pixels in a neighbour's
+    // colour for one frame (owner 2026-11-14, LIMSHOWM; 9 such frames a picture).
+    memset(H->cnt, 0, sizeof H->cnt);
+    for (int i = 0; i < 4096; i++) {
+        if (!s_cnt2[i]) continue;
+        uint16_t& c = H->cnt[H->pidx[i >> 6] << 4 | H->pidx[i & 63]];
+        const uint32_t v = (uint32_t)c + s_cnt2[i];
+        c = (uint16_t)(v > 0xFFFF ? 0xFFFF : v);
+    }
+    const uint8_t* cur = H->lutOn ? H->lut : std;
+    // Scratch in Hot::h (pairPalette's, free here): 1 KB more of core0 stack is too much.
+    uint8_t* first = (uint8_t*)H->h;     // slot -> the pair that owns it
+    uint8_t* fr = first + 256; uint8_t* lut = fr + 256;
+    bool* seen = (bool*)(lut + 256);
+    bool any = false, bad = false;
+    memset(seen, 0, 256);
+    for (int p = 0; p < 256; p++) if (!seen[cur[p]]) { seen[cur[p]] = true; first[cur[p]] = (uint8_t)p; }
+    for (int p = 0; p < 256; p++) if (H->cnt[p]) { any = true; if (first[cur[p]] != p) bad = true; }
+    if (!any) return;                    // nothing drawn since the last look
+    memset(s_cnt2, 0, 8192);
+    if (bad) {
+        int nf = 0;
+        bool* drop = (bool*)first;       // `first` is done with
+        memset(seen, 0, 256); memset(drop, 0, 256);
+        for (int c = 0; c < 16; c++) seen[std[c * 17]] = true;
+        for (int p = 0; p < 256; p++) if (!seen[std[p]]) { seen[std[p]] = true; fr[nf++] = std[p]; }
+        for (int d = 240 - nf; d > 0; d--) {
+            int m = -1;
+            for (int p = 255; p > 0; p--) if (p % 17 && !drop[p] && (m < 0 || H->cnt[p] < H->cnt[m])) m = p;
+            drop[m] = true;
+        }
+        int k = 0;
+        for (int p = 0; p < 256; p++) {
+            if (!(p % 17)) { lut[p] = std[p]; continue; }
+            if (!drop[p]) { lut[p] = fr[k++]; continue; }
+            uint32_t bd = ~0u; int b = 0;
+            for (int q = 0; q < p; q++) {
+                if (drop[q]) continue;
+                const uint32_t dd = dist(H->pal[p >> 4], H->pal[q >> 4]) + dist(H->pal[p & 15], H->pal[q & 15]);
+                if (dd < bd) { bd = dd; b = q; }
+            }
+            lut[p] = lut[b];
+        }
+        if (!H->lutOn || memcmp(lut, H->lut, 256)) {
+            memcpy(H->lut, lut, 256);
+            H->lutOn = true;
+            VIDEO::samPairLut(H->lut);
+        }
+    }
 }
 // One fb row of palette slots.
 static void outDirect(int fy, int x0, const uint8_t* slots, int n) {
@@ -940,6 +1027,76 @@ static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
     });
 }
 
+// The same for a row already in RGB.
+static void rgbLine(const uint32_t* c, int n, int y, uint8_t* slots) {
+    if (!s_ham || !s_ham->n) { for (int x = 0; x < n; x++) slots[x] = cubeSlot(c[x], x, y); return; }
+    static const int8_t bay[16] = { -8, 0, -6, 2, 4, -4, 6, -2, -5, 3, -7, 1, 7, -1, 5, -3 };
+    const int8_t* row = bay + (y & 3) * 4;
+    uint8_t* lut = s_ham->lut;
+    for (int x = 0; x < n; x++) {
+        const int t = row[x & 3] * HAM_DITHER / 8;
+        const auto cl = [t](int v) { v += t; return v < 0 ? 0 : v > 255 ? 255 : v; };
+        const uint32_t b = rgbBin(cl((int)(c[x] >> 16)), cl((int)((c[x] >> 8) & 255)), cl((int)(c[x] & 255)));
+        uint8_t v = lut[b];
+        if (v == 0xFF) v = lut[b] = hamNearest(b);
+        slots[x] = v;
+    }
+}
+
+// HRC under GigaScreen (g_zxi_008 = 1 two VRAMs, 2 two frames; TOCHIHRC: a fixed 1-pixel
+// chequer of INK and PAPER whose attributes change every frame). The pair frame has 16
+// colours and no blend, so the picture goes out 256 wide: a pixel is the mean of its
+// two HRC pixels now and of the two it is mixed with, on the HAM palette. The frame
+// before is kept as INK << 4 | PAPER a pixel in the HGFX buffers, idle below mode 3.
+static bool s_gigaPrev;                 // the kept frame is a frame of this picture
+static inline bool hrcGiga() { return mode == 1 && giga; }
+static void hrcRow(const uint8_t* scr, int y, uint8_t* out) {
+    hrLine(scr, y, false, out);
+    if (keyBottom && scr != keyBottom) {
+        hrLine(keyBottom, y, false, s_hot->line2);
+        for (int x = 0; x < 512; x++) if (keyIs(out[x])) out[x] = s_hot->line2[x];
+    }
+}
+// keep: this row becomes the frame before (the render, not the histogram pass).
+static void hrcMixRow(int y, uint32_t* out, bool keep) {
+    Hot* H = s_hot;
+    uint32_t zx[16];
+    for (int i = 0; i < 16; i++) { const uint32_t c = VIDEO::zxRgb((uint8_t)i); zx[i] = (c & 0xFF00FF) | (c & 0xFF00) << 12; }   // G apart: sums of four fit
+    const auto mix = [&](uint32_t a) { return ((a & 0x3FF03FF) >> 2 & 0xFF00FF) | ((a >> 22) & 0xFF) << 8; };
+    hrcRow(keyTop ? keyTop : VIDEO::grmem, y, H->line);
+    uint8_t* prev = s_buf + (uint32_t)y * WIDTH;
+    if (giga == 1 && gigaOther) {
+        hrLine(gigaOther, y, false, H->slots);
+        for (int x = 0; x < WIDTH; x++)
+            out[x] = mix(zx[H->line[x * 2]] + zx[H->line[x * 2 + 1]] + zx[H->slots[x * 2]] + zx[H->slots[x * 2 + 1]]);
+        return;
+    }
+    for (int x = 0; x < WIDTH; x++) {
+        const uint8_t l = H->line[x * 2], r = H->line[x * 2 + 1];
+        const uint8_t pv = s_gigaPrev ? prev[x] : (uint8_t)(l << 4 | r);
+        out[x] = mix(zx[l] + zx[r] + zx[pv >> 4] + zx[pv & 15]);
+        if (keep) prev[x] = (uint8_t)(l << 4 | r);
+    }
+}
+
+// Gigascreen "Auto" for HRC: mix only while the picture flickers. A cell flickers when
+// its attribute differs from the frame before and equals the one before that (TOCHIHRC
+// swaps attributes every frame; a #7FFD bit 3 flip every frame reads the same way, the
+// shown screen is what is compared). On after 4 such frames in a row with 48+ cells
+// (1.5 % of 3072), off half a second after the last one: a still page keeps its 512 px.
+// The two attribute frames live in the second HGFX buffer, idle below mode 3.
+static bool hrcFlicker() {
+    static uint8_t s_run, s_hold;
+    const uint8_t* at = (keyTop ? keyTop : VIDEO::grmem) + 0x3000;
+    uint8_t* p1 = s_buf + 0x10000; uint8_t* p2 = p1 + 0xC00;
+    int f = 0;
+    for (int i = 0; i < 3072; i++) f += (at[i] != p1[i]) & (at[i] == p2[i]);
+    memcpy(p2, p1, 3072); memcpy(p1, at, 3072);
+    if (f >= 48) { if (s_run < 4) s_run++; if (s_run == 4) s_hold = 25; }
+    else { s_run = 0; if (s_hold) s_hold--; }
+    return s_hold != 0;
+}
+
 // Median cut over the picture's bins: split the box with the most weight x extent
 // along its longest axis at the weighted median, 168 boxes, each slot the box's
 // weighted mean. false: no memory (the cube then).
@@ -954,6 +1111,14 @@ static bool hamProgram(bool force) {
     HamBox* box = (HamBox*)(idx + HAM_BINS);
     memset(h, 0, HAM_BINS * sizeof(uint16_t));
     const int n0 = s_r[REG_VP] & 1;
+    if (hrcGiga()) for (int y = 0; y < HEIGHT; y += 4) {
+        uint32_t* c = s_hot->hist;       // core0 scratch; the frame is drained (frameEnd)
+        hrcMixRow(y, c, false);
+        for (int x = 0; x < WIDTH; x++) {
+            uint16_t& v = h[rgbBin((int)(c[x] >> 16), (int)((c[x] >> 8) & 255), (int)(c[x] & 255))];
+            if (v != 0xFFFF) v++;
+        }
+    } else
     for (int y = 0; y < s_h; y += 4)
         hamWalk(rowOf(n0, y), WIDTH, [h](int, uint32_t c) {
             uint16_t& v = h[rgbBin((int)(c >> 16), (int)((c >> 8) & 255), (int)(c & 255))];
@@ -1076,14 +1241,28 @@ static void renderFrame() {
     }
     if (mode == 1 || mode == 2) {
         const bool idx = mode == 2;
+        const uint8_t* lut = idx && H->lutOn ? H->lut : &VIDEO::profi_pair_lookup[0][0];
+        if (hrcGiga() && !s_pair) {
+            for (int y = 0; y < HEIGHT; y++) {
+                hrcMixRow(y, H->rgb, true);
+                rgbLine(H->rgb, WIDTH, y, H->slots);
+                outDirect(y0 + y, x0, H->slots, WIDTH);
+            }
+            s_gigaPrev = true;
+            return;
+        }
         if (s_pair) for (int y = 0; y < HEIGHT; y++) {
             hrLine(zx0, y, idx, H->line);
             if (keyBottom) {
                 hrLine(keyBottom, y, idx, H->line2);
-                for (int x = 0; x < 512; x++) if (keyIs(H->line[x])) H->line[x] = H->line2[x];
+                const uint8_t own = idx ? 32 : 0;      // HRXC: the bottom screen's own table
+                for (int x = 0; x < 512; x++) if (keyIs(H->line[x])) H->line[x] = (uint8_t)(H->line2[x] + own);
             }
-            if (idx) for (int x = 0; x < 512; x++) H->line[x] = H->pidx[H->line[x]];
-            outPair(y0 + y, x0, H->line, WIDTH);
+            if (idx) {
+                if (s_cnt2) for (int x = 0; x < 512; x += 2) s_cnt2[(H->line[x] & 63) << 6 | (H->line[x + 1] & 63)]++;
+                for (int x = 0; x < 512; x++) H->line[x] = H->pidx[H->line[x]];
+                outPair(y0 + y, x0, H->line, WIDTH, lut);
+            } else outPair(y0 + y, x0, H->line, WIDTH);
         }
         return;
     }
@@ -1173,13 +1352,16 @@ static void renderFrame() {
 static void frameSetup() {
     uint32_t* rgb = s_hot->rgb; uint32_t* hist = s_hot->hist;   // wantPairFor2 uses hist first, done by then
     const bool hr = mode == 1 || mode == 2;
-    bool wantPair = hr || mode == 5 || mode == 6 || mode == 7;
+    bool wantPair = (hr && !hrcGiga()) || mode == 5 || mode == 6 || mode == 7;
+    if (!hrcGiga()) s_gigaPrev = false;
     if (mode == 4) {
         if (s_pairHold) s_pairHold--;
         else { wantPair = wantPairFor2(); s_pairWant2 = wantPair; s_pairHold = 25; }
         wantPair = s_pairWant2;
     }
-    if (hr && mode == 1) {
+    if (mode != 2 && s_hot->lutOn) { s_hot->lutOn = false; VIDEO::samPairLut(nullptr); }
+    if (mode != 2 && s_cnt2) { drain(); free(s_cnt2); s_cnt2 = nullptr; }
+    if (hr && mode == 1 && wantPair) {
         for (int i = 0; i < 256; i++) { rgb[i] = 0; hist[i] = 0; }
         for (int i = 0; i < 12; i++) { rgb[i] = VIDEO::zxRgb((uint8_t)i); hist[i] = (uint32_t)(100 - i); }
         pairPalette(hist, rgb, 12);
@@ -1191,11 +1373,28 @@ static void frameSetup() {
         int n = 256;
         memset(hist, 0, 256 * sizeof(uint32_t));
         if (mode == 2) {
-            n = 32;
+            // KeyLayer: "every screen uses its own colour palette" (Reference), the
+            // bottom one's 32 are indices 32..63 here. HRXCIMGS loads the two screens
+            // one after the other; through the top table the bottom one showed in the
+            // new picture's colours before its own table came (owner 2026-11-14).
+            n = keyBottom ? 64 : 32;
             const uint8_t* ct = hrxcTable ? hrxcTable : VIDEO::grmem + HRXC_TABLE;
             for (int i = 0; i < 32; i++) rgb[i] = tableRgb(ct + i * 3);
-            const uint8_t* at = VIDEO::grmem + 0x3000;
-            for (int i = 0; i < 3072; i += 3) { hist[at[i] & 15]++; hist[16 | (at[i] >> 4)]++; }
+            if (keyBottom) {               // latched with the top one's (Element.cpp), right behind it
+                const uint8_t* cb = hrxcTable ? hrxcTable + HRXC_BYTES : keyBottom + HRXC_TABLE;
+                for (int i = 0; i < 32; i++) rgb[32 + i] = tableRgb(cb + i * 3);
+            }
+            // Every cell of every screen shown: under KeyLayer the top one may be INK over a
+            // key PAPER and the bottom one bring colours the top never uses, and a colour
+            // met in one cell of three could miss the sample (HRXCIMGS: black dots where
+            // the absent colour went to its nearest, owner 2026-11-14).
+            for (const uint8_t* scr : { keyTop ? keyTop : (const uint8_t*)VIDEO::grmem, keyBottom }) {
+                if (!scr) continue;
+                const uint8_t* at = scr + 0x3000;
+                uint32_t* hs = hist + (scr == keyBottom ? 32 : 0);
+                for (int i = 0; i < 3072; i++) { hs[at[i] & 15]++; hs[16 | (at[i] >> 4)]++; }
+            }
+            if (keyBottom) hist[keyColour & 31] = 0;   // the key is never seen
         } else {
             n = mode == 4 ? 256 : mode == 5 ? 16 : 4;
             for (int i = 0; i < n; i++) { rgb[i] = tableRgb(s_col + i * 3); hist[i] = (uint32_t)(n - i); }
@@ -1223,7 +1422,7 @@ static void frameSetup() {
         }
         return;
     }
-    if (s_r[REG_FEATURE] == 2) {         // HAM: its own palette, refreshed twice a second
+    if (hrcGiga() || (mode >= 3 && s_r[REG_FEATURE] == 2)) {   // HAM, HRC mixed: a palette of the picture, refreshed twice a second
         const bool need = s_palDirty || !s_palValid;
         if (need || !s_hamHold) {
             s_hamHold = 25;
@@ -1251,6 +1450,7 @@ void frameEnd() {
             sramOff(true);
             s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
             if (s_pair) { s_pair = false; VIDEO::samPairSync(false, nullptr); }
+            if (s_cnt2) { drain(); free(s_cnt2); s_cnt2 = nullptr; }
             VIDEO::applyPalette();
             VIDEO::brdChange = VIDEO::brdnextframe = true;
             borderFollow(true);
@@ -1258,11 +1458,18 @@ void frameEnd() {
         Debug::log("[ELM] extra video %s (mode %u key %d rad %d)", want ? "on" : "off", mode, keyBottom != nullptr, (int)radastan);
     }
     if (!s_live) return;
+    if (mode == 1 && !giga && gigaAuto && hrcFlicker()) giga = gigaAuto;
     if (s_palDirty || !s_palValid) s_fbDirty = true;
     const bool was = s_pair;
-    if (s_pair || mode == 4) drain();       // the pair tables are rewritten under the frame
+    if (s_pair || mode == 4 || hrcGiga()) drain();   // the pair tables are rewritten under the frame; the HRC mix shares scratch
     frameSetup();
-    if (was != s_pair) { VIDEO::updateBorderBrd(); VIDEO::brdChange = VIDEO::brdnextframe = true; }
+    // The pair frame's border is a slot of the picture's palette, and a new palette deals
+    // the slots again: the border stayed on its old slot in whatever colour came there
+    // (HRXCIMGS: blue, green, beige for BORDER 0; owner 2026-11-14).
+    static uint8_t s_brdPair = 0xFF;
+    const uint8_t bp = s_pair ? pairBorder(VIDEO::borderColor) : 0xFF;
+    if (was != s_pair || bp != s_brdPair) { VIDEO::updateBorderBrd(); VIDEO::brdChange = VIDEO::brdnextframe = true; }
+    s_brdPair = bp;
     borderFollow();
     if (!s_q) { renderFrame(); return; }
     g_elm_c1_live = true;

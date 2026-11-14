@@ -32,6 +32,9 @@ extern uint8_t  radBank, radPad, keyColour;
 extern uint16_t radOffset;
 extern const uint8_t* keyTop;     // KeyLayer: the screens, or nullptr
 extern const uint8_t* keyBottom;
+extern uint8_t giga;           // HRC GigaScreen: 0 none, 1 the two VRAMs, 2 two frames
+extern uint8_t gigaAuto;       // Gigascreen Auto: the kind to use while HRC flickers, 0 = not Auto
+extern const uint8_t* gigaOther;  // giga 1: the screen not shown
 extern const uint8_t* hrxcTable;  // HRXC: the colour table latched at the frame start
 
 bool    ensure();             // the buffers (PSRAM), first use

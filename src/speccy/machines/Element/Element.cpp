@@ -53,7 +53,7 @@ static uint8_t s_corePos;
 // 1 KB, on the heap: only this machine pays for them.
 // hrxc: the HRXC colour table as this frame's picture uses it (the Reference: the
 // palette is taken at the start of the frame, a change during the display waits).
-struct Regs { uint8_t g[256], e[256], u[256], win[256], hrxc[Hgfx::HRXC_BYTES]; };
+struct Regs { uint8_t g[256], e[256], u[256], win[256], hrxc[Hgfx::HRXC_BYTES * 2]; };   // hrxc: the shown screen's table, then the other one's
 static Regs* s_r;
 
 // URAM. Four Zones of two 8K Areas, each with its own 16-bit page; #73 picks the Zone
@@ -578,9 +578,17 @@ void remap() {
 }
 
 static const uint8_t* s_hrxcSrc;      // the screen the table was latched from
+// The screen not shown (KeyLayer's bottom one): its table is latched with the shown one's,
+// or a fade written to both in one loop reads a step apart (HRXCIMGS: 31 colours for 16).
+static const uint8_t* hrxcOther() {
+    const uint8_t* b = MemESP::ram[7].direct();
+    return VIDEO::grmem == b ? MemESP::ram[(s_r->g[0x002] & 1) ? 6 : 5].direct() : b;
+}
 static void hrxcLatch() {
     s_hrxcSrc = VIDEO::grmem;
-    if (Hgfx::mode == 2) memcpy(s_r->hrxc, VIDEO::grmem + Hgfx::HRXC_TABLE, Hgfx::HRXC_BYTES);
+    if (Hgfx::mode != 2) return;
+    memcpy(s_r->hrxc, VIDEO::grmem + Hgfx::HRXC_TABLE, Hgfx::HRXC_BYTES);
+    memcpy(s_r->hrxc + Hgfx::HRXC_BYTES, hrxcOther() + Hgfx::HRXC_TABLE, Hgfx::HRXC_BYTES);
 }
 
 // KeyLayer: the screen #7FFD bit 3 shows is on top, the other shines through its key
@@ -594,6 +602,14 @@ void frameEnd() {
     Hgfx::keyTop = key ? (MemESP::videoLatch ? b : a) : nullptr;
     Hgfx::keyBottom = key ? (MemESP::videoLatch ? a : b) : nullptr;
     Hgfx::keyColour = s_r->g[0x004];
+    // GigaScreen for HRC is the owner's switch, as for the ZX screen: "On" in the menu
+    // (SetUp 01 / 02) draws it 256 wide and mixed, Off keeps the 512 px pair
+    // frame. Following g_zxi_008 alone blurred TOCHIHRC's 512 px title text (owner
+    // 2026-11-14); the register only says what is mixed: 1 the two VRAMs, else two frames.
+    const uint8_t gkind = s_r->g[0x008] == 1 ? 1 : 2;
+    Hgfx::giga = Config::gigascreen_onoff == 1 ? gkind : 0;
+    Hgfx::gigaAuto = Config::gigascreen_onoff == 2 ? gkind : 0;   // Auto: only while HRC flickers (Hgfx::hrcFlicker)
+    Hgfx::gigaOther = MemESP::videoLatch ? a : b;
     Hgfx::radastan = (s_r->u[0x40] & 3) == 3;
     Hgfx::radOffset = (uint16_t)(s_r->u[0x41] | (s_radHi << 8));
     Hgfx::radPad = s_r->u[0x42];
@@ -695,8 +711,11 @@ bool memWriteCold(uint16_t a, uint8_t v) {
     case W_HRXC: {
         const uint8_t* p = MemESP::ramCurrent[a >> 13] + (a & 0x1FFF);
         const uint8_t* t = VIDEO::grmem + Hgfx::HRXC_TABLE;
-        if (p >= t && p < t + Hgfx::HRXC_BYTES && (int)(CPU::tstates >> ESPectrum::multiplicator) < VIDEO::tStatesScreen)
-            s_r->hrxc[p - t] = v;
+        const uint8_t* t2 = hrxcOther() + Hgfx::HRXC_TABLE;
+        if ((int)(CPU::tstates >> ESPectrum::multiplicator) < VIDEO::tStatesScreen) {
+            if (p >= t && p < t + Hgfx::HRXC_BYTES) s_r->hrxc[p - t] = v;
+            else if (p >= t2 && p < t2 + Hgfx::HRXC_BYTES) s_r->hrxc[Hgfx::HRXC_BYTES + (p - t2)] = v;
+        }
         return false;
     }
     case W_LCU2:
@@ -1075,6 +1094,17 @@ void syncFromSettings() {
         framPut((uint8_t)i, w[i]);
     }
     if (n) Debug::log("[ELM] settings -> SetUp: %s", what);
+}
+
+// The turbo hot key set the clock itself: e_zxi_030 (and the SetUp's page) follow it.
+// m = the multiplicator, 3 = 28 MHz = OverClock 28.
+void syncTurbo(uint8_t m) {
+    if (!s_r) return;
+    const uint8_t v = m >= 3 ? 5 : m;
+    if (s_r->e[0x030] == v) return;
+    s_r->e[0x030] = v;
+    framPut(0x030, v);
+    Debug::log("[ELM] hot key: CPU speed -> e_030=%02X", v);
 }
 
 static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again

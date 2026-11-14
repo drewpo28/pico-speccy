@@ -564,6 +564,9 @@ public:
   // rgb4: pair colours 12..15 too (eLeMeNt HRXC, a 16-colour table); the overlays then
   // draw their ZX 12..15 in whatever the picture put there.
   static bool samPairSync(bool want, const uint32_t rgb12[12], const uint32_t* rgb4 = nullptr);
+  // The owner's own 256-byte pair table instead of profi_pair_lookup (nullptr: back to
+  // it), pushed by the next samPairSync. Its (c, c) slots must be the shared table's.
+  static void samPairLut(const uint8_t* lut);
   static void samPairForceOff();
   // A menu or dialog is about to draw over the framebuffer: drop the scanout
   // line map until the next EndFrame, so what it draws is shown row for row.
