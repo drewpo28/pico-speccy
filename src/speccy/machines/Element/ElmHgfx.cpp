@@ -694,12 +694,31 @@ static void paletteProgram(bool all) {
         else if (H->slotCol[k] != rgb[i]) H->mapK[i] = 0xFF;
     }
     int freeK = 0;
+    bool folded = false;
     for (int i = 0; i < 256; i++) {
         if (H->mapK[i] != 0xFF) { H->approx[i] = 0; continue; }
         int hit = -1;
         for (int k = 0; k < 168 && hit < 0; k++) if (H->claim[k] && H->slotCol[k] == rgb[i]) hit = k;
         if (hit < 0) {
             while (freeK < 168 && H->claim[freeK]) freeK++;
+            // Out of slots: the sticky rule keeps a slot for every index that once had a
+            // colour of its own, also after a fade brought them to the same colour, and
+            // nothing gave those back (Tetris: 152 colours, up to 126 doubles; the text
+            // and block colours 192..255 then sat on the nearest grey until a reset).
+            // Fold the doubles once, then look again.
+            if (freeK == 168 && !folded) {
+                folded = true;
+                for (int k = 1; k < 168; k++) {
+                    if (!H->claim[k]) continue;
+                    int j = 0;
+                    while (j < k && !(H->claim[j] && H->slotCol[j] == H->slotCol[k])) j++;
+                    if (j == k) continue;
+                    for (int m = 0; m < 256; m++) if (H->mapK[m] == k) H->mapK[m] = (uint8_t)j;
+                    H->claim[k] = 0;
+                }
+                freeK = 0;
+                while (freeK < 168 && H->claim[freeK]) freeK++;
+            }
             if (freeK < 168) { hit = freeK; take(hit, rgb[i]); }
         }
         H->approx[i] = 0;
@@ -714,6 +733,15 @@ static void paletteProgram(bool all) {
         }
         H->mapK[i] = (uint8_t)hit;
     }
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_ELMPAL")) {
+        int cl = 0, ap = 0, dup = 0;
+        for (int k = 0; k < 168; k++) { if (!H->claim[k]) continue; cl++; for (int j = 0; j < k; j++) if (H->claim[j] && H->slotCol[j] == H->slotCol[k]) { dup++; break; } }
+        for (int i = 0; i < 256; i++) ap += H->approx[i];
+        static int s_cl = -1, s_ap = -1, s_dup = -1;
+        if (cl != s_cl || ap != s_ap || dup != s_dup) { s_cl = cl; s_ap = ap; s_dup = dup; Debug::log("[ELMPAL] slots %d dup %d approx %d", cl, dup, ap); }
+    }
+#endif
     for (int i = 0; i < 256; i++) H->map[i] = kSlots(H->mapK[i]);
 }
 

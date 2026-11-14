@@ -936,6 +936,18 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   e_zxi_030 = 5/6/7 (OverClock 28/28/30) -> multiplicator 3, 3/4 (20/22) stay at 14 MHz; the SetUp keeps 5/6 and
   e_zxi_031. WOWDEMO writes 03 then 05: at 28 MHz it shows a new picture every 2 frames (~24 a second, the readme's
   figure) against every 3-4 at 14. Board cost of 28 MHz NOT measured.
+- **TETRIS "sometimes starts black and white, stays so until F12" (owner 2026-11-14; NOT hw-tested, natural failure
+  NOT reproduced; test ELF `debug/DVp2w-elm-palfold-1.1.2`).** Not the game's option 3 (grey blocks, flag `#9C70`,
+  palette `#9D50` instead of `#9C90` into colour indices 192..255): the owner says key 3 does not bring colour back.
+  Suspect: `paletteProgram`'s sticky slots. An index that once had its own colour keeps its slot when a fade brings it
+  to a neighbour's colour, and nothing returned such doubles. Meter (host, `PICOSPECCY_ELMPAL=1`, `[ELMPAL] slots /
+  dup / approx`): the picture needs 152 of the 168 slots, the game's fade (key 1) holds 156 with 42..126 doubles. With
+  no free slot the late indices (the text and block colours, 192..255) sit on the nearest grey, and stay there while
+  the doubles hold the slots. Fix: out of slots -> fold the doubles once (indices move to the first slot of the
+  colour), then deal. Proof only under a forced shortage (slot count cut to 154 in a throwaway build): without the
+  fold `approx` 1..2 through the whole run, with it 0 and 113..114 slots. On the bench at 168 slots the shortage never
+  came up (four runs), so what fills the last 12 slots on the board is a guess (a table caught half-written at the
+  frame end). If the test ELF still fails: log `[ELMPAL]`-style counts once on the board before another fix.
 - **"The palette blinks sometimes" on the host (owner 2026-11-14; NOT reproduced by a meter).** Two changes, neither
   measured: (1) `pairPalette` (all modes but HRC) keeps a colour in the pair slot whose colour of the previous frame
   is nearest instead of frequency order - the palette is pushed before core1 draws the new pixels, so renumbered
