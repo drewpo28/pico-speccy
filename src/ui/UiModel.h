@@ -212,7 +212,8 @@ bool machineMenuName(const char*& family, const char*& romShort);
 enum ArchIdx : uint8_t;     // ArchRom.h
 enum RomsetIdx : uint8_t;
 namespace nm {
-bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort);
+bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort,
+                        int pers = -1);   // eLeMeNt personality; -1 = the running one
 // Reorders a level's visible rows in place (the Machine level puts the running
 // machine's group first) and returns how many rows were moved to the front (the
 // renderer marks the first as active and rules a line under the last); 0 elsewhere.

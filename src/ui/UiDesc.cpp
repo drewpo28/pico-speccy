@@ -217,7 +217,9 @@ static void stagedMachine(ArchIdx& a, RomsetIdx& r) {
 static int machineSub(DescLine* out, int n, int max, ArchIdx a, RomsetIdx r, bool bad) {
     const char* fam = nullptr; const char* sh = nullptr;
     char now[20];
-    if (machineMenuNameFor(a, r, fam, sh)) snprintf(now, sizeof(now), "now %s", sh);
+    const int32_t m = Stage::get(SET_MACHINE);   // a staged eLeMeNt pick carries its personality
+    const int pers = m >= 0 ? (int)((m >> 16) & 0xFF) : -1;
+    if (machineMenuNameFor(a, r, fam, sh, pers)) snprintf(now, sizeof(now), "now %s", sh);
     else                                    snprintf(now, sizeof(now), "now ?");
     return sub(out, n, max, "Machine", now, bad ? DESC_BAD : DESC_OK);
 }

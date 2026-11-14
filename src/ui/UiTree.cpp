@@ -17,6 +17,7 @@
 #include "UiStrings.h"
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
 #include "app/Config.h"
+#include "speccy/machines/Element/Element.h"   // Elm::personality() for the subheader name
 #include "fs/FileUtils.h"
 #include "speccy/core/Rzx.h"               // p_rzxPlaying (Snapshots > Stop RZX playback)
 #include "speccy/devices/storage/IDE.h"     // IDE::Scheme for the Devices > IDE / HDD rows
@@ -1055,8 +1056,12 @@ bool machineMenuName(const char*& family, const char*& romShort) {
     return machineMenuNameFor(Config::arch, Config::romSet, family, romShort);
 }
 
-bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort) {
-    const int32_t want = NM_MACH(archDisplay(arch, romSet), romSet);
+bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort, int pers) {
+    // The eLeMeNt's rows differ by personality only (NM_MACH_P): without it every one
+    // of them resolved to the first row, "48". Unknown = the running board's.
+    if (arch == A_ELM && pers < 0 && Config::arch == A_ELM) pers = Elm::personality();
+    const int32_t want = pers >= 0 && arch == A_ELM ? NM_MACH_P(A_ELM, romSet, pers)
+                                                    : NM_MACH(archDisplay(arch, romSet), romSet);
     for (uint8_t i = 0; i < NM_COUNT(kMachine); i++) {
         const Node& n = kMachine[i];
         if (n.kind != K_RADIO || n.setting != SET_MACHINE) continue;
