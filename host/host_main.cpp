@@ -376,6 +376,12 @@ static bool crtScreen(SDL_Renderer* ren, SDL_Texture* src, const SDL_Rect& dst,
 static std::mutex s_snapMx;
 static std::vector<uint8_t> s_snap;
 static int s_snapW = 0, s_snapH = 0;
+// The palette that belongs to that frame. present() used to read the live tables, so a
+// machine that changes the palette with every picture (eLeMeNt HRXC video, WOWDEMO)
+// showed the last complete frame through the NEXT frame's colours now and then
+// ("the palette blinks", owner 2026-11-14).
+static uint32_t s_snapPal[256], s_snapPair[256][2];
+static bool s_snapPairMode = false;
 // The window waits for a new snapshot on this (one wake-up per frame, not a 1 ms poll).
 static std::mutex s_snapCvMx;
 static std::condition_variable s_snapCv;
@@ -392,6 +398,9 @@ extern "C" void host_frame_done(void) {
             else memset(&s_snap[(size_t)y * xres], 0, (size_t)xres);
         }
         s_snapW = xres; s_snapH = yres;
+        memcpy(s_snapPal, host_palette, sizeof s_snapPal);
+        memcpy(s_snapPair, host_pair_rgb, sizeof s_snapPair);
+        s_snapPairMode = host_pair_mode;
     }
     s_snapMs.store(SDL_GetTicks(), std::memory_order_relaxed);
     s_snapSeq.fetch_add(1, std::memory_order_release);
@@ -423,7 +432,9 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     }
     void* pix; int pitch;
     if (SDL_LockTexture(tex, nullptr, &pix, &pitch) != 0) return;
-    const bool pair = host_pair_mode;
+    const bool pair = useSnap ? s_snapPairMode : (bool)host_pair_mode;
+    const uint32_t* const palT = useSnap ? s_snapPal : host_palette;
+    const uint32_t (*const pairT)[2] = useSnap ? s_snapPair : host_pair_rgb;
     // Same values as the HDMI driver (hdmi.c hdmi_scanline_gray_lut / hdmi_crt_mask):
     // a scanline is the odd output line filled with one grey, the mask multiplies the
     // output columns by a 4-column profile (pitch 2 for the "Grille" levels).
@@ -449,8 +460,8 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         for (int x = 0; x < xres; x++) {
             const uint8_t b = row[x ^ 2];
             uint32_t l, r;
-            if (pair) { l = host_pair_rgb[b][0]; r = host_pair_rgb[b][1]; }
-            else l = r = host_palette[b];
+            if (pair) { l = pairT[b][0]; r = pairT[b][1]; }
+            else l = r = palT[b];
             if (crt && !crtShape) { l = tap(l, m[(2 * x) & 3]); r = tap(r, m[(2 * x + 1) & 3]); }
             d0[2 * x] = 0xFF000000u | l;
             d0[2 * x + 1] = 0xFF000000u | r;

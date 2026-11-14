@@ -747,14 +747,83 @@ static void hrLine(const uint8_t* scr, int y, bool indexed, uint8_t* out) {
 static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
     uint32_t pal[16]; uint32_t* h = s_hot->h;
     memcpy(h, hist, n * sizeof(uint32_t));
-    for (int i = 0; i < 12; i++) {
-        int best = 0;
-        for (int k = 1; k < n; k++) if (h[k] > h[best]) best = k;
-        pal[i] = rgbOf[best];
-        h[best] = 0;
+    // A small table (HRXC: 32 entries, WOWDEMO uses 16 a picture) with more than twelve
+    // colours in use: the twelve most frequent ones dropped whole hues, and the nearest
+    // left for skin and hair were the ZX bright white and yellow (owner 2026-11-14).
+    // Merge instead: the colour that costs least (its weight x the distance to the
+    // nearest one staying, the four ZX ones included) goes, its weight to the neighbour.
+    // HRXC (owner 2026-11-14): all sixteen pair colours are the picture's when it uses
+    // more than twelve; the ZX 12..15 the overlays count on come back with a calmer one.
+    const int room = mode == 2 ? 16 : 12;
+    if (n <= 32) {
+        int used = 0;
+        for (int k = 0; k < n; k++) if (h[k]) used++;
+        while (used > room) {
+            int drop = -1, into = -1; uint64_t cost = ~0ull;
+            for (int k = 0; k < n; k++) {
+                if (!h[k]) continue;
+                uint32_t bd = ~0u; int b = -1;
+                for (int j = 0; j < n; j++) {
+                    if (j == k || !h[j]) continue;
+                    const uint32_t d = dist(rgbOf[j], rgbOf[k]);
+                    if (d < bd) { bd = d; b = j; }
+                }
+                if (room == 12) for (int z = 12; z < 16; z++) {
+                    const uint32_t d = dist(VIDEO::zxRgb((uint8_t)z), rgbOf[k]);
+                    if (d < bd) { bd = d; b = -1; }
+                }
+                const uint64_t c = (uint64_t)bd * h[k];
+                if (c < cost) { cost = c; drop = k; into = b; }
+            }
+            if (drop < 0) break;
+            if (into >= 0) h[into] += h[drop];
+            h[drop] = 0;
+            used--;
+        }
     }
-    for (int i = 12; i < 16; i++) pal[i] = VIDEO::zxRgb((uint8_t)i);
-    s_pair = VIDEO::samPairSync(true, pal);
+    bool full = false;
+    if (mode == 1) {                     // HRC: the ZX colours, pair index = ZX index
+        for (int i = 0; i < 12; i++) {
+            int best = 0;
+            for (int k = 1; k < n; k++) if (h[k] > h[best]) best = k;
+            pal[i] = rgbOf[best];
+            h[best] = 0;
+        }
+        for (int i = 12; i < 16; i++) pal[i] = VIDEO::zxRgb((uint8_t)i);
+    } else {
+        // The colours that stay, the heaviest first, then each into the slot whose
+        // colour of the previous frame is nearest. The palette is pushed before the
+        // new pixels are drawn, so for a moment the old picture is shown through it:
+        // in frequency order every picture of a video renumbered the slots and that
+        // moment was a flash of wrong colours (owner on the host, 2026-11-14).
+        uint32_t want[16]; int m = 0;
+        for (; m < room; m++) {
+            int best = -1;
+            for (int k = 0; k < n; k++) if (h[k] && (best < 0 || h[k] > h[best])) best = k;
+            if (best < 0) break;
+            want[m] = rgbOf[best];
+            h[best] = 0;
+        }
+        full = m > 12;
+        const int slots = full ? 16 : 12;
+        const bool had = s_pair;
+        for (int i = 0; i < 16; i++) pal[i] = had && i < slots ? s_hot->pal[i] : i < 12 ? 0 : VIDEO::zxRgb((uint8_t)i);
+        uint16_t usedS = 0, usedC = 0;
+        for (int a = 0; a < m; a++) {
+            uint32_t bd = ~0u; int bs = 0, bc = 0;
+            for (int c = 0; c < m; c++) {
+                if (usedC & (1u << c)) continue;
+                for (int sl = 0; sl < slots; sl++) {
+                    if (usedS & (1u << sl)) continue;
+                    const uint32_t d = had ? dist(s_hot->pal[sl], want[c]) : (uint32_t)(sl != c);
+                    if (d < bd) { bd = d; bs = sl; bc = c; }
+                }
+            }
+            usedS |= (uint16_t)(1u << bs); usedC |= (uint16_t)(1u << bc);
+            pal[bs] = want[bc];
+        }
+    }
+    s_pair = VIDEO::samPairSync(true, pal, full ? pal + 12 : nullptr);
     memcpy(s_hot->pal, pal, sizeof(pal));
     for (int k = 0; k < n; k++) {
         uint32_t bd = ~0u; int b = 0;

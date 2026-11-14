@@ -2502,12 +2502,15 @@ bool Tape::FlashLoad() {
             UINT br;
             MemESP::ensureResident(page); // accessor bank → real frame before raw f_read
             uint8_t* p = MemESP::ramCurrent[page];
+            // A request longer than the block (HGFXHAM8 asks #5000 for 193 bytes)
+            // stores only what the tape has: data + the parity byte.
+            const int rd = nBytes > (blockLen - 1) ? (blockLen - 1) : nBytes;
             if ( p < (uint8_t*)0x11000000 || (page <= 1 && !MemESP::page0ram) ) {
-                f_lseek(tape, f_tell(tape) + nBytes);
+                f_lseek(tape, f_tell(tape) + rd);
             } else {
                 MemESP::ensureResident(page);
                     mem_desc_t::mark_bank_dirty(page); // direct write past writebyte
-                f_read(tape, &p[addr2], nBytes, &br);
+                f_read(tape, &p[addr2], rd, &br);
             }
             while ((count < nBytes) && (count < blockLen - 1)) {
                 Z80::Xor(MemESP::readbyte(addr));
@@ -2518,6 +2521,7 @@ bool Tape::FlashLoad() {
             int chunk1 = 0x2000 - addr2;
             int chunkrest = nBytes > (blockLen - 1) ? (blockLen - 1) : nBytes;
             do {
+                if (chunk1 > chunkrest) chunk1 = chunkrest;   // short block inside the first page
                 if ((page > 1) && (page < 8)) {
                     UINT br;
                     MemESP::ensureResident(page);
@@ -2810,12 +2814,15 @@ bool Tape::FlashLoad() {
         UINT br;
         MemESP::ensureResident(page); // accessor bank → real frame before raw f_read
         uint8_t* p = MemESP::ramCurrent[page];
+        // A request longer than the block (HGFXHAM8 asks #5000 for 193 bytes)
+        // stores only what the tape has: data + the parity byte.
+        const int rd = nBytes > (blockLen - 1) ? (blockLen - 1) : nBytes;
         if ( p < (uint8_t*)0x11000000 || (page <= 1 && !MemESP::page0ram) ) {
-            f_lseek(tape, f_tell(tape) + nBytes);
+            f_lseek(tape, f_tell(tape) + rd);
         } else {
             MemESP::ensureResident(page);
                     mem_desc_t::mark_bank_dirty(page); // direct write past writebyte
-            f_read(tape, &p[addr2], nBytes, &br);
+            f_read(tape, &p[addr2], rd, &br);
         }
 
         while ((count < nBytes) && (count < blockLen - 1)) {
@@ -2832,6 +2839,7 @@ bool Tape::FlashLoad() {
         int chunkrest = nBytes > (blockLen - 1) ? (blockLen - 1) : nBytes;
 
         do {
+            if (chunk1 > chunkrest) chunk1 = chunkrest;   // short block inside the first page
 
             if ((page > 1) && (page < 8)) {
                 UINT br;

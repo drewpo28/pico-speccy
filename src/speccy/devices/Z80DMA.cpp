@@ -1147,6 +1147,26 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
     }
 #endif
 
+    // The frame end inside a transfer. It used to be taken right here (VIDEO::EndFrame
+    // and a rewind of CPU::tstates inside the OUT), so that frame never reached the main
+    // loop: no V-Sync wait and no audio write for it. PF2026 on the eLeMeNt streams from
+    // the card through the DMA, a third of its time: 20 such frames a second, the machine
+    // at 70 FPS and every third frame of sound lost (owner on the host bench, 2026-11-14;
+    // the Next got its own cure on 2026-10-08, nxService). Now the rest of the transfer
+    // moves its bytes without the clock, the loop ends the frame its usual way, and the
+    // time owed is charged at the start of the next transfer.
+    static uint32_t s_owed = 0;
+    if (s_owed) {
+        uint32_t pay = CPU::tstates < CPU::statesInFrame ? CPU::statesInFrame - CPU::tstates : 0;
+        if (pay > s_owed) pay = s_owed;
+        s_owed -= pay;
+        while (pay) { const uint32_t n = pay > 200 ? 200 : pay; VIDEO::Draw(n, false); pay -= n; }
+    }
+    auto dmaT = [](uint32_t n) __attribute__((always_inline)) {
+        if (CPU::tstates < CPU::statesInFrame) VIDEO::Draw(n, false);
+        else if (s_owed < CPU::statesInFrame) s_owed += n;
+    };
+
     while (byte_counter > 0 && transfer_active) {
         transfer_started = true;
 
@@ -1167,16 +1187,16 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
         // shadow below is what keeps in-order per-scanline writers right.
         if (transfer_dir) {
             // A → B: read A, write B
-            VIDEO::Draw(port_a_cycles, false);
+            dmaT(port_a_cycles);
             val = port_a_is_io ? Ports::dmaInput(cur_port_a) : memPeek(cur_port_a);
-            VIDEO::Draw(port_b_cycles, false);
+            dmaT(port_b_cycles);
             if (port_b_is_io) Ports::dmaOutput(cur_port_b, val);
             else memPoke(cur_port_b, val);
         } else {
             // B → A: read B, write A
-            VIDEO::Draw(port_b_cycles, false);
+            dmaT(port_b_cycles);
             val = port_b_is_io ? Ports::dmaInput(cur_port_b) : memPeek(cur_port_b);
-            VIDEO::Draw(port_a_cycles, false);
+            dmaT(port_a_cycles);
             if (port_a_is_io) Ports::dmaOutput(cur_port_a, val);
             else memPoke(cur_port_a, val);
         }
@@ -1186,15 +1206,9 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
         byte_counter--;
         }
 
-        // Handle frame boundary mid-transfer
-        if (CPU::tstates >= CPU::statesInFrame) {
 #if NEXT_TRACE
-            g_dma_endframes++;
+        if (CPU::tstates >= CPU::statesInFrame) g_dma_endframes++;
 #endif
-            VIDEO::EndFrame();
-            CPU::global_tstates += CPU::statesInFrame;
-            CPU::tstates -= CPU::statesInFrame;
-        }
     }
 
     // Snapshot attr state for per-scanline effects

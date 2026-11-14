@@ -170,3 +170,17 @@ CPU.cpp build with `-fno-data-sections -fsection-anchors`. The branch's TS-Conf
 "28 MHz (turbo)" CPU cap was deliberately NOT taken (owner: the speed-ups serve
 14 MHz too). `tools/z80bench/` = the branch's QEMU
 instruction-count harness (ZEXDOC passes; -28% ARM insns/T measured there).
+
+## Z80 DMA: a frame end inside a transfer goes through the main loop (2026-11-14, bench, NOT hw-tested)
+
+The generic (non-Next) transfer loop in `Z80DMA::handleDMA` ran a whole block inside the OUT and, when the clock
+passed `statesInFrame`, called `VIDEO::EndFrame()` and rewound `CPU::tstates` right there. That frame skipped
+`ESPectrum::loop`: no V-Sync wait, no audio write, no per-frame services. Rare on most software (one lost frame of
+sound), constant on the eLeMeNt's PF2026, which streams from the card through the DMA: 70 FPS on the host bench and
+a third of the sound gone (other-machines.md). Now, once the clock is at the frame end, the rest of the transfer
+moves its bytes without `VIDEO::Draw` and adds the time to `s_owed` (capped at one frame); the loop ends the frame
+as usual and the next transfer pays `s_owed` first, up to its frame's end. Total time is kept for streaming users;
+a single block longer than what is left of the frame finishes early by that much. The Next keeps `nxService`.
+Re-run on the bench: all 46 eLeMeNt Demos/Games. Other DMA machines (Pentagon + DMA card, MB-02+, TS-Conf has its
+own) NOT re-run.
+

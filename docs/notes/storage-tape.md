@@ -566,6 +566,14 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   per-pulse levels, keys typed for LOAD "") settled the polarity in one run —
   rebuild it in session scratch before guessing at a tape-loader report.
 
+**A request LONGER than the block (2026-11-14, bench, NOT hw-tested).** HGFXHAM8.TAP (eLeMeNt) finds its palette
+blocks by calling LD-BYTES with DE = #5000 on every block and comparing IX afterwards (#78C1 + 193 for the 194-byte
+block). The TAP and TZX flash-load paths clamped the byte count only where the request stayed inside one 8 KB page;
+across a page boundary the first chunk ran to the end of the page (1855 bytes for 193), IX came back wrong and the
+loader went round the tape for ever (border stripes, blue paper). The one-page path also `f_read` the whole request
+into RAM past the block. Both now stop at data + parity (`rd`, `chunk1 > chunkrest`), as the PZX path already did.
+Re-run on the bench after it: HGFNICCC, HGFXBIRD, HRXCIMGS, HE2025, PARADISE tapes load as before.
+
 ## Tape wear — "the recorder is chewing the tape" (2026-09-20; hw-confirmed, after three rounds)
 
 `Config::tape_wear` (Storage > Tape > Tape wear: Off / Light / Medium / Heavy)

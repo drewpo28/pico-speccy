@@ -794,6 +794,73 @@ emulated frame). Every store went `poke8_generic` (RAM) -> `Elm::memWrite` (flas
 - The read side (`peek8_generic`) is RAM all the way; level 2 fast reads (below #4000) are the Next's and are tied to
   its divMMC plug, not taken. Bench tape: scratch `mkzoom.py` (BASIC loop with `LOAD ""CODE` + the five HGFZOOMn.COD).
 
+**Demos + Games sweep on the bench (2026-11-14, NOT hw-tested; the owner's `eLeMeNtZx/Demos` and `Games`, 46 entries).**
+Recipe: each run gets its own card root (SYS, BIN, .config, roms/element, the program's folder under `/EZ`) and a
+one-line launcher tape `10 GO TO "/EZ/<DIR>": LOAD *"<NAME>.BAS"` (esxDOS BASIC: `GO TO "dir"` = cd); a typed
+`.cd /EZ/X` inside a tape line answered "Invalid FILENAME". LOAD keys from frame 900 (a fresh root boots esxDOS
+later than frame 500). Six runs in parallel give ~3000 frames in 130 s each. Rebuild `build-all/host` first: the
+binary had been built from another branch and showed HGFXCUBE as a black screen.
+Copy the NVS and the FRAM from a SAVED Element copy, not from the live `~/pico-speccy`: the machine there was switched to
+Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
+- All 46 start and draw: ABUSEZX, FDMATEST, GIGASCRS, HGFXAGON, HGFXCUBE, HGFXDEM2 (ZOOM, HAMCOLOR), HGFXELOG,
+  HGFXPLOT, HGFX-SHR (SHR4ZXSC, SHRTEXT), HGFXTEXT, HRCDEMO (102 bytes of random HRC cells, as drawn), KLAYTEST,
+  LIMSHOWM (GS found, pictures change), PF2024, PF2026, PLANETOS, RADAMAND, RADASHOW, RADDEMOS (five HWSCROLL,
+  RADSCROL, T-REX), SAM2HGFX, TOCHIHRC, ULAW20A/B, WALLRUN, WOW, HGFNICCC (3D part draws polygons now, the old
+  "bands" are gone), HGFXBIRD, HGFXHAM8, HRXCIMGS; games AWORLD (08 + AA-SRAM, to the access-code screen),
+  HOLYTOW2 (menu, story), MAGMAGIC, NETHER, NEXTIPED, SHIPFIX, SLAMTRIS, TETRIS, HE2025, PARADISE (menu) reach play.
+  Sound was not judged (dummy audio).
+- **PF2026: green bars instead of the "PF 2026" title for the first ~70 s.** The APP launcher (PF2026.COD, on the
+  power-up personality 07) loads the package into Protect pages #5F-#77, the demo then writes e_zxi_000 = 05 and
+  copies pages #5F-#62 to the chunky window. On 07 the pool wrapped at 64 pages, on 05 at 128: the demo read pages
+  nobody wrote. Third fault of this family after HGFXZOOM (zoom4/zoom5). Fix: `poolIndex` numbers the 07 pool like
+  the others (128, 384 with AA-SRAM); g_zxi_011/012 still report 64 (256). Proof: FRAM byte 0 = 05 from power-up
+  showed the title before the fix. Dead end: sending chunky WRITES to the VP bit 2 buffer (the Reference's "bit2 =
+  source ... and CHUNKY access") also hid the bars, but lost TETRIS's background picture and HGFNICCC's 3D part;
+  chunky writes stay on bit 1. The video peeking in at the bottom and sliding up after ~1450 frames is the demo.
+- HGFXHAM8.TAP never showed a picture: a shared tape flash-load bug, see storage-tape.md "Tape polarity, long blocks".
+- HW128X512's seam is the picture's own wrap (a 512-line collage through a 256-line window), not the offset register.
+
+**PF2026 sound and WOWDEMO colours (owner on the bench build, 2026-11-14: "звук очень странный", wrong colours; fixed on the bench, NOT hw-tested).**
+- PF2026 streams ADC.BIN through a 64 KB SoundDMA loop at #0F0000 (URAM pages #78-#7F; par #9D = play, loop, signed,
+  extended period, stereo; period #1612 = 20298.67 Hz, 1600 bytes a video packet) and paces the video on g_zxi_04A.
+  `ElmSdma` masked sample addresses to 512 KB, so it played pages #38-#3F: noise. Now 24 bits, the page callback wraps
+  at the pool. That gave music, but still "strange": see the next item.
+- **PF2026 at 70 FPS, a third of the sound missing (owner on the host bench).** The demo reads the card through the
+  Z80 DMA, a third of its machine time, and the generic transfer loop took a frame end inside a transfer on the spot
+  (`VIDEO::EndFrame` + a rewind inside the OUT): ~20 frames a second never reached the main loop, so no V-Sync wait
+  and no `pwm_audio_write` for them. Fixed in Z80DMA.cpp for every non-Next machine (z80-core.md). Meter:
+  `PICOSPECCY_WAV` against ADC.BIN (raw signed 8-bit stereo, 20298.67 Hz) with a correlator over 65 ms windows -
+  after the fix the source position is t - 18.511 s at every probe from 30 to 60 s, correlation 0.99+; before it ran
+  1.43-1.48x ahead in jumps. A first reading of that ("the file carries packet headers") was WRONG; a frame counter
+  against the wall clock next to the tick counter is what named it (48.8 ticks, 70 frame ends).
+- WOWDEMO is HRXC (512 wide = the pair frame: 12 free colours + ZX 12..15). Each picture brings its own 16 colours;
+  `pairPalette` kept the 12 most frequent and sent the rest to the nearest of the 16, which for skin (#FBDCBE) and hair
+  (#D7AE24) was the ZX bright white and yellow. Now, for tables of up to 32 entries, the colour whose weight x distance
+  to its nearest remaining neighbour is smallest is merged into that neighbour until 12 are left. Tables of 256
+  (HGFX 2 pair frames) keep the frequency pick: the merge is O(n^3). Re-run after it: HRCDEMO, TOCHIHRC, HRXCIMGS,
+  LIMSHOWM, HGFX-SHR, SHR4ZXSC, KLAYTEST, PF2026, HGFNICCC, HGFXBIRD, NETHER, TETRIS - pictures as before or better.
+  Owner 2026-11-14, on the bench pictures side by side: the merged palette (gold hair, skin tone, red scarf) is the right one.
+- **HRXC takes all 16 pair colours, OverClock = 28 MHz (owner 2026-11-14: both "да"; bench).** `samPairSync` got an
+  optional `rgb4` (pair colours 12..15); `pairPalette` asks for it in HRXC when a picture uses more than twelve, so
+  WOWDEMO's 16 are exact and nothing is merged. The overlays' ZX 12..15 are then the picture's colours for as long
+  as such a picture is up (a notify badge over it may be hard to read; a full-screen menu owns the palette anyway).
+  e_zxi_030 = 5/6/7 (OverClock 28/28/30) -> multiplicator 3, 3/4 (20/22) stay at 14 MHz; the SetUp keeps 5/6 and
+  e_zxi_031. WOWDEMO writes 03 then 05: at 28 MHz it shows a new picture every 2 frames (~24 a second, the readme's
+  figure) against every 3-4 at 14. Board cost of 28 MHz NOT measured.
+- **"The palette blinks sometimes" on the host (owner 2026-11-14; NOT reproduced by a meter).** Two changes, neither
+  measured: (1) `pairPalette` (all modes but HRC) keeps a colour in the pair slot whose colour of the previous frame
+  is nearest instead of frequency order - the palette is pushed before core1 draws the new pixels, so renumbered
+  slots flash; (2) host_main.cpp: `present()` read the LIVE palette tables over the frame snapshot, now the tables
+  are copied with the snapshot (`s_snapPal`, `s_snapPair`). Frame-by-frame shots (700 frames, outlier-frame and
+  single-frame-spike counts) show 0 flashes before AND after, so the shots do not see what the owner saw; his eyes
+  are the test. Owner: WOWDEMO's colours are right; its music needs Devices > SAA1099 on.
+- WOWDEMO flicker (owner: "картинка мерцает"): it flips the screen (#7FFD bit 3) for every picture, one every 3-4
+  frames, and each screen carries its own HRXC table. The frame was drawn from the NEW screen with the table latched
+  at the frame start from the OLD one: one frame in three in the wrong colours. `Elm::frameEnd` now re-latches when
+  `VIDEO::grmem` is not the screen the table came from (`s_hrxcSrc`). Meter: shots of every frame, count the frames
+  that differ from the previous one - before, two in a row per picture (20-90 % of the pixels, then back); after,
+  one per picture, 0 doubles over 161 frames. It does not change which colours a settled picture has.
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

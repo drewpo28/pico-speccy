@@ -410,6 +410,11 @@ static void lcu2Publish() {
 
 static uint32_t poolIndex(uint16_t page) {   // Protect: the pool wraps like the board's page decode
     uint32_t b, n; protectPool(&b, &n);
+    // The Pentagon 1024 REPORTS 64 (256) free pages, but a page number means the same
+    // page as on the smaller personalities: the APP launcher loads PF2026 into pages
+    // #5F-#77 on 07, the demo then writes e_zxi_000 = 05 and reads them back. With the
+    // 64-page wrap it read pages nobody wrote (green bars for the title, bench 2026-11-14).
+    if (s_r->e[0x000] == 7) n = aasram() ? 384 : 128;
     return (b + ((n & (n - 1)) ? page % n : (page & (n - 1)))) & (fullPages() - 1);
 }
 static uint8_t* uramPtr(uint16_t page) {
@@ -566,7 +571,9 @@ void remap() {
     windowsRebuild();
 }
 
+static const uint8_t* s_hrxcSrc;      // the screen the table was latched from
 static void hrxcLatch() {
+    s_hrxcSrc = VIDEO::grmem;
     if (Hgfx::mode == 2) memcpy(s_r->hrxc, VIDEO::grmem + Hgfx::HRXC_TABLE, Hgfx::HRXC_BYTES);
 }
 
@@ -585,6 +592,11 @@ void frameEnd() {
     Hgfx::radOffset = (uint16_t)(s_r->u[0x41] | (s_radHi << 8));
     Hgfx::radPad = s_r->u[0x42];
     Hgfx::radBank = s_r->u[0x43] & 3;
+    // The other screen was switched in during this frame (#7FFD bit 3): the picture drawn
+    // below is that screen's, so is the table. WOWDEMO flips for every picture and each
+    // has its own colours; with the table of the frame start every new picture was shown
+    // for one frame in the previous one's colours (flicker, owner 2026-11-14).
+    if (Hgfx::mode == 2 && VIDEO::grmem != s_hrxcSrc) hrxcLatch();
     Hgfx::hrxcTable = s_r->hrxc;
     Hgfx::frameEnd();
     hrxcLatch();                          // the next frame starts with the table as it is now
@@ -903,8 +915,8 @@ static void validateRegs() {
     if (e[0x01F] != 0) revert(0x01F, 0, "DVI");
     if (e[0x02C] == 2) revert(0x02C, 1, "SD slot 2");             // the Z-Controller's card is set in Devices
     if (e[0x02D] & 2) revert(0x02D, (uint8_t)(e[0x02D] & ~2), "SD swap");
-    if (e[0x030] >= 3) revert(0x030, 2, "20 MHz+");      // 14 MHz is the ceiling
-    if (e[0x031] & 1) revert(0x031, 0, "OverClock");
+    if (e[0x030] == 3 || e[0x030] == 4) revert(0x030, 2, "20/22 MHz");   // 14 or 28 MHz here
+    if (e[0x030] == 7) revert(0x030, 6, "30 MHz");
     if (e[0x03F] != 0) revert(0x03F, 0, "Diag");
     if (!n) return;
     Debug::log("[ELM] SetUp: not supported here, kept as before: %s", what);
@@ -1276,16 +1288,17 @@ static uint8_t uartStatus() {
     return (uint8_t)((lsr & 1) | (lsr & 0x20 ? 0 : 2));
 }
 
-// e_zxi_030 / u_zxi_00B: the CPU clock. 20 MHz and the overclock modes run at our
-// 14 MHz (deviation, recorded in the plan).
+// e_zxi_030 / u_zxi_00B: the CPU clock. 20 and 22 MHz run at our 14 MHz (deviation,
+// recorded in the plan); the OverClock 28 / 30 MHz modes at 28 MHz like the Next's
+// (owner 2026-11-14: WOWDEMO writes 03 then 05 and skips frames below 28).
 static void cpuSpeed(uint8_t sel) {
-    const uint8_t want = sel >= 2 ? 2 : sel;
+    const uint8_t want = sel >= 5 ? 3 : sel >= 2 ? 2 : sel;
     const uint8_t old = ESPectrum::multiplicator;
     if (want == old) return;
     CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
     ESPectrum::multiplicator = want;
     CPU::updateStatesInFrame();
-    OSD::notifyClock(want == 2 ? " CPU: 14 MHz " : want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
+    OSD::notifyClock(want == 3 ? " CPU: 28 MHz " : want == 2 ? " CPU: 14 MHz " : want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
 }
 
 // The 48-bit master counter at 114.6875 MHz, i.e. 32.77 counts per 3.5 MHz T.

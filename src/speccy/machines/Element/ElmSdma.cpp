@@ -13,7 +13,10 @@ namespace {
 
 constexpr uint64_t CLOCK_NORMAL = 7167969;     // 7.16796875 MHz
 constexpr uint64_t CLOCK_EXT    = 114687500;   // 114.6875 MHz
-constexpr uint32_t ADDR_MASK    = 0x7FFFF;     // 512K of protected URAM
+// 24-bit addresses into the protected URAM; the page callback wraps at the pool. It was
+// 512K until 2026-11-14: PF2026 streams through a 64K buffer at #0F0000 (pages #78-#7F)
+// and the mask played pages #38-#3F instead - noise in place of the music.
+constexpr uint32_t ADDR_MASK    = 0xFFFFFF;
 constexpr int      BIAS         = 128;
 
 struct Ch {
