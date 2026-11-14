@@ -32,6 +32,11 @@
 #include "drivers/graphics/graphics.h"   // graphics_set_scanlines: the SetUp's CRT effect applied live
 
 uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
+// Ports::input: e_zxi_010 bit 1 clear ("enable read port hFF" off, the SetUp's default) =
+// an IN from #FF does not answer with the Timex register even with the Timex modes on,
+// so the read falls through to the personality's floating bus (Reference: the read
+// "does not work with some ZX Spectrum games, e.g. Arkanoid").
+uint8_t g_elm_ff_off;
 const uint8_t* g_elm_divrom;          // DivMMC.cpp: esxDOS from block 4 of the ROM Area (e_zxi_02D bit 0)
 uint8_t g_elm_personality = 7;        // Config.h: e_zxi_000 as armed at the last reset
 
@@ -65,6 +70,7 @@ static inline uint32_t fullPages() { return MEM_PG_CNT * 2; }
 static inline bool aasram() { return MEM_PG_CNT >= 256; }
 static void aasramWanted(bool want, const char* who);
 static void divsdWanted(uint8_t e001, const char* who);
+static void bootClassRegs(const uint8_t* e);
 // Protect mode leaves URAM what the ZX memory of the personality (e_zxi_000) does not
 // take: 128 pages up to 512 KB, 64 on the Pentagon 1024 (the Reference's table).
 // HGFNICCC sets Pentagon 128 and streams 120 pages; with 64 its stream wrapped onto
@@ -210,7 +216,7 @@ static uint8_t s_radHi;
 static uint8_t s_scan;
 static uint8_t s_lifo[32], s_lifoTop;     // #2B, 32 bytes, circular
 static uint64_t s_clkLatch;               // e_zxi_0F3..0F8, latched by reading 0F3
-static void cpuSpeed(uint8_t sel);
+static void cpuSpeed(uint8_t sel, bool quiet = false);
 static void eWrite(uint8_t r, uint8_t v);
 static void extraTick();
 static uint8_t s_dac[5], s_dacUsed;
@@ -785,6 +791,24 @@ void rst0(uint16_t pc) {
     s_setupLive = false;
     s_fromSetup = true;
     s_resetWanted = true;
+    // What the SetUp SAVED is what it meant: every page stores its pick in the FRAM
+    // (#2000 + N), but the live write can miss - SetUp 20260406's "Joystick/DE9
+    // connector" page shares the Joystick page's handler (page table D44C: handler C7D7
+    // for both), so it writes e_003 live and e_01A to the FRAM; Shift+L only fills the
+    // FRAM. The board shows the saved values at its next power-up; here the restart is
+    // that power-up (cold esxDOS, reboot-class items), so the registers follow the FRAM
+    // now. Before the reset: armPersonality reads e_000 ahead of Elm::reset.
+    if (ElmFlash::ensure()) {
+        const uint8_t* f = ElmFlash::fram();
+        if (f[0x000] <= 9 && f[0x001] != 0xFF) {
+            for (int i = 0; i < 0x40; i++)
+                if (s_r->e[i] != f[i]) Debug::log("[ELM] SetUp exit: e_%03X live %02X, saved %02X -> saved", i, s_r->e[i], f[i]);
+            memcpy(s_r->e, f, 0x40);
+            aasramWanted(f[0x038] & 1, "SetUp e_zxi_038");
+            divsdWanted(f[0x001], "SetUp e_zxi_001");
+            bootClassRegs(f);
+        }
+    }
     g_elm_nodiv = 1;                    // the rest of this frame: the ROM alone at #0000
     Debug::log("[ELM] SetUp RST 0 at %04X: e_000=%02X e_001=%02X e_00F=%02X e_02D=%02X divmmc map=%d con=%d -> machine reset",
                pc, s_r->e[0x000], s_r->e[0x001], s_r->e[0x00F], s_r->e[0x02D],
@@ -819,6 +843,17 @@ static bool mb02Ram() {
     }
     MB02::setExternalRam(s_mb02Ram);
     return true;
+}
+
+// Reboot-class: the DMA window and the ZiFi NIC are laid out at boot (the SetUp's
+// restart reboots the board when either changed - rebootWanted()). Also called from
+// rst0, BEFORE the caller asks rebootWanted(): from applyRegs alone (inside the reset
+// that follows) the pick came one check too late and the board did not reboot.
+static void bootClassRegs(const uint8_t* e) {
+    const bool dma = e[0x02E] & 1;
+    if ((Config::dma_mode != 0) != dma) { Config::dma_mode = dma ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_02E: DMA %s at the next boot", dma ? "on" : "off"); }
+    const bool uart = e[0x039] != 3;
+    if ((Config::zifi_enabled != 0) != uart) { Config::zifi_enabled = uart ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_039 = %02X: UART/ZiFi %s at the next boot", e[0x039], uart ? "on" : "off"); }
 }
 
 // Phase E: the SetUp's registers -> Config. Runtime only, never Config::save(): the
@@ -883,12 +918,7 @@ static void applyRegs(const uint8_t* e, bool live) {
     if (tz >= -12 && tz <= 14 && Config::wifi_tz != tz) { Config::wifi_tz = tz; note("tz"); }
     if (n) Debug::log("[ELM] SetUp -> settings%s: %s", live ? "" : " (boot)", what);
     if (live && subsys) nm::Stage::reconcileQuiet();
-    // Reboot-class: the DMA window and the ZiFi NIC are laid out at boot (the SetUp's
-    // restart reboots the board when either changed - rebootWanted()).
-    const bool dma = e[0x02E] & 1;
-    if ((Config::dma_mode != 0) != dma) { Config::dma_mode = dma ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_02E: DMA %s at the next boot", dma ? "on" : "off"); }
-    const bool uart = e[0x039] != 3;
-    if ((Config::zifi_enabled != 0) != uart) { Config::zifi_enabled = uart ? 1 : 0; Config::save(); Debug::log("[ELM] SetUp e_zxi_039 = %02X: UART/ZiFi %s at the next boot", e[0x039], uart ? "on" : "off"); }
+    bootClassRegs(e);
 }
 
 // What the emulator cannot do that the SetUp offers: told once at the SetUp's exit, and
@@ -903,14 +933,19 @@ static void framPut(uint8_t i, uint8_t v) {
 static void validateRegs() {
     const uint8_t* prev = s_preValid ? s_preSetup : kDefaults;
     char what[160]; int n = 0;
+    // Told only when the pick was made in this session: a value the SetUp's own defaults
+    // table carries (legacy DVI = 1) is put right without a word.
     auto revert = [&](uint8_t i, uint8_t v, const char* why) {
         if (s_r->e[i] == v) return;
+        const bool picked = s_r->e[i] != prev[i] && s_r->e[i] != kDefaults[i];
         s_r->e[i] = v; framPut(i, v);
+        if (!picked) return;
         if (n < (int)sizeof(what) - 24) n += snprintf(what + n, sizeof(what) - n, "%s%s", n ? ", " : "", why);
     };
     uint8_t* e = s_r->e;
     if (e[0x000] == 2 || e[0x000] == 4 || e[0x000] > 9) revert(0x000, prev[0x000] <= 9 && prev[0x000] != 2 && prev[0x000] != 4 ? prev[0x000] : kDefaults[0], "machine");
     if (!(e[0x002] & 1)) revert(0x002, (uint8_t)(e[0x002] | 1), "ULA audio off");
+    if (e[0x003] > 3) revert(0x003, prev[0x003] <= 3 ? prev[0x003] : 1, "keyboard joystick");
     if (e[0x01A] != 0) revert(0x01A, 0, e[0x01A] == 1 ? "Sega pad" : "DE9 UART");
     if (e[0x01F] != 0) revert(0x01F, 0, "DVI");
     if (e[0x02C] == 2) revert(0x02C, 1, "SD slot 2");             // the Z-Controller's card is set in Devices
@@ -1007,12 +1042,11 @@ void syncFromSettings() {
     if (!s_r) return;
     uint8_t w[0x40];
     memcpy(w, s_r->e, sizeof w);
-    switch (Config::joystick) {                        // 04 (keys) covers Cursor; Fuller/custom stay
+    switch (Config::joystick) {                        // Cursor / Fuller / custom have no SetUp value: it stays
         case JOY_NONE:      w[0x003] = 0; break;
         case JOY_KEMPSTON:  w[0x003] = 1; break;
         case JOY_SINCLAIR2: w[0x003] = 2; break;
         case JOY_SINCLAIR1: w[0x003] = 3; break;
-        case JOY_CURSOR:    w[0x003] = 4; break;
         default: break;
     }
     w[0x010] = (uint8_t)((w[0x010] & ~1) | (Config::timex_video ? 1 : 0));
@@ -1128,6 +1162,8 @@ void reset() {
     if (s_setupRom) Debug::log("[ELM] SetUp ROM (block 7 of Area %u) boots at this reset", s_r->e[0x00F] & 3);
     cpuSpeed(s_r->e[0x030]);
     ElmSid::mute(!(s_r->e[0x002] & 8));
+    g_elm_ff_off = !(s_r->e[0x010] & 2);
+    ElmSid::setParams(s_r->e[0x019] & 3);   // the SetUp's model / clock outlives a reset like the register
     if (s_fromSetup) { s_fromSetup = false; if (s_running) validateRegs(); }
     if (s_running) applyRegs(s_r->e, true);   // the power-up values went in through bootSettings()
     s_r->e[0x0FC] = kStampDay;
@@ -1245,6 +1281,7 @@ static void eWrite(uint8_t r, uint8_t v) {
     if (r == 0x2D) { remap(); divRomApply(); }
     if (r == 0x0F && s_flashOpen) remap();   // the flash window follows the Area at once; the ROMs at the next reset (FLASH2A returns to BASIC between blocks)
     if (r == 0x02) ElmSid::mute(!(v & 8));
+    if (r == 0x10) g_elm_ff_off = !(v & 2);
     if (r == 0x38) aasramWanted(v & 1, "e_zxi_038");
     if (r == 0x01) divsdWanted(v, "e_zxi_001");
     if (r == 0x19) { ElmSid::renderTo(audioPos()); ElmSid::setParams(v & 3); }
@@ -1291,13 +1328,14 @@ static uint8_t uartStatus() {
 // e_zxi_030 / u_zxi_00B: the CPU clock. 20 and 22 MHz run at our 14 MHz (deviation,
 // recorded in the plan); the OverClock 28 / 30 MHz modes at 28 MHz like the Next's
 // (owner 2026-11-14: WOWDEMO writes 03 then 05 and skips frames below 28).
-static void cpuSpeed(uint8_t sel) {
+static void cpuSpeed(uint8_t sel, bool quiet) {
     const uint8_t want = sel >= 5 ? 3 : sel >= 2 ? 2 : sel;
     const uint8_t old = ESPectrum::multiplicator;
     if (want == old) return;
     CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
     ESPectrum::multiplicator = want;
     CPU::updateStatesInFrame();
+    if (quiet) return;
     OSD::notifyClock(want == 3 ? " CPU: 28 MHz " : want == 2 ? " CPU: 14 MHz " : want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
 }
 
@@ -1486,7 +1524,16 @@ bool portOut(uint16_t a, uint8_t v) {
         return true;
     }
     if ((a & 0xF8FF) == 0x703B) return true;
-    if (a == 0xEFF7) VIDEO::timexHiresRequest(v & 2);   // and on to the generic decode
+    if (a == 0xEFF7) {
+        VIDEO::timexHiresRequest(v & 2);
+        // e_zxi_032 bit 1 "enable Pentagon 1024 v2.2 turbo", personality 07: #EFF7 D4 is the
+        // 1024SL's turbo switch (pentevo io.cpp: turbo(pEFF7 & 0x10 ? 1 : 2)) - 1 = 3.5 MHz,
+        // 0 = turbo: the SetUp's CPU speed, 7 MHz when that is 3.5. Level, not edge, as
+        // on the 1024SL. The generic handler's Alt+F2 policy is off on this machine
+        // (Pentagon::eff7Paging). No toast: TheLink flips it around beam-raced effects.
+        if (g_elm_personality == 7 && (s_r->e[0x032] & 2) && !MemESP::pagingLock)
+            cpuSpeed((v & 0x10) ? 0 : (s_r->e[0x030] ? s_r->e[0x030] : 1), true);
+    }                                                    // and on to the generic decode
     return false;
 }
 

@@ -4634,8 +4634,8 @@ void ESPectrum::loop() {
                  Z80::getRegPC(), rk == 2 ? "warm" : "cold");
       if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
       Config::last_ram_file = NO_RAM_FILE;
-      if (Elm::rebootWanted()) {      // AA-SRAM on/off: the page strip is laid out by setup()
-        Debug::log("[ELM] URAM size changed in the SetUp: rebooting the board");
+      if (Elm::rebootWanted()) {      // AA-SRAM, esxDOS, DMA, UART: laid out by setup()
+        Debug::log("[ELM] a boot-time item changed in the SetUp (AA-SRAM / divSD / DMA / UART): rebooting the board");
         Config::save();
         OSD::esp_hard_reset();        // never returns
       }

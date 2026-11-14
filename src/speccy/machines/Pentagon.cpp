@@ -79,7 +79,8 @@ void Pentagon::eff7Paging(uint8_t data) {
     // USER has turbo on: D4=0 must not turbo a 3.5 MHz session — the Gluk
     // RTC clock loop rewrites EFF7 (D7 CMOS) with D4=0 all the time.
     // Immediate apply mid-frame follows the Profi #028B precedent above.
-    if (Z80Ops::is1024 && ESPectrum::multUser) {
+    // eLeMeNt ZX: its own switch, gated by the SetUp's e_zxi_032 bit 1 (Elm::portOut).
+    if (Z80Ops::is1024 && ESPectrum::multUser && !Z80Ops::isElm) {
       uint8_t want = bitRead(data, 4) ? 0 : ESPectrum::multUser;
       if (want != ESPectrum::multiplicator) {
         ESPectrum::multiplicator = want;

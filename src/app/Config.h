@@ -47,6 +47,7 @@ visit https://zxespectrum.speccy.org/contacto
 // eLeMeNt ZX: the personality (e_zxi_000) as it was armed at the last reset
 // (Element.cpp, Elm::armPersonality) — read by the Config::isElm*Raster() predicates.
 extern uint8_t g_elm_personality;
+extern uint8_t g_elm_ff_off;        // Element.cpp: the SetUp switched the #FF (Timex) read off
 
 namespace JoyProf { struct Profile; }
 struct NvsWriter;   // Config.cpp

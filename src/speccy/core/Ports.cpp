@@ -1503,8 +1503,10 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // never matched an `address == 0x00FF` test. When Timex video is a CARD on an
     // ordinary 48K/128K the A8=0 qualifier has to stay: the SAA1099 shares the
     // #FF family there (0x00FF data / 0x01FF address).
+    // g_elm_ff_off: the eLeMeNt's SetUp switched the #FF read off (tested last: only
+    // an IN from #FF with the Timex modes on gets this far).
     if (Config::timex_video && !ESPectrum::trdos && p8 == 0xFF &&
-        (g_timex_machine || !(address & 0x0100))) {
+        (g_timex_machine || !(address & 0x0100)) && !g_elm_ff_off) {
       LED::touchR(LED::TIMEX);
       TMX_TRACE('r', 0xFF, VIDEO::timex_port_ff);
       ioContentionLate(MemESP::busContended[rambank]);

@@ -693,6 +693,36 @@ itself, hw 2026-11-03), `poolIndex` wraps modulo for the 384. The 4096K bit (#7F
 #AFF7 extra bit 2 with the pack. e_zxi_001 00/03 -> esxdos 0, 01/02 -> 3 (NVS, boot-class; FE/FF untouched). Both are
 reboot-class: `Elm::rebootWanted()` makes the SetUp restart `esp_hard_reset` like a machine switch. AWORLD (needs 384
 pages) reaches its menu on the bench with the pack. ZC on a second card partition: done 2026-11-03 (above).
+**SetUp walk, all 28 pages (2026-11-14, bench; NOT hw-tested, `debug/DVp2w-elm-setup5-1.1.2`):** every page was driven
+on the bench (pick, Shift+R, FRAM + NVS + log compared). The menu has 28 pages: the ROM's "SD/MMC" page (e_006) and
+"GigaScreen mode3: KeyLayer" string are NOT shown. Radio pages change on Up/Down, check-box pages on Enter. Found and fixed:
+- **SetUp 20260406's "Joystick/DE9 connector" page uses the Joystick page's handler** (page table D44C: handler C7D7 for
+  both; the proper one at C84A is unreferenced): it writes e_003 live and e_01A to the FRAM. Here the joystick changed and
+  the unsupported DE9 value stayed in the FRAM without the revert. Fix: at the SetUp's RST 0 (`Elm::rst0`) the live
+  registers are reloaded from the FRAM (log `[ELM] SetUp exit: e_xxx live .., saved .. -> saved`) before the reset; so
+  Shift+L (which only fills the FRAM) now takes effect at once too - personality 128/+2, UART on, GMT+1 are ITS defaults.
+- **DMA / UART picks did not reboot the board**: `rebootWanted()` was asked before `applyRegs` set Config. `bootClassRegs`
+  now also runs from `rst0`.
+- The defaults table carries legacy DVI = 1, so every first SetUp exit raised "SetUp: not here: DVI" with nothing picked:
+  a revert is told only when the value was picked in this session and is not the table's.
+- Joystick 04 (keys OPQA) is reverted with a message; `syncFromSettings` no longer writes 04 for our Cursor type.
+- e_019 (SID model / clock) was never applied at power-up or kept over a reset (`setParams(0)` in reset): re-applied now.
+- Bench trap: `PICOSPECCY_KEYS` runs on the presented-frame clock; the SetUp's intro waits for an RTC second, and more
+  than 3 emulators in parallel mis-count key presses. Start keys at frame 900, hold 4 frames, 30 apart, 3 runs at a time,
+  and check the FRAM index that changed. Shots every 30 frames x 40 runs filled the /tmp quota: shoot every 150.
+- **e_010 bit 1 "enable read port hFF"** (owner 2026-11-14: do it): `g_elm_ff_off` = bit clear (the table's default)
+  is tested LAST in `Ports::input`'s Timex #FF read, so an IN from #FF falls through to the personality's floating bus;
+  set in `eWrite(0x10)` and at reset. RAM: `Ports::input` 0x147C -> 0x1488 (+12 B), +1 B bss, section total unchanged.
+  Bench (FFT.TAP, BASIC `PRINT IN 255`): bit clear 255, bit set 0.
+- **e_032 bit 1 "Pentagon 1024 v2.2 turbo"** (owner: just switch the turbo): personality 07, #EFF7 D4 = 1 -> 3.5 MHz,
+  D4 = 0 -> the SetUp's CPU speed, 7 MHz when that is 3.5 (level, as pentevo `turbo(pEFF7 & 0x10 ? 1 : 2)`), in
+  `Elm::portOut`, no toast. The generic Alt+F2 policy in `Pentagon::eff7Paging` is off on the eLeMeNt. How the real core
+  combines D4 with e_030 is NOT in the Reference - assumption. Bench (a 400-pass FOR loop timed by FRAMES after
+  OUT 61431,16 / ,0): 122 / 61 frames with the bit, 123 / 122 without, 122 / 30 with e_030 = 14 MHz.
+  Test ELF `debug/DVp2w-elm-setup5-1.1.2` (replaces setup4), NOT hw-tested.
+- Still open (stored, no effect): e_018 bit 0 AY/YM, e_011 bit 1, e_004 (its "none" writes #FF, not 00), e_002 bit 5
+  tape input, e_031 bit 1 ROM wait state, scan lines 1/32..1/128 = our level 4. Diagnostic "colour moving pattern"
+  writes FF live but saves 04 (the SetUp's own).
 Bench: test programs from zxfiles.net/download/elzxmb/ run on `build-all/host` with esxDOS; a player can take a minute of wall time to start, so do not judge audio from an early window (that cost a round on SDMAPLAY).
 
 **HGFX perf round 1: FDMATEST (2026-11-13, bench self-checked; hw-confirmed DVp2w the same day on `debug/DVp2w-elm-fdma1-1.1.2`, owner: "FDMATEST - отлично", no numbers given).**
