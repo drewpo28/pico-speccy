@@ -1656,70 +1656,167 @@ IRAM_ATTR __attribute__((noinline, optimize("O2"))) void Z80::exec_nocheck_ts() 
 // a trace build (nxJumpNote) and z80bench's non-Next harness. The loop keeps
 // CPU::tstates in nx_t (below), and NextIdle::jump() reads AND advances the
 // global, so it is published around the call; nxIdleNote() = the JR hook.
-#define nxSync(expr) do { CPU::tstates = nx_t; regR = nx_r; expr; nx_t = CPU::tstates; nx_r = regR; } while (0)
+// The loop keeps four things in registers for the whole slice: the T-state
+// counter (nx_t), PC (nx_pc), the fetch counter (nx_r) and nx_lim, the T-state
+// limit of next_memory.h. nxPub() publishes the first three, nxSync() wraps
+// every call-out: anything outside the pasted bodies reads and moves the
+// globals, and may tick the raster or lower the slice end — so the limit is
+// zeroed and the loop head recomputes it. nxSyncHot() recomputes it in place.
+// (Tried and dropped, 2026-11-15, each measured on tools/z80bench: pinning the
+// four to ARM registers — GCC takes a local register variable as a hint only,
+// moved them about all the same, the loop came out 5% slower; and the head's
+// increments in place through an asm "+r" operand, to save the moves GCC pays
+// in bodies that do not touch them — 3% slower, it duplicated the head.)
+#define nxPub() do { CPU::tstates = nx_t; regR = nx_r; regPC.word = nx_pc; } while (0)
+#define nxLoad() do { nx_t = CPU::tstates; nx_r = regR; nx_pc = regPC.word; } while (0)
+#define nxSync(expr) do { nxPub(); expr; nxLoad(); nx_lim = 0; } while (0)
+#define nxSyncHot(expr) do { nxPub(); expr; nxLoad(); nx_lim = NextMemory::lim_nx(); } while (0)
+// check_trdos() of every JP / CALL / RET and the JR hook: one shared tail
+// behind the opcode switch (nx_jump / nx_idle in exec_nocheck_next) — always
+// the last thing a pasted body does. RETI has more to do after it and keeps
+// the inline form.
+#define nxCheckTrdos() goto nx_jump
+#define nxIdleNote() goto nx_idle
 #if NEXT_TRACE
-#define nxCheckTrdos() nxSync(check_trdos())
+#define nxCheckTrdosInl() nxSync(check_trdos())
 #else
-#define nxCheckTrdos() do { if (__builtin_expect(Z80Ops::isNext, 1)) nxSync(NextIdle::note(REG_PC)); \
+#define nxCheckTrdosInl() do { if (__builtin_expect(Z80Ops::isNext, 1)) nxSync(NextIdle::note(nx_pc)); \
         else nxSync(check_trdos()); } while (0)
 #endif
-#define nxIdleNote() nxSync(NextIdle::note(REG_PC))
+// The accessors' fallbacks (next_memory.h / next_opcode.h). Each byte takes
+// what the inline path would have taken for it.
+namespace NextMemory {
+NX_OVL_CODE __attribute__((noinline)) uint32_t nxPeek16Edge(uint32_t address) {
+    const uint16_t next = (uint16_t)(address + 1);
+    return MemESP::ramCurrent[address >> 13][address & 0x1FFF] | (MemESP::ramCurrent[next >> 13][next & 0x1FFF] << 8);
+}
+NX_OVL_CODE __attribute__((noinline)) void nxPoke8Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+    CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
+    Z80Ops::poke8((uint16_t)address, (uint8_t)value);
+}
+NX_OVL_CODE __attribute__((noinline)) void nxPoke16Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+    CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
+    for (int i = 1; i >= 0; i--) {
+        const uint16_t a = (uint16_t)(address + i);
+        const uint8_t v = (uint8_t)(value >> (8 * i));
+        if (a >= 0x4000) { CPU::tstates += 3; MemESP::ramCurrent[a >> 13][a & 0x1FFF] = v; }
+        else Z80Ops::poke8(a, v);
+    }
+}
+}
+namespace NextOpcode {
+NX_OVL_CODE __attribute__((noinline)) uint32_t fetchSlow(uint32_t t, uint32_t pc) {
+    Z80::setRegPC((uint16_t)pc);
+#if !DEBUG
+    if (g_next_fastrd && t + 4 < VIDEO::ts_line_t) {
+        CPU::tstates = t + 4;
+        return DivMMC::nextOpcodeSlow((uint16_t)pc);
+    }
+#endif
+    CPU::tstates = t;
+    return Z80Ops::fetchOpcode();
+}
+}
 // push()/pop() with the gate-free Next-inline access (next_dispatch.inc pastes
 // handler bodies): one slot lookup for the word when it does not straddle a slot.
-#define nxPush(w) do { const uint16_t nx_w_ = (uint16_t)(w); \
-    REG_SP -= 2; NextMemory::poke16_nx(nx_t, REG_SP, nx_w_); } while (0)
-#define nxPop() ([&nx_t]() __attribute__((always_inline)) { const uint16_t nx_w_ = NextMemory::peek16_nx(nx_t, REG_SP); REG_SP += 2; return nx_w_; }())
+#define nxPush(w) do { const uint16_t nx_pw_ = (uint16_t)(w); REG_SP -= 2; NextMemory::poke16_nx(nx_t, nx_pc, REG_SP, nx_pw_); } while (0)
+#define nxPop() ({ const uint16_t nx_pw_ = NextMemory::peek16_nx(nx_t, REG_SP); REG_SP += 2; nx_pw_; })
+// The first M1: the divMMC automap pages are all below 0x4000, so one compare
+// keeps their check (and the divmmc flag) out of the path of code in RAM.
+#define nxFetchM1() do { \
+        if (__builtin_expect(nx_pc < 0x4000, 0) && divmmc && DivMMC::opcodeTrapPage(nx_pc)) { \
+            const uint16_t nx_tp_ = nx_pc; \
+            nxSync(nx_op = DivMMC::nextOpcodeSlow(nx_tp_)); \
+        } else nx_op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; \
+        nx_r++; \
+        nx_pc++; \
+    } while (0)
+// Entered at an instruction boundary only (prefixOpcode == 0, exec_nocheck
+// tests it) and with the slice not over; a DD/FD chain leaves it again, so the
+// loop head carries no prefix test. Two flags that the shared loops write on
+// every instruction are lazy here:
+//  - pendingEI is cleared at entry and after an EI the slice outlives: nothing
+//    inside the loop reads it, so it only has to be right on the way out
+//    (true = the last instruction was EI);
+//  - Q (flagQ / lastFlagQ, the SCF/CCF undocumented flags): nx_qs holds the
+//    fetch counter of the last instruction that changed F, so "the previous
+//    instruction changed F" is nx_qs == nx_r - 1 inside the next one. An
+//    instruction that leaves F alone writes nothing at all. The generator
+//    stamps the ones that may change it (next_dispatch.inc), SCF/CCF read the
+//    stamp, lastFlagQ is published on the way out and before a shared handler.
 NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool divmmc) {
-    // The T-state counter lives here for the whole slice (2026-10-14): the
-    // global's load/store on every tick and every memory access was ~10% of
-    // the loop on NXModPlayer. Everything that reads or moves CPU::tstates —
-    // the raster tick, the table handlers, the prefix decoders, NextIdle, the
-    // automap trap pages, the accessors' fallback paths — gets it published
-    // first and reloads it after (nxSync / next_memory.h).
-    uint32_t nx_t = CPU::tstates, nx_r = regR;   // regR too: NextIdle reads/moves it (nxSync)
-    uint8_t nx_op;                                 // opCode: published before the table handlers
-    do {
-        const uint16_t pc = REG_PC;
+    uint32_t nx_t = CPU::tstates, nx_r = regR, nx_lim = NextMemory::lim_nx();
+    uint16_t nx_pc = regPC.word;
+    uint32_t nx_qs = lastFlagQ ? nx_r : nx_r - 1;
+    uint8_t nx_op;
+    pendingEI = false;
+    for (;;) {
         nx_t += 4;
-        if (__builtin_expect(nx_t >= VIDEO::ts_line_t, 0)) nxSync(VIDEO::tsDrawTick());
-        if (divmmc && __builtin_expect(DivMMC::opcodeTrapPage(pc), 0)) nxSync(nx_op = DivMMC::nextOpcodeSlow(pc));
-        else nx_op = MemESP::ramCurrent[pc >> 13][pc & 0x1fff];
-        nx_r++;
-        REG_PC = pc + 1;
+        if (__builtin_expect(nx_t >= nx_lim, 0)) {
+            // One test for three things. The slice end is the old loop's tail
+            // test (the T-states before this fetch; a g_next_fastrd drop ends
+            // the slice too, Video.cpp nextFastrdSet lowers stFrame); the
+            // raster tick is the old head test; and an instruction that could
+            // reach either limit before it ends goes to the shared handlers.
+            if (nx_t >= CPU::stFrame + 4) break;
+            if (nx_t >= VIDEO::ts_line_t) nxSync(VIDEO::tsDrawTick());
+            nx_lim = NextMemory::lim_nx();   // also after nxSync zeroed it
+            if (nx_t >= nx_lim) {
+                nxFetchM1();
+                goto nx_slow;
+            }
+        }
+        nxFetchM1();
 #if PERF_TRACE && PERF_HIST
         z80_op_hist[nx_op]++;
-        if (prefixOpcode == 0) {
-            nx_pc_hist[pc >> 5]++;
-            if (nx_op == 0xCB || nx_op == 0xDD || nx_op == 0xED || nx_op == 0xFD) {
-                const uint16_t q = pc + 1;
-                const uint8_t* sp = MemESP::ramCurrent[q >> 13];
-                if (sp) nx_pfx_hist[nx_op == 0xCB ? 0 : nx_op == 0xDD ? 1 : nx_op == 0xED ? 2 : 3][sp[q & 0x1fff]]++;
-            }
+        nx_pc_hist[(uint16_t)(nx_pc - 1) >> 5]++;
+        if (nx_op == 0xCB || nx_op == 0xDD || nx_op == 0xED || nx_op == 0xFD) {
+            const uint16_t q = nx_pc;
+            const uint8_t* sp = MemESP::ramCurrent[q >> 13];
+            if (sp) nx_pfx_hist[nx_op == 0xCB ? 0 : nx_op == 0xDD ? 1 : nx_op == 0xED ? 2 : 3][sp[q & 0x1fff]]++;
         }
 #endif
-        if (__builtin_expect(prefixOpcode == 0, 1)) {
-            flagQ = pendingEI = false;
-            uint8_t nx_v; uint8_t* nx_p; bool nx_cc;   // next_dispatch.inc: shared ALU / INC / DEC / cc tails
-            switch (nx_op) {
+        uint8_t nx_v; uint8_t* nx_p; bool nx_cc;   // next_dispatch.inc: shared ALU / INC / DEC / cc tails
+        switch (nx_op) {
 #include "next_dispatch.inc"
-            }
-            lastFlagQ = flagQ;
+        }
+        continue;
+        // The shared handler of this opcode, against the globals: the prefixes
+        // (their own second fetch, the big decoders), HALT, the tape trap, RST,
+        // IN / OUT, DI / EI — and ANY instruction too close to the raster line
+        // or the slice end for a pasted body. A port write may drop the gate, a
+        // DD / FD followed by another prefix leaves prefixOpcode set: both end
+        // the loop, the shared one carries on.
+    nx_slow:
+        lastFlagQ = (nx_qs == nx_r - 1);   // the shared SCF / CCF read it (DD 37 as well)
+        flagQ = false;
+        opCode = nx_op;
+        nxSyncHot(dcOpcode[nx_op]());
+        if (__builtin_expect(!g_next_fastrd || prefixOpcode, 0)) { lastFlagQ = flagQ; return; }
+        if (flagQ) nx_qs = nx_r;
+        if (__builtin_expect(pendingEI, 0) && nx_t < CPU::stFrame) pendingEI = false;   // EI, and the slice goes on
+        continue;
+        // The jump hooks (nxCheckTrdos / nxIdleNote). No jump touches F.
+    nx_jump:
+#if NEXT_TRACE
+        nxSync(check_trdos());   // nxJumpNote lives there
+        continue;
+#else
+        if (__builtin_expect(!Z80Ops::isNext, 0)) {   // z80bench's TS harness
+            nxSync(check_trdos());
             continue;
         }
-        opCode = nx_op;
-        CPU::tstates = nx_t; regR = nx_r;
-        if (prefixOpcode == 0xDD) { prefixOpcode = 0; decodeDDFD(regIX); }
-        else if (prefixOpcode == 0xED) { prefixOpcode = 0; decodeED(); }
-        else if (prefixOpcode == 0xFD) { prefixOpcode = 0; decodeDDFD(regIY); }
-        else continue;
-        nx_t = CPU::tstates; nx_r = regR;
-        if (prefixOpcode == 0) lastFlagQ = flagQ;
-        // A port write in a prefixed handler (OUT (C),r / NEXTREG) may have dropped the
-        // gate: the pasted bodies assume it (NextMemory::*_nx), so leave at once.
-        if (__builtin_expect(!g_next_fastrd, 0)) return;
-    } while (nx_t < CPU::stFrame);   // a g_next_fastrd drop ends the slice (Video.cpp nextFastrdSet)
-    regR = nx_r;
-    CPU::tstates = nx_t;
+#endif
+    nx_idle:
+        // NextIdle::note() with the call-out reduced to the idle-loop
+        // candidates: a new target only rotates the history.
+        if (__builtin_expect(nx_pc != NextIdle::tgt && nx_pc != NextIdle::tgt2 && nx_pc != NextIdle::tgt3, 1)) {
+            NextIdle::tgt3 = NextIdle::tgt2; NextIdle::tgt2 = NextIdle::tgt; NextIdle::tgt = nx_pc;
+        } else nxSync(NextIdle::note(nx_pc));
+    }
+    nx_t -= 4;                       // the fetch that did not happen
+    lastFlagQ = (nx_qs == nx_r);
+    nxPub();
 }
 
 IRAM_ATTR void Z80::exec_nocheck() {
@@ -1735,7 +1832,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
     while (CPU::tstates < CPU::stFrame) {
 
 #if !NEO8_TRAP
-        if (g_next_fastrd && nbp <= 0) {
+        if (g_next_fastrd && nbp <= 0 && prefixOpcode == 0) {   // mid DD/FD chain: one instruction below
             exec_nocheck_next(divmmc);
             continue;
         }

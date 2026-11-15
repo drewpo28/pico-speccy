@@ -278,7 +278,11 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # Same day: NextInt::reschedule (EI / RETI keep the slice running), the CTC
     # write fast path and NextPorts::ayWrite in SRAM — +784 B, content 53 936 B:
     # 53248 -> 54016.
-    set(NXOVL_WIN_SIZE_EFFECTIVE 54016)
+    # Same day, the Z80 loop round (docs/z80-regcore-plan.md, stage A):
+    # exec_nocheck_next 13 644 -> 9 566 B (reads without a time test, one shared
+    # slow route instead of 17 inlined table calls) + 344 B of out-of-line
+    # fallbacks — content 50 144 B: 54016 -> 50240.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 50240)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -300,7 +304,9 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # 52 792 B — 51968 -> 52864; with the direct Layer 2 row 53 728 B -> 53824;
         # with reschedule / ctcWrite / ayWrite in SRAM 54 512 B -> 54528; the hot
         # pool's PC sample in NextInt::ack 54 560 B -> 54656.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 54656)
+        # The Z80 loop round of the plain term: NEXT_TRACE content 51 144 B
+        # (DVp2w) -> 51264. A PERF_TRACE / PERF_HIST build was not linked.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 51264)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

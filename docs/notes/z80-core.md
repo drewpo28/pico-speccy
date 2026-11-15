@@ -1,5 +1,119 @@
 <!-- Moved verbatim from CLAUDE.md on 2026-11-04; sections in their original order. -->
 
+## Next loop: PC / T limit in locals, reads without a time test, lazy Q (2026-11-15; hw-run DVp2w 2026-11-15, owner: "some games clearly got faster by IDL" — not itemised per title)
+
+Stage 0 + A of `docs/z80-regcore-plan.md`. `Z80::exec_nocheck_next` only; every other
+machine's path is untouched (TS-mode bench: same state, same instruction count).
+Test ELF `debug/DVp2w-regcoreA-1.1.2.elf` (+ .uf2). Uncommitted.
+
+Measured on `tools/z80bench`, Next mode, HEAD bad796cf against the new loop — T-states,
+M1 count, every register and the memory CRC identical in every run:
+
+| workload | ARM insns, HEAD | new | |
+|---|---|---|---|
+| ZEXDOC, 300 M T | 2298.3 M (61.8 / M1) | 2021.4 M (54.4 / M1) | -12.0% |
+| `game` (mkmix.py: short unprefixed code at 0x8000), 30 M T | 210.2 M (48.0 / M1) | 165.5 M (37.8 / M1) | -21.3% |
+| `mixhi` (the LDIR / IX / IY mix at 0x8000) | 247.4 M | 241.3 M | -2.5% |
+| `mix` (the same below 0x4000) | 247.4 M | 249.4 M | +0.8% |
+
+`.nxovl` content 53 984 -> 50 144 B (`exec_nocheck_next` 13 644 -> 9 566 B + 344 B of
+helpers), AUTO terms 54016 -> 50240, trace 54656 -> 51264: the Next gets 3.8 KB of heap
+back, every other machine 896 B of early heap. Main SRAM: `exec_nocheck` +4 B, `.data`
+and `__end__` unchanged.
+
+What changed, in the order of what it bought:
+
+- **Reads carry no time test.** The head decides once per instruction: `nx_lim` =
+  min(next raster line, slice end) - `NX_WIN` (20 T), and an instruction whose first M1
+  ends at or past it does not run its pasted body — it goes to the shared slow route
+  (`nx_slow`: `dcOpcode[op]()` against the published globals, i.e. the handlers the
+  shared loop uses, with their own line tests). Inside a pasted body a read is `t += 3`
+  and a load. Before, each of ~75 inlined reads tested the limit, and each fallback was
+  13 instructions of register shuffling: that was 2.4 KB. **`NX_WIN` must cover the
+  T-states any pasted body takes after its first M1** (15 unprefixed, 16 for the pasted
+  ED ones); the bench cannot check it (its raster tick is a stub) — it is by inspection.
+- **One slow route instead of 17 inlined table calls**: prefixes CB/DD/FD, HALT, RST,
+  IN/OUT, DI/EI, CP A all `goto nx_slow`.
+- **PC in a local** (`nx_pc`; `nxPub()` / `nxSync()` publish and reload it with T and R),
+  **one limit instead of two** (the slice-end test moved from the tail into the head's
+  single compare), **no `prefixOpcode` test**: the loop is entered only at an instruction
+  boundary (`exec_nocheck` tests it) and leaves when a DD/FD handler left a prefix
+  pending, the shared loop finishes the chain.
+- **Lazy Q**: `nx_qs` = the fetch counter of the last instruction that changed F, so
+  "the previous instruction changed F" is `nx_qs == nx_r - 1`. An instruction that
+  leaves F alone writes nothing (it was two stores per instruction). The generator
+  decides per body: nothing called outside its `SAFE` list -> no stamp; anything else is
+  bracketed `flagQ = false; body; if (flagQ) stamp`, which GCC folds where it can see
+  the store. `lastFlagQ` is published on the way out and before the slow route.
+- **Lazy `pendingEI`**: cleared at entry and after an EI the slice outlives.
+- **The jump hook**: one shared tail (`nx_jump` / `nx_idle`) instead of a copy per
+  JP/CALL/RET/JR, and a new jump target only rotates `NextIdle::tgt..tgt3` inline — the
+  call (and the publish around it) is left for a target seen in the last three.
+- **divMMC trap pages**: `pc < 0x4000` first, so code in RAM pays one compare instead
+  of the flag test + two page compares it paid with divMMC on.
+
+Tried and dropped, each measured:
+
+- **Local register variables** (`register uint32_t nx_t asm("r5")` for T, PC, R, the
+  limit, the page table): GCC treats them as a hint, still copies them about (it used
+  r9 for PC where `nx_mem` was pinned), and merges tails harder. Loop 9.9 KB but 5%
+  slower than plain locals. Stage B of the plan (A, F, BC, DE, HL in locals) would
+  stand on the same allocator — do not expect it to hold them.
+- **In-place increments through an asm `"+r"` operand** (to drop the three moves GCC
+  pays in every body that does not touch T / PC / R): 3% slower, the head was duplicated.
+- **`no-crossjumping`**: 0.2% for +472 B. **An own case for NOP** to remove the
+  dispatch's range check (`subs; cmp; bhi` on every instruction): GCC keeps the check.
+
+What is left in the fixed part (18 ARM instructions a Z80 instruction, was ~29): the
+three phi moves, the page-table address from the literal pool on every access, the
+range check, a jump over a literal pool that GCC parks in the head. None of them moves
+from C; they are what a generated assembly loop (stage C) would take.
+
+`tools/z80bench` changes (stage 0):
+
+- `Z80BENCH_MODE=next` in the environment for `run` / `prof` / `zex` / `lock` / `fuzz`
+  (the script never passed the harness its mode argument).
+- The plugins use the scoreboard API (QEMU 10: `..._inline_per_vcpu`).
+- `M1` in the output = opcode fetches, so ARM instructions per Z80 instruction.
+- `lock <elf> <com> <M T> <log>`: slices of 1..400 T, each carried on to an instruction
+  boundary, a hash of the whole state every 65536 slices — diff two builds' logs.
+- `fuzz <elf> <n> <seed> <log>`: random instructions (every prefix, chains, PC/SP/HL on
+  8K slot edges, SCF/CCF after half of them for Q), alternately as two single steps
+  (slow routes) and one 40..103 T slice (fast routes). A mutation (the INC r stamp
+  removed) shows in the first 12 000 tests.
+- `mix <out> high|game`: the workloads at 0x8000. The old `mix` runs below 0x4000,
+  where the Next loop has the trap-page branch and generic writes — it says little
+  about a game.
+- The baseline is built from a `git stash` of `src` + the generator into the same build
+  dir, then `z80bench.sh build`; keep the bench ELF, not the objects.
+
+Verified: `lock` on ZEXDOC 300 M T, `game`, `mixhi`, `mix` 100 M T each and `fuzz` 2 M
+tests x 3 seeds identical to HEAD; host bench (`build-all/host`): NextZXOS boots,
+`.nexload` of Fluid, menu and attract demo clean (host frames are not deterministic run
+to run, base against base differs — judged by eye). The whole ZEXDOC and ZEXALL (hours
+under QEMU with eight shards) had not finished when this was committed. Hw owed: Fluid with music, NXModPlayer, Atic Atac, NextZXOS
+boot + a game through the divMMC automap (esxDOS dot command), a copper / raster-split
+title (the window moves instructions near a line to the slow route).
+
+**hw 2026-11-15, Fluid with music, `DVp2w-regcoreA-nxtrace` (log `logs/devttyACM0_2026_11_15.20.40.57.528.txt`),
+against the 17:20 log of the same day (the previous trace build; its `build:` line was not captured, so
+which one is an assumption).** Seconds in the level with the music on (m1 78-86k/fr, act >= 30%):
+
+| | 17:20 log, 36 s | regcoreA, 39 s |
+|---|---|---|
+| `cpu` avg | 18.6 ms | 16.6 ms |
+| `ns/m1` (CPU::loop time / M1, ports and interrupts included) | 226 | 203 |
+| `c1` avg | 17.6 ms | 15.3 ms |
+| seconds with cpu >= 19 ms | 16 | 8 |
+| frames with negative idle | 559/1512 (37%) | 400/1747 (23%) |
+
+The bad seconds that are left (cpu 19.2-19.9, neg 29-35 of ~44) have the SAME m1 as the good ones
+(82-83k): what differs is `int ack` 507/fr against 272/fr, `io out` 2424/fr = 4.8 ms/fr against
+1551/fr = 3.2 ms/fr (trace build: `nxIoNote` is in those numbers), with `BFFDw 216/fr 1774 us/fr` —
+~8 us per AY data write — as the largest single port, then the three CTC ports (~1030 writes,
+1.6 ms/fr). core0 also loses its row help there (1 row/fr against 49). So the next lever for Fluid is
+the port path (AY write catch-up first), not instructions per M1.
+
 ## Z80 core speed-up (ported from ccr-05d4d17f d2c05088 via drew-zx-next, 2026-10-13, NOT hw-tested)
 
 Taken WITHOUT that branch's TS-Conf "28 MHz (turbo)" CPU cap (owner, on drew-zx-next:
