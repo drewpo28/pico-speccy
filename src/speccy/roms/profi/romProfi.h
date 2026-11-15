@@ -15,15 +15,14 @@ extern "C" const unsigned char gb_rom_profi_pq_bank0[];
 // romset dispatch in Config.cpp.
 extern "C" const unsigned char gb_rom_profi_bank0_karabas[];
 // Doctor Max tool romsets (profi_banks_dmax.c): real-hw ROMSET 2 (Flash Tool
-// v2.7) and ROMSET 3 (FDImage v0.87). bank1 of both = gb_rom_profi_bank_ff
-// (empty 0xFF bank, shared).
+// v2.7) and ROMSET 3 (FDImage v0.87). bank1 of both is an empty 0xFF bank,
+// built in RAM by Profi::emptyBank() (machines/Profi), not stored in flash.
 extern "C" const unsigned char gb_rom_profi_bank0_flashtool[];
 extern "C" const unsigned char gb_rom_profi_bank2_flashtool[];
 extern "C" const unsigned char gb_rom_profi_bank3_flashtool[];
 extern "C" const unsigned char gb_rom_profi_bank0_fdimage[];
 extern "C" const unsigned char gb_rom_profi_bank2_fdimage[];
 extern "C" const unsigned char gb_rom_profi_bank3_fdimage[];
-extern "C" const unsigned char gb_rom_profi_bank_ff[];
 // Not a ROM but a Karabas-Pro asset that lives in flash beside them: the
 // karabas_boot.$c hobeta (FATALL 0.26) that ROMain's "Loading boot from SD"
 // runs off the card root — FileUtils::ensureKarabasBoot() writes it to the SD

@@ -13,6 +13,7 @@ option(HDMI_HSTX_TRACE "HSTX: dump the pad map, the line rate and the Data Islan
 # Add new toggles here following the same option(...) + compile-definition pattern.
 option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
+option(HOBBIT_TRACE "PK Hobbit: log configuration changes and unknown ports" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(COL16_TRACE "Per-ZX-page access counts + #7FFD D3 flip rate for Pentagon 16col ([C16] every 60 frames)" OFF)

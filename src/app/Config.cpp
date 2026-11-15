@@ -14,6 +14,9 @@
 #include "speccy/machines/If2.h"
 #include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
 #include "speccy/roms/kay/kay_banks.h"
+#include "speccy/roms/hobbit/hobbit_banks.h"   // PK Hobbit ROM roles — this TU only (same reason)
+#include "speccy/machines/Hobbit.h"
+#include "speccy/machines/Profi/Profi.h"
 #include "speccy/roms/quorum/quorum_banks.h"   // Quorum ROM roles — this TU only (same reason)   // Nemo KAY bank tables — this TU only (same reason)
 #include "fs/FileUtils.h"
 #include "ESPectrum.h"
@@ -380,6 +383,7 @@ bool Config::isQuorumKvRaster() {
 bool Config::trdosBaseOwnedByMachine() {
     if (arch == A_TSCONF || arch == A_ATM) return true;
     if (arch == A_48K && isQuorum64Romset(romSet48)) return true;     // Quorum: own TR-DOS
+    if (arch == A_48K && isHobbitRomset(romSet48)) return true;       // Hobbit: its DOS page
     if (arch == A_PENT && isQuorum128Romset(romSetPent)) return true;
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
                                isScorpEvoRomset(romSetScorp) ||
@@ -597,6 +601,21 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::registerOverlay(t[0].data, t[0].overlay);
             break;
         }
+        case R_48K_HBMAIN: case R_48K_HBBASIC: case R_48K_HBFORTH: {
+            // PK Hobbit (machines/Hobbit.h): rom[0] = the stock 48K ROM (the SINCLAIR
+            // page of every dump), rom[4] = its DOS page; LOGO and the two shadow
+            // pages are mapped by Hobbit.cpp, which also registers the overlays.
+            const hobbit_rom_bank_t* t =
+                romSet48 == R_48K_HBFORTH ? gb_rom_hbforth_banks
+#if HOBBIT_ALL_ROMS
+              : romSet48 == R_48K_HBBASIC ? gb_rom_hbbasic_banks
+#endif
+              : gb_rom_hbmain_banks;   // (4 MB image: the V2.9 dump is not in it)
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::rom[4].assign_rom(t[0].data);
+            Hobbit::bind(t);
+            break;
+        }
         case R_TC2068:
             // Timex TC2068 — its own 16 KB HOME ROM, nothing to do with the Sinclair
             // one (measured: the cheapest overlay against anything in the tree is
@@ -771,14 +790,14 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             // ROMSET 2: Flash Tool v2.7 by Doctor Max. bank1 is empty (0xFF) in
             // the real image; bank0/2/3 are unique raw dumps (profi_banks_dmax.c).
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0_flashtool);
-            MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
+            MemESP::rom[1].assign_rom(Profi::emptyBank());
             MemESP::rom[2].assign_rom(gb_rom_profi_bank2_flashtool);
             MemESP::rom[3].assign_rom(gb_rom_profi_bank3_flashtool);
             break;
         case R_PROFI_FDI:
             // ROMSET 3: FDImage v0.87 by Doctor Max. Same layout as Flash Tool.
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0_fdimage);
-            MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
+            MemESP::rom[1].assign_rom(Profi::emptyBank());
             MemESP::rom[2].assign_rom(gb_rom_profi_bank2_fdimage);
             MemESP::rom[3].assign_rom(gb_rom_profi_bank3_fdimage);
             break;
@@ -1011,6 +1030,10 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // overlay per base, so registering the pick would evict the machine's own TR-DOS
     // overlay on the shared 5.04T base.
     if (!trdosBaseOwnedByMachine()) bindTrdosRom(Config::trdosBios);
+    // The Doctor Max romsets' empty bank1 is a RAM block, not flash (Profi.h): give
+    // it back once no rom[] slot can point at it any more.
+    if (!(arch == A_PROFI && (romSetProfi == R_PROFI_FT || romSetProfi == R_PROFI_FDI)))
+        Profi::releaseEmptyBank();
 
     // Battery-backed state follows the machine (see the note in RTC.cpp): push
     // what the outgoing one wrote to its own file and adopt the incoming one's.

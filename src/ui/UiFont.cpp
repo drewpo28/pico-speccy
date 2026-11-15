@@ -123,26 +123,22 @@ const uint8_t ui_font6x10[UI_FONT_COUNT * UI_FONT_H] = {
 } // namespace nm
 
 // ── CP1251 extension ───────────────────────────────────────────────────────────
-// The classic OSD ships a 6x8 CP1251 face (Font.cpp, byte-per-pixel, chars
-// 32..255, GLOBAL scope). Re-pack a glyph into our 6x10 row-bitmap format on
-// demand: row 0 and row 9 stay empty, the 8 art rows sit at 1..8. The static
-// buffer is safe — the rasteriser consumes the rows before the next glyph is
-// fetched (single thread).
-extern const unsigned char Font6x8CyrPixels[];
+// The classic OSD ships a 6x8 CP1251 face (Font.cpp: 8 row bytes a glyph, bit 7 =
+// leftmost pixel, chars 32..255). Re-pack a glyph into our 6x10 row-bitmap format
+// (bit 5 = leftmost) on demand: row 0 and row 9 stay empty, the 8 art rows sit at
+// 1..8. The static buffer is safe — the rasteriser consumes the rows before the
+// next glyph is fetched (single thread).
+#include "drivers/framebuffer/Font.h"   // in the tail: tools/mkuifont.py keeps it
+extern Font Font6x8Cyr;
 
 namespace nm {
 
 const uint8_t* uiGlyphExt(uint8_t c) {
     static uint8_t rows[UI_FONT_H];
     if (c < 32) c = '?';
-    const unsigned char* px = &Font6x8CyrPixels[(unsigned)(c - 32) * 48u];
+    const unsigned char* px = &Font6x8Cyr.pixels[(unsigned)(c - 32) * 8u];
     rows[0] = 0;
-    for (int r = 0; r < 8; r++) {
-        uint8_t bits = 0;
-        for (int b = 0; b < 6; b++)
-            if (px[r * 6 + b]) bits |= (uint8_t)(0x20 >> b);
-        rows[r + 1] = bits;
-    }
+    for (int r = 0; r < 8; r++) rows[r + 1] = (uint8_t)(px[r] >> 2);
     rows[UI_FONT_H - 1] = 0;
     return rows;
 }

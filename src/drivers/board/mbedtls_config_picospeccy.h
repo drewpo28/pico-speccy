@@ -27,8 +27,12 @@
 // of recomputing them into RAM at first use. On m1p2 (SPI-PSRAM, no butter XIP) the
 // heap arena is the binding constraint for Profi; these 8 KB of BSS are pure waste
 // there (mbedTLS/ZiFi is disabled on Profi anyway). Flash is XIP-cached so AES speed
-// is unchanged; costs ~8 KB flash (we have 31% used of 4/16 MB).
+// is unchanged; costs ~8 KB flash.
 #define MBEDTLS_AES_ROM_TABLES
+// ...but only FT0/RT0 of them: the other six are byte rotations of those, done per
+// round instead (a few cycles per word — invisible at SSH/HTTPS rates). ~6 KB of
+// flash back for the 4 MB image, which sits at the GM.DLS floor (2026-11-15).
+#define MBEDTLS_AES_FEWER_TABLES
 #define MBEDTLS_CIPHER_C
 #define MBEDTLS_CIPHER_MODE_CTR            // aes256-ctr (SSH default we negotiate)
 
@@ -55,6 +59,10 @@
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED   // ecdsa-sha2-nistp256 host keys (fallback)
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED   // P-384 — some HTTPS certs (e.g. worldofspectrum.net)
 #define MBEDTLS_ECP_DP_SECP521R1_ENABLED   // P-521 — broaden cert/curve compatibility
+// MBEDTLS_ECP_FIXED_POINT_OPTIM stays at its default (1): turning it off saves
+// only ~2 KB (the secpXXXr1_T tables) but makes G*d 3x slower on P-256 and 3.8x
+// on P-384 (measured on a PC, 2026-11-15) — every ECDSA cert verify and ECDHE on
+// those curves pays it, and the Let's Encrypt chains are P-384.
 #define MBEDTLS_ECDSA_C
 #define MBEDTLS_ASN1_PARSE_C               // ECDSA signature DER
 #define MBEDTLS_ASN1_WRITE_C               // dependency of MBEDTLS_ECDSA_C (check_config)

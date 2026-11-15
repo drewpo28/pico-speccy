@@ -459,6 +459,16 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
   ECDHE-RSA/ECDSA key exch, `GCM_C`, X.509 (`PK_C/PK_PARSE_C/X509_USE_C/X509_CRT_PARSE_C/PEM_PARSE_C`).
   TLS 1.2 only (no 1.3 → no version pinning needed). Buffers trimmed:
   `SSL_IN_CONTENT_LEN=16384` (cert chains), `SSL_OUT_CONTENT_LEN=4096` (tiny GETs).
+- **4 MB flash trim (2026-11-15, host-tested, NOT hw-tested):** `MBEDTLS_AES_FEWER_TABLES`
+  (FT0/RT0 only, the other six tables rotated per round): mbedTLS 85.6 -> 79.5 KB on DVp2
+  4 MB, AES-256-CTR 10-15 % slower on a PC (irrelevant behind the ESP-01S UART).
+  `MBEDTLS_ECP_FIXED_POINT_OPTIM 0` was tried and REVERTED: it would give ~12 KB (the
+  `secpXXXr1_T` pointer tables are small, the comb points they name are not), but G*d is
+  3x slower on P-256 and 3.8x on P-384 — every ECDSA cert verify / ECDHE pays it, and the
+  Let's Encrypt chains are P-384. A reserve if the 4 MB image needs 12 KB again.
+  Checked: AES/GCM/ECP self-tests + TLS 1.2 handshakes with chain verification against
+  github.com, worldofspectrum.net (P-384), spectrumcomputing.co.uk (ECDSA-SHA384) in a
+  standalone harness, and `PICOSPECCY_NETTEST` (the firmware's own HttpsGet) on the host.
 
 ### HTTP layer (`src/HttpsGet.{h,cpp}`)
 - Minimal HTTP/1.1 GET: `https://`→`TlsSock`, `http://`→plain `ZiFiSock`. Streams

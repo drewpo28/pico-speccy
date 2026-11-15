@@ -420,6 +420,29 @@ butter-only objects still below the range — NextVideo 28.8 KB, Ft812Render 23.
 Ft812 14.2 KB, NextReg 10.6 KB, Sam 8.1 KB (CODE: check static ctors and every
 unconditional call first, see the Pico-Zx-Player comment in rp2350-memmap.ld).
 
+### 4 MB round 2026-11-15: Navigator 256 + PK Hobbit did not fit (host-tested, NOT hw-tested)
+
+Merging drew-hobbit-2 after Navigator 256 left every HDMI/VGA/HSTX 4 MB image 8-16 KB
+under the hard floor (z0p2 PIOUSB 32 KB). Hobbit FORTH (31.8 KB) was kept on 4 MB (owner)
+and the room found without dropping a feature:
+- **Profi Doctor Max empty bank1** (`gb_rom_profi_bank_ff`, 16 KB of 0xFF): gone from
+  flash; `Profi::emptyBank()` takes 16 KB from `Buffer::palloc(NEED_POINTER|PREFER_PSRAM)`
+  while Flash Tool / FDImage is the romset, `releaseEmptyBank()` at the tail of
+  `requestMachine` frees it on any other romset. No memory -> the zero page + a log line.
+- **6x8 fonts** (`Font6x8`, `Font6x8Cyr`) were one byte per pixel: `packFont6x8` in
+  Font.cpp folds them at COMPILE time into 8 row bytes a glyph (bit 7 = leftmost);
+  17.7 KB -> 2.9 KB. Readers: `Graphics::drawChar`, `nm::uiGlyphExt`.
+  `tools/gen_cyrillic_font.py` emits the new form (re-run = byte-identical file).
+- **mbedTLS `AES_FEWER_TABLES`**: 6.1 KB (network.md; the ECP fixed-point option, ~12 KB,
+  was rejected for its handshake cost and is the next reserve).
+Margins to the hard floor after (KB): z0p2 PIOUSB 4, m1p2/z0p2 VGA-HDMI 20, DVp2/PCp2/m2p2
+VGA-HDMI 24, PCp2/m2p2 HSTX 28, TV/TFT 56-68. Rejected: `gb_rom_Alf_ep` (16 KB of zeros)
+is ALSO TsConf's ROM filler for pages 4..31 (`TsConf::romPtr`), so moving Alf to a RAM
+page saves nothing; 48K vs 128K ROM1 differ by 1177 B but sit on every 128K read path;
+the merged log strings (~21 KB) are spread over hundreds of calls. Still on the table:
+`kbd_img` + `ui_logo128` deflated (~27 KB, ~30 KB transient heap in the menu),
+`gb_rom_esxide` as an overlay over esxDOS (771 B apart, ~7 KB).
+
 ## A GM.DLS bank bigger than the flash partition is still playable in PSRAM (hw-confirmed 2026-09-09)
 
 "The picker does not see DLSbyXG.bin, not even the one it converted itself." Nothing

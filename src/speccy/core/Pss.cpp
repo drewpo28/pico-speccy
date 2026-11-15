@@ -44,6 +44,7 @@
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/Alf.h"
 #include "speccy/machines/Quorum.h"
+#include "speccy/machines/Hobbit.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Next/NextVideo.h"
@@ -82,7 +83,7 @@ static constexpr int MAX_PAGES = 2048;   // Murmuzavr 32 MB
 static int pageCount(bool& sparse) {
     sparse = false;
     if (Z80Ops::isNext) return 0;   // its own 8K pages: PSXP / PSXF (saveNext)
-    if (Z80Ops::is48) return g_quorum ? 4 : 3;   // Quorum 64: + its shadow RAM (page 1)
+    if (Z80Ops::is48) return (g_quorum || g_hobbit) ? 4 : 3;   // Quorum 64 / PK Hobbit: + the shadow RAM (page 1)
     int n = Z80Ops::is1024 ? 64 : (Z80Ops::is512 ? 32 : 8);
     if (Z80Ops::isPentagon && MEM_PG_CNT > 64) n = (int)MEM_PG_CNT;   // Murmuzavr
     if (Z80Ops::isScorpion) n = (int)Scorpion::ramPages();
@@ -110,6 +111,7 @@ static int pageIndex(uint16_t page, int np) {
 // Pages a file must carry. A Quorum .pss written before PSQU has only the 48K's
 // three pages or the Pentagon's eight; the rest take the power-on pattern.
 static int pagesRequired(int np) {
+    if (g_hobbit) return 3;      // a 48K's file loads too: the shadow RAM stays as it is
     if (!g_quorum) return np;
     return Z80Ops::is48 ? 3 : (np < 8 ? np : 8);
 }
@@ -478,6 +480,12 @@ bool save(const string& path, const string& name) {
         uint8_t b[Quorum::SNAP_MAX];
         const uint32_t n = Quorum::snapSave(b);
         w.begin("PSQU"); w.raw(b, n); w.end();
+    }
+
+    if (g_hobbit) {   // PSHB: #0F, the NMI / DOS flip-flops, the 8251's screen line
+        uint8_t b[Hobbit::SNAP_MAX];
+        const uint32_t n = Hobbit::snapSave(b);
+        w.begin("PSHB"); w.raw(b, n); w.end();
     }
 
     if (Z80Ops::isALF) {   // PSAL: the ROM-bank select (cart bit 7) + the #FE D3 read-back
@@ -1238,6 +1246,7 @@ bool load(const string& path) {
     uint8_t sam[Sam::SNAP_MAX] = {}; uint32_t samSize = 0;
     uint8_t ep[Ep::SNAP_MAX] = {}; uint32_t epSize = 0;
     uint8_t qu[Quorum::SNAP_MAX] = {}; uint32_t quSize = 0;
+    uint8_t hb[Hobbit::SNAP_MAX] = {}; uint32_t hbSize = 0;
     JoyProf::Profile joyOffer; bool joyMissing = false;
     uint8_t bd[2][16] = {}; bool haveBd[2] = {}, bdV2[2] = {};
     uint8_t up[UPD_SNAP_MAX] = {}; uint32_t upSize = 0;
@@ -1315,6 +1324,7 @@ bool load(const string& path) {
         else if (idIs(id, "PSSC") && sz >= 1)  { scSize = sz < sizeof(sc) ? sz : sizeof(sc); r.raw(sc, scSize); }
         else if (idIs(id, "PSPR") && sz >= 1)  { prSize = sz < sizeof(pr) ? sz : sizeof(pr); r.raw(pr, prSize); }
         else if (idIs(id, "PSAT") && sz >= 1)  { atmSize = sz < sizeof(atm) ? sz : sizeof(atm); r.raw(atm, atmSize); }
+        else if (idIs(id, "PSHB") && sz >= 1 && g_hobbit) { hbSize = sz < sizeof(hb) ? sz : sizeof(hb); r.raw(hb, hbSize); }
         else if (idIs(id, "PSQU") && sz >= 1 && g_quorum) { quSize = sz < sizeof(qu) ? sz : sizeof(qu); r.raw(qu, quSize); }
         else if (idIs(id, "PSAL") && sz >= 3)  { r.u8(); alfSel = r.u8(); alfBit = r.u8(); haveAlf = true; }
         else if (idIs(id, "PSEP") && sz >= 1 && Z80Ops::isEnt) { epSize = sz < sizeof(ep) ? sz : sizeof(ep); r.raw(ep, epSize); }
@@ -1399,7 +1409,12 @@ bool load(const string& path) {
     // Pages a sparse file left out held the power-on pattern when it was saved (and
     // a pre-PSQU Quorum file never had the shadow / above-128K pages).
     if (fileSparse || loadedPages != np)
-        for (int i = 0; i < np; i++) if (!(loaded[i >> 5] & (1u << (i & 31)))) fillPowerOnPattern(pageAt(i));
+        for (int i = 0; i < np; i++) if (!(loaded[i >> 5] & (1u << (i & 31)))) {
+            // PK Hobbit, a file without the shadow RAM (a plain 48K's): the monitor's
+            // variables and its NMI vector live there — leave them as they are.
+            if (g_hobbit && pageAt(i) == 1) continue;
+            fillPowerOnPattern(pageAt(i));
+        }
 
     // Memory map.
     MemESP::bankLatch  = pt[1] | (pt[2] << 8) | (pt[3] << 16) | ((uint32_t)pt[4] << 24);
@@ -1463,6 +1478,10 @@ bool load(const string& path) {
     // without PSQU leaves it to afterSnapshot (BASIC running, as for a .z80).
     if (g_quorum && quSize && !Quorum::snapLoad(qu, quSize))
         Debug::log("[PSS] Quorum record refused - #00 = BASIC running");
+    // PK Hobbit: the configuration, the NMI / DOS flip-flops and the screen line. A
+    // file without PSHB leaves it to afterSnapshot (#0F = #B8, BASIC running).
+    if (g_hobbit && hbSize && !Hobbit::snapLoad(hb, hbSize))
+        Debug::log("[PSS] Hobbit record refused - #0F = BASIC running");
 
     // DivMMC last of the memory map: it overrides page 0 while mapped.
     if (haveDmmc) DivMMC::snapRestore(dmmcCtl, dmmcPaged);

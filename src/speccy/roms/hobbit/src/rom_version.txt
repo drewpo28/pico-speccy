@@ -1,0 +1,7 @@
+hbt_basic.rom	V521  2.9
+hbt_bk31.rom 	V1028 4.4
+hbt_main1.rom	V1028 4.4
+hbt_w1.rom	V1028 4.4
+hbt_w2.rom	V1028 4.4
+hbt_w3.rom	V521  2.9
+hbt_w4.rom	V1028 4.4

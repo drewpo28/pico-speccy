@@ -101,10 +101,10 @@ class Graphics {
 		// the Cyrillic face = 224) reads only valid pixels — no out-of-bounds.
 		if (!(ch >= font->firstChar && ch < font->firstChar + font->charCount))
 			return;
-		const unsigned char *pix = &font->pixels[font->charWidth * font->charHeight * (ch - font->firstChar)];
+		const unsigned char *rows = &font->pixels[font->charHeight * (ch - font->firstChar)];
 		for (int py = 0; py < font->charHeight; py++)
 			for (int px = 0; px < font->charWidth; px++)
-				if (*(pix++))
+				if (rows[py] & (0x80 >> px))
 					dotFast(px + x, py + y, frontColor);
 					// dotMix(px + x, py + y, frontColor);
 				else

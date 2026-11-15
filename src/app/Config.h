@@ -455,6 +455,8 @@ public:
     static bool isLeningrad() { return arch == A_48K && isLeningradRomset(romSet); }
     // Quorum 64 (ArchRom.h isQuorum64Romset, machines/Quorum.h): a 48K with no ULA.
     static bool isQuorum64() { return arch == A_48K && isQuorum64Romset(romSet); }
+    // PK Hobbit (ArchRom.h isHobbitRomset, machines/Hobbit.h): a 48K with no ULA.
+    static bool isHobbit() { return arch == A_48K && isHobbitRomset(romSet); }
     // Quorum-1024+ in its "Quorum" raster (timing diagram, machines/Quorum.h): the
     // Pentagon renderer on a 312-line 69888 T frame, INT 8 lines later.
     // Quorum 1024 (the 1024+ board): the "Quorum" raster (its timing diagram) unless the

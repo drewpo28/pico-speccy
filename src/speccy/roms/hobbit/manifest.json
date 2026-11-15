@@ -1,0 +1,49 @@
+{
+  "id": "hobbit",
+  "raw": [
+    {
+      "sym": "gb_z_hbmain_logo",
+      "len": 11916
+    },
+    {
+      "sym": "gb_z_hbmain_mon",
+      "len": 12811
+    },
+    {
+      "sym": "gb_z_hbbasic_mon",
+      "len": 12549
+    },
+    {
+      "sym": "gb_z_hbforth_logo",
+      "len": 12872
+    },
+    {
+      "sym": "gb_z_hbforth_mon",
+      "len": 12961
+    }
+  ],
+  "overlays": [
+    {
+      "sym": "gb_overlay_hbmain_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 4688,
+      "runs": 76,
+      "diff_bytes": 4220
+    },
+    {
+      "sym": "gb_overlay_hbbasic_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 873,
+      "runs": 22,
+      "diff_bytes": 729
+    },
+    {
+      "sym": "gb_overlay_hbforth_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 5996,
+      "runs": 97,
+      "diff_bytes": 5402
+    }
+  ],
+  "flash_bytes": 74666
+}

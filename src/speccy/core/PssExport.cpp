@@ -396,6 +396,7 @@ bool exportTo(const string& src, const string& dst, ExportFmt fmt, string& dropp
     if (s.ay2) addDrop(dropped, "2nd AY");
     if (s.hidden) addDrop(dropped, "hidden RAM");
     if (s.extra) addDrop(dropped, "Murmuzavr RAM");
+    if (isHobbitRomset(rom)) addDrop(dropped, "Hobbit #0F / shadow RAM");
     if (isQuorum64Romset(rom) || isQuorum128Romset(rom)) {
         addDrop(dropped, "Quorum #00 / shadow RAM");
         if (arch == A_PENT && quorumRamPages(rom) > 8) addDrop(dropped, "RAM above 128K");
