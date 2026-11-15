@@ -1409,6 +1409,12 @@ QUORUM_IMAGES = [
     # 1024 mode (its own memtest only works that way, see Quorum.cpp extRamOn): #3C47
     # XOR #FF -> OR 0, so ON now means D4 = 1 = 128K only.
     ('quorum1024p.bin', 0x123C2F8F),
+    # Navigator 256 (NOVA, 1998; the SpeccyP emulator's NOVA256 machine, its ROM set):
+    # the four 16 KB files joined in the QU7V42 page order — sm_v5.08_nova (6D947A05,
+    # 'NAVIGATOR' v5.08 service ROM), trdos604_nova (C446CBF8, 5.04T + 503 bytes, stock
+    # Beta ports), rom128Q_nova (124AD9E0 = pentagon rom0), rom48Q_nova (32034F36 =
+    # Sinclair 128 ROM1 + 9 bytes of #00 trampolines at #0013 / #002B).
+    ('navigator256.bin', 0xA03CC303),
 ]
 QUORUM_ROMSETS = [
     # tag, [(file, page) for roles ...]
@@ -1416,9 +1422,10 @@ QUORUM_ROMSETS = [
     ('qu128', [('qu7v42.bin', 2), ('qu7v42.bin', 3), ('qu7v42.bin', 0), ('qu7v42.bin', 1)]),  # 128, 48, sys, dos
     ('qu64o', [('quorum48.bin', 0)]),                                            # 48
     ('qu1024p', [('quorum1024p.bin', 2), ('quorum1024p.bin', 3), ('quorum1024p.bin', 0), ('quorum1024p.bin', 1)]),  # 128, 48, sys, dos
+    ('nav256', [('navigator256.bin', 2), ('navigator256.bin', 3), ('navigator256.bin', 0), ('navigator256.bin', 1)]),  # 128, 48, sys, dos
 ]
 QUORUM_ROLE_NAMES = {'qu64': ['48', 'dos'], 'qu128': ['128', '48', 'sys', 'dos'], 'qu64o': ['48'],
-                     'qu1024p': ['128', '48', 'sys', 'dos']}
+                     'qu1024p': ['128', '48', 'sys', 'dos'], 'nav256': ['128', '48', 'sys', 'dos']}
 
 def pack_quorum():
     out_dir = os.path.join('src', 'speccy', 'roms', 'quorum')
@@ -1451,7 +1458,9 @@ def pack_quorum():
                 blob, nr, nd = make_overlay(bbytes, page)
                 if best is None or len(blob) < len(best[1]):
                     best = (bsym, blob, nr, nd)
-            if len(best[1]) > KAY_RAW_MAX:
+            if best[3] == 0:                # the base itself: no overlay to register
+                d = (best[0], 'nullptr')
+            elif len(best[1]) > KAY_RAW_MAX:
                 sym = 'gb_rom_%s_%s' % (tag, names[ri])
                 raws.append((sym, page))
                 bases.append((sym, page))   # a later romset may overlay a raw page
@@ -1499,6 +1508,135 @@ def pack_quorum():
               'flash_bytes': total}
     open(os.path.join(out_dir, 'manifest.json'), 'w').write(json.dumps(report, indent=2) + "\n")
     print("[quorum] %d raw arrays + %d overlays = %d B in flash" % (len(raws), len(ovls), total))
+    for o in ovls:
+        print("    %-24s over %-24s %6d B" % (o[0], o[2], len(o[1])))
+
+# ---------------------------------------------------------------- Hobbit
+# PK Hobbit (InterCompex, 1990-93), machines/Hobbit.h. Images: github.com/bw2012/
+# pk-hobbit rom/ (64 KB 27512 dumps; hbt_w3 = hbt_basic, not shipped twice).
+# Layout of a dump (docs/Architectura.pdf): #0000 SINCLAIR (byte-identical to the
+# stock 48K ROM in every dump — checked here, not stored), #4000 DOS, #8000
+# LOGO / FORTH, #C000 SHADOW-B (8 KB), #E000 SHADOW-A (8 KB). Roles: dos, logo,
+# mon (SHADOW-B then SHADOW-A, one 16 KB page). Hobbit.cpp registers the dos/logo
+# overlay of the live configuration itself, so one base may carry two overlays.
+HOBBIT_IMAGES = [
+    # tag, file, CRC32
+    ('hbmain',  'hbt_main1.bin', 0x60E92AB2),   # V1028 4.4, LOGO
+    ('hbbasic', 'hbt_basic.bin', 0x81B3FA54),   # V521 2.9 (= hbt_w3): TR-DOS 5.03, no LOGO
+    ('hbforth', 'hbt_forth.bin', 0x28948A27),   # FORTH V6.4 in the LOGO page
+    # Not built (owner, 2026-11-13): the other V4.4 dumps differ from main1 by the byte
+    # at SHADOW-A #000F (#0E / #12 / #0D / #1F — it looks like the machine's network
+    # number) and, w2, by a slightly different monitor build. The images stay in
+    # src/; a line here plus a romset (ArchRom.h, Config.cpp, UiTree.cpp) brings one back.
+    # ('hbw1',    'hbt_w1.bin',    0xDE9CEAB0),   # V1028 4.4
+    # ('hbbk31',  'hbt_bk31.bin',  0x71916A2D),   # V1028 4.4
+    # ('hbw2',    'hbt_w2.bin',    0x9130C47F),   # V1028 4.4
+    # ('hbw4',    'hbt_w4.bin',    0x89420D81),   # V1028 4.4
+]
+# Dumps for 16 MB images only (#if HOBBIT_ALL_ROMS, cmake/board.cmake).
+HOBBIT_BIG = ('hbbasic',)
+# A page of the dump that is 16 KB of #FF (V2.9 has no LOGO) is not stored: the row
+# is { nullptr, nullptr, 0 } and Hobbit.cpp shows an empty socket.
+# LOGO / FORTH and the monitor page are stored as raw deflate (zlen != 0) and
+# inflated into idle RAM pages when the machine is selected (Hobbit.cpp, miniz
+# tinfl): 16 KB of Z80 code comes to 12-13 KB. The DOS page stays an overlay over
+# the shipped TR-DOS 5.04T (4.7-6 KB), which deflate cannot beat.
+
+HOBBIT_ROLES = ['dos', 'logo', 'mon']
+
+def pack_hobbit():
+    out_dir = os.path.join('src', 'speccy', 'roms', 'hobbit')
+    src_dir = os.path.join(out_dir, 'src')
+    rd = lambda *p: open(os.path.join(*p), 'rb').read()
+    sinclair = rd('src', 'speccy', 'roms', '48k', 'src', 'sinclair_48k.bin')
+    bases = [('gb_rom_4_trdos_504t', rd('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin')),
+             ('gb_rom_0_sinclair_48k', sinclair),
+             ('gb_rom_1_sinclair_128k', rd('src', 'speccy', 'roms', '128k', 'src', 'sinclair_128k_1.bin'))]
+    raws, ovls, desc = [], [], {}
+    for tag, fname, crc in HOBBIT_IMAGES:
+        img = rd(src_dir, fname)
+        c = zlib.crc32(img) & 0xFFFFFFFF
+        if c != crc or len(img) != 65536:
+            raise SystemExit("hobbit: %s CRC32 %08X, expected %08X" % (fname, c, crc))
+        if img[:16384] != sinclair:
+            raise SystemExit("hobbit: %s SINCLAIR page is not the stock 48K ROM" % fname)
+        row = []
+        for ri, role in enumerate(HOBBIT_ROLES):
+            page = img[(ri + 1) * 16384:(ri + 2) * 16384]
+            if page == b'\xff' * 16384:
+                row.append(('nullptr', 'nullptr', 0))
+                continue
+            if role != 'dos':
+                co = zlib.compressobj(9, zlib.DEFLATED, -15)
+                z = co.compress(page) + co.flush()
+                if zlib.decompress(z, -15) != page:
+                    raise SystemExit("hobbit: %s %s does not survive deflate" % (tag, role))
+                sym = 'gb_z_%s_%s' % (tag, role)
+                raws.append((sym, z))
+                row.append((sym, 'nullptr', len(z)))
+                continue
+            best = None
+            for bsym, bbytes in bases:
+                blob, nr, nd = make_overlay(bbytes, page)
+                if best is None or len(blob) < len(best[1]):
+                    best = (bsym, blob, nr, nd)
+            if len(best[1]) > KAY_RAW_MAX:
+                sym = 'gb_rom_%s_%s' % (tag, role)
+                raws.append((sym, page))
+                d = (sym, 'nullptr', 0)
+            else:
+                same = [o for o in ovls if o[2] == best[0] and o[1] == best[1]]
+                if same:
+                    osym = same[0][0]
+                else:
+                    osym = 'gb_overlay_%s_%s' % (tag, role)
+                    ovls.append((osym, best[1], best[0], best[2], best[3]))
+                d = (best[0], osym, 0)
+            row.append(d)
+        desc[tag] = row
+    banner = ['// Generated by tools/rom_pack.py (pack_hobbit) — do not edit by hand.',
+              '// PK Hobbit ROM pages: raw pages + run-list overlays. The SINCLAIR page of',
+              '// every dump is the stock 48K ROM (gb_rom_0_sinclair_48k).',
+              '// Regenerate: python3 tools/rom_pack.py hobbit', '']
+    big = lambda sym: any(('_%s_' % t) in sym for t in HOBBIT_BIG)
+    allsyms = raws + [(o[0], o[1]) for o in ovls]
+    c = list(banner) + ['#include <stdint.h>', '']
+    for sym, data in [x for x in allsyms if not big(x[0])]:
+        c.append(_c_array(sym, data)); c.append('')
+    c.append('#if HOBBIT_ALL_ROMS')
+    for sym, data in [x for x in allsyms if big(x[0])]:
+        c.append(_c_array(sym, data)); c.append('')
+    c.append('#endif')
+    open(os.path.join(out_dir, 'hobbit_roms.c'), 'w').write("\n".join(c) + "\n")
+    h = list(banner) + ['// Include from Config.cpp ONLY: the tables name gb_rom_4_trdos_504t,',
+                        '// an internal-linkage array a second TU would duplicate (see romScorpion.h).',
+                        '#pragma once', '#include <stdint.h>',
+                        '// zlen != 0: data is zlen bytes of raw deflate of the 16 KB page.',
+                        'struct hobbit_rom_bank_t { const uint8_t* data; const uint8_t* overlay; uint16_t zlen; };',
+                        'extern "C" {']
+    for sym, _ in [x for x in allsyms if not big(x[0])]:
+        h.append('extern const unsigned char %s[];' % sym)
+    h.append('#if HOBBIT_ALL_ROMS')
+    for sym, _ in [x for x in allsyms if big(x[0])]:
+        h.append('extern const unsigned char %s[];' % sym)
+    h.append('#endif')
+    h.append('}')
+    for tag, _, _ in HOBBIT_IMAGES:
+        if tag in HOBBIT_BIG: h.append('#if HOBBIT_ALL_ROMS')
+        h.append('// roles: ' + ', '.join(HOBBIT_ROLES))
+        h.append('static const hobbit_rom_bank_t gb_rom_%s_banks[%d] = {' % (tag, len(HOBBIT_ROLES)))
+        for ri, (b, o, zl) in enumerate(desc[tag]):
+            h.append('    { %s, %s, %d },   // %s' % (b, o, zl, HOBBIT_ROLES[ri]))
+        h.append('};')
+        if tag in HOBBIT_BIG: h.append('#endif')
+    open(os.path.join(out_dir, 'hobbit_banks.h'), 'w').write("\n".join(h) + "\n")
+    total = sum(len(d) for _, d in raws) + sum(len(o[1]) for o in ovls)
+    report = {'id': 'hobbit', 'raw': [{'sym': s, 'len': len(d)} for s, d in raws],
+              'overlays': [{'sym': o[0], 'base': o[2], 'len': len(o[1]), 'runs': o[3],
+                            'diff_bytes': o[4]} for o in ovls],
+              'flash_bytes': total}
+    open(os.path.join(out_dir, 'manifest.json'), 'w').write(json.dumps(report, indent=2) + "\n")
+    print("[hobbit] %d raw arrays + %d overlays = %d B in flash" % (len(raws), len(ovls), total))
     for o in ovls:
         print("    %-24s over %-24s %6d B" % (o[0], o[2], len(o[1])))
 
@@ -1592,10 +1730,13 @@ def main():
     os.chdir(root)
     # plus3div is only packed on request: its ROM is not in the repository, so a
     # bare `rom_pack.py` must not fail on a tree that simply does not have it.
-    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'atm', 'kay', 'quorum', 'gmx', 'prof', 'scorpevo', 'sam', 'ep'])
+    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'atm', 'kay', 'quorum', 'hobbit', 'gmx', 'prof', 'scorpevo', 'sam', 'ep'])
     for fid in fams:
         if fid == 'quorum':
             pack_quorum()
+            continue
+        if fid == 'hobbit':
+            pack_hobbit()
             continue
         if fid == 'gmx':
             pack_gmx()

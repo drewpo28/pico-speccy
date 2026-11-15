@@ -1003,6 +1003,7 @@ bool MemESP::buildNextRam() {
 #endif
 #define NEXT_HOT_PROMOS 2
 uint8_t* MemESP::nextHotIdx = nullptr;
+uint16_t* MemESP::nextHotHits = nullptr;
 uint8_t* MemESP::nextHotFrame[MemESP::NEXT_HOT_MAX] = {};
 static uint8_t  s_hotN = 0;                       // frames in the pool
 static uint8_t  s_hotPage[MemESP::NEXT_HOT_MAX];  // page held, 0xFF = free
@@ -1076,12 +1077,15 @@ static void nextHotGrow() {
 
 static bool nextHotAlloc() {
     if (NEXT_HOT_FRAMES <= 0) return false;
-    uint8_t* idx = (uint8_t*)tryMalloc(MemESP::NEXT_PAGES);
+    // one block: the page -> frame index, then the per-page execution hits
+    uint8_t* idx = (uint8_t*)tryMalloc(MemESP::NEXT_PAGES * 3);
     if (!idx) return false;
     memset(idx, 0xFF, MemESP::NEXT_PAGES);
+    memset(idx + MemESP::NEXT_PAGES, 0, MemESP::NEXT_PAGES * 2);
     s_hotN = 0;
     nextHotGrow();
     if (!s_hotN) { free(idx); return false; }
+    MemESP::nextHotHits = (uint16_t*)(idx + MemESP::NEXT_PAGES);   // NEXT_PAGES is even: aligned
     memset(s_hotPrev, 0xFF, sizeof(s_hotPrev));
     MemESP::nextHotIdx = idx;
     return true;
@@ -1101,6 +1105,12 @@ void MemESP::nextHotTick() {
     }
     if (nextBootRomActive || nextConfigMode) return;   // the TBBLUE boot owns slots 0/1
     ++s_hotTick;
+    uint16_t* const hits = nextHotHits;
+    {   // the tick's own PC sample (a title without CTC / line interrupts gets only these)
+        const uint8_t pp = mmu[Z80::getRegPC() >> 13];
+        if (pp < NEXT_PAGES && hits[pp] < 0xFFFF) hits[pp]++;
+        if (!(s_hotTick & 15)) for (int i = 0; i < NEXT_PAGES; i++) hits[i] >>= 1;
+    }
     // Mark what is mapped now.
     for (int f = 0; f < s_hotN; f++) {
         const uint8_t pg = s_hotPage[f];
@@ -1134,14 +1144,22 @@ void MemESP::nextHotTick() {
             bool quarantined = false;
             for (int i = 0; i < s_hotN; i++) if (s_hotPage[i] == 0xFF) quarantined = true;
             if (quarantined) break;           // a frame frees up in a tick or two
-            // Victim: the frame seen mapped longest ago, not in the last two ticks.
+            // Victim: the frame the CPU executes in least (nextHotHits), not
+            // mapped in the last two ticks — and only for a page that is clearly
+            // hotter. "Seen mapped longest ago" alone made Fluid swap its game
+            // code page (04) and its music player page (56), mapped by turns
+            // from the frame ISR, every few seconds; with 56 held the game ran
+            // from PSRAM for up to 20 s (host log 2026-11-15, dips with the
+            // music on only).
             int v = -1;
             for (int i = 0; i < s_hotN; i++) {
                 if (s_hotPage[i] == 0xFF) continue;
                 if (s_hotTick - s_hotLast[i] < 3) continue;
-                if (v < 0 || s_hotLast[i] < s_hotLast[v]) v = i;
+                if (v < 0 || hits[s_hotPage[i]] < hits[s_hotPage[v]] ||
+                    (hits[s_hotPage[i]] == hits[s_hotPage[v]] && s_hotLast[i] < s_hotLast[v])) v = i;
             }
-            if (v >= 0) nextHotEvict(v);    // quarantined: usable from a later tick
+            if (v >= 0 && hits[pg] > 2u * hits[s_hotPage[v]] + 4u)
+                nextHotEvict(v);            // quarantined: usable from a later tick
             break;
         }
         uint8_t* fr = nextHotFrame[f];

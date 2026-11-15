@@ -64,6 +64,9 @@ else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE IDE_PORT_TRACE=0)
 endif ()
 
+if (HOBBIT_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HOBBIT_TRACE=1)
+endif()
 # WD1793 FDD command tracing toggle (see wd1793.cpp `#if FDD_PORT_TRACE`).
 if (FDD_PORT_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE FDD_PORT_TRACE=1)

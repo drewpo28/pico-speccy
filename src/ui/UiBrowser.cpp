@@ -78,7 +78,6 @@ static string  s_dir;             // current directory, always ends with '/'
 static string  s_root;
 static string  s_title;
 static uint8_t s_ftype;
-static std::vector<string> s_exts;   // ".tap", ".sna", ... (with the dot)
 
 static int  s_total;              // records in the index (incl. the ".." row)
 static unsigned s_ndirs, s_nfiles;
@@ -240,11 +239,22 @@ static bool pickMode()   { return s_ftype != DISK_CFGFILE; }
 static bool extMatches(const string& name) {
     // No extension list (DISK_CFGFILE): nothing here is more interesting than
     // anything else, so every name draws in the normal ink instead of all-dim.
-    if (s_exts.empty()) return true;
+    // Matched in place against the type's comma list ("(.tap,.TAP,...)"). The list
+    // used to be split into a vector<string>: ~200 entries for DISK_ALLFILE, i.e. a
+    // 6 KB contiguous block (+3 KB while it grew) through plain malloc, which
+    // PANICKED on a fragmented 15 KB heap (Next + NeoGS + WiFi, hw 2026-11-15).
+    const string& list = FileUtils::fileTypes[s_ftype].fileExts;
+    if (list.empty()) return true;
     const size_t dot = name.find_last_of('.');
     if (dot == string::npos) return false;
-    const string e = name.substr(dot);
-    for (const auto& x : s_exts) if (e == x) return true;
+    const char*  e  = name.c_str() + dot;
+    const size_t en = name.size() - dot;
+    for (size_t p = 0; p < list.size(); ) {
+        size_t q = list.find(',', p);
+        if (q == string::npos) q = list.size();
+        if (q - p == en && !memcmp(list.data() + p, e, en)) return true;
+        p = q + 1;
+    }
     return false;
 }
 
@@ -1857,16 +1867,6 @@ string browseFile(string& fdir, const string& title, uint8_t ftype, const char* 
     Debug::log("UiBrowser: open dir='%s' ftype=%u root='%s' root_parent=%d heap=%u largest=%u\n",
                s_dir.c_str(), (unsigned)ftype, s_root.c_str(), (int)OSD::fd_root_parent,
                (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
-
-    // Split the type's extension list once ("(.tap,.tzx,...)" style comma list).
-    s_exts.clear();
-    string ss = FileUtils::fileTypes[ftype].fileExts;
-    size_t pos;
-    while ((pos = ss.find(',')) != string::npos) {
-        if (pos) s_exts.push_back(ss.substr(0, pos));
-        ss.erase(0, pos + 1);
-    }
-    if (!ss.empty()) s_exts.push_back(ss);
 
     const string ret = runLoop();
     fdir = s_dir;                         // navigation is part of the contract

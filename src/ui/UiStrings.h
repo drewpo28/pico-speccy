@@ -372,8 +372,17 @@
 #define TXT_ROM_QU128P_S     "Quorum 128+"
 #define TXT_ROM_QU256        "Quorum 256 (AY)"
 #define TXT_ROM_QU256_S      "Quorum 256"
+#define TXT_ROM_NAV256       "Navigator 256 (AY)"
+#define TXT_ROM_NAV256_S     "Navigator 256"
 #define TXT_ROM_QU1024       "Quorum 1024 (AY)"
 #define TXT_ROM_QU1024_S     "Quorum 1024"
+#define TXT_MACH_HOBBIT      "Hobbit"
+#define TXT_ROM_HBMAIN       "Hobbit (LOGO)"
+#define TXT_ROM_HBMAIN_S     "LOGO"
+#define TXT_ROM_HBBASIC      "Hobbit (TR-DOS 5.03)"
+#define TXT_ROM_HBBASIC_S    "TR-DOS"
+#define TXT_ROM_HBFORTH      "Hobbit (FORTH)"
+#define TXT_ROM_HBFORTH_S    "FORTH"
 #define TXT_ROM_CUSTOM      "Custom"
 // Two DIFFERENT flash images (Devices > Replace ROM slots "48K" and "128K"),
 // so they cannot share one row. Pentagon reuses the 128K image and keeps the

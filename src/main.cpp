@@ -1071,6 +1071,8 @@ extern "C" volatile uint8_t g_sd_as_state;     // sdcard.c: a background SD read
 extern "C" volatile uint8_t g_sd_c1_live;
 extern "C" void sd_async_pump(void);
 extern "C" volatile bool g_next_c1_live;     // Spectrum Next lines on core1 (NextVideo.cpp)
+extern volatile uint32_t nx_w, nx_c;         // its row ring: posted / next to claim (NextVideo.cpp)
+extern volatile uint8_t g_nx_c0wait;         // core0 is spinning in c1Drain
 #ifdef VGA_HDMI
 extern "C" void hdmi_lut_clear(void);       // zero the .hdmi_lut section (hdmi.c)
 extern "C" void vga_reinit(void);
@@ -1170,6 +1172,13 @@ void __not_in_flash_func(render_core)() {
             if (g_ts_c1_live) {
                 if (GS::idleThrottled)            run = !ts_render_core1_busy();
                 else if (ts_render_core1_prio())  run = GS::hostActive();
+            } else if (g_next_c1_live) {
+                // Spectrum Next: the same two rules (it had none — an enabled NeoGS
+                // took a slice between every batch of 8 rows; Fluid, Layer 2 320 +
+                // tilemap + sprites, core1 alone on the rows: 38 FPS, hw 2026-11-15).
+                const uint32_t q = nx_w - nx_c;
+                if (GS::idleThrottled)                 run = q == 0;
+                else if (q > 32 || g_nx_c0wait)        run = GS::hostActive();
             }
             if (run) GS::pump();
         }

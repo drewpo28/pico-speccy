@@ -60,6 +60,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/EvoBase.h"    // ZX-Evo font RAM, INT ack
 #include "speccy/machines/Leningrad.h"  // Leningrad-1/-2 frame INT, /WAIT alignment
 #include "speccy/machines/Quorum.h"     // Quorum 64 frame INT, window 0
+#include "speccy/machines/Hobbit.h"     // PK Hobbit: windows 0/1, opcode-fetch hook
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
 #include "speccy/core/Rzx.h"
@@ -182,6 +183,11 @@ void CPU::updateStatesInFrame() {
         if (isQuorum64Romset(Config::romSet48)) {
             IntStart = 0;
             IntEnd = Quorum::kIntLen64;
+        }
+        // PK Hobbit: the pulse is the display PLA's (Hobbit.h, TIMING) — 28 T.
+        if (isHobbitRomset(Config::romSet48)) {
+            IntStart = 0;
+            IntEnd = Hobbit::kIntLen;
         }
     } else if (Config::arch == A_128K || Z80Ops::isALF) {
         // The +2A/+3 (romset R_P3) keeps the 128K frame (70908 T, 228 T/line, screen
@@ -353,7 +359,8 @@ void CPU::reset() {
         // Kempston, L2's data bus has pull-ups (machines/Leningrad.h).
         Ports::getFloatBusData = isLeningrad1Romset(Config::romSet48) ? &Ports::getFloatBusDataLen1
                                : (isLeningrad2Romset(Config::romSet48) ||
-                                  isQuorum64Romset(Config::romSet48)) ? &Ports::getFloatBusDataNone
+                                  isQuorum64Romset(Config::romSet48) ||
+                                  isHobbitRomset(Config::romSet48)) ? &Ports::getFloatBusDataNone
                                                                       : &Ports::getFloatBusData48;
         Z80Ops::is48 = true;
         Z80Ops::is128 = false;
@@ -529,7 +536,7 @@ void CPU::reset() {
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
     if (((Z80Ops::isPentagon && !Z80Ops::isElm) || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm ||
-         Config::isQuorum64()) && !Config::betadisk) Config::betadisk = true;
+         Config::isQuorum64() || Config::isHobbit()) && !Config::betadisk) Config::betadisk = true;
 
     // ...and impossible on the +3, which has the uPD765 on #2FFD/#3FFD instead. Beta's
     // #1F/#FF decode and its 0x3D00 ROM trap would both fire inside the +3's own ROMs.
@@ -662,6 +669,8 @@ void CPU::reset() {
     if (Z80Ops::isAtm) Atm::reset();
     // Quorum: window 0 (+ the #7FFD windows on the 128) belongs to Quorum::remap.
     Quorum::reset();
+    // PK Hobbit: windows 0/1 belong to Hobbit's remap (port #0F, NMI, the DOS trap).
+    Hobbit::reset();
 
     tstates = 0;
     global_tstates = 0;
@@ -966,11 +975,12 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
                     NEXTVID::haltAdvanceTo(target);
                 } else {
                     stFrame = target;
+                    NextInt::slEnd = target;    // NextInt::reschedule may bring it in
                     Z80::exec_nocheck();
                     if (stFrame == 0) {
                         if (!stamped) { tstates_active = tstates; stamped = true; }
                         halted = true;
-                        NEXTVID::haltAdvanceTo(target);
+                        NEXTVID::haltAdvanceTo(NextInt::slEnd);
                     }
                 }
             } else {
@@ -1639,7 +1649,7 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     // the whole point (the TS2068 extended BASIC lives in the EX-ROM, and every
     // LROS cartridge takes over from 0x0000).
     if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[pc >> 13])
-        return timexPeek8(pc);
+        return Timex::fetch8(pc);
     TS_PAGE_HIT(pc);
     C16_FE(pc);
     return MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc);

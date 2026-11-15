@@ -72,12 +72,40 @@ __attribute__((always_inline)) inline void poke8(uint16_t address, uint8_t value
 // kind of handler that can drop it (a port write), so inside a pasted body the
 // gate is an invariant and its per-access load + test are not paid.
 // The line-boundary test (peek) and the >= 0x4000 test (poke) stay.
+//
+// They take the loop's own variables, which live in registers for the slice:
+//   t    the T-state counter (2026-10-14, NXModPlayer: CPU::tstates' load/store
+//        on every tick and every access was ~10% of the loop);
+//   lim  the loop's one T-state limit (2026-11-15), see below;
+//   pc   PC, for the write fallbacks to publish.
+//
+// READS CARRY NO TIME TEST (2026-11-15). The loop decides once per instruction,
+// in its head: lim = min(next raster line, slice end) - NX_WIN, and an
+// instruction whose first M1 ends at or past it does not run its pasted body at
+// all — it goes through the shared handlers (dcOpcode[], the generic accessors
+// with their own line test). So inside a pasted body the whole instruction is
+// known to end before the raster tick and before the slice end, and a read is
+// `t += 3` and a load. Before that every read tested the limit and each of its
+// ~75 inlined fallbacks cost 13 instructions of register shuffling (2.4 KB).
+// NX_WIN must be >= the T-states any pasted body can take AFTER its first M1:
+// 15 for the unprefixed set (EX (SP),HL 19 T, CALL 17, LD (nn),HL 16), 16 for
+// the ED ones pasted in tools/gen_next_dispatch.py (LD rr,(nn) and NEXTREG n,n
+// are 20 T with two M1s). 20 leaves a margin; a body pasted later that takes
+// longer needs it raised.
+//
+// Writes below 0x4000 (Layer 2 write window, divMMC, ROM) and words across two
+// 8K slots take out-of-line fallbacks (Z80_JLS.cpp, .nxovl) that publish t and
+// PC and run the generic accessor.
+constexpr uint32_t NX_WIN = 20;
+__attribute__((always_inline)) inline uint32_t lim_nx() {
+    const uint32_t a = VIDEO::ts_line_t, b = CPU::stFrame;
+    const uint32_t m = a < b ? a : b;
+    return m > NX_WIN ? m - NX_WIN : 0;
+}
+uint32_t nxPeek16Edge(uint32_t address);
+void nxPoke8Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value);
+void nxPoke16Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value);
 
-// `t` is the caller's T-state counter: Z80::exec_nocheck_next keeps CPU::tstates
-// in a register for the whole slice (2026-10-14, NXModPlayer: the global's
-// load/store on every tick and every access was ~10% of the loop) and the fall-
-// back paths (a raster line boundary, an address below 0x4000) publish it to
-// CPU::tstates around the generic accessor, which reads and advances the global.
 __attribute__((always_inline)) inline void addressOnBus_nx(uint32_t& t, uint16_t, int32_t cycles) {
     t += (uint32_t)cycles;
 }
@@ -86,58 +114,46 @@ __attribute__((always_inline)) inline void addressOnBusIR_nx(uint32_t& t, int32_
 }
 
 __attribute__((always_inline)) inline uint8_t peek8_nx(uint32_t& t, uint16_t address) {
-    const uint32_t end = t + 3;
-    if (end < VIDEO::ts_line_t) {
-        t = end;
-        return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
-    }
-    CPU::tstates = t;
-    const uint8_t v = Z80Ops::peek8(address);
-    t = CPU::tstates;
-    return v;
+    t += 3;
+    return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
 }
 
-// A word inside one 8K slot is one slot lookup; one straddling two keeps the
-// per-byte form (the slots need not be adjacent in SRAM).
+// A word inside one 8K slot is one slot lookup; one straddling two is read per
+// byte, out of line (the slots need not be adjacent in SRAM).
 __attribute__((always_inline)) inline uint16_t peek16_nx(uint32_t& t, uint16_t address) {
-    const uint32_t end = t + 6;
-    if (end < VIDEO::ts_line_t) {
-        t = end;
+    t += 6;
+    if (__builtin_expect((address & 0x1FFF) != 0x1FFF, 1)) {
         const uint8_t* const p = MemESP::ramCurrent[address >> 13] + (address & 0x1FFF);
-        if (__builtin_expect((address & 0x1FFF) != 0x1FFF, 1)) return (uint16_t)(p[0] | (p[1] << 8));
-        const uint16_t next = address + 1;
-        return (uint16_t)(p[0] | (MemESP::ramCurrent[next >> 13][next & 0x1FFF] << 8));
+        return (uint16_t)(p[0] | (p[1] << 8));
     }
-    CPU::tstates = t;
-    const uint16_t v = Z80Ops::peek16(address);
-    t = CPU::tstates;
-    return v;
+    return (uint16_t)nxPeek16Edge(address);
 }
 
-__attribute__((always_inline)) inline void poke8_nx(uint32_t& t, uint16_t address, uint8_t value) {
-    if (address >= 0x4000) {
+// A write at 0x4000-0xFFFF: +3 T, no line tick until the next M1, a plain store
+// (see NextMemory::poke8 above for what is left out and why).
+__attribute__((always_inline)) inline void poke8_nx(uint32_t& t, uint16_t pc, uint16_t address, uint8_t value) {
+    if (__builtin_expect(address >= 0x4000, 1)) {
         t += 3;
         MemESP::ramCurrent[address >> 13][address & 0x1FFF] = value;
         return;
     }
-    CPU::tstates = t;
-    Z80Ops::poke8(address, value);
+    nxPoke8Slow(t, pc, address, value);
     t = CPU::tstates;
 }
 
 // PUSH's two writes as one: low byte at `address`, high at `address + 1`,
 // written HIGH FIRST like the two pokes it replaces (the order is visible only
-// below 0x4000, which takes the per-byte path anyway).
-__attribute__((always_inline)) inline void poke16_nx(uint32_t& t, uint16_t address, uint16_t value) {
-    if (address >= 0x4000 && __builtin_expect((address & 0x1FFF) != 0x1FFF, 1)) {
+// below 0x4000, which takes the per-byte fallback anyway).
+__attribute__((always_inline)) inline void poke16_nx(uint32_t& t, uint16_t pc, uint16_t address, uint16_t value) {
+    if (__builtin_expect(address >= 0x4000 && (address & 0x1FFF) != 0x1FFF, 1)) {
         t += 6;
         uint8_t* const p = MemESP::ramCurrent[address >> 13] + (address & 0x1FFF);
         p[1] = (uint8_t)(value >> 8);
         p[0] = (uint8_t)value;
         return;
     }
-    poke8_nx(t, address + 1, (uint8_t)(value >> 8));
-    poke8_nx(t, address, (uint8_t)value);
+    nxPoke16Slow(t, pc, address, value);
+    t = CPU::tstates;
 }
 
 } // namespace NextMemory

@@ -57,6 +57,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Pss.h"
 #include "speccy/machines/Next/NexLaunch.h"
 #include "speccy/machines/Quorum.h"
+#include "speccy/machines/Hobbit.h"
 #include "app/Config.h"
 
 #include <sys/unistd.h>
@@ -131,6 +132,7 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
     // Quorum: no snapshot format carries port #00 — rebuild window 0 around the
     // #7FFD latches the loader left (BASIC running, TR-DOS from ROM).
     if (res) Quorum::afterSnapshot();
+    if (res) Hobbit::afterSnapshot();   // PK Hobbit: #0F = BASIC running
     if (!nested) g_snapshot_loading_path.clear();
     // Quick-slot name suggestion: a .pss names itself; a quick slot's own file
     // (persistN.*) is not a name at all.
@@ -1139,6 +1141,10 @@ void FileZ80::loader48() {
     MemESP::plug16(3, MemESP::ram[MemESP::bankLatch].sync(3), false);
 
     VIDEO::grmem = MemESP::ram[5].direct();
+
+    // PK Hobbit: the reset above left the boot-menu configuration (SHADOW-A in
+    // window 0); the snapshot resumes inside the SINCLAIR ROM, as a .z80 does.
+    Hobbit::afterSnapshot();
 
 }
 

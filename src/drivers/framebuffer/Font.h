@@ -16,6 +16,8 @@ class Font
   public:
 	const int firstChar;
 	const int charCount;
+	// One byte per glyph row, leftmost pixel in bit 7 (charWidth <= 8): a glyph
+	// is charHeight bytes. Font.cpp packs its byte-per-pixel sources at compile time.
 	const unsigned char *pixels;
 	const int charWidth;
 	const int charHeight;

@@ -31,6 +31,13 @@ bool extWrite(uint16_t address, uint8_t data);
 // rvmWD1793Write.
 bool fdcNoDiskBreak(uint16_t address);
 
+// The Doctor Max tool romsets (Flash Tool, FDImage) have an empty bank1: 16 KB of
+// 0xFF. It is not kept in flash (the 4 MB image is at the GM.DLS floor) but taken
+// from Buffer::palloc (butter or heap) while such a romset is live. No memory: the
+// shared zero page (gb_rom_Alf_ep) stands in and the failure is logged. Called from
+// Config::requestMachine; release when the romset is left (idempotent).
+const uint8_t* emptyBank();
+void releaseEmptyBank();
 // ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────────
 // #DFFD, the Karabas #008B/#018B/#028B, the DS80 palette and its BX0/GX0 latches,
 // the VV51 mouse control: the PSPR block. The DS80 colour memory is RAM pages

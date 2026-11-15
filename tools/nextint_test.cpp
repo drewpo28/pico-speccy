@@ -3,7 +3,7 @@
 // ZC/TO, im2_device.vhd daisy chain, zxnext.vhd 1925-2085 / 5590-5640 / 6230-6263,
 // zxula_timing.vhd 546-585), not from the implementation.
 //
-//   g++ -O2 -Wall -Wextra -Itools/nextint_stub -Isrc -o /tmp/nextint_test
+//   g++ -O2 -Wall -Wextra -Itools/nextint_stub -Isrc -Iexternal -o /tmp/nextint_test
 //       tools/nextint_test.cpp src/speccy/machines/Next/NextInt.cpp && /tmp/nextint_test
 // (the stub dir FIRST: its CPU.h / z80.h / ESPectrum.h / Video.h stand in for the firmware's)
 #include <cstdio>
@@ -29,6 +29,9 @@ uint16_t NextReg::paperLineV = 63;
 static uint8_t g_timing = 2;   // 128K
 uint8_t NextReg::machineTiming() { return g_timing; }
 bool NextMf::active() { return false; }
+#include "speccy/devices/Z80DMA.h"
+bool Z80DMA::nxPending = false, Z80DMA::nxStall = false;   // NextInt::reschedule
+uint32_t Z80DMA::nxNextT = 0;
 
 static int g_fail = 0, g_n = 0;
 #define CHECK(c, ...) do { g_n++; if (!(c)) { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)

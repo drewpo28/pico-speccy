@@ -13,13 +13,18 @@
 # Needs: arm-none-eabi-gcc 14.2 on PATH (the firmware's own), qemu-system-arm,
 # gcc + glib-2.0 headers (for the plugins), curl (once, for qemu-plugin.h).
 # ZEXDOC/ZEXALL are not in the tree: anotherlin/z80emu testfiles/zexdoc.com.
+# They must be the CP/M builds (BDOS call 5, `LD HL,tests` at 0x11F): a NedoOS
+# build prints through its own OS and the bench shows no OK / ERROR line.
 #
 #   z80bench.sh plugins                      build the two plugins (once)
 #   z80bench.sh build <fw build dir> <out.elf>
 #   z80bench.sh run   <elf> <file.com> <M T-states, 0 = to the end> [skip] [ntests]
 #   z80bench.sh prof  <elf> <file.com> <M T-states> [skip]   per-function profile
 #   z80bench.sh zex   <elf> <out-prefix> [file.com]   all 67 tests in 4 parallel shards
-#   z80bench.sh mix   <out.com>                      the game-like second workload
+#   z80bench.sh lock  <elf> <file.com> <M T-states> <out.log>   state hash per 65536 slices
+#   z80bench.sh fuzz  <elf> <n pairs> <seed> <out.log>          random instruction pairs
+# Z80BENCH_MODE=next in the environment runs any of them on the Next loop.
+#   z80bench.sh mix   <out.com> [high|game]          the game-like workloads (mkmix.py)
 #
 # skip/ntests carve a window out of the ZEXDOC test table (the operand of the
 # `LD HL,tests` at 0x11F). Numbers from the 2026-10-10 session are in CLAUDE.md
@@ -62,21 +67,43 @@ for e in json.load(open('$B/compile_commands.json')):
     [ -f "$OUT" ]
 }
 
+# Z80BENCH_MODE=next selects the Spectrum Next loop (harness argv[5]); anything
+# else (default "ts") is the TS-Conf fast path.
+MODE="${Z80BENCH_MODE:-ts}"
+
 run() {
-    $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="$2",arg="$3",arg="${4:-0}",arg="${5:-0}" \
+    $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="$2",arg="$3",arg="${4:-0}",arg="${5:-0}",arg="$MODE" \
         -kernel "$1" -plugin "$WORK/libinsn.so" 2>&1
 }
 
 prof() {
-    PROF_OUT="$WORK/prof.txt" $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="$2",arg="$3",arg="${4:-0}",arg=0 \
+    PROF_OUT="$WORK/prof.txt" $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="$2",arg="$3",arg="${4:-0}",arg=0,arg="$MODE" \
         -kernel "$1" -plugin "$WORK/libprof.so" 2>&1 | tail -3
     python3 "$HERE/symprof.py" "$1" "$WORK/prof.txt"
+}
+
+# Lockstep across two builds: the harness runs in slices of a pseudo-random
+# length (1..400 T, each carried on to an instruction boundary) and prints a
+# hash of the whole Z80 state every 65536 slices; the first differing line of
+# two logs brackets the divergence. `fuzz` runs <n> random tests (an instruction
+# with any prefix, PC/SP/HL on 8K slot edges, SCF/CCF after it half the time so
+# the Q flag shows; alternately as two single steps and as one 40..103 T slice)
+# and prints a hash every 4096.
+lock() {   # lock <elf> <file.com> <M T-states> <out.log>
+    $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="$2",arg="$3",arg=0,arg=0,arg="$MODE",arg=lock \
+        -kernel "$1" > "$4" 2>&1
+    tail -2 "$4"
+}
+fuzz() {   # fuzz <elf> <n pairs> <seed> <out.log>
+    $QEMU -semihosting-config enable=on,target=native,arg=bench,arg=-,arg="$2",arg="$3",arg=0,arg="$MODE",arg=fuzz \
+        -kernel "$1" > "$4" 2>&1
+    tail -1 "$4"
 }
 
 zex() {
     local S=(0 17 34 51) N=(17 17 17 16)
     for i in 0 1 2 3; do
-        $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="${3:-$WORK/zexdoc.com}",arg=0,arg=${S[$i]},arg=${N[$i]} \
+        $QEMU -semihosting-config enable=on,target=native,arg=bench,arg="${3:-$WORK/zexdoc.com}",arg=0,arg=${S[$i]},arg=${N[$i]},arg="$MODE" \
             -kernel "$1" > "$2.$i.log" 2>&1 &
     done
     wait
@@ -91,6 +118,8 @@ case "$cmd" in
     run)     run "$@" ;;
     prof)    prof "$@" ;;
     zex)     zex "$@" ;;
-    mix)     python3 "$HERE/mkmix.py" "$1" ;;
+    lock)    lock "$@" ;;
+    fuzz)    fuzz "$@" ;;
+    mix)     python3 "$HERE/mkmix.py" "$@" ;;
     *) sed -n 2,30p "$0"; exit 1 ;;
 esac

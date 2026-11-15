@@ -9,6 +9,7 @@
 struct quorum_rom_bank_t { const uint8_t* data; const uint8_t* overlay; };
 extern "C" {
 extern const unsigned char gb_rom_qu128_sys[];
+extern const unsigned char gb_rom_nav256_sys[];
 extern const unsigned char gb_overlay_qu64_48[];
 extern const unsigned char gb_overlay_qu64_dos[];
 extern const unsigned char gb_overlay_qu128_128[];
@@ -17,6 +18,8 @@ extern const unsigned char gb_overlay_qu128_dos[];
 extern const unsigned char gb_overlay_qu64o_48[];
 extern const unsigned char gb_overlay_qu1024p_48[];
 extern const unsigned char gb_overlay_qu1024p_sys[];
+extern const unsigned char gb_overlay_nav256_48[];
+extern const unsigned char gb_overlay_nav256_dos[];
 }
 // roles: 48, dos
 static const quorum_rom_bank_t gb_rom_qu64_banks[2] = {
@@ -40,4 +43,11 @@ static const quorum_rom_bank_t gb_rom_qu1024p_banks[4] = {
     { gb_rom_1_sinclair_128k, gb_overlay_qu1024p_48 },   // 48
     { gb_rom_qu128_sys, gb_overlay_qu1024p_sys },   // sys
     { gb_rom_4_trdos_504t, gb_overlay_qu128_dos },   // dos
+};
+// roles: 128, 48, sys, dos
+static const quorum_rom_bank_t gb_rom_nav256_banks[4] = {
+    { gb_rom_0_pentagon_128k, nullptr },   // 128
+    { gb_rom_1_sinclair_128k, gb_overlay_nav256_48 },   // 48
+    { gb_rom_nav256_sys, nullptr },   // sys
+    { gb_rom_4_trdos_504t, gb_overlay_nav256_dos },   // dos
 };

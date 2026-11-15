@@ -35,6 +35,10 @@ static uint8_t s_pages = 8;
 // The original Quorum 64 (quorum48.rom): no TR-DOS ROM, no DOS signal — the trap at
 // #3Dxx does nothing and the Beta ports are never the controller.
 static bool s_orig = false;
+// Navigator 256 (Quorum.h): no shadow RAM, no #80-#85 / #7E, the Beta 128 on its stock
+// ports, page bit 3 = #7FFD D7, #7FFD D5 = the lock (s_lock, until a reset).
+static bool s_nav = false;
+static bool s_lock = false;
 // Pss::load restored #00 & co. (snapLoad): the afterSnapshot() that follows keeps them.
 static bool s_snapRestored = false;
 
@@ -72,10 +76,12 @@ static inline uint32_t shadowPage() {
 // D6 only locks #7FFD and D5 B_ROM = 1 protects the shadow RAM (Quorum port map,
 // "Порты компьютеров Кворум").
 static inline bool shadowWp() {
+    if (s_nav) return true;                          // nothing under the ROM to write to
     return (s_pages > 8) ? (p00 & B_ROM) != 0 : (p00 & BLK_WR) != 0;
 }
 static inline uint32_t topPage() {
     uint32_t pg = s_p7ffd & 7;
+    if (s_nav) return pg | ((s_p7ffd & 0x80) >> 4);  // D7 -> bit 3 (SM memtest: 00-07, 80-87)
     if (extRamOn()) pg |= ((s_p7ffd & 0xC0) >> 3) | (s_p7ffd & 0x20);
     return pg & (s_pages - 1);
 }
@@ -86,6 +92,14 @@ static void window0(uint8_t& rom, bool& ram) {
     // Under the DOS signal #00 D7 picks TR-DOS from ROM (1) or the shadow RAM (0,
     // the "TR-DOS emulator" firmware); otherwise D0 maps the shadow RAM (ZXMAK2).
     ram = dos ? !(p00 & TR_DOS) : (p00 & F_RAM) != 0;
+    if (s_nav) {
+        // SpeccyP rom_select (NOVA256): DOS signal first, D5 = 0 -> the service ROM,
+        // else BASIC by #7FFD D4. D0 (shadow RAM on a Quorum) is a stub there: the
+        // service ROM again.
+        ram = false;
+        rom = dos ? 4 : (!(p00 & B_ROM) || (p00 & F_RAM)) ? 2 : (MemESP::romLatch ? 1 : 0);
+        return;
+    }
     // ZXMAK2 MemoryQuorum256: DOS first, then SYS only when B_ROM AND TR_DOS are
     // both 0, else BASIC by #7FFD D4.
     if (!is128())                  rom = dos ? 4 : 0;
@@ -155,6 +169,8 @@ void reset() {
     s_p7ffd = 0;
     s_pages = (g_quorum >= 2) ? quorumRamPages(Config::romSetPent) : 4;
     s_orig = g_quorum == 1 && isQuorum64OrigRomset(Config::romSet48);
+    s_nav = g_quorum >= 2 && isNavigatorRomset(Config::romSetPent);
+    s_lock = false;
     s_cpm = false;
     s_p85 = 0;
     s_snapRestored = false;
@@ -187,7 +203,7 @@ uint32_t snapSave(uint8_t* b) {
     b[2] = p80FD;
     b[3] = s_p7ffd;
     b[4] = s_p85;
-    b[5] = s_cpm ? 1 : 0;
+    b[5] = (uint8_t)((s_cpm ? 1 : 0) | (s_lock ? 2 : 0));
     return SNAP_MAX;
 }
 
@@ -199,6 +215,7 @@ bool snapLoad(const uint8_t* b, uint32_t n) {
     s_p7ffd = b[3];
     s_p85   = b[4];
     s_cpm   = (b[5] & 1) != 0;
+    s_lock  = s_nav && (b[5] & 2) != 0;
     // D2 picks the raster on the 1024: re-derive it at the frame boundary.
     if (is1024() && ((old ^ p00) & PENT)) rasterPending = true;
     remap();
@@ -296,7 +313,7 @@ static uint8_t extRead(uint16_t address) {
 // WD1793 with TRD = 0, #80-#85 with TRD = 1. #80-#85 stay decoded under DOS here
 // too, because QU7V42's own TR-DOS is the moved-port one.
 static inline bool betaPort64(uint8_t lo) {
-    return ((g_quorum == 1 && !s_orig) || is1024()) && ESPectrum::trdos && (lo & 0x1F) == 0x1F;
+    return ((g_quorum == 1 && !s_orig) || is1024() || s_nav) && ESPectrum::trdos && (lo & 0x1F) == 0x1F;
 }
 
 // Gluk clock (ports.md "Порты энергонезависимых часов"): #EFF7 (D7 = clock open),
@@ -311,6 +328,9 @@ bool portIn(uint16_t address, uint8_t* out) {
         *out = (glukPort(lo) && address == 0xBFF7) ? RTC::readData() : 0xFF;
         return true;
     }
+    // Navigator 256: no Quorum disk board and no #7E keyboard; every even port is the
+    // ULA's (SpeccyP), the Kempston / AY / GS decode is the generic one.
+    if (s_nav) return false;
     if ((lo & 0x9C) == 0x80) {                       // #80-#83 WD1793
         Ports::FDDStep((s_p85 & 0x20) != 0);
         *out = rvmWD1793Read(&ESPectrum::fdd, lo & 3);
@@ -357,6 +377,26 @@ bool portOut(uint16_t address, uint8_t data) {
         p00 = data;
         remap();
         return true;
+    }
+    if (s_nav) {
+        // SpeccyP nova_256: every other even port is the ULA, #7FFD is the loose
+        // A15 = A1 = 0 decode with the 128's D5 lock; no #80-#85 board. AY, GS, the
+        // Gluk clock and the rest go to the generic decode.
+        if (!(lo & 1)) return false;
+        if ((address & 0x8002) == 0) {
+            if (s_lock) return true;
+            if (data & 0x20) s_lock = true;
+            s_p7ffd = data;
+            MemESP::bankLatch = data & 7;
+            MemESP::romLatch = (data >> 4) & 1;
+            MemESP::videoLatch = (data >> 3) & 1;
+            remap();
+            return true;
+        }
+        // #80FD / #81FD: the service ROM writes #80 there (Quorum habit); swallowed so
+        // it does not land in an AY register.
+        if ((address & 0xA01A) == 0x8018) return true;
+        return (lo & 0x1F) == 0x1F;                  // the Beta ports outside TR-DOS
     }
     if ((lo & 0x9C) == 0x80) {                       // #80-#83 WD1793
         Ports::FDDStep(false);

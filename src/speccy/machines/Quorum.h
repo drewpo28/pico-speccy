@@ -30,6 +30,18 @@
 //                timing diagram, kKvRasterShift), switched live at the frame boundary; D2/D4
 //                survive F11 and the NMI acknowledge.
 //                Not modelled: #80FD D7 EN_RAM. (No Quorum 512: only the port table names it.)
+//   Navigator 256  romset R_NAV256 of A_PENT ("NOVA", 1998; SpeccyP's NOVA256 machine and
+//                its ROM set). A Quorum by its port #00 (D5 = 0 -> the service ROM
+//                'NAVIGATOR' v5.08; the NMI acknowledge clears #00) on a Pentagon-128
+//                base: BASIC-128 = Pentagon ROM0, BASIC-48 = Sinclair ROM1 + two #00
+//                trampolines, TR-DOS "6.04T" = 5.04T + 503 bytes on the STOCK Beta ports
+//                (entered at #3Dxx). 256 KB: page bit 3 = #7FFD D7 (the ROM's memtest
+//                walks #7FFD = 00-07, 80-87; it keeps a 48/128 flag in page 8 and saves
+//                the screen to page 11). #7FFD D5 locks #7FFD (SpeccyP; the ROM masks D5
+//                out of every #7FFD value it restores). No shadow RAM (writes under the
+//                ROM are dropped), no #80-#85 disk board, no #7E keyboard; even ports =
+//                ULA. Pentagon raster (SpeccyP: 71680 T). Source: SpeccyP zx_machine.c
+//                + the ROM disassembly; no schematic.
 //
 // Sources: the KiCad schematics in github.com/UncleRus/quorum-reborn (Quorum 64 drawn
 // by its designer), its resources/Doc/ports.md, UnrealSpeccy MM_QUORUM, ZXMAK2

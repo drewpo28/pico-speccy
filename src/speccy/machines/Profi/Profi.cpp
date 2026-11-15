@@ -15,9 +15,33 @@
 #include "speccy/z80/z80.h"
 #include "speccy/devices/disk/wd1793.h"
 
+#include "app/Buffer.h"
+// The shared 16 KB zero page (roms/alf/alf1.c) is the fallback. Not via roms.h: its
+// headers define internal-linkage ROM arrays (see TsConf.cpp, same extern).
+extern "C" const unsigned char gb_rom_Alf_ep[];
+
 #ifndef bitRead
 #define bitRead(value, bit) (((value) >> (bit)) & 0x01)
 #endif
+
+// ── Empty 0xFF bank of the Doctor Max tool romsets (Profi.h) ────────────────────
+static uint8_t* s_emptyBank = nullptr;
+
+const uint8_t* Profi::emptyBank() {
+    if (!s_emptyBank) {
+        s_emptyBank = (uint8_t*)Buffer::palloc(16384, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!s_emptyBank) {
+            Debug::log("[PROFI] no 16 KB for the empty 0xFF bank1 - it reads 0x00");
+            return gb_rom_Alf_ep;
+        }
+        memset(s_emptyBank, 0xFF, 16384);
+    }
+    return s_emptyBank;
+}
+
+void Profi::releaseEmptyBank() {
+    if (s_emptyBank) { Buffer::pfree(s_emptyBank); s_emptyBank = nullptr; }
+}
 
 extern int ram_pages, butter_pages, psram_pages, swap_pages;
 extern volatile bool profi_ds80_active;   // drivers (hdmi.c / vga.c)

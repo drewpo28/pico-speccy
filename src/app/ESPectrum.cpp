@@ -32,6 +32,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "speccy/machines/Quorum.h"
+#include "speccy/machines/Hobbit.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Sam/SamClock.h"
@@ -1575,7 +1576,7 @@ void ESPectrum::setup() {
                  !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::isElmPentRaster() ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
-                   Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
+                   Config::isLeningrad() || Config::isQuorum64() || Config::isHobbit()));   // no ULA: CPU and video share slots, no wait
   MemESP::plug16(2, MemESP::ram[2].sync(2), false);
   MemESP::plug16(3, MemESP::ram[MemESP::bankLatch].sync(3), false);
 
@@ -1859,7 +1860,11 @@ void ESPectrum::setup() {
                        Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
-  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
+  // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
+  // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
+  // 2026-11-15) — and held their objects + buffer on a heap with no room left.
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0 && Config::arch != A_NEXT);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
@@ -2406,7 +2411,7 @@ void ESPectrum::reset(uint8_t romInUse) {
                  !(Config::arch == A_P1024 || Config::arch == A_P512 || Config::isElmPentRaster() ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
-                   Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
+                   Config::isLeningrad() || Config::isQuorum64() || Config::isHobbit()));   // no ULA: CPU and video share slots, no wait
   MemESP::plug16(2, MemESP::ram[2].sync(2), false);
   MemESP::plug16(3, MemESP::ram[0].sync(3), false);
 
@@ -2642,7 +2647,11 @@ void ESPectrum::reset(uint8_t romInUse) {
                        Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
-  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
+  // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
+  // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
+  // 2026-11-15) — and held their objects + buffer on a heap with no room left.
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0 && Config::arch != A_NEXT);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
@@ -3007,6 +3016,81 @@ static void quorumKeys(fabgl::Keyboard* Kbd) {
     memcpy(Quorum::ext, k, sizeof(k));
 }
 
+// PK Hobbit: the PC keys that are its framing keys (Hobbit.h KEYBOARD, table A.5).
+static void hobbitKeys(fabgl::Keyboard* Kbd, uint8_t* cols) {
+    using namespace fabgl;
+    struct K { VirtualKey vk; uint8_t code; };
+    static const K edit[] = {
+        {VK_BACKSPACE, 0x49}, {VK_LEFT, 0x5A}, {VK_UP, 0x5B}, {VK_RIGHT, 0x5C}, {VK_DOWN, 0x5D},
+        {VK_RALT, 0x6C},                                  // Rus/Lat
+    };
+    static const K all[] = {
+        {VK_F1, 0x48}, {VK_F2, 0x44}, {VK_F3, 0x43}, {VK_F4, 0x46}, {VK_F5, 0x45}, {VK_F6, 0x47},
+        {VK_F7, 0x4D}, {VK_F8, 0x52}, {VK_INSERT, 0x41}, {VK_DELETE, 0x49}, {VK_HOME, 0x6C},
+        {VK_END, 0x55}, {VK_PAGEDOWN, 0x6D},   // #5E ("Register" in table A.5) types "+" in all three firmwares
+    };
+    uint8_t code = 0;
+    if (Hobbit::keysMode != Hobbit::KEYS_OFF) {
+        for (const K& e : edit) if (Kbd->isVKDown(e.vk)) { code = e.code; break; }
+        if (!code && Hobbit::keysMode == Hobbit::KEYS_ALL)
+            for (const K& e : all) if (Kbd->isVKDown(e.vk)) { code = e.code; break; }
+    }
+    // Scanner keys (no NMI). Codes found by pressing every key number in LOGO
+    // (docs/notes/other-machines.md): the Hobbit has keys of its own for the six
+    // letters a PC keeps on punctuation, so the table depends on Rus/Lat.
+    static const K lat[] = {
+        {VK_PERIOD, 0x63}, {VK_COMMA, 0x64}, {VK_SLASH, 0x61}, {VK_EQUALS, 0x65}, {VK_MINUS, 0x5F},
+        {VK_LEFTBRACKET, 0x4F}, {VK_RIGHTBRACKET, 0x50}, {VK_COLON, 0x4A}, {VK_LEFTPAREN, 0x4B},
+        {VK_RIGHTPAREN, 0x4C}, {VK_ASTERISK, 0x60}, {VK_PLUS, 0x5E}, {VK_LESS, 0x67},
+        {VK_GREATER, 0x66}, {VK_AT, 0x58}, {VK_HASH, 0x42}, {VK_DOLLAR, 0x6B}, {VK_AMPERSAND, 0x59},
+        {VK_QUOTEDBL, 0x6A}, {VK_QUOTE, 0x51}, {VK_CARET, 0x62},
+        {VK_KP_PERIOD, 0x63}, {VK_KP_DIVIDE, 0x61}, {VK_KP_MULTIPLY, 0x60}, {VK_KP_PLUS, 0x5E},
+        {VK_KP_MINUS, 0x5F},
+    };
+    // Rus: the PC's own JCUKEN places — [ ] ; ' , . are the letters, "." and "," sit on
+    // the "/" key, the double quote on Shift+2 (and Shift+' for a US keyboard).
+    static const K rus[] = {
+        {VK_LEFTBRACKET, 0x4E}, {VK_RIGHTBRACKET, 0x51}, {VK_SEMICOLON, 0x53}, {VK_QUOTE, 0x54},
+        {VK_COMMA, 0x57}, {VK_PERIOD, 0x58}, {VK_SLASH, 0x63}, {VK_QUESTION, 0x64},
+        {VK_QUOTEDBL, 0x6A}, {VK_AT, 0x6A}, {VK_BACKSLASH, 0x61}, {VK_VERTICALBAR, 0x61},
+        {VK_LEFTBRACE, 0x4F}, {VK_RIGHTBRACE, 0x50},      // LOGO lists without leaving Rus
+        {VK_EQUALS, 0x65}, {VK_MINUS, 0x5F}, {VK_COLON, 0x4A}, {VK_LEFTPAREN, 0x4B},
+        {VK_RIGHTPAREN, 0x4C}, {VK_ASTERISK, 0x60}, {VK_PLUS, 0x5E}, {VK_LESS, 0x67},
+        {VK_GREATER, 0x66}, {VK_HASH, 0x42}, {VK_DOLLAR, 0x6B}, {VK_AMPERSAND, 0x59}, {VK_CARET, 0x62},
+        {VK_KP_PERIOD, 0x63}, {VK_KP_DIVIDE, 0x61}, {VK_KP_MULTIPLY, 0x60}, {VK_KP_PLUS, 0x5E},
+        {VK_KP_MINUS, 0x5F},
+    };
+    // The keyboard layer reports the key, not the character: Shift + "=" arrives as
+    // VK_EQUALS with a Shift down. Shift + key -> the Hobbit's own key for that sign,
+    // (the matrix is cleared below).
+    struct S { VirtualKey vk; uint8_t lat, rus, row, bit; };   // row 0xFF = no core key
+    static const S shifted[] = {
+        {VK_EQUALS, 0x5E, 0x5E, 0xFF, 0}, {VK_8, 0x60, 0x60, 4, 2}, {VK_9, 0x4B, 0x4B, 4, 1},
+        {VK_0, 0x4C, 0x4C, 4, 0}, {VK_SEMICOLON, 0x4A, 0x4A, 0xFF, 0}, {VK_QUOTE, 0x54, 0x6A, 0xFF, 0},
+        {VK_COMMA, 0x67, 0x67, 0xFF, 0}, {VK_PERIOD, 0x66, 0x66, 0xFF, 0}, {VK_2, 0x58, 0x6A, 3, 1},
+        {VK_3, 0x42, 0x42, 3, 2}, {VK_4, 0x6B, 0x6B, 3, 3}, {VK_6, 0x62, 0x62, 4, 4},
+        {VK_7, 0x59, 0x59, 4, 3}, {VK_LEFTBRACKET, 0x4F, 0x4F, 0xFF, 0}, {VK_RIGHTBRACKET, 0x50, 0x50, 0xFF, 0},
+        {VK_SLASH, 0, 0x64, 0xFF, 0},
+    };
+    uint8_t s = 0;
+    if (Hobbit::keysMode != Hobbit::KEYS_OFF && (Kbd->isVKDown(VK_LSHIFT) || Kbd->isVKDown(VK_RSHIFT))) {
+        const bool rus = Hobbit::rusMode();
+        for (const S& e : shifted) if (Kbd->isVKDown(e.vk)) {
+            s = rus ? e.rus : e.lat;
+            break;
+        }
+    }
+    if (!s && Hobbit::keysMode != Hobbit::KEYS_OFF) {
+        if (Hobbit::rusMode()) { for (const K& e : rus) if (Kbd->isVKDown(e.vk)) { s = e.code; break; } }
+        else                   { for (const K& e : lat) if (Kbd->isVKDown(e.vk)) { s = e.code; break; } }
+    }
+    // While a sign key is down nothing else is: the generic layer would add its own
+    // Symbol Shift combination (BASIC typed ";:" for one key) and a held Shift is not
+    // the Hobbit's Caps Shift here.
+    if (s) for (int i = 0; i < 8; i++) cols[i] |= 0x1F;
+    Hobbit::frameKey(code, s);
+}
+
 void ESPectrum::processKeyboard() {
   static uint8_t PS2cols[8] = {0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf};
   auto Kbd = PS2Controller.keyboard();
@@ -3217,7 +3301,10 @@ void ESPectrum::processKeyboard() {
                 && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F8)
             // Quorum: F1-F6 are its #7E keys while Alt+~ says so (quorumKeys).
             || (g_quorum && Quorum::fkeysToGuest
-                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F6);
+                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F6)
+            // PK Hobbit, Alt+~ "all": F1-F8 and the nav block are its framing keys.
+            || (g_hobbit && Hobbit::keysMode == Hobbit::KEYS_ALL
+                && !(KeytoESP >= fabgl::VK_F9 && KeytoESP <= fabgl::VK_F12));
         bool passToZ80 = extKeysOn
             && KeytoESP != fabgl::VK_PAUSE
             && KeytoESP != fabgl::VK_TILDE
@@ -3366,7 +3453,8 @@ void ESPectrum::processKeyboard() {
           !(Kbd->isVKDown(fabgl::VK_LSHIFT) || Kbd->isVKDown(fabgl::VK_RSHIFT));
       // Quorum with Alt+~ on: the arrows and Backspace are its #7E keys
       // (quorumKeys), not Caps Shift + 5..8 / 0 — NC reads Caps Shift as Shift.
-      const bool qExt = g_quorum && Quorum::fkeysToGuest;
+      const bool qExt = (g_quorum && Quorum::fkeysToGuest)
+                     || (g_hobbit && Hobbit::keysMode != Hobbit::KEYS_OFF);   // hobbitKeys
       const bool kBsZx = Kbd->isVKDown(fabgl::VK_BACKSPACE) && !qExt;
       // Cursor Keys
       if (!qExt && Kbd->isVKDown(fabgl::VK_RIGHT)) {
@@ -3516,6 +3604,7 @@ void ESPectrum::processKeyboard() {
       if (Z80Ops::isSam) samKeys(Kbd);
       if (Z80Ops::isEnt) epKeys(Kbd);
       if (g_quorum) quorumKeys(Kbd);
+      if (g_hobbit) hobbitKeys(Kbd, PS2cols);
 
       // ── Profi extended keyboard ─────────────────────────────────────────
       // Active when arch=Profi and extended keyboard mode is on.
@@ -5393,7 +5482,7 @@ void ESPectrum::loop() {
     // interface on board (betadisk forced on), so it counts like Pentagon here;
     // the +3 has its own uPD765.
     bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm) ||
-                   (Z80Ops::is128 && Z80Ops::isByte) || Z80Ops::isP3) && Tape::tapeStatus != TAPE_LOADING
+                   (Z80Ops::is128 && Z80Ops::isByte) || Z80Ops::isP3 || g_hobbit) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
     // Indicator sits at x=311 — inside the DS80 right border band / normal top border.
