@@ -944,11 +944,12 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
                     NEXTVID::haltAdvanceTo(target);
                 } else {
                     stFrame = target;
+                    NextInt::slEnd = target;    // NextInt::reschedule may bring it in
                     Z80::exec_nocheck();
                     if (stFrame == 0) {
                         if (!stamped) { tstates_active = tstates; stamped = true; }
                         halted = true;
-                        NEXTVID::haltAdvanceTo(target);
+                        NEXTVID::haltAdvanceTo(NextInt::slEnd);
                     }
                 }
             } else {

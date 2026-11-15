@@ -255,7 +255,14 @@ public:                       // the type only: NextVideo.cpp's core0 copy names
         uint8_t n;
         uint8_t dirty, lo, hi;   // resolve range [lo, hi] pending
         volatile uint8_t applying;   // sprApplyTo is writing attr (core0's copy is taken from core1's)
-        uint8_t pad[3];
+        // Rows (sprite space, 0..255) some visible sprite covers, rebuilt by
+        // resolveSprites: RenderSpritesLine leaves at once on a row with none
+        // (Fluid: 72 sprites tested on each of 256 rows for ~35 rows of pixels,
+        // 3.4 ms of core1 a frame, hw 2026-11-15). All ones while the title
+        // re-resolves many times a frame (maskOff) — a per-line multiplexer
+        // would pay for the rebuild on every line and gain nothing.
+        uint8_t  rcnt, maskOff, lastLine;
+        uint32_t rowMask[8];
     };
 private:
     static SprRender* sprR;              // renderer side (own heap block, with sprLog)

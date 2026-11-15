@@ -232,7 +232,9 @@ void NextPorts::dacNr(uint8_t r, uint8_t v) {
 // 1xx111cc selects AY (cc 10 -> 1, 01 -> 2, 11/00 -> 0) and sets its pan from
 // bits 6:5; the register number latches only for d7:5 = 000. With TurboSound
 // off the select is ignored and the AY last selected stays the only one heard.
-bool NextPorts::ayWrite(uint16_t address, uint8_t data) {
+// SRAM: every AY register select / write of the Next (~700 a frame under a
+// TurboSound player — Fluid, 2026-11-15) came through here from flash.
+NXP_HOT bool NextPorts::ayWrite(uint16_t address, uint8_t data) {
     const uint16_t top = address & 0xC004;
     if (top != 0xC004 && top != 0x8004) return true;
     if ((NextReg::reg[0x06] & 3) == 3) return true;          // AYs held in reset
@@ -244,9 +246,12 @@ bool NextPorts::ayWrite(uint16_t address, uint8_t data) {
             if (NextReg::reg[0x08] & 0x02) {
                 const uint8_t cc = data & 3;
                 const int n = cc == 2 ? 1 : cc == 1 ? 2 : 0;
-                ESPectrum::AYGetSample();                     // the pan applies from here on
+                // The pan applies from here on — catch the synthesis up only when it
+                // CHANGES: a TurboSound player selects a chip before every register
+                // (Fluid: ~200 selects a frame, all with the same pan).
+                const uint8_t pan = (data >> 5) & 3;
+                if (ay_next_pan[n] != pan) { ESPectrum::AYGetSample(); ay_next_pan[n] = pan; }
                 AySound::selected_chip = n;
-                ay_next_pan[n] = (data >> 5) & 3;
             }
             return true;
         }

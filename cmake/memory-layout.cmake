@@ -268,7 +268,17 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # two `bmpOvr` selects in the row renderer — +128 B.
     # 2026-10-27: ScanlineWork arms the next line inline when no writer races the
     # beam (one flash call less per raster line) — +128 B (content 51 744 B).
-    set(NXOVL_WIN_SIZE_EFFECTIVE 51840)
+    # 2026-11-15: blank tilemap tiles skipped + the row flag + the Layer-2-alone
+    # mix (Fluid) — +296 B, content 52 064 B (main, DVp2w): 51840 -> 52160.
+    # Same day: the sprite row mask test in RenderSpritesLine + the veneer to its
+    # flash builder — +168 B, content 52 232 B: 52160 -> 52288.
+    # Same day: Layer 2 alone straight to the framebuffer (RenderL2Line's byte
+    # span + RenderLayers' verdict, sprites rendered first) — +920 B, content
+    # 53 152 B: 52288 -> 53248.
+    # Same day: NextInt::reschedule (EI / RETI keep the slice running), the CTC
+    # write fast path and NextPorts::ayWrite in SRAM — +784 B, content 53 936 B:
+    # 53248 -> 54016.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 54016)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -284,7 +294,12 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # trace 47 608 — ~3.5 KB under the terms again. Terms unchanged.
         # 2026-10-23: +128 B with the plain term (the bitmap-line capture).
         # 2026-10-27: +128 B with the plain term (the inline line arm).
-        set(NXOVL_WIN_SIZE_EFFECTIVE 51968)
+        # 2026-11-15: NEXT_TRACE content 52 632 B on DVp2w (the trace forks grew
+        # with the code since — nobody had linked a trace build — plus the blank
+        # tilemap rows and the sprite row mask of the plain term): content
+        # 52 792 B — 51968 -> 52864; with the direct Layer 2 row 53 728 B -> 53824;
+        # with reschedule / ctcWrite / ayWrite in SRAM 54 512 B -> 54528.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 54528)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

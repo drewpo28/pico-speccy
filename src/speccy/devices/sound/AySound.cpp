@@ -370,6 +370,42 @@ void AySound::prepare_generation()
         if (++l_env_pos > 127) l_env_pos = 64; \
     }
 
+// One output sample = l_tacts chip ticks. When no tone counter fires inside that
+// span — and the noise / envelope generators either do not fire or are heard on
+// no channel — every tick mixes the same level: mix it ONCE, scale by the span
+// and move the counters by it (an unheard noise / envelope still steps on its
+// own, so its state is the tick loop's). Bit-exact with the loop; it is the
+// common case (a tone period of 200 fires once in 28 samples), and the loop was
+// ~1 ms a frame per chip on core0 (Fluid: two chips written from a CTC
+// interrupt per scanline, hw 2026-11-15). -DAY_NO_QUIET_SPAN: the plain loop.
+#ifdef AY_NO_QUIET_SPAN
+#define AY_SAMPLE(MIX, SCALE) \
+    for (int m = 0; m < l_tacts; m++) { AY_TICK_COUNTERS() MIX }
+#else
+#define AY_SAMPLE(MIX, SCALE) \
+    if (l_cnt_a + l_tacts < l_tone_a && l_cnt_b + l_tacts < l_tone_b && l_cnt_c + l_tacts < l_tone_c && \
+        (l_noUseN || l_cnt_n + l_tacts < l_noise2) && (l_noUseE || l_cnt_e + l_tacts < l_env_freq)) { \
+        l_cnt_a += l_tacts; l_cnt_b += l_tacts; l_cnt_c += l_tacts; \
+        if (l_cnt_n + l_tacts < l_noise2) l_cnt_n += l_tacts; \
+        else for (int m = 0; m < l_tacts; m++) { \
+            if (++l_cnt_n >= l_noise2) { \
+                l_cnt_n = 0; \
+                l_seed = (l_seed * 2 + 1) ^ (((l_seed >> 16) ^ (l_seed >> 13)) & 1); \
+                l_bit_n = (l_seed >> 16) & 1; \
+            } \
+        } \
+        if (l_cnt_e + l_tacts < l_env_freq) l_cnt_e += l_tacts; \
+        else for (int m = 0; m < l_tacts; m++) { \
+            if (++l_cnt_e >= l_env_freq) { \
+                l_cnt_e = 0; \
+                if (++l_env_pos > 127) l_env_pos = 64; \
+            } \
+        } \
+        MIX \
+        SCALE \
+    } else for (int m = 0; m < l_tacts; m++) { AY_TICK_COUNTERS() MIX }
+#endif
+
 // Hoist all loop-invariant AY state into local variables
 #define AY_HOIST_LOCALS() \
     int l_tone_a = ayregs.tone_a, l_tone_b = ayregs.tone_b, l_tone_c = ayregs.tone_c; \
@@ -385,6 +421,7 @@ void AySound::prepare_generation()
     int l_env_pos = env_pos; \
     int l_seed = Cur_Seed; \
     int l_tacts = ChipTacts_per_outcount; \
+    const bool l_noUseN = !(l_R7na | l_R7nb | l_R7nc), l_noUseE = !(l_env_a | l_env_b | l_env_c); \
     int l_inv_amp = inv_Amp_Global; \
     const int *l_table = table;
 
@@ -403,20 +440,19 @@ AY_MIX_ABC void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, 
     AY_HOIST_LOCALS()
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
-        for (int m = 0; m < l_tacts; m++) {
-            AY_TICK_COUNTERS()
-            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
-                mix_l += AY_CHVOL(l_env_a, l_vol_a);
-            }
-            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
-                int v = AY_CHVOL(l_env_b, l_vol_b) >> 1;
-                mix_l += v;
-                mix_r += v;
-            }
-            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
-                mix_r += AY_CHVOL(l_env_c, l_vol_c);
-            }
+        AY_SAMPLE(
+        if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+            mix_l += AY_CHVOL(l_env_a, l_vol_a);
         }
+        if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+            int v = AY_CHVOL(l_env_b, l_vol_b) >> 1;
+            mix_l += v;
+            mix_r += v;
+        }
+        if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+            mix_r += AY_CHVOL(l_env_c, l_vol_c);
+        },
+            mix_l *= l_tacts; mix_r *= l_tacts;)
         *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
         *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
     }
@@ -428,20 +464,19 @@ AY_MIX_BAC void AySound::gen_sound_BAC(int sound_bufsize, uint8_t *sound_buf_L, 
     AY_HOIST_LOCALS()
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
-        for (int m = 0; m < l_tacts; m++) {
-            AY_TICK_COUNTERS()
-            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
-                int v = AY_CHVOL(l_env_a, l_vol_a) >> 1;
-                mix_l += v;
-                mix_r += v;
-            }
-            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
-                mix_l += AY_CHVOL(l_env_b, l_vol_b);
-            }
-            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
-                mix_r += AY_CHVOL(l_env_c, l_vol_c);
-            }
+        AY_SAMPLE(
+        if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+            int v = AY_CHVOL(l_env_a, l_vol_a) >> 1;
+            mix_l += v;
+            mix_r += v;
         }
+        if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+            mix_l += AY_CHVOL(l_env_b, l_vol_b);
+        }
+        if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+            mix_r += AY_CHVOL(l_env_c, l_vol_c);
+        },
+            mix_l *= l_tacts; mix_r *= l_tacts;)
         *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
         *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
     }
@@ -453,20 +488,19 @@ AY_MIX_ACB void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, 
     AY_HOIST_LOCALS()
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
-        for (int m = 0; m < l_tacts; m++) {
-            AY_TICK_COUNTERS()
-            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
-                mix_l += AY_CHVOL(l_env_a, l_vol_a);
-            }
-            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
-                mix_r += AY_CHVOL(l_env_b, l_vol_b);
-            }
-            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
-                int v = AY_CHVOL(l_env_c, l_vol_c) >> 1;
-                mix_l += v;
-                mix_r += v;
-            }
+        AY_SAMPLE(
+        if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+            mix_l += AY_CHVOL(l_env_a, l_vol_a);
         }
+        if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+            mix_r += AY_CHVOL(l_env_b, l_vol_b);
+        }
+        if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+            int v = AY_CHVOL(l_env_c, l_vol_c) >> 1;
+            mix_l += v;
+            mix_r += v;
+        },
+            mix_l *= l_tacts; mix_r *= l_tacts;)
         *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
         *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
     }
@@ -478,18 +512,17 @@ AY_MIX_MONO void AySound::gen_sound_MONO(int sound_bufsize, uint8_t *sound_buf_L
     AY_HOIST_LOCALS()
     while (sound_bufsize-- > 0) {
         int mix = 0;
-        for (int m = 0; m < l_tacts; m++) {
-            AY_TICK_COUNTERS()
-            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
-                mix += AY_CHVOL(l_env_a, l_vol_a);
-            }
-            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
-                mix += AY_CHVOL(l_env_b, l_vol_b);
-            }
-            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
-                mix += AY_CHVOL(l_env_c, l_vol_c);
-            }
+        AY_SAMPLE(
+        if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+            mix += AY_CHVOL(l_env_a, l_vol_a);
         }
+        if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+            mix += AY_CHVOL(l_env_b, l_vol_b);
+        }
+        if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+            mix += AY_CHVOL(l_env_c, l_vol_c);
+        },
+            mix *= l_tacts;)
         uint8_t out = (mix * l_inv_amp) >> 16;
         *sound_buf_L++ = out;
         *sound_buf_R++ = out;

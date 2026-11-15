@@ -2922,7 +2922,7 @@ void Z80::decodeOpcodefb() /* EI */
     ffIFF1 = ffIFF2 = true;
     pendingEI = true;
     if (Z80Ops::isTsconf) TsConf::intEnableHook();
-    if (Z80Ops::isNext && NextInt::ex) NextInt::wake();
+    if (Z80Ops::isNext && NextInt::ex) NextInt::reschedule(false);
     if (Z80Ops::isEnt) Ep::intEnable();
 }
 
@@ -3170,10 +3170,10 @@ static Z80_COLD void nxRst8Note() {
 // NextZXOS's SPECTRUM snapshot executor (.sna/.z80/.snx from the Browser) ends
 // in ROM 2's reset trap (NOP / JR 0) on a black screen (2026-10-08). Every
 // control transfer the core routes through check_trdos (JP/RET/CALLcc/JP(HL)/
-// RETI), every NMI and every RETN lands in a 256-entry ring; the first time a
+// RETI), every NMI and every RETN lands in a 64-entry ring; the first time a
 // transfer lands on 0x0000 with ROM 2 paged the ring is printed once.
 struct NxJmp { uint16_t to, sp, af, bc, de, hl; uint8_t t, rom, m0, m1, p7, p1, iff, dm; };
-static constexpr uint32_t NX_JMP_N = 256;
+static constexpr uint32_t NX_JMP_N = 64;    // 256 until 2026-11-15: 5 KB of .bss the trace build no longer has
 static NxJmp s_nx_jmp[NX_JMP_N];
 static uint32_t s_nx_jmp_w = 0;
 static bool s_nx_jmp_done = false;

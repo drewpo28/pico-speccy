@@ -63,6 +63,9 @@ void wake();
 // counted): the slice must end NOW, not one instruction later. wake() leaves
 // stFrame = tstates + 1, which lets exactly one more instruction run.
 void wakeNow();
+// EI / RETI: bring the running slice's end in to the next event (NextInt.cpp)
+void reschedule(bool atRetI);
+extern uint32_t slEnd;   // CPU::loop: the slice end, lowered by reschedule()
 // Called by CPU::loop right before `tstates -= statesInFrame`.
 void frameEnd();
 // NR 0x22 / 0x23 / 0x64 / raster: re-derive the line-interrupt position.

@@ -192,6 +192,10 @@ NXI_HOT void advanceTimer(Ctc& c, int64_t t, Stream& s) {
     c.ref = t;
 }
 
+// One channel's counter to t, nothing emitted: for a caller that knows no ZC is
+// due (ctcWrite's fast path, right after sync()).
+inline void advanceQuiet(Ctc& c, int64_t t) { Stream s; advanceTimer(c, t, s); }
+
 NXI_HOT void counterFrom(Ctc& c, const Stream& src, Stream& s) {
     s.n = 0;
     if (src.n <= 0) return;
@@ -480,6 +484,46 @@ NXI_HOT void wakeNow() {
     if (CPU::stFrame > t) CPU::stFrame = t;
 }
 
+// EI and RETI on the Next. CPU::loop runs an interrupt handler (IFF1 = 0) as
+// one slice to the frame's end, and EI / RETI used to end it at once (wake) so
+// the loop could re-derive the slice end with IFF1 = 1 / the daisy chain
+// released. That is a slice exit + re-entry and two more syncs per EI and per
+// RETI — ~940 a frame under a CTC "SID" player, ~4 slices per interrupt
+// (Fluid, host count 2026-11-15). Instead put the slice end where the loop
+// would put it now, and end it at once only when the loop has to act at once:
+// /INT is up, the zxnDMA holds the bus or a DMA byte is already due. The
+// target is the loop's own: next interrupt event (IFF1 set) and the next paced
+// DMA byte unless an interrupt in service delays the DMA.
+// atRetI: from RETI, whose release of the daisy chain counts at once (wakeNow:
+// a request it unblocks is taken right after the RETI); EI delays acceptance
+// by one instruction (wake). DELIBERATE CHANGE (2026-11-15): the old RETI used
+// wake(), so a second request released by RETI was taken one instruction AFTER
+// the RETI (host acknowledge log, Fluid: CTC1 waiting while CTC0's ISR ran).
+// im2_control.vhd:234 raises o_reti_seen at T3/T4 of the 4D opcode fetch,
+// im2_device.vhd S_ISR -> S_0 on it, and the next device in S_REQ pulls /INT
+// at once (o_int_n) — before RETI's two stack reads, so the Z80, sampling /INT
+// in the instruction's last T, takes it right after the RETI.
+// Everything else in the acknowledge log was identical up to that point.
+NXI_HOT void reschedule(bool atRetI) {
+#define NXI_ACT() do { if (atRetI) wakeNow(); else wake(); return; } while (0)
+    if (Z80DMA::nxPending && Z80DMA::nxStall) NXI_ACT();
+    uint32_t t = CPU::stFrame;
+    if (Z80::isIFF1()) {
+        if (intLine()) NXI_ACT();
+        t = nextEventTSynced(t);
+    }
+    if (Z80DMA::nxPending && !dmaDelay()) {
+        const uint32_t d = Z80DMA::nxNextT;
+        if (d <= CPU::tstates) NXI_ACT();
+        if (d < t) t = d;
+    }
+    if (t < CPU::stFrame) { CPU::stFrame = t; slEnd = t; }
+#undef NXI_ACT
+}
+// The running slice's end as CPU::loop set it, lowered by reschedule(): a HALT
+// later in the slice (stFrame = 0) sleeps to here, not to the stale target.
+uint32_t slEnd = 0;
+
 NXI_HOT bool intLine() {
     sync();
     if (im2Hw()) return cpuIm2() ? presented() >= 0 : classicUla();
@@ -533,7 +577,7 @@ NXI_HOT void reti() {
             break;
         }
     }
-    wake();
+    reschedule(true);
 }
 
 void frameEnd() {
@@ -678,9 +722,82 @@ uint8_t ctcRead(uint8_t ch) {
     return (uint8_t)((c.st == C_RUN || c.st == C_RUN_TC) ? c.cnt : c.tc);
 }
 
-void ctcWrite(uint8_t ch, uint8_t v) {
+// The general CTC write (flash): everything ctcWrite's fast path does not take.
+static __attribute__((noinline)) void ctcWriteSlow(uint8_t ch, uint8_t v);
+
+// SRAM (.nxovl): ~1000 writes a frame under a CTC player, nearly all of them the
+// fast path below; the general path is a call to flash.
+NXI_HOT void ctcWrite(uint8_t ch, uint8_t v) {
     if (ch > 3) return;
     sync();
+#ifndef NXI_NO_WFAST   // host differential test switch (tools/nextint_wfast_test.cpp)
+    // Independent running timers (s_ctcIndep, the state ctcRefresh's fast path
+    // keeps): a write that leaves this channel a plain running timer, or stops
+    // it, moves only ITS next ZC — no catch-up of the other channels and no
+    // full re-derivation at the next sync. The shapes a CTC "SID" player uses
+    // in every interrupt (Fluid: control word #85 "TC follows", then the time
+    // constant, on three channels — ~1000 writes a frame at ~4 us each through
+    // the general path, hw 2026-11-15):
+    //  - time constant for a running channel (C_RUN_TC): used at the next
+    //    reload, the pending ZC does not move;
+    //  - control word with software reset: the channel stops;
+    //  - time constant after that reset, timer mode without a trigger: the
+    //    channel starts now.
+    //  - control word without reset for a running timer (below).
+    // Anything else (counter mode, trigger, an edge change, a control word for
+    // a channel waiting for its constant) takes the general path below.
+    if (s_ctcIndep && s_ctcNext != -kNever) {
+        Ctc& c = s_ctc[ch];
+        bool done = false;
+        if (c.st == C_RUN_TC) {
+            c.tc = v ? v : 256;
+            c.st = C_RUN;
+            done = true;
+        } else if (c.st == C_RESET_TC) {
+            if (timer(c) && !(c.cw & 0x08)) {
+                c.tc = v ? v : 256;
+                c.cnt = c.tc;
+                c.st = C_RUN; c.run0 = c.ref = s_last28;
+                s_ctcZc[ch] = ctcNextZc(ch, 1, 0);
+                done = true;
+            }
+        } else if ((v & 0x03) == 0x03) {
+            c.cw = v & 0xF8;
+            c.ref = s_last28;
+            c.st = (v & 0x04) ? C_RESET_TC : C_RESET;
+            c.cnt = c.tc;
+            s_ctcZc[ch] = kNever;
+            done = true;
+        } else if ((v & 0x03) == 0x01 && c.st == C_RUN && timer(c) && !((v ^ c.cw) & 0x10) && !(v & 0x40)) {
+            // Control word without reset for a running timer that stays a timer,
+            // same edge (Fluid's actual shape: #85 "TC follows", then the constant):
+            // this channel's counter to now, exactly as ctcCatchUp would leave it
+            // (no ZC can be due — sync() has just passed them all), then the same
+            // re-base the general path does.
+            advanceQuiet(c, s_last28);
+            c.cw = v & 0xF8;
+            c.ref = s_last28;
+            if (v & 0x04) c.st = C_RUN_TC;
+            s_ctcZc[ch] = ctcNextZc(ch, 1, 0);
+            done = true;
+        }
+        if (done) {
+            int64_t nx = kNever, nxInt = kNever;
+            for (int i = 0; i < 4; i++) {
+                const int64_t z = s_ctcZc[i];
+                if (z < nx) nx = z;
+                if ((s_ctc[i].cw & 0x80) && z < nxInt) nxInt = z;
+            }
+            s_ctcNext = nx; s_ctcNextInt = nxInt;
+            exRecalc();
+            return;
+        }
+    }
+#endif
+    ctcWriteSlow(ch, v);
+}
+
+static __attribute__((noinline)) void ctcWriteSlow(uint8_t ch, uint8_t v) {
     ctcCatchUp();
     s_ctcNext = -kNever;
     const int64_t now = s_last28;

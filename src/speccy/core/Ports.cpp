@@ -2194,14 +2194,19 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     return v;
   }
 #if NEXT_TRACE
-  if (Z80Ops::isNext) {
-    const uint32_t t0 = timer_hw->timerawl;
+  // ONE call site: with two, GCC inlined inputImpl<false> into this RAM function
+  // twice (+4.7 KB of SRAM, and +5.5 KB in output() — the trace build ran out of
+  // heap in Config::load on DVp2w, 2026-11-15).
+  {
+    const bool nx = Z80Ops::isNext;
+    const uint32_t t0 = nx ? timer_hw->timerawl : 0;
     const uint8_t v = inputImpl<false>(address);
-    nxIoNote(address, timer_hw->timerawl - t0, false);
+    if (nx) nxIoNote(address, timer_hw->timerawl - t0, false);
     return v;
   }
-#endif
+#else
   return inputImpl<false>(address);
+#endif
 }
 
 // Profi CP/M system (RQ93) register write: drive select, soft-reset, HLT/test,
@@ -4446,14 +4451,15 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
   }
 #if NEXT_TRACE
-  if (Z80Ops::isNext) {
-    const uint32_t t0 = timer_hw->timerawl;
+  {   // one call site, see Ports::input
+    const bool nx = Z80Ops::isNext;
+    const uint32_t t0 = nx ? timer_hw->timerawl : 0;
     outputImpl<false>(address, data);
-    nxIoNote(address, timer_hw->timerawl - t0, true);
-    return;
+    if (nx) nxIoNote(address, timer_hw->timerawl - t0, true);
   }
-#endif
+#else
   outputImpl<false>(address, data);
+#endif
 }
 
 

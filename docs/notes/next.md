@@ -1214,3 +1214,228 @@ past the 8th become partners of the nearest head at f+8. Reading a Next 640 fb d
 `profi_lut.bin` + the (ink,paper) reverse of each slot, counted per slot, names a fold
 in one line — a missing mirror pair is the signature. Test ELF
 `debug/DVp2-next-p80fam-1.0.10`.
+
+## Fluid (shrek128, 2026) — bench profile, hw drops to 38 FPS (2026-11-15, cause NOT hw-measured)
+
+`fluid.nex` (NextV1.2, 33 banks, 28 MHz, Layer 2 320x256 + 40-col tilemap + sprites, TurboSound
+with CTC-driven SID instruments, sampled SFX through DMA -> DAC #DF, saves `fluid.sav` beside the
+.nex). Owner on hw (DVp2w): FPS falls to 38.
+
+Bench (`build-all/host`, launched through NextZXOS `.nexload`): loads, menu + attract demo run,
+game time advances 5 s per 250 frames (guest logic at 50 fps), picture clean. Sound from the
+`PICOSPECCY_WAV` capture: AY music in stereo from the menu on, DAC samples in the level, no
+clipping (peak 226/255), no stuck or silent stretches. NOT hw-tested for pitch.
+
+Per-frame load in the demo level (host twin with `-DNEXT_TRACE=1`, counts are machine-independent):
+- `NEXT z80: m1=82k/fr act=38-41%`, `idle loop skipped 0%`: the main loop waits in HALT (#823D),
+  but ~315 IM2 interrupts a frame (CTC, one per scanline) keep waking it; the ISR sits at #E9xx
+  behind three MMU remaps in and three out (NR 54/55/56).
+- `NEXT io: out 1705/fr`: #183B x317 and #193B x320 (CTC 0/1 reloaded in every ISR), #DF x315
+  (DAC, 0x80 in silence — the SFX stream never stops), #57 x360 (sprite attributes), #FFFD x249,
+  #BFFD x109. On the host the OUTs alone are ~30% of CPU::loop.
+- Render: `rows L2 256/fr`, tilemap on for all rows (NR 6B=80), `spr tested 18432/fr drawn 1152/fr`
+  (72 sprites tested on every row), L2 at bank 9 = the 320x256 band path (`nxL2SlowRow` is the top
+  core1 symbol in `perf`). Same layer set as Adventures in Videoland / Atic Atac above, where hw
+  measured l2 9.0 + tm 5.2 + mix 6.5 + spr 3.2 ms/fr — here core0 has far less idle to lend rows.
+Which core is over budget is not known until the hw trace: `debug/DVp2w-fluid4-nxtrace-1.1.2.elf`
+(read `NEXT cpu:` cpu/vid ms, `NEXT rows:` core0 vs core1, `NEXT vid:`, `NEXT perf: idl_min/c1`).
+
+Bench recipe for a .nex (no F5 needed): write `N\n/<path>.nex\n` to `<root>/tmp/next/.launch`
+(lower-case `tmp` — the bench root has both `tmp` and `TMP`, FatFs-on-folder resolves `/tmp` to the
+lower-case one), `arch=Next` in the nvs. Two traps met with `--root ~/pico-speccy`: its
+`machines/next/CONFIG.INI` had `default=14` (boots straight into a 48K personality, the launch times
+out with `stage=1 error=11`; `default=0` = the NextZXOS menu), and `midi=4` in its nvs makes the
+host reboot forever right after `MidiSynth: provisionAtBoot enter` (run with `midi=0`; not looked
+into — the owner's default root `~/!SD` does not do it). A NEXT_TRACE host twin needs three stubs
+(XIP_CTRL counters, NxFrameProf's ARM ISR, sdcard.c stats); NEXT_TRACE on a board needed the
+`.nxovl` trace term 51968 -> 52480 and the PERF `.dmaovl` term (cmake/memory-layout.cmake).
+The first trace ELF died with OOM in `Config::load` (panic from `NvsLines::read`'s string, stack read
+over OpenOCD): NEXT_TRACE cost +19.9 KB of static SRAM, not the ~7 KB it used to — `Ports::input`
+/`output` each carried TWO inlined copies of `inputImpl/outputImpl<false>` (+4.7 / +5.5 KB in RAM;
+now one call site) and the `[NXJMP]` ring was 5 KB (256 -> 64 entries). After: +5.9 KB over a plain build.
+
+**hw trace 2026-11-15 (DVp2w, `nxtrace2`, 28 MHz, demo/game level; trace build runs 31-36 FPS, plain 38):
+BOTH cores are over 20 ms.**
+- core1 alone renders every row: `rows: core0 0/fr, core1 ~255/fr`, `c1=21-23.7 ms/fr`, ring pinned at
+  320/320. `vid: ula=0.5 tm=4.6 l2=6.6 spr=3.2 mix=6.0 out=0.6`. The core0 row helper never starts:
+  `[NXC1] core0 row helper: no SRAM (8200 + 3072 B)` all session (also on the host bench).
+- core0 `CPU::loop` 23-26 ms/fr with no waiting in it (`worst frame: sd 0 drain 0 queue 0`): 81.5k M1/fr
+  at 280-320 ns. `io: out ~2050/fr = 7.1-9.0 ms/fr` (timer-wrapped, so inflated by the trace itself):
+  #FFFD 334-497/fr at ~8.4 us each (3.0-3.6 ms; ayWrite's TurboSound chip select calls
+  `ESPectrum::AYGetSample()` on every select, the game selects a chip before each register), CTC
+  #183B/#193B/#1A3B ~790/fr at ~4 us (3.3 ms, `NextInt::ctcWrite` from flash), #BFFD ~2.2 us, #57 and
+  #DF ~1.2-1.3 us. ~290 IM2 acks a frame.
+**Re-read of the same log (the first reading above blamed the port writes — wrong):** the guest PC
+sampler has 36-40% of core0's time in the game's HALT (`NEXT pc: 8220`), and HALT is fast-forwarded
+per line (`NEXTVID::haltAdvanceTo` -> ScanlineWork -> emitRow), so that time is core0 WAITING for a
+slot in the full row ring: core0's 23-26 ms is mostly core1's lateness. The #FFFD cost is the AY
+synthesis itself (the first write after a gap generates the samples of the gap; the silent third AY
+already takes the memset path), not the select. And core1 was not the renderer's alone: `render_core`
+(main.cpp) had the "queued lines before an idle General Sound" rules for TS-Conf only — on the Next an
+enabled NeoGS (the owner's config) got a `GS::pump()` slice between every batch of 8 rows.
+Done 2026-11-15, NOT hw-tested (`fluid3` test ELFs):
+- render_core: the two TS-Conf rules for the Next ring (`nx_w - nx_c`, now non-static data — no room
+  for a predicate in `.nxovl`): idle-throttled card runs only with no row queued; otherwise, with
+  > 32 rows queued or core0 in c1Drain, only a card the host is using (`GS::hostActive`).
+- `NextPorts::ayWrite`: a TurboSound chip select catches the synthesis up only when the pan changes.
+- the helper's "no SRAM" line prints heap free + largest (the next thing to read on hw).
+Still open: SRAM for the core0 row helper (11.3 KB; ~20 KB free at loop entry on the trace build),
+tilemap 4.6 ms for a nearly empty 40x32 map, 72 sprite tests on every row, CTC rewrite path (~4 us a
+write through flash; not the bottleneck while core0 waits on the ring).
+
+**hw 2026-11-15, `fluid3-nxtrace`: 37-41 FPS (was 31-36 with the trace), owner: "не особо помогло".**
+`c1=20.2-20.9 ms/fr` (was 21-23.7), core0 58-65% of its time in the HALT wait, helper still off:
+`heap free 13840 largest 5724` against 8200 + 3072 — there is no SRAM for it at 576p + HDMI audio
+(13 KB) + WiFi (6 KB) + NeoGS on (its two overlay windows are ~31 KB that return to the heap with
+General Sound = Off). `vid: tm=5.0 l2=6.4-7.0 mix=6.5 spr=0.9`.
+Render round (`debug/DVp2w-fluid4-1.1.2.elf`, `-fluid4-nxtrace-`; built from main; NOT hw-tested):
+- `RenderTilemapLine`, 4bpp: a tile row whose 8 pixels are all the transparent index (one 32-bit
+  compare with `transp * 0x11111111`) is skipped — the buffer is already NX_TR; `rowTm` (NxCtx) says
+  whether the line drew anything.
+- `RenderLayers`: `m.tm = tmEn && (rowTm || stencil || hires != 0)` — a blank tilemap row mixes like
+  the tilemap off. `nxMixOrder`: Layer 2 alone (no ULA, no tilemap pixel) goes through `nxMixU<false>`
+  on nxL (one load a pixel), also outside the sprite span.
+- `.nxovl` +296 B: plain term 51840 -> 52160, trace 52736.
+Bench: Fluid menu/level picture intact (HUD text, Layer 2, sprites). Frames of two runs differ
+anyway (the game's own animation phase), so old/new screenshots cannot be byte-compared.
+
+**hw 2026-11-15, `fluid4-nxtrace`, owner: 25-50 FPS, slow only with the game's sound on.** One log,
+three states:
+- music off: `cpu 4.9-9.3 ms/fr`, `c1 18.0-19.3`, fps 45-46 with the trace (`vid: tm 3.1-3.5` (was
+  5.0), `mix 4.3-5.0` (was 6.5), `l2 6.4-7.6`, `spr 0.9-3.3`) — the render round worked, core1 is at
+  its limit but holds.
+- music on (`ack` 46 -> 13-17k a second = ~315 CTC interrupts a frame): `cpu 22-30 ms/fr`, fps 27-39.
+  So core0 IS the bottleneck there, and the "core0 only waits on the ring" re-read above was wrong:
+  `NEXT cpu:` does not include that wait, and `NEXT pc:` samples wall time, waits included, so its
+  HALT share proves nothing. `io: out 2000-3100/fr = 7-10.7 ms`: #BFFD 170-285/fr at ~13 us (the AY
+  synthesis of the gap since the last write — ~3 ms a frame for two chips, real work), CTC
+  #183B/#193B/#1A3B ~900-1150/fr at ~4 us, #FFFD ~1.2 us. The other ~6 ms over the music-off frame
+  is not in the OUTs (the full `ctcRefresh` each write forced at the next sync, the ISR entries).
+- The ISRs (#E9A3 / #E9E8 / #EA2D, one per channel): `OUT cw` (reset + TC follows) + `OUT tc` on
+  their own channel, then chip select + R8/R9/R10 volume write — a SID-style PWM of the AY volume.
+`NextInt::ctcWrite` fast path (`debug/DVp2w-fluid5-1.1.2.elf`, `-fluid5-nxtrace-`; NOT hw-tested): with
+`s_ctcIndep` valid, a TC for a running channel, a control word with reset, and the TC after it
+(timer, no trigger) touch only that channel's `s_ctcZc` and the two minima — no `ctcCatchUp`, no
+invalidation. Everything else takes the old path. Checked: `tools/nextint_wfast_test.cpp` (4000
+random scenarios, built with and without `-DNXI_NO_WFAST`, identical traces; 1.17 M writes through
+the fast path, 0.26 M through the general one) and the bench's audio capture of Fluid is
+byte-identical for 85 s before/after. `tools/nextint_test.cpp` builds again (85 checks pass; it
+needed `-Iexternal`, a MemESP stub and `DivMMC::automap` in the stub). Still flash code — move it
+to `.nxovl` only if hw says the remaining ~1 us a write matters.
+Next if still short: the AY synthesis per ISR (2 chips x 7 tacts a sample, hoist/writeback per call),
+the row helper's SRAM.
+
+**hw 2026-11-15, `fluid5-nxtrace`: "не помог"** — CTC writes still ~3.6 us each, music-on cpu 20-22.5 ms.
+The fast path was never taken by this game: a host counter showed `s_ctcIndep` true on every write,
+but the control word is **#85** (TC follows, NO reset; the `LD A,#07` in the listing is patched), a
+shape the first cut sent to the general path — half the writes, each followed by the full refresh.
+Lesson: count the fast-path hits on the real title before handing a build out; a differential test
+only says the path is right, not that it runs.
+`fluid6` (`debug/DVp2w-fluid6-1.1.2.elf`, `-fluid6-nxtrace-`; NOT hw-tested): fourth shape — control
+word without reset for a C_RUN timer that stays a timer with the same edge: `advanceQuiet` (this
+channel's counter to now), cw / ref re-base, C_RUN_TC, its `s_ctcZc` recomputed. Host counter on
+Fluid: 2 560 000 of 2 560 000 writes fast; differential test identical; bench audio byte-identical
+for 85 s against the pre-CTC build.
+
+**hw 2026-11-15, `fluid6-nxtrace`: "лучше, но недостаточно"** — 41-46 FPS with the trace. CTC writes
+1.9 us each (was 3.6; ~1.2 us is the floor of a traced OUT), music-on `cpu 15-20.7 ms`, `c1 18-20.8`.
+Now the top port is #BFFD: 160-350 writes a frame at 13-15 us = 2.5-3.6 ms. A host counter says
+that is NOT the AY synthesis: 7 tacts a sample, ~3.5 samples a call, two live chips — a few us of
+RAM code. Suspect (not measured on hw): `ESPectrum::AYGetSample` -> `FMGenSound` with TSFM enabled
+in Config (the last DVp2w nvs copy on the PC has `tsfm=1`): a flash `memset`, two flash
+`OpnFm::gen` (refreshChan x3 + the silent scan each) and `dcblock_run` per catch-up, on a machine
+that has no YM2203 and whose `NextPorts::ayWrite` never reaches one.
+`fluid7` (`debug/DVp2w-fluid7-1.1.2.elf`, `-fluid7-nxtrace-`; NOT hw-tested): `TsfmSubsys::request(...
+&& arch != A_NEXT)` at both call sites — no FM objects / buffer on the Next (heap back too; watch the
+`[NXC1] ... heap free / largest` line, the row helper may now fit). Bench audio byte-identical for
+85 s with `tsfm=1` in the bench nvs. If #BFFD does not drop on hw the suspect was wrong: read
+`NEXT io:` first.
+
+**hw 2026-11-15, `fluid7-nxtrace`: TSFM was not it** (owner; #BFFD still ~12 us a write, and the heap
+did not grow: `heap free 9144 largest 4116`). The suspect above is dead. Re-counted: the mixer body
+is ~70 instructions a chip tick, not 30 — 624 samples x 7 ticks x 2 chips is ~0.6 M instructions a
+frame, i.e. the ~2-3 ms measured IS the AY synthesis (`.ayovl_abc` is 1.7 KB of one loop).
+`fluid8` (`debug/DVp2w-fluid8-1.1.2.elf`, `-fluid8-nxtrace-`; NOT hw-tested), ALL machines:
+`AY_SAMPLE` in AySound.cpp — an output sample whose 7 ticks cross no tone counter (and no HEARD
+noise / envelope step) is mixed once and scaled; an unheard noise / envelope still steps on its own.
+Bit-exact: `tools/ay_quietspan/run.sh` (the four mixers cut from the source, built with and without
+`AY_NO_QUIET_SPAN`, 4.1 M samples of random register changes, output + whole chip state equal), and
+the bench's Fluid audio is byte-identical for 84 s. Cost: the shared AY mixer slot 1732 -> 2436 B,
+**+704 B of base SRAM on every board and machine** (`end` 2004c668 -> 2004c928) — the owner's call
+whether the ~1.5-2 ms a frame of core0 (two chips) is worth it; `-DAY_NO_QUIET_SPAN` is the old loop
+but does not give the bytes back by itself (the macro is still there, only shorter).
+The TSFM-off-on-the-Next change stays (no YM2203 on that machine); it is not a fix for Fluid.
+
+**hw 2026-11-15, `fluid8-nxtrace`: better, no stable 50.** #BFFD 155-340 writes = 1.5-2.1 ms (was
+2.3-3.0). The AY is no longer what limits: with the music OFF the same build shows 45-46 FPS at
+`cpu ~10 ms` — core1 is the cap. `c1` 18.0-19.9 ms of render a frame and the FPS follows it (18.0 ->
+46, 19.9 -> 44, 20.6 -> 41): core1 also runs the HDMI line ISR, so ~17 ms of render is what fits a
+20 ms frame at 576p. `vid: l2 6.2-7.8, mix 4.4-5.1, spr 3.3-3.6 (0.9 in the menu), tm 3.0-3.5`.
+core0 with the music: 17-21 ms (CTC ~1.9 us a write, AY as above). Helper: `heap free 8440 largest 3412`.
+`fluid9` (`debug/DVp2w-fluid9-1.1.2.elf`, `-fluid9-nxtrace-`; NOT hw-tested): **sprite row mask** —
+`SprRender::rowMask[8]` (sprite-space rows some visible sprite covers), built by flash `sprRowMask`
+at the end of `resolveSprites`; `RenderSpritesLine` returns at once on a row with no bit (Fluid: 72
+tests on each of 256 rows for ~35 rows of sprite pixels). A title that re-resolves more than 16
+times a frame (per-line multiplexing) gets an all-ones mask for the next frame (`maskOff`, decided
+when the line number goes back) so it never pays for the rebuild. `.nxovl` +168 B (plain term 52288,
+trace 52864), SprRender +36 B. Bench: Fluid's sprites intact (droplet, cloud over the border,
+sparkles).
+Next on core1 if still short: Layer 2 alone straight to the framebuffer (band byte -> one 256-entry
+byte LUT, no 16-bit nxL pass — l2 + mix are ~11.5 ms), which needs the sprite / tilemap verdict
+before Layer 2 is rendered.
+
+**hw 2026-11-15, `fluid9-nxtrace`: better again, still dips.** `spr tested` 17k -> ~3k a frame, `spr=`
+3.4 -> 2.5 ms (the rest is the ~1000 sprite rows actually drawn). Two corrections to the readings above:
+- **The trace build cannot show more than ~45-46 FPS**: its 1 Hz dump stalls core0 for 120-190 ms
+  (`worst frame: after ... (trace ...)`), i.e. 6-9 frames a second. "45-46 with the music off" was
+  that ceiling, not core1. Judge by `neg=` (frames with negative idle) and the cpu / c1 ms instead.
+- core0 PC samples (`NEXT hostpc`, core0 only — the first parse mixed in `hostpc1`), heavy seconds
+  (cpu >= 19 ms): `exec_nocheck_next` 54%, `Ports::output` 10%, `nxIoNote` 7% + `nxJumpNote` 2.4%
+  (trace only), NextPorts::output 2%, AY mixers 2%, ctcWrite 1.5%. Light seconds: the core 49%.
+  The core's own share goes from ~5.8 ms (music off, 71.6k M1) to ~11.2 ms (music on, 83k M1):
+  +5.4 ms for +11k M1 and ~350 interrupts = ~15 us per interrupt INSIDE the core's code — the next
+  thing to take apart on core0 (slice exit/entry, the interrupt acceptance), not ns per instruction.
+Bad seconds: `cpu 20.1-20.8` with `c1 19.5-20.2`, `neg 34-41/41`.
+`fluid10` (`debug/DVp2w-fluid10-1.1.2.elf`, `-fluid10-nxtrace-`; NOT hw-tested): **Layer 2 alone
+straight to the framebuffer.** RenderLayers renders the sprites BEFORE Layer 2 (separate buffers),
+and when the row has no sprite pixel, no tilemap pixel, the ULA off or blank, order < 6, no stencil
+and hires 0, it hands `NxCtx::l2Fb` to RenderL2Line; its 320x256 band path then writes the final
+bytes through a 256-byte LUT (`nxL2Lut8Build`: remap of the 16-bit LUT, fallback colour where
+transparent; in the band buffer's tail, NX_L2_BAND +256) with `nxL2Span8`, fills the columns outside
+the clip with the fallback and clears `l2Fb`; any other Layer 2 path leaves it set and the row is
+mixed as before. Removes the nxL pass and the whole mixer pass on such rows (mix was 4.6-5.1 ms).
+The band FILL from PSRAM (the larger part of `l2=`) is untouched. Cost: `.nxovl` +920 B (plain term
+53248, trace 53824) + 256 B per band buffer — heap on the Next is now the scarce thing (trace build:
+8.3 KB free before this). Bench: Fluid picture intact.
+
+**hw 2026-11-15, `fluid10-nxtrace`: core1 solved, core0 left.** `c1` 15.5-17.4 ms (was 18-20.8),
+`mix` 2.0-2.4 (was 4.6-5.1), `rows L2 256/fr` all through the direct path. Bad seconds are now the
+ones with `cpu` >= 18 ms (core0), `neg` 14-31 of ~44.
+Host counts per frame, music on (temporary counters, removed): ~1950 slices of the Next CPU::loop,
+~460 interrupt acknowledges, ~1000 exec_nocheck entries, ~3400 NextInt::sync, ~940 wake() — EI and
+RETI ended the slice in every ISR (~4 slices per interrupt). A paced zxnDMA (Fluid's SFX, ~310
+bytes a frame) is pending at EVERY EI, so a plain "skip the wake" is wrong.
+`fluid11` (`debug/DVp2w-fluid11-1.1.2.elf`, `-fluid11-nxtrace-`; NOT hw-tested):
+- `NextInt::reschedule(atRetI)` replaces the EI / RETI wake: the slice end is brought in to the loop's
+  own target (next interrupt event when IFF1, the next paced DMA byte unless dmaDelay()), and ended
+  at once only when /INT is up, the DMA holds the bus or a DMA byte is due. `NextInt::slEnd` (set by
+  CPU::loop per slice, lowered here) is what a HALT later in the slice sleeps to — the first cut
+  slept to the stale frame-end target and the bench audio diverged at 12.9 s.
+  Host: wake 940 -> ~120 a frame, slices ~1950 -> ~1560 (the rest are the DMA bytes and the
+  interrupts themselves).
+- **Deliberate timing change**: RETI ends the slice NOW (wakeNow), so a request the RETI unblocks
+  is taken right after the RETI; before, one instruction later. Found by an acknowledge log (frame
+  time, T, PC, SP, s_req per ack) of the old and new paths on the bench: every difference up to the
+  point where the game diverged was exactly that (same request, 4-17 T earlier). Reference (core
+  3.02.03 VHDL, ~/github/ZX_Spectrum_Next_FPGA): im2_control.vhd:234 `o_reti_seen` at T3/T4 of the
+  4D fetch, im2_device.vhd S_ISR -> S_0 on it, the next S_REQ device drives o_int_n at once — before
+  RETI's stack reads, so /INT is low in the instruction's last T.
+  The attract-mode replay still completes its level on the bench.
+- `NextInt::ctcWrite` split: the fast path in SRAM (NXI_HOT), the general path `ctcWriteSlow` in
+  flash. `NextPorts::ayWrite` in SRAM (NXP_HOT). `.nxovl` +784 B (plain 54016, trace 54528).
+- tools/nextint_test.cpp (85 checks) and tools/nextint_wfast_test.cpp (identical with and without
+  NXI_NO_WFAST) pass; their stubs gained Z80::isIFF1 and the Z80DMA statics.
+Not done, and the honest size of the "Z80 core 54%" question: the core's own cost is ~65 ARM cycles
+per Z80 instruction (83k a frame with the music = ~11 ms); the fixed per-instruction head/tail was
+already the subject of opt3-opt6 (see next-28mhz-perf-work), and only a register-resident core would
+move it further — a large rewrite, not a tuning step.

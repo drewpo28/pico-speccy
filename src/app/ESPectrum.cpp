@@ -1837,7 +1837,11 @@ void ESPectrum::setup() {
                        Config::arch == A_NEXT);   // Next DAC ports
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
-  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
+  // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
+  // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
+  // 2026-11-15) — and held their objects + buffer on a heap with no room left.
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0 && Config::arch != A_NEXT);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
@@ -2620,7 +2624,11 @@ void ESPectrum::reset(uint8_t romInUse) {
                        Config::arch == A_NEXT);   // Next DAC ports
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
-  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
+  // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
+  // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
+  // 2026-11-15) — and held their objects + buffer on a heap with no room left.
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0 && Config::arch != A_NEXT);
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
