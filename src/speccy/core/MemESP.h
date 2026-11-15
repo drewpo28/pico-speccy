@@ -466,6 +466,11 @@ public:
     static constexpr int NEXT_HOT_MAX = 8;
     static uint8_t* nextHotIdx;
     static uint8_t* nextHotFrame[NEXT_HOT_MAX];
+    // Where the CPU executes, per 8K page (NEXT_PAGES entries, with nextHotIdx):
+    // the PC's page at every interrupt acknowledge (NextInt::ack — a CTC player
+    // samples ~300 times a frame at random code points) and at every pool tick,
+    // halved every 16 ticks. The pool's victim choice ranks frames by it.
+    static uint16_t* nextHotHits;
     __attribute__((always_inline)) static inline uint8_t* nextHomePtr(unsigned pg) {
         return (pg < 16) ? nextPg[pg] : nextStrip + ((size_t)(pg - 16) << 13);
     }

@@ -1439,3 +1439,16 @@ Not done, and the honest size of the "Z80 core 54%" question: the core's own cos
 per Z80 instruction (83k a frame with the music = ~11 ms); the fixed per-instruction head/tail was
 already the subject of opt3-opt6 (see next-28mhz-perf-work), and only a register-resident core would
 move it further — a large rewrite, not a tuning step.
+
+**The dips with the music on were the hot-page pool swapping (2026-11-15, owner: "80% fine, then
+a jump to negative IDL; no dips with the music off").** The frame ISR calls the music player with
+slots 4-6 remapped to 55/56/54 (`E8A4`: NR 54/55/56, CALL, restore 04/05/00). The pool (1 frame on
+this heap) chose by "mapped at the tick, longest unseen goes": host log of every promotion /
+eviction showed the game's code page 04 (PC 9890 / 8207) and the player's page 56 (PC A1xx-A6xx)
+replacing each other ~40 times in 80 s, 56 sometimes held for 10-20 s — the game then ran from PSRAM.
+Fix (`fluid12`, `debug/DVp2w-fluid12-1.1.2.elf` + `-fluid12-nxtrace-`; NOT hw-tested):
+`MemESP::nextHotHits[NEXT_PAGES]` (in the pool's index block, +448 B heap) counts the PC's page at
+every `NextInt::ack` (a CTC player = ~300 random samples a frame) and at every tick, halved every 16
+ticks; the victim is the least-executed frame, evicted only for a page with > 2x its hits + 4.
+Bench: 04 ~10-15x hotter than 56, held for the whole run, 0 evictions; audio byte-identical (the pool
+only moves pages). `.nxovl` trace term 54528 -> 54656.

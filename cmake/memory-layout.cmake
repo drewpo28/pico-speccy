@@ -298,8 +298,9 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # with the code since — nobody had linked a trace build — plus the blank
         # tilemap rows and the sprite row mask of the plain term): content
         # 52 792 B — 51968 -> 52864; with the direct Layer 2 row 53 728 B -> 53824;
-        # with reschedule / ctcWrite / ayWrite in SRAM 54 512 B -> 54528.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 54528)
+        # with reschedule / ctcWrite / ayWrite in SRAM 54 512 B -> 54528; the hot
+        # pool's PC sample in NextInt::ack 54 560 B -> 54656.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 54656)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

@@ -553,6 +553,10 @@ NXI_HOT uint32_t nextEventTSynced(uint32_t limit) {
 
 NXI_HOT uint8_t ack() {
     sync();
+    if (uint16_t* const h = MemESP::nextHotHits) {   // where the CPU was: the hot pool's ranking
+        const uint8_t pp = MemESP::mmu[Z80::getRegPC() >> 13];
+        if (pp < MemESP::NEXT_PAGES && h[pp] < 0xFFFF) h[pp]++;
+    }
 #if NEXT_TRACE
     g_int_ack++;
 #endif
