@@ -991,7 +991,9 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
                 // 2 SYS (menu / tests / monitor / copier), 4 its own TR-DOS.
                 // 256: the same V4.2 ROM (it is the Quorum 256 ROM — "RAM 256 Kbyte").
                 // 1024: ROM-MENU V5.0 of the Quorum-1024+, same page roles.
+                // Navigator 256: its own four pages (service ROM, TR-DOS 6.04T).
                 const quorum_rom_bank_t* t = romSet == R_QU1024 ? gb_rom_qu1024p_banks
+                                           : romSet == R_NAV256 ? gb_rom_nav256_banks
                                                                 : gb_rom_qu128_banks;
                 static const uint8_t slot[4] = { 0, 1, 2, 4 };
                 for (int i = 0; i < 4; i++) {

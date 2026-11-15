@@ -1409,6 +1409,12 @@ QUORUM_IMAGES = [
     # 1024 mode (its own memtest only works that way, see Quorum.cpp extRamOn): #3C47
     # XOR #FF -> OR 0, so ON now means D4 = 1 = 128K only.
     ('quorum1024p.bin', 0x123C2F8F),
+    # Navigator 256 (NOVA, 1998; the SpeccyP emulator's NOVA256 machine, its ROM set):
+    # the four 16 KB files joined in the QU7V42 page order — sm_v5.08_nova (6D947A05,
+    # 'NAVIGATOR' v5.08 service ROM), trdos604_nova (C446CBF8, 5.04T + 503 bytes, stock
+    # Beta ports), rom128Q_nova (124AD9E0 = pentagon rom0), rom48Q_nova (32034F36 =
+    # Sinclair 128 ROM1 + 9 bytes of #00 trampolines at #0013 / #002B).
+    ('navigator256.bin', 0xA03CC303),
 ]
 QUORUM_ROMSETS = [
     # tag, [(file, page) for roles ...]
@@ -1416,9 +1422,10 @@ QUORUM_ROMSETS = [
     ('qu128', [('qu7v42.bin', 2), ('qu7v42.bin', 3), ('qu7v42.bin', 0), ('qu7v42.bin', 1)]),  # 128, 48, sys, dos
     ('qu64o', [('quorum48.bin', 0)]),                                            # 48
     ('qu1024p', [('quorum1024p.bin', 2), ('quorum1024p.bin', 3), ('quorum1024p.bin', 0), ('quorum1024p.bin', 1)]),  # 128, 48, sys, dos
+    ('nav256', [('navigator256.bin', 2), ('navigator256.bin', 3), ('navigator256.bin', 0), ('navigator256.bin', 1)]),  # 128, 48, sys, dos
 ]
 QUORUM_ROLE_NAMES = {'qu64': ['48', 'dos'], 'qu128': ['128', '48', 'sys', 'dos'], 'qu64o': ['48'],
-                     'qu1024p': ['128', '48', 'sys', 'dos']}
+                     'qu1024p': ['128', '48', 'sys', 'dos'], 'nav256': ['128', '48', 'sys', 'dos']}
 
 def pack_quorum():
     out_dir = os.path.join('src', 'speccy', 'roms', 'quorum')
@@ -1451,7 +1458,9 @@ def pack_quorum():
                 blob, nr, nd = make_overlay(bbytes, page)
                 if best is None or len(blob) < len(best[1]):
                     best = (bsym, blob, nr, nd)
-            if len(best[1]) > KAY_RAW_MAX:
+            if best[3] == 0:                # the base itself: no overlay to register
+                d = (best[0], 'nullptr')
+            elif len(best[1]) > KAY_RAW_MAX:
                 sym = 'gb_rom_%s_%s' % (tag, names[ri])
                 raws.append((sym, page))
                 bases.append((sym, page))   # a later romset may overlay a raw page

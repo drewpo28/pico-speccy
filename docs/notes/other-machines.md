@@ -615,6 +615,31 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
   hold Caps Shift for a cold one. Original 64 (CP/M): its NMI (Alt+F10) boots the disk —
   quorum48.rom #0066 loads track 0 sector 1 to #8800 and runs it if #8820 = JP.
 - Gluk clock #EFF7/#DFF7/#BFF7 on every Quorum while Devices > CMOS + NVRAM (else #FF / swallowed).
+- **Navigator 256 (2026-11-15, host-tested; hw-confirmed DVp2w 2026-11-15 by the owner):** romset `R_NAV256` of A_PENT (appended
+  at the END of the romset table), menu row after Quorum 256 behind the same extended-RAM gate. It is the
+  SpeccyP emulator's `NOVA256` machine ("Navigator 256") and its ROM set ('NAVIGATOR' v5.08 (C) NOVA 01.04.98);
+  sources = SpeccyP `zx_machine.c` + the ROM disassembly, no schematic. ROMs (`quorum/src/navigator256.bin` =
+  sm + trdos + 128 + 48, CRC A03CC303): BASIC-128 = Pentagon ROM0 byte for byte (no overlay), BASIC-48 = Sinclair
+  128 ROM1 + 9 bytes (`OUT (0),A` trampolines at #0013 / #002B; the font is stock, not Quorum's), TR-DOS "6.04T" =
+  5.04T + 503 bytes on the STOCK Beta ports (719 B overlay), service ROM raw 16 KB. Flash +17 136 B.
+  Model (`s_nav` in Quorum.cpp): #00 as on a Quorum (D5 = 0 or D0 = 1 -> service ROM, NMI ack clears it), no
+  shadow RAM (writes under the ROM dropped), #C000 page bit 3 = #7FFD D7 (the ROM's memtest table is
+  00-07, 80-87; page 8 #FFFF holds its 48/128 flag, page 11 the saved screen — the monitor needs 256 KB),
+  #7FFD = loose A15 = A1 = 0 decode with the D5 lock (SpeccyP; the ROM masks D5 out of every value it restores),
+  Beta 128 on #1F-#FF under the DOS signal (`betaPort64`), no #80-#85 / #7E, every other even port = ULA,
+  #80FD/#81FD writes swallowed (the ROM writes #80 there), Pentagon raster. `.pss` PSQU flags b1 = the lock.
+  Bench: menu, 1 = BASIC 128, 3 = TR-DOS 6.04T prompt, 4 = "ROM 64 Kbyte" pages 0-3 OK + RAM pages #00-#0F
+  green over three passes; **2 is not plain BASIC 48** — it sets the 48 flag and opens the Navigator "MAIN MENU"
+  (Boot floppy / Reset / Restart / Test / NMI Menu; Boot floppy -> TR-DOS); the unlisted key 5 is the plain
+  BASIC 48 (#7FFD = #17, #00 = #E0). Owner asked for 2 -> BASIC 48 directly; left as the ROM has it (the
+  patch would be #0184 `JP C,#0209` -> `#0259`), Alt+F11 > Reset to > 48K does it. MAIN MENU semantics, from the
+  disassembly (RAM copy at #5D00 = ROM #064C): Reset ("Execute ?") = cold start by the 48/128 flag; Restart = WARM
+  restart — restores #5B00-#7FFF from the copy taken at Navigator entry and takes RAMTOP from the sysvars, so after
+  a cold start (all zeros) it lands in a broken BASIC (owner on hw: garbage after a key, hang); NMI Menu > Return
+  from a cold MAIN MENU returns with SP = 0 (hang) — both work after a real NMI (Alt+F10; Return hw-ok).
+  hw-confirmed by the owner 2026-11-15 as well: Restart after an NMI from a live BASIC, disk work from the
+  Navigator, booting a real disk image.
+  With esxDOS (DivSD) enabled the machine never reaches the service menu (bench: esxDOS init loops) — turn it off.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

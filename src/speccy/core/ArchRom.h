@@ -99,7 +99,8 @@
     X(R_QU1024,         "Quorum1024",       "Quorum 1024")  \
     X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)") \
     X(R_EP64,           "EP64",             "Enterprise 64")  \
-    X(R_EP128,          "EP128",            "Enterprise 128")
+    X(R_EP128,          "EP128",            "Enterprise 128") \
+    X(R_NAV256,         "Navigator256",     "Navigator 256")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -239,11 +240,14 @@ inline bool isQuorum64Romset(RomsetIdx r)  { return r == R_48K_QU64 || r == R_48
 // signal; the OS is loaded from disk into the shadow RAM, the WD1793 is on #80-#85.
 inline bool isQuorum64OrigRomset(RomsetIdx r) { return r == R_48K_QU64O; }
 inline bool isQuorum128Romset(RomsetIdx r) {
-    return r == R_QU128 || r == R_QU128P || r == R_QU256 || r == R_QU1024;
+    return r == R_QU128 || r == R_QU128P || r == R_QU256 || r == R_QU1024 || r == R_NAV256;
 }
+// Navigator 256 (NOVA, 1998): a Quorum-style machine — port #00 and a service ROM —
+// with the Beta 128 on its stock ports and 256 KB by #7FFD D7. Quorum.h.
+inline bool isNavigatorRomset(RomsetIdx r) { return r == R_NAV256; }
 // RAM pages (16 KB) of a Quorum 128-family romset: 128/128+ 8, 256 16, 512 32, 1024 64.
 inline uint8_t quorumRamPages(RomsetIdx r) {
-    return r == R_QU1024 ? 64 : r == R_QU256 ? 16 : 8;
+    return r == R_QU1024 ? 64 : (r == R_QU256 || r == R_NAV256) ? 16 : 8;
 }
 
 // "Is the GMX firmware live?" — one romset today (ProfRom GMX v5.44), but the question
