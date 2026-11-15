@@ -29,6 +29,15 @@ MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations g
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+## F5 browser: extension list matched in place (hw-confirmed 2026-11-15, DVp2w)
+
+`browseFile` split the type's comma list into a `vector<string>`: ~200 entries for
+DISK_ALLFILE = a 6 KB contiguous block (+3 KB while growing, +1 KB list copy) through
+plain `malloc`, so it PANICKED in `check_alloc` on Next + NeoGS + WiFi (heap 15768 free,
+fragmented; hw 2026-11-15, Menu > Browser). `extMatches` now walks
+`fileTypes[s_ftype].fileExts` directly: no heap at all. Test build
+`debug/DVp2w-f5exts-1.1.2.elf`.
+
 ## Menu > Browser = the F5 file manager (2026-11-08, host-checked, NOT hw-tested)
 
 Root row before Snapshots (`act_browser`, shown with an SD card). The F5 branch of
