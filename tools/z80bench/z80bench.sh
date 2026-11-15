@@ -13,6 +13,8 @@
 # Needs: arm-none-eabi-gcc 14.2 on PATH (the firmware's own), qemu-system-arm,
 # gcc + glib-2.0 headers (for the plugins), curl (once, for qemu-plugin.h).
 # ZEXDOC/ZEXALL are not in the tree: anotherlin/z80emu testfiles/zexdoc.com.
+# They must be the CP/M builds (BDOS call 5, `LD HL,tests` at 0x11F): a NedoOS
+# build prints through its own OS and the bench shows no OK / ERROR line.
 #
 #   z80bench.sh plugins                      build the two plugins (once)
 #   z80bench.sh build <fw build dir> <out.elf>

@@ -90,8 +90,12 @@ from C; they are what a generated assembly loop (stage C) would take.
 Verified: `lock` on ZEXDOC 300 M T, `game`, `mixhi`, `mix` 100 M T each and `fuzz` 2 M
 tests x 3 seeds identical to HEAD; host bench (`build-all/host`): NextZXOS boots,
 `.nexload` of Fluid, menu and attract demo clean (host frames are not deterministic run
-to run, base against base differs — judged by eye). The whole ZEXDOC and ZEXALL (hours
-under QEMU with eight shards) had not finished when this was committed. Hw owed: Fluid with music, NXModPlayer, Atic Atac, NextZXOS
+to run, base against base differs — judged by eye). The whole ZEXDOC and ZEXALL on the committed
+loop (50989c33): 67/67 OK each, 0 errors, four shards a test. **Use the CP/M builds**
+(`~/github/zx_go/pkg/z80/testdata/conformance/zexdoc.com`, `zexall.com`, 8704 B): the ones in
+`~/pico-speccy/bin` (9624 / 9618 B) are NedoOS builds — they print through their own OS call, so the
+bench shows no OK / ERROR line at all, and their test table is not where the shard window expects it
+(each shard runs the whole 46.7 G T). Hw owed: Fluid with music, NXModPlayer, Atic Atac, NextZXOS
 boot + a game through the divMMC automap (esxDOS dot command), a copper / raster-split
 title (the window moves instructions near a line to the slow route).
 
