@@ -256,8 +256,19 @@ NXP_HOT bool NextPorts::ayWrite(uint16_t address, uint8_t data) {
             return true;
         }
         if (data & 0xE0) return true;                          // not a register number
-        chip->selectRegister(data);
+        if (Config::audio_driver == 3) chip->selectRegister(data);   // hardware AY: the 595 path, in flash
+        else chip->selectRegisterSoft(data);
     } else {
+        // Registers 0-13 without leaving SRAM (AySound.h). A write of the value
+        // the register already holds changes nothing — no catch-up of the
+        // synthesis either; R13 is the exception, any write restarts the envelope.
+        const uint8_t r = chip->selReg();
+        if (r < 14 && Config::audio_driver != 3) {
+            if (r != 13 && chip->reg(r) == data) return true;
+            if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+            chip->setRegisterDataSoft(data);
+            return true;
+        }
         if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
         chip->setRegisterData(data);
     }

@@ -148,16 +148,47 @@ public:
     // manual's §5.1 advice) mutes the FM half.
     static bool ts_fm_enabled;
     AySound(uint8_t my_num): my_num(my_num) {}
-    void updToneA();
-    void updToneB();
-    void updToneC();
-    void updNoisePitch();
-    void updMixer();
-    void updVolA();
-    void updVolB();
-    void updVolC();
-    void updEnvFreq();
-    void updEnvType();
+    // Registers 0-13 -> the parsed ayregs. Inline, and with them the software
+    // half of the register write below: selectRegister / setRegisterData are in
+    // flash (they also drive the hardware-AY shift register), and a caller in
+    // SRAM that writes 200+ registers a frame (NextPorts::ayWrite, Fluid's
+    // TurboSound player at 28 MHz) paid an XIP excursion for each.
+    void updToneA() { ayregs.tone_a = regs[0] + ((regs[1] & 0x0f) << 8); }
+    void updToneB() { ayregs.tone_b = regs[2] + ((regs[3] & 0x0f) << 8); }
+    void updToneC() { ayregs.tone_c = regs[4] + ((regs[5] & 0x0f) << 8); }
+    void updNoisePitch() { ayregs.noise = regs[6] & 0x1f; }
+    void updMixer() {
+        ayregs.R7_tone_a = !(regs[7] & 0x01);
+        ayregs.R7_tone_b = !(regs[7] & 0x02);
+        ayregs.R7_tone_c = !(regs[7] & 0x04);
+        ayregs.R7_noise_a = !(regs[7] & 0x08);
+        ayregs.R7_noise_b = !(regs[7] & 0x10);
+        ayregs.R7_noise_c = !(regs[7] & 0x20);
+    }
+    void updVolA() { ayregs.vol_a = regs[8] & 0x0f; ayregs.env_a = regs[8] & 0x10; }
+    void updVolB() { ayregs.vol_b = regs[9] & 0x0f; ayregs.env_b = regs[9] & 0x10; }
+    void updVolC() { ayregs.vol_c = regs[10] & 0x0f; ayregs.env_c = regs[10] & 0x10; }
+    void updEnvFreq() { ayregs.env_freq = regs[11] + (regs[12] << 8); }
+    void updEnvType() { ayregs.env_style = regs[13] & 0x0f; env_pos = cnt_e = 0; }
+    // The software register select / write, registers 0-13 only (14 / 15 are the
+    // I/O ports: MIDI bit-bang, in flash). Not for Config::audio_driver == 3.
+    void selectRegisterSoft(uint8_t r) { selectedRegister = r; }
+    __attribute__((always_inline)) void setRegisterDataSoft(uint8_t data) {
+        const uint8_t r = selectedRegister;
+        regs[r] = data;
+        switch (r) {
+            case 0: case 1: updToneA(); break;
+            case 2: case 3: updToneB(); break;
+            case 4: case 5: updToneC(); break;
+            case 6: updNoisePitch(); break;
+            case 7: updMixer(); break;
+            case 8: updVolA(); break;
+            case 9: updVolB(); break;
+            case 10: updVolC(); break;
+            case 11: case 12: updEnvFreq(); break;
+            case 13: updEnvType(); break;
+        }
+    }
     void updIOPortA();
     void updIOPortB();
     

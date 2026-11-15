@@ -282,7 +282,9 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # exec_nocheck_next 13 644 -> 9 566 B (reads without a time test, one shared
     # slow route instead of 17 inlined table calls) + 344 B of out-of-line
     # fallbacks — content 50 144 B: 54016 -> 50240.
-    set(NXOVL_WIN_SIZE_EFFECTIVE 50240)
+    # Same day: NextPorts::ayWrite writes registers 0-13 inline (AySound.h,
+    # no flash excursion per write) — +352 B, content 50 496 B: 50240 -> 50560.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 50560)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -306,7 +308,8 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # pool's PC sample in NextInt::ack 54 560 B -> 54656.
         # The Z80 loop round of the plain term: NEXT_TRACE content 51 144 B
         # (DVp2w) -> 51264. A PERF_TRACE / PERF_HIST build was not linked.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 51264)
+        # The inline AY register write of the plain term: 51 488 B -> 51584.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 51584)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

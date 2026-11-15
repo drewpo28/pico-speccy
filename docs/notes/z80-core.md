@@ -114,6 +114,36 @@ The bad seconds that are left (cpu 19.2-19.9, neg 29-35 of ~44) have the SAME m1
 1.6 ms/fr). core0 also loses its row help there (1 row/fr against 49). So the next lever for Fluid is
 the port path (AY write catch-up first), not instructions per M1.
 
+**AY write path, `debug/DVp2w-ay1-1.1.2.elf` + `-ay1-nxtrace-` (2026-11-15, NOT hw-tested; host: Fluid
+runs).** `AySound::selectRegister` / `setRegisterData` are in FLASH (0x1005995x; they also drive the
+hardware-AY 595), and `NextPorts::ayWrite` (SRAM) called both — ~430 XIP excursions a frame in Fluid,
+with the XIP cache already thrashed by the guest's PSRAM pages (`xip miss 18k/fr`). Now, for
+`Config::audio_driver != 3` and registers 0-13: the select is `selectRegisterSoft` and the write is
+`setRegisterDataSoft`, both inline from AySound.h (`updToneA..updEnvType` moved there, one source for
+the flash copy too), so `ayWrite` never leaves SRAM; and a write of the value the register already
+holds returns before the synthesis catch-up (R13 excepted — any write restarts the envelope). Host
+count on Fluid: 21% of data writes are same-value. Registers 14/15 (I/O ports, MIDI bit-bang) and the
+hardware AY keep the flash path. `.nxovl` +352 B (terms 50560 / trace 51584), main SRAM unchanged.
+What to read on hw: `NEXT io:` `BFFDw n/us` (was 216/1774 in a bad second) and `FFFDw`.
+
+**hw 2026-11-15, NXModPlayer, notes mode, 576p, `debug/DVp2w-ay1-1.1.2` (owner): IDL +3500..+4000**,
+against +500 at 576p (+1500 at 480p) on opt4 (2026-10-14). The build has both the loop round and the
+AY write path; the two were not measured apart on this title.
+
+**hw 2026-11-15, Fluid with music, `DVp2w-ay1` plain (owner): "visually all good", IDL goes negative
+only for about a second at the change of level.** Trace twin, `logs/devttyACM0_2026_11_15.21.01.14.224.txt`
+(19 s, a busier stretch than the 20:40 log: `int ack` up to 530/fr, `out` up to 3000/fr):
+- AY: `BFFDw` 155..356 writes/fr cost 1363..1886 us/fr — ~2.6 us per extra write over a ~1.0 ms/fr floor
+  (the floor is the three chips' synthesis, caught up from these writes); the 20:40 log had ~3.7 us per
+  extra write over the same floor. `FFFDw` ~0.94 us each. Every port in a trace build carries
+  `nxIoNote` + two clock reads, so ~1 us of each write is the trace itself: the plain build's port
+  cost is not in this log.
+- The trace build still shows cpu 19-21 ms and neg 31-41/43 in the busiest seconds; with the 1 Hz dump
+  (120 ms a second) it cannot be read as the plain build's verdict.
+- The level change: the game SAVES (`SD wr-cmd CMD24` x3) and loads the next level through the divMMC
+  driver (`pc 1F40:15%`, `[SD3] busy 459/111336` = 111 ms waiting on the card, `c1 read 41 ms`).
+  Card time, not emulation.
+
 ## Z80 core speed-up (ported from ccr-05d4d17f d2c05088 via drew-zx-next, 2026-10-13, NOT hw-tested)
 
 Taken WITHOUT that branch's TS-Conf "28 MHz (turbo)" CPU cap (owner, on drew-zx-next:
