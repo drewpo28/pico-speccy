@@ -131,6 +131,7 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/devices/gs/NgsSd.h"
 #include "speccy/devices/gs/NgsMp3.h"
 #include "speccy/core/Rzx.h"
+#include "HilBench.h"
 
 // +3 disk auto-start (plus3AutoBoot*, below ESPectrum::reset). Guest frames.
 #define P3BOOT_DELAY_FRAMES  150
@@ -5482,6 +5483,13 @@ void ESPectrum::loop() {
 
     elapsed = time_us_64() - ts_start;
     idle = target - elapsed;
+#if HIL_BENCH
+    {
+      extern volatile uint32_t cpu_frame_us;
+      HilBenchSvc::frame(idle, elapsed, target, ts_start + elapsed, cpu_frame_us, g_mix_us, g_kbd_us);
+      if (g_hil.cmd) HilBenchSvc::service();   // cold: a command from tools/hil over SWD
+    }
+#endif
 #if NEXT_TRACE
     {
       extern volatile int32_t g_nx_idle_min; extern volatile uint32_t g_nx_idle_neg;

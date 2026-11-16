@@ -1,0 +1,4 @@
+[
+  {"name": "slot1", "slot": 1, "warmup": 5, "measure": 10, "repeat": 3},
+  {"name": "dizzy-z80", "file": "/games/dizzy.z80", "warmup": 5, "measure": 10, "repeat": 3}
+]

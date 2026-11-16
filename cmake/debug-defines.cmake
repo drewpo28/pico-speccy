@@ -57,6 +57,13 @@ else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE SMUC_TRACE=0)
 endif ()
 
+# tools/hil benchmark mailbox (src/app/HilBench.*).
+if (HIL_BENCH)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HIL_BENCH=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HIL_BENCH=0)
+endif ()
+
 # IDE/HDD port tracing toggle (see Ports.cpp / IDE.cpp `#if IDE_PORT_TRACE`).
 if (IDE_PORT_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE IDE_PORT_TRACE=1)

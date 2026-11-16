@@ -11,6 +11,10 @@ option(HDMI_HSTX_TRACE "HSTX: dump the pad map, the line rate and the Data Islan
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
+# Hardware-in-the-loop benchmark: the g_hil SWD mailbox that tools/hil/hil_bench.py
+# drives (load a snapshot, measure FPS / IDL over a window). Off in releases.
+option(HIL_BENCH "SWD benchmark mailbox for tools/hil (FPS/IDL over a window)" OFF)
+
 option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(HOBBIT_TRACE "PK Hobbit: log configuration changes and unknown ports" OFF)

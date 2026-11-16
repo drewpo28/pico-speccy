@@ -9,6 +9,14 @@
   - Supports all Z80 prefixes: CB, DD, FD, ED, DD CB, FD CB (including undocumented)
 - [profi2png VGA detection fix](memory/profi2png_vga_detection.md) — max_byte>15 heuristic always fires for VGA std-mode (0xC0+ sync bits); fix: also require min_byte<0xC0.
 
+- `tools/hil/hil_bench.py` — hardware-in-the-loop FPS / IDL over SWD (2026-11-16,
+  **NOT hw-tested**, exercised against a fake OpenOCD only). Needs a `-DHIL_BENCH=ON`
+  image (`g_hil` mailbox, `src/app/HilBench.*`, hooked once a frame after
+  `idle = target - elapsed` in `ESPectrum::loop`); loads a persist slot or snapshot
+  over SWD, measures a window, `ab` alternates two ELFs and prints B − A. Details and
+  caveats in `tools/hil/README.md`. Basis for automated optimisation: the numbers are
+  the board's own, no timing model in between.
+
 ## FPGA48_2026.tap border test — 48K ONLY, verified by host simulation (2026-08-21)
 
 Correct picture (SpecEmu reference, measured programmatically off the
