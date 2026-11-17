@@ -124,4 +124,5 @@ Each rule cost at least one hardware round; the story is in the notes file named
 | `ui.md` | nm:: UI behaviour, notify, LEDs, input/keyboard, profiles, debugger, game |
 | `tools-tests.md` | tools/, test files, host simulations |
 
-Plans for work in progress stay in `docs/*-plan.md`.
+Plans for work in progress stay in `docs/*-plan.md`. `docs/cores-and-video-modes.md` is the
+map of what runs on which core (host video modes, per-machine render path, GS, SD, audio).
