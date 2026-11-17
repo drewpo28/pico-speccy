@@ -23,6 +23,7 @@
 #include <hardware/clocks.h>
 #include <hardware/uart.h>
 #include <hardware/watchdog.h>    // watchdog_caused_reboot (boot breadcrumb)
+extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
 #include <hardware/structs/powman.h>  // chip_reset reason decode (boot breadcrumb)
 
 #include <hardware/pll.h>
@@ -1957,6 +1958,7 @@ int main() {
     Debug::uartFlushSync();   // drain before the clock switch garbles it
     flash_info();
     flash_qe_fix();
+    { extern size_t getFreeHeap(void); Debug::log("main: after flash_qe_fix, freeHeap=%u largest=%u", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     if (flash_qe)
         Debug::log("main: flash QE (Puya) %s | jed=%02X sr1=%02X sr2=%02X vol=%02X wel=%02X fin=%02X",
                    flash_qe_text(), flash_qe_diag[0], flash_qe_diag[1], flash_qe_diag[2],
@@ -2004,6 +2006,7 @@ int main() {
     zero2_pio_usb_host_init();
     #else
     tuh_init(BOARD_TUH_RHPORT);
+    { extern size_t getFreeHeap(void); Debug::log("main: after tuh_init, freeHeap=%u largest=%u", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     #endif
     {
     #if defined(KBD_ALT_CLOCK_PIN) && defined(PCM5122_I2C_SDA)
@@ -2062,7 +2065,7 @@ int main() {
     #endif
     }
 #endif
-    Debug::log("main: psram init done");
+    { extern size_t getFreeHeap(void); Debug::log("main: psram init done, freeHeap=%u largest=%u", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     // send kbd reset only after initial process passed
 #ifndef KBDUSB
     keyboard_send(0xFF);
@@ -2071,10 +2074,13 @@ int main() {
     #ifdef VGA_HDMI
     Debug::log("main: testPins begin");
     linkVGA01 = testPins(VGA_BASE_PIN, VGA_BASE_PIN + 1);
-    Debug::log("main: testPins=%02X", linkVGA01);
+    { extern size_t getFreeHeap(void); Debug::log("main: testPins=%02X, freeHeap=%u largest=%u", linkVGA01, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     #endif
 
-    Debug::log("main: before ESPectrum::setup()");
+    { extern size_t getFreeHeap(void);
+      // The heap BEFORE the boot framebuffer: a warm reboot (USB keyboard attached, the
+      // stack enumerating at once) has it fragmented here already (hw 2026-11-17).
+      Debug::log("main: before ESPectrum::setup(), freeHeap=%u largest=%u", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     // The HDMI palette/TMDS LUT lives in .hdmi_lut (ORIGIN(RAM), 4 KB-aligned for
     // free) instead of .bss, so crt0 does not zero it — do it here, before ANY
     // palette slot is written. VIDEO::Init inside setup() is the first writer, and

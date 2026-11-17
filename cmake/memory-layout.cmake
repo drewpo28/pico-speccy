@@ -344,6 +344,12 @@ if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
     # window - from flash it ran at 21 ms a frame on core1.
     # +256 the same day: Hgfx::pairSig (the pair frame's draw skipped while nothing it reads
     # changed) and rowPump's beam test; PERF_TRACE content was 8 136 of 8 192.
+    # 2026-11-17: +1536 for the HGFX row renderers was REVERTED the same day. The window
+    # already reaches 384 B below __ftovl_win_start (8448 against the 8064 that fit above
+    # it), so every byte here lowers __ovl_low_start, the pre-apply heap ceiling of every
+    # machine: +1.5 KB put a warm reboot's boot framebuffer into 8 chunks with 3 KB left
+    # and Config::load panicked (hw, three reboots). More eLeMeNt RAM code wants its own
+    # window at the .nxovl addresses, not this one.
     set(DMAOVL_WIN_SIZE_EFFECTIVE 8192)
     if (PERF_TRACE)
         set(DMAOVL_WIN_SIZE_EFFECTIVE 8448)

@@ -95,12 +95,50 @@ enum { SRAM_MAX = 1 };
 static volatile uint32_t s_use[2];  // PSRAM transactions a buffer would cost: writes x2
 static uint8_t s_lagFrames, s_lagWindow;
 static uint8_t s_sramRetry;         // half-second windows before a refused move is tried again
+// Dirty units: one bit per 256 bytes of the 128 KB space, set by every store the engine
+// makes (core0 in direct mode, core1 otherwise), taken and cleared by the draw at its
+// start. A row whose units are clean since the last draw is still in the framebuffer
+// as drawn, so the draw skips it: Another World changes its picture every third frame,
+// a sprite game touches a few rows, and a whole 256x192 draw was 14-20 ms of core1
+// (hw 2026-11-16). A mark lost to the race between a core0 `|=` and the draw's
+// exchange cannot happen (the exchange returns the old word, the `|=` writes old |
+// bit after it); a mark set during the draw is drawn now and again next time.
+// A draw is FULL (every row) when anything the mapping depends on moved: s_fullDraw
+// (mode, palette, repaint, reset), the draw key (shown buffer, feature, g20), the ZX
+// layer under index 0 (its writes are not tracked), or every tenth partial draw, so
+// whatever painted over the framebuffer (a toast's carve) is gone within ten.
+static volatile uint32_t s_dirty[BUF_SIZE / 256 / 32];
+static volatile bool s_fullDraw = true;
+static uint32_t s_drawKey = ~0u;
+static uint8_t s_partialDraws;
+static uint32_t s_drawnBytes;       // of the last draw: the buffer's PSRAM cost (s_use)
+static void dirtyAll() { for (uint32_t i = 0; i < BUF_SIZE / 256 / 32; i++) s_dirty[i] = ~0u; }
 // The hot path sits in the Z80 DMA window: always loaded on this machine.
 #define ELM_HOT __attribute__((section(".time_critical.dmaloop"), noinline))
 // The helpers of that path are forced inline: at -Os GCC left e16 / rowOf / zxRow / put8
 // as functions in FLASH, reached from the RAM code through veneers, several per guest
 // byte (objdump of the 2026-11-05 build), on the XIP port the PSRAM buffers share.
 #define ELM_INL static inline __attribute__((always_inline))
+// The row renderers of the draw (hamLine, outDirect, outPair, the map loops): FLASH for
+// now. In the window they cost 1.5 KB of .dmaovl, and .dmaovl already reaches below
+// __ftovl_win_start, so every byte there lowers the pre-apply heap ceiling of EVERY
+// machine: a warm reboot with the USB stack's hole mid-heap put the boot framebuffer in
+// 8 chunks with 3 KB left and Config::load panicked (hw 2026-11-17, three reboots in a
+// row). Their own window at the .nxovl addresses (the plan's "Next and eLeMeNt resident
+// mutually exclusive") is the place for them, not .dmaovl.
+#define ELM_ROW
+// s_dirty above. The RAM callers mark ONE unit, the one holding the row's first byte (a
+// row store) or the byte itself (chunkyWrite): the draw tests every unit of a row's byte
+// range, which always holds the row's first unit, so one bit per row is enough and the
+// window pays a handful of bytes per site (a two-unit mark was 50 B a site, .dmaovl
+// overflowed). The flash callers (chunkyWriteRun, up to a whole run) mark the range.
+ELM_INL void dirtyMark(uint32_t a) {
+    const uint32_t u = a >> 8;
+    s_dirty[(u >> 5) & (BUF_SIZE / 256 / 32 - 1)] |= 1u << (u & 31);
+}
+static void dirtyMarkRun(uint32_t a, uint32_t n) {
+    for (uint32_t u = a >> 8, ue = (a + n - 1) >> 8; u <= ue; u++) s_dirty[(u >> 5) & (BUF_SIZE / 256 / 32 - 1)] |= 1u << (u & 31);
+}
 static uint8_t* s_col;              // the colour table, PSRAM
 static struct Hot {                 // read per pixel: heap
     uint8_t map[256], pidx[256], zxp[16], line[720], line2[720], slots[720];
@@ -175,6 +213,7 @@ static uint8_t s_cleanRun;
 static uint64_t s_busyUntil;
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
 static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH, s_bpp = 8;
+ELM_INL void dirtyRow(uint32_t rowA) { dirtyMark(rowA); }   // the row at rowA: its first unit
 // The pair frame's staged palette (pairPalette, mode 2): core1 pushes it at the start of
 // the draw it belongs to (pairPendApply), which the Q_DRAW gate starts only with the beam
 // below the picture or in blanking (beamBelowPicture).
@@ -253,6 +292,7 @@ void setMode(uint8_t m) {
     // owner's screenshots (2026-11-02). Every other program selects the mode once,
     // before it draws.
     if (m && s_buf) memset(s_buf, 0, BUF_SIZE);
+    s_fullDraw = true; dirtyAll();
     mode = m;
     static const struct { uint16_t w, h; uint8_t bpp; bool two; } k[10] = {
         { 256, 192, 8, true },  { 256, 192, 8, true },  { 256, 192, 8, true },
@@ -299,9 +339,10 @@ ELM_INL uint8_t* at(uint32_t a) {
     return s_buf + a;
 }
 ELM_INL uint8_t* bufN(int n) { return s_buf + (n ? s_b1 : 0); }
+ELM_INL uint32_t rowAbs(int n, int y) { return (n ? s_b1 : 0) + (uint32_t)y * s_stride; }   // offset in the 128 KB space
 ELM_INL uint8_t* rowOf(int n, int y) {
     if (s_sramOn[n]) return s_sram[n * SRAM_PER + (y >> SRAM_SHIFT)] + (y & (SRAM_ROWS - 1)) * 256;
-    return at((n ? s_b1 : 0) + (uint32_t)y * s_stride);
+    return at(rowAbs(n, y));
 }
 static inline uint32_t dstOff() { return ((s_r[REG_VP] >> 1) & 1) ? s_b1 : 0; }
 static inline uint32_t srcOff() { return ((s_r[REG_VP] >> 2) & 1) ? s_b1 : 0; }
@@ -358,16 +399,35 @@ static void h1Off(bool keep, const char* why) {
     if (keep) memcpy(s_buf + s_h1Base, s_h1, s_h1Size);
     s_h1 = nullptr;                       // the arena stays for the next time
     s_h1Retry = 50;                       // a second before another try (a window across the edge)
-    Debug::log("[ELM] HGFX buffer 1 back to PSRAM (%s), heap free %u", why, (unsigned)getFreeHeap());
+    Debug::log("[ELM] HGFX buffer %d back to PSRAM (%s), heap free %u", s_h1Base ? 1 : 0, why, (unsigned)getFreeHeap());
 }
 // Into the arena only where the row-block promotion (sramPromote) cannot work: chunky
 // windows mapped (direct), mode 3. Called once a frame from frameEnd.
+// WHICH buffer's half (s_h1Pref, decided on every half-second window in frameEnd): the
+// one core1 draws from while core0 keeps finding core1 still drawing (s_c1Limits) - with
+// the other half in SRAM the draw read 48 KB of PSRAM a frame and the frame could not be
+// shorter than it (PF2026, split2 hw 2026-11-16: buffer 1 in SRAM, NO gain); otherwise
+// the buffer with the most PSRAM traffic (s_use: stores x2, the draw's reads x1), and
+// it moves only when the other one has twice the traffic, at most every 5 s.
 static uint32_t s_arenaSize;
+static int8_t s_h1Pref = -1;          // -1: not decided yet (the shown buffer then)
+static int8_t s_h1Cand = -1;          // the last window's answer, and how many windows in a row gave it
+static uint8_t s_h1CandRun;
+static bool s_c1Limits;               // last window: core1 was still drawing on half the frames or more
+static uint8_t s_h1Hold;              // frames before the half may change buffers again
+static volatile uint32_t s_drawUse[2];   // bytes the draw read from each buffer this window
 static void h1Manage() {
     const bool want = s_direct && mode == 3 && s_buf && s_b1 == BUF1 && s_bpp == 8 && s_w == WIDTH && s_h == HEIGHT &&
                       s_stride == WIDTH && !s_sramOn[0] && !s_sramOn[1];
     if (!want) { if (s_h1) { h1Off(true, s_direct ? "mode" : "windows gone"); Elm::remap(); } return; }
-    if (s_h1) return;
+    const int n = s_h1Pref >= 0 ? s_h1Pref : (s_r[REG_VP] & 1);
+    if (s_h1) {
+        if (s_h1Hold) { s_h1Hold--; return; }
+        if ((s_h1Base ? 1 : 0) == n) return;
+        h1Off(true, n ? "buffer 1 needs it" : "buffer 0 needs it");
+        s_h1Retry = 0; s_h1Hold = 250;
+        Elm::remap();
+    }
     if (s_h1Retry) { s_h1Retry--; return; }
     if (!s_arena) return;                 // no arena this session: the half stays in PSRAM
     // Windows across the arena's edges three times: this program's windows reach past what
@@ -379,12 +439,12 @@ static void h1Manage() {
         return;
     }
     s_h1Size = s_arenaSize < H1_END ? s_arenaSize : H1_END;
-    s_h1Base = BUF1;                      // the picture first; the tail only as far as the arena goes
+    s_h1Base = n ? BUF1 : 0;              // the picture first; the tail only as far as the arena goes
     drain();                              // core1 draws from the PSRAM copy until here
     memcpy(s_arena, s_buf + s_h1Base, s_h1Size);
     s_h1 = s_arena;
     Elm::remap();                         // the mapped windows re-read their pointers (chunkyRead)
-    Debug::log("[ELM] HGFX buffer 1 #%04X..#%04X in SRAM (the arena)", (unsigned)(s_h1Base - BUF1), (unsigned)(s_h1Base - BUF1 + s_h1Size));
+    Debug::log("[ELM] HGFX buffer %d #%04X..#%04X in SRAM (the arena)", n, (unsigned)(s_h1Base - (n ? BUF1 : 0)), (unsigned)(s_h1Base - (n ? BUF1 : 0) + s_h1Size));
 }
 static void sramPromote() {
     if (s_direct || s_h1 || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
@@ -490,7 +550,11 @@ void drain() { drainWait(false); }
 #if PERF_TRACE
 static uint32_t s_pWaitUs, s_pPush, s_pDrop;          // core0
 static uint32_t s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush;   // the pair frame: what moved per 60 frames
-static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN, s_pCmdUs, s_pSkips;   // core1
+static uint32_t s_pLutFree, s_pLutLost, s_pLutLostPx;             // the last re-deal: free slots, drawn pairs dropped, their pixels
+static uint32_t s_pDealH[8], s_pDealHb[8];                         // HRXC deal: the weights of indices 0..7 (top) and 32..39 (bottom) of the last frame
+static uint8_t  s_pDealN, s_pDealSlots, s_pDealOwned;              // ...n, slots, indices that own a slot
+static uint32_t s_pLutPal[16];                                     // ...and the 16 pair colours it dealt for
+static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN, s_pCmdUs, s_pSkips, s_pRows;   // core1
 #endif
 
 ELM_INL void pushRaw(uint32_t e) {
@@ -556,11 +620,13 @@ void reset() {
     // The planes a program does not touch must not show the last program's picture
     // (HGFXAGON after Tetris).
     sramOff(false);
-    h1Off(false, "reset"); s_h1Retry = 0; s_h1Edge = 0;
+    h1Off(false, "reset"); s_h1Retry = 0; s_h1Edge = 0; s_h1Pref = s_h1Cand = -1; s_h1CandRun = 0; s_h1Hold = 0; s_c1Limits = false;
+    s_drawUse[0] = s_drawUse[1] = 0;
     s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
     free(s_ham); s_ham = nullptr;          // 4.8 KB of heap only while a program uses HAM
     s_hamHold = 0; s_hamCubeOn = false;
     if (s_buf) memset(s_buf, 0, BUF_SIZE);
+    s_fullDraw = true; dirtyAll();
     mode = 0; g20 = 0; s_e20 = 0; rgbOrder = false;
     memset(s_r, 0, sizeof(s_r));
     s_r[REG_MASK] = 0xFF;
@@ -575,7 +641,7 @@ void loadState(const uint8_t* regs, const uint8_t* colours) {
     memcpy(s_r, regs, REG_COUNT);
     memcpy(s_e, regs, REG_COUNT); s_e20 = g20;
     memcpy(s_col, colours, COLOURS);
-    s_palDirty = true; s_fbDirty = true;
+    s_palDirty = true; s_fbDirty = true; s_fullDraw = true;
 }
 
 static inline bool inWindow(int x, int y) {
@@ -609,6 +675,7 @@ ELM_HOT static void execVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src
     if (y < 0 || y >= s_h) return;
     int x = col + e16(REG_OX);
     uint8_t* d = rowOf(dstE(), y);
+    dirtyRow(rowAbs(dstE(), y));
     const uint8_t m = s_e[REG_MASK], pm = s_e[REG_MODE];
     const bool fast = s_bpp == 8 && x >= 0 && x + 8 <= s_w && !(s_e[REG_VP] & 8);
     if (fast) s_use[dstE()] = s_use[dstE()] + 16;
@@ -679,6 +746,7 @@ ELM_HOT static void execBytes(uint16_t off, const uint8_t* p, uint32_t n, bool w
         const int y = row + e16(REG_OY), x = (int)col * 8 + e16(REG_OX);
         if (y >= 0 && y < s_h && x >= 0 && x + (int)c * 8 <= s_w) {
             s_use[dstE()] = s_use[dstE()] + 16 * c;
+            dirtyRow(rowAbs(dstE(), y));
             uint8_t* d = rowOf(dstE(), y) + x;
             if (pm == 0) {
                 for (uint32_t i = 0; i < c; i++, d += 8) {
@@ -719,6 +787,7 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static voi
             x >= 0 && x + px <= s_w && sx >= 0 && sx + px <= s_w) {
             s_use[dstE()] = s_use[dstE()] + px * 2;    // a write = the fill and the write-back
             s_use[srcE()] = s_use[srcE()] + px;
+            dirtyRow(rowAbs(dstE(), y));
             uint8_t* d = rowOf(dstE(), y) + x;
             const uint8_t* q = rowOf(srcE(), sy) + sx;
             const uint8_t m = s_e[REG_MASK];
@@ -764,8 +833,9 @@ void copyRun(uint16_t off, uint16_t src, uint32_t n) {
     }
 }
 
-// core0: n plain bytes in a row of the window (FastDMA), never a COPY.
-ELM_HOT void writeVramRun(uint16_t off, const uint8_t* p, uint32_t n) {
+// core0: n plain bytes in a row of the window (FastDMA), never a COPY. Flash: its one
+// caller (fdmaRun) is flash, and the window had no room for its 200 B (2026-11-17).
+void writeVramRun(uint16_t off, const uint8_t* p, uint32_t n) {
     s_fbDirty = true;
     if (queued()) for (uint32_t i = 0; i < n; i++) byteAppend((uint16_t)(off + i), p[i], false);
     else for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), p[i], false, 0xFFFF);
@@ -780,6 +850,7 @@ static void execCmd(uint8_t c) {
     if (c == 1 && (dn == sn || !s_b1)) return;
     s_use[dn] = s_use[dn] + (uint32_t)s_stride * s_h * 2;
     if (c == 1) s_use[sn] = s_use[sn] + (uint32_t)s_stride * s_h;
+    dirtyAll();
     for (int y = 0; y < s_h; y++) {
         uint8_t* d = rowOf(dn, y);
         if (c == 1) {
@@ -901,8 +972,10 @@ ELM_HOT void chunkyWrite(uint32_t off, uint8_t v) {
     if (!s_buf) return;
     s_fbDirty = true;
     if ((s_r[REG_VP] & 0x10) && !v) return;
-    uint8_t* d = at(dstOff() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1)));
+    const uint32_t a = dstOff() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1));
+    uint8_t* d = at(a);
     *d = planar(*d, v, s_r[REG_MASK]);
+    dirtyMark(a);                         // s_use: the runs count, a byte store is not worth the RAM bytes
 }
 
 void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {
@@ -922,6 +995,8 @@ void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {
         uint8_t* d = at(a);
         if (m == 0xFF && !skip0) memcpy(d, p, c);   // word stores into the PSRAM buffer (a byte loop was slower, hw 2026-11-16)
         else for (uint32_t i = 0; i < c; i++) { if (skip0 && !p[i]) continue; d[i] = planar(d[i], p[i], m); }
+        s_use[(s_r[REG_VP] >> 1) & 1] = s_use[(s_r[REG_VP] >> 1) & 1] + 2 * c;   // the fill and the write-back
+        dirtyMarkRun(a, c);
         p += c; n -= c; o = (o + c) & (BUF_SIZE - 1);
     }
 }
@@ -1016,7 +1091,7 @@ static void paletteProgram(bool all) {
 }
 
 // The ZX layer of one row, colours 0..15.
-static void zxLine(const uint8_t* scr, int y, uint8_t* out) {
+ELM_ROW static void zxLine(const uint8_t* scr, int y, uint8_t* out) {
     const uint32_t b = ((y & 0xC0) << 5) | ((y & 7) << 8) | ((y & 0x38) << 2);
     const uint8_t* attr = scr + 0x1800 + (y >> 3) * 32;
     const bool flash = VIDEO::flashing != 0;
@@ -1064,7 +1139,7 @@ static volatile bool s_pairStale = true;   // the pair FB no longer holds the la
 static void pairFbClear(uint8_t slot) {
     const int xres = VIDEO::vga.xres, x0 = (xres - WIDTH) / 2, y0 = VIDEO::screenTopRows();
     for (int y = 0; y < HEIGHT; y++) memset(VIDEO::vga.frameBuffer[y0 + y] + x0, slot, WIDTH);
-    s_pairStale = true;
+    s_pairStale = true; s_fullDraw = true;
 }
 static void pairOff() {
     s_pairPendValid = false; g_pairPushNow = false;
@@ -1107,6 +1182,11 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
 #endif
             pairPushPoll();
         }
+        // The same colour under two indices is ONE owner (KeyLayer: the bottom screen's
+        // table is usually the top one's, so every colour came twice and sixteen slots
+        // held eight colours; LIMSHOWM's lamp at 28 MHz, host + hw 2026-11-17). The
+        // later index folds into the earlier: its pixels map to that slot exactly below.
+        for (int j = 1; j < n; j++) if (h[j]) for (int i = 0; i < j; i++) if (rgbOf[i] == rgbOf[j]) { h[i] += h[j]; h[j] = 0; break; }
         int m = 0;
         for (int k = 0; k < n; k++) if (h[k]) m++;
         full = m > 12 || (had && s_pairFull);
@@ -1118,20 +1198,54 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
             if (k != 0xFF && k < n && h[k]) pal[i] = rgbOf[k];                 // the owner, its colour of this frame
             else { if (k != 0xFF) s_slotIdx[i] = 0xFF; pal[i] = had ? s_hot->pal[i] : 0; }   // free: keeps its colour
         }
-        // New indices, the heaviest first, into free slots: the one whose old colour is nearest.
+        // New indices into free slots by VISIBILITY, not weight: weight x the distance to
+        // the nearest colour already owned (+ a floor of 16 levels a channel). Heaviest-
+        // first gave a picture that arrives whole in one frame (28 MHz) its sixteen slots
+        // to the dark bulk and mapped a 40-cell yellow filament to a grey; at 3.5 MHz the
+        // same picture arrived over many frames and the small bright indices happened to
+        // claim slots first. With every slot owned, the least visible owner yields to a
+        // candidate twice as visible, one eviction a frame (a fade scales every colour
+        // alike, so the ranking - and the slots - hold through it).
+        enum { D_FLOOR = 3 * 16 * 16 };
         bool owned[64];
         for (int k = 0; k < n; k++) owned[k] = false;
         for (int i = 0; i < slots; i++) if (s_slotIdx[i] != 0xFF) owned[s_slotIdx[i]] = true;
+        const auto dOwned = [&](uint32_t c, int except) {    // distance to the nearest owned colour (slot `except` left out)
+            uint32_t bd = ~0u;
+            for (int i = 0; i < slots; i++) if (i != except && s_slotIdx[i] != 0xFF) { const uint32_t d = dist(pal[i], c); if (d < bd) bd = d; }
+            return bd == ~0u ? (uint32_t)D_FLOOR * 64 : bd;
+        };
+        bool evicted = false;
         for (;;) {
-            int best = -1;
-            for (int k = 0; k < n; k++) if (h[k] && !owned[k] && (best < 0 || h[k] > h[best])) best = k;
+            int best = -1; uint64_t bs = 0;
+            for (int k = 0; k < n; k++) if (h[k] && !owned[k]) {
+                const uint64_t sc = (uint64_t)h[k] * (dOwned(rgbOf[k], -1) + D_FLOOR);
+                if (best < 0 || sc > bs) { bs = sc; best = k; }
+            }
             if (best < 0) break;
             int fs = -1; uint32_t bd = ~0u;
             for (int i = 0; i < slots; i++) if (s_slotIdx[i] == 0xFF) { const uint32_t d = dist(pal[i], rgbOf[best]); if (d < bd) { bd = d; fs = i; } }
-            if (fs < 0) break;                                                  // more indices than slots: the rest map to the nearest
+            if (fs < 0) {                                                       // every slot owned: the least visible owner?
+                if (evicted) break;
+                int w = -1; uint64_t ws = 0;
+                for (int i = 0; i < slots; i++) {
+                    const uint8_t k = s_slotIdx[i];
+                    if (k == 0xFF) continue;
+                    const uint64_t sc = (uint64_t)h[k] * (dOwned(pal[i], i) + D_FLOOR);
+                    if (w < 0 || sc < ws) { ws = sc; w = i; }
+                }
+                if (w < 0 || bs < ws * 2) break;                                 // the rest map to the nearest
+                owned[s_slotIdx[w]] = false; s_slotIdx[w] = 0xFF; evicted = true; fs = w;
+            }
             s_slotIdx[fs] = (uint8_t)best; pal[fs] = rgbOf[best]; owned[best] = true;
         }
         memcpy(s_hot->pal, pal, sizeof(pal));
+#if PERF_TRACE
+        { for (int k = 0; k < 8; k++) { s_pDealH[k] = k < n ? h[k] : 0; s_pDealHb[k] = 32 + k < n ? h[32 + k] : 0; }
+          s_pDealN = (uint8_t)n; s_pDealSlots = (uint8_t)slots; int o = 0;
+          for (int i = 0; i < slots; i++) if (s_slotIdx[i] != 0xFF) o++;
+          s_pDealOwned = (uint8_t)o; }
+#endif
         // An index without a slot (the pictures have up to 32 colours on 16 slots) maps to
         // the nearest slot colour - with hysteresis: it keeps last frame's slot unless a
         // new one is clearly nearer. A fade-in from black separates the colours by coarse
@@ -1345,8 +1459,10 @@ static inline void gsPump() {}
 static inline void gatePump() {}
 static inline void rowPump(int) {}
 #endif
+// The row renderers below are ELM_ROW (flash, see the macro): the .dmaovl window has no
+// room for them without lowering the pre-apply heap of every machine.
 // One fb row from 2 output px per byte, colours in l[].
-static void outPair(int fy, int x0, const uint8_t* l, int bytes, const uint8_t* lut = &VIDEO::profi_pair_lookup[0][0]) {
+ELM_ROW static void outPair(int fy, int x0, const uint8_t* l, int bytes, const uint8_t* lut = &VIDEO::profi_pair_lookup[0][0]) {
     rowPump(fy);
     uint8_t* row = VIDEO::vga.frameBuffer[fy];
     int cx[8][2];
@@ -1525,6 +1641,22 @@ static void pairLutUpdate() {
             }
             lut[p] = lut[b];
         }
+#if PERF_TRACE || HOST_BUILD
+        {   // what this deal cost: the [HGFX] pair line (hw) / PICOSPECCY_ELMLOG (bench)
+            int dropped = 0, lost = 0; uint32_t lostPx = 0;
+            for (int p = 0; p < 256; p++) if (p % 17 && drop[p]) { dropped++; if (H->cnt[p]) { lost++; lostPx += H->cnt[p]; } }
+#if PERF_TRACE
+            s_pLutFree = (uint32_t)nf; s_pLutLost = (uint32_t)lost; s_pLutLostPx = lostPx;
+            memcpy(s_pLutPal, H->pal, sizeof s_pLutPal);
+#endif
+#if HOST_BUILD
+            if (getenv("PICOSPECCY_ELMLOG"))
+                Debug::log("[ELM] pair lut: %d free slots, %d pairs dropped, %d of them drawn (%u px); pal %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X",
+                           nf, dropped, lost, (unsigned)lostPx, (unsigned)H->pal[0], (unsigned)H->pal[1], (unsigned)H->pal[2], (unsigned)H->pal[3], (unsigned)H->pal[4], (unsigned)H->pal[5],
+                           (unsigned)H->pal[6], (unsigned)H->pal[7], (unsigned)H->pal[8], (unsigned)H->pal[9], (unsigned)H->pal[10], (unsigned)H->pal[11], (unsigned)H->pal[12], (unsigned)H->pal[13], (unsigned)H->pal[14], (unsigned)H->pal[15]);
+#endif
+        }
+#endif
         if (!H->lutOn || memcmp(lut, H->lut, 256)) {
             memcpy(H->lut, lut, 256);
             H->lutOn = true;
@@ -1536,7 +1668,7 @@ static void pairLutUpdate() {
     }
 }
 // One fb row of palette slots.
-static void outDirect(int fy, int x0, const uint8_t* slots, int n) {
+ELM_ROW static void outDirect(int fy, int x0, const uint8_t* slots, int n) {
     rowPump(fy);
     uint8_t* row = VIDEO::vga.frameBuffer[fy];
     int cx[8][2];
@@ -1548,9 +1680,28 @@ static void outDirect(int fy, int x0, const uint8_t* slots, int n) {
 }
 
 // FILL: a 0 repeats the last non-zero pixel from the left.
-static void fillLine(uint8_t* p, int n) {
+ELM_ROW static void fillLine(uint8_t* p, int n) {
     uint8_t last = 0;
     for (int x = 0; x < n; x++) { if (p[x]) last = p[x]; else p[x] = last; }
+}
+// The per-pixel loops of renderFrame, out of the flash. out[i] = map[in[i]].
+ELM_ROW static void mapLine8(const uint8_t* in, const uint8_t* map, uint8_t* out, int n) {
+    for (int x = 0; x < n; x++) out[x] = map[in[x]];
+}
+// ...and the same over a packed row (s_bpp 4 / 2): pixels x0, x0 + step, ...
+ELM_ROW static void mapLinePx(const uint8_t* p, int x0, int step, const uint8_t* map, uint8_t* out, int n) {
+    for (int x = 0; x < n; x++) out[x] = map[pxGet(p, x0 + x * step)];
+}
+// 512 px on 256: the left pixel, or the right over 0.
+ELM_ROW static void halveLine(const uint8_t* p, uint8_t* out, int n) {
+    for (int x = 0; x < n; x++) out[x] = p[x * 2] ? p[x * 2] : p[x * 2 + 1];
+}
+// Index 0 shows the ZX layer: four pixels of 0 are four pixels of the ZX line as they stand.
+ELM_ROW static void underLine(const uint8_t* q, const uint8_t* zx, const uint8_t* map, uint8_t* out, int n) {
+    for (int x = 0; x < n; x += 4) {
+        if (!rd32(q + x)) { wr32(out + x, rd32(zx + x)); continue; }
+        for (int k = x; k < x + 4; k++) out[k] = q[k] ? map[q[k]] : zx[k];
+    }
 }
 
 // HAM8, as on the Amiga: the top two bits say what the low six do: 00 a colour of the
@@ -1599,7 +1750,7 @@ static inline uint32_t sat8(int v) {
 // and the frame could not be shorter than that. Per pixel here: one switch, three
 // saturating adds, the bin, one LUT load; the table colours come from Hot::colRgb
 // (renderFrame's per-frame copy, SRAM) instead of three byte loads from s_col in PSRAM.
-static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
+ELM_ROW static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
     if (!s_ham || !s_ham->n) { hamWalk(p, n, [&](int x, uint32_t c) { slots[x] = cubeSlot(c, x, y); }); return; }
     static const int8_t bay[16] = { -8, 0, -6, 2, 4, -4, 6, -2, -5, 3, -7, 1, 7, -1, 5, -3 };   // 4x4 Bayer, x HAM_DITHER/8
     const int8_t* row = bay + (y & 3) * 4;
@@ -1911,6 +2062,7 @@ static void renderFrame() {
 #endif
             if (sig == s_sig && !s_pairStale && s_clean < PAIR_CLEAN) {
                 s_clean++;
+                s_drawnBytes = 0;        // nothing read: no PSRAM cost, no rows
 #if PERF_TRACE
                 s_pSkips = s_pSkips + 1;
 #endif
@@ -1931,45 +2083,68 @@ static void renderFrame() {
         }
         return;
     }
-    const uint8_t* buf = bufN(s_e[REG_VP] & 1);
+    const int shown = s_e[REG_VP] & 1;
+    const uint8_t* buf = bufN(shown);
     const uint8_t feature = s_e[REG_FEATURE];
     if (feature == 2 && s_col) for (int i = 0; i < 64; i++) H->colRgb[i] = tableRgb(s_col + i * 3);   // hamLine's copy
     const bool under = !(s_e20 & 4) && s_w <= 512 && s_h == HEIGHT;
     const bool fullScreen = s_w >= 360 && s_w != 512;
+    // Dirty rows (s_dirty): the rows below are drawn only where the engine stored since
+    // the last draw, unless the draw is full. The key is everything the row -> picture
+    // mapping depends on besides the palette (that sets s_fullDraw itself).
+    const uint32_t key = (uint32_t)shown | (uint32_t)feature << 8 | (uint32_t)s_e20 << 16 | (uint32_t)mode << 24;
+    bool full = __atomic_exchange_n(&s_fullDraw, false, __ATOMIC_ACQ_REL);
+    if (key != s_drawKey || under || ++s_partialDraws >= 10) full = true;
+    if (full) { s_partialDraws = 0; s_drawKey = key; }
+    uint32_t snap[BUF_SIZE / 256 / 32];
+    for (uint32_t i = 0; i < BUF_SIZE / 256 / 32; i++) snap[i] = __atomic_exchange_n(&s_dirty[i], 0u, __ATOMIC_ACQ_REL);
+    const auto rowDirty = [&](uint32_t a) {
+        uint32_t u = a >> 8;
+        const uint32_t ue = (a + (uint32_t)s_stride - 1) >> 8;
+        for (; u <= ue; u++) if (snap[(u >> 5) & (BUF_SIZE / 256 / 32 - 1)] & (1u << (u & 31))) return true;
+        return false;
+    };
+    s_drawnBytes = 0;
     if (fullScreen) {
         // 360x288 and the PAL modes fill the framebuffer; a smaller one shows the middle.
         const int rows = s_h > 300 ? yres : s_h > yres ? yres : s_h;
         const int srcRowStep2 = s_h > 300 ? 2 : 1;
         const int ytop = s_h > 300 ? 0 : (s_h - rows) / 2;
         for (int r = 0; r < rows; r++) {
-            const uint8_t* p = buf + (uint32_t)(ytop + r) * srcRowStep2 * s_stride;
+            const uint32_t srow = (uint32_t)(ytop + r) * srcRowStep2;
+            const uint8_t* p = buf + srow * s_stride;
             if (s_h > 300 && (ytop + r) * 2 >= s_h) break;
+            if (!full && !rowDirty(rowAbs(shown, (int)srow))) continue;
+            s_drawnBytes += (uint32_t)s_stride;
             if (s_w == 720) {
+                const int skip = (720 - xres * 2) / 2;
                 if (s_pair) {
-                    const int skip = (720 - xres * 2) / 2;
-                    for (int x = 0; x < xres * 2; x++) H->line[x] = H->pidx[pxGet(p, x + skip)];
+                    mapLinePx(p, skip, 1, H->pidx, H->line, xres * 2);
                     outPair(r, 0, H->line, xres);
                 } else {
-                    for (int x = 0; x < xres; x++) H->slots[x] = H->map[pxGet(p, (x * 2) + (720 - xres * 2) / 2)];
+                    mapLinePx(p, skip, 2, H->map, H->slots, xres);
                     outDirect(r, 0, H->slots, xres);
                 }
             } else {
                 const int skip = (360 - xres) / 2;
-                if (s_bpp == 8) for (int x = 0; x < xres; x++) H->slots[x] = H->map[p[x + skip]];
-                else for (int x = 0; x < xres; x++) H->slots[x] = H->map[pxGet(p, x + skip)];
+                if (s_bpp == 8) mapLine8(p + skip, H->map, H->slots, xres);
+                else mapLinePx(p, skip, 1, H->map, H->slots, xres);
                 outDirect(r, 0, H->slots, xres);
             }
         }
         return;
     }
     for (int y = 0; y < HEIGHT; y++) {
-        const uint8_t* p = rowOf(s_e[REG_VP] & 1, s_h > HEIGHT ? y * 2 : y);
+        const int sy = s_h > HEIGHT ? y * 2 : y;
+        if (!full && !rowDirty(rowAbs(shown, sy))) continue;
+        s_drawnBytes += (uint32_t)s_stride;
+        const uint8_t* p = rowOf(shown, sy);
         if (s_bpp != 8) {                // HGFX 3: 16 colours, every second row of 384
             if (s_pair) {
-                for (int x = 0; x < 512; x++) H->line[x] = H->pidx[pxGet(p, x)];
+                mapLinePx(p, 0, 1, H->pidx, H->line, 512);
                 outPair(y0 + y, x0, H->line, WIDTH);
             } else {
-                for (int x = 0; x < WIDTH; x++) H->slots[x] = H->map[pxGet(p, x * 2)];
+                mapLinePx(p, 0, 2, H->map, H->slots, WIDTH);
                 outDirect(y0 + y, x0, H->slots, WIDTH);
             }
             continue;
@@ -1977,13 +2152,13 @@ static void renderFrame() {
         if (s_pair) {                    // HGFX 2 as text
             memcpy(H->line2, p, WIDTH * 2);
             if (feature == 1) fillLine(H->line2, 512);
-            for (int x = 0; x < 512; x++) H->line[x] = H->pidx[H->line2[x]];
+            mapLine8(H->line2, H->pidx, H->line, 512);
             outPair(y0 + y, x0, H->line, WIDTH);
             continue;
         }
         const uint8_t* q = p;
         if (s_w > WIDTH) {               // 512 px on 256: the left pixel, or the right over 0
-            for (int x = 0; x < WIDTH; x++) H->line2[x] = p[x * 2] ? p[x * 2] : p[x * 2 + 1];
+            halveLine(p, H->line2, WIDTH);
             q = H->line2;
         } else if (feature == 1) {
             memcpy(H->line2, p, WIDTH);
@@ -1993,16 +2168,25 @@ static void renderFrame() {
         if (feature == 2) { hamLine(q, WIDTH, y, H->slots); outDirect(y0 + y, x0, H->slots, WIDTH); continue; }
         if (under) {
             zxLine(VIDEO::grmem, y, H->line);
-            // Four pixels of index 0 are four pixels of the ZX layer as they stand.
-            for (int x = 0; x < WIDTH; x += 4) {
-                if (!rd32(q + x)) { wr32(H->slots + x, rd32(H->line + x)); continue; }
-                for (int k = x; k < x + 4; k++) H->slots[k] = q[k] ? H->map[q[k]] : H->line[k];
-            }
+            underLine(q, H->line, H->map, H->slots, WIDTH);
         } else {
-            for (int x = 0; x < WIDTH; x++) H->slots[x] = H->map[q[x]];
+            mapLine8(q, H->map, H->slots, WIDTH);
         }
         outDirect(y0 + y, x0, H->slots, WIDTH);
     }
+}
+
+// The frame's draw with its accounting, out of the RAM window (core1Pump is in it;
+// noinline, or -Os pastes it back).
+static __attribute__((noinline)) void drawFrame() {
+    s_drawnBytes = WIDTH * HEIGHT;       // the paths without dirty rows read the whole picture
+    renderFrame();
+    const int n = s_e[REG_VP] & 1;
+    s_use[n] = s_use[n] + s_drawnBytes;
+    s_drawUse[n] = s_drawUse[n] + s_drawnBytes;
+#if PERF_TRACE
+    s_pRows = s_pRows + s_drawnBytes / 256;
+#endif
 }
 
 // The palette a frame needs, or a change of output.
@@ -2022,7 +2206,7 @@ static void frameSetup() {
         for (int i = 0; i < 256; i++) { rgb[i] = 0; hist[i] = 0; }
         for (int i = 0; i < 12; i++) { rgb[i] = VIDEO::zxRgb((uint8_t)i); hist[i] = (uint32_t)(100 - i); }
         pairPalette(hist, rgb, 12);
-        s_zxPair = true;
+        s_zxPair = true; s_fullDraw = true;
         return;
     }
     s_zxPair = false;
@@ -2065,12 +2249,13 @@ static void frameSetup() {
             }
         }
         pairPalette(hist, rgb, n);
+        s_fullDraw = true;                   // pidx may have moved: every pair row again
         if (s_pair) { for (int i = 0; i < 16; i++) {
             uint32_t bd = ~0u; const uint32_t z = VIDEO::zxRgb((uint8_t)i);
             for (int k = 0; k < 16; k++) { const uint32_t d = dist(s_hot->pal[k], z); if (d < bd) { bd = d; s_hot->zxp[i] = (uint8_t)k; } }
         } return; }
     }
-    if (s_pair) { pairOff(); s_palDirty = true; s_palAll = true; }
+    if (s_pair) { pairOff(); s_palDirty = true; s_palAll = true; s_fullDraw = true; }
     if (radastan && !mode) {
         for (int i = 0; i < 16; i++) {
             const uint8_t g = VIDEO::ulaplus_palette[radBank * 16 + i];
@@ -2086,12 +2271,13 @@ static void frameSetup() {
             s_palDirty = false; s_palValid = true;
             if (hamProgram(need)) s_hamCubeOn = false;
             else if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; }
+            s_fullDraw = true;               // slots were dealt: every row through the new mapping
         } else s_hamHold--;
         return;
     }
     if (s_palDirty || !s_palValid) {
         s_palDirty = false; s_palValid = true;
-        if (mode) { paletteProgram(s_palAll); s_palAll = false; }
+        if (mode) { paletteProgram(s_palAll); s_palAll = false; s_fullDraw = true; }
     }
 }
 
@@ -2144,9 +2330,21 @@ void frameEnd() {
         static const bool forceSram = getenv("PICOSPECCY_ELM_SRAM") != nullptr;   // bench: the hw lag rule never fires here
         if (forceSram) s_lagFrames = 15;
 #endif
-        if (s_lagFrames >= 15) sramPromote();
+        s_c1Limits = s_lagFrames >= 15;
+        if (s_c1Limits) sramPromote();
+        {   // The buffer whose half the arena holds (h1Manage): the one the draw reads most
+            // while core1 is the limit, else the one with the most traffic; the other one
+            // only with twice the figure, and the same answer on three windows in a row
+            // (HGFXZOOM double-buffers: a per-window pick swapped the half every hold).
+            const volatile uint32_t* u = s_c1Limits ? s_drawUse : s_use;
+            int pref = u[1] > u[0] ? 1 : 0;
+            if (s_h1) { const int cur = s_h1Base ? 1 : 0; if (pref != cur && u[pref] < 2 * u[cur]) pref = cur; }
+            if (pref == s_h1Cand) { if (s_h1CandRun < 3) s_h1CandRun++; } else { s_h1Cand = (int8_t)pref; s_h1CandRun = 1; }
+            if (s_h1CandRun >= 3) s_h1Pref = s_h1Cand;
+        }
         s_lagWindow = s_lagFrames = 0;
         s_use[0] = s_use[1] = 0;
+        s_drawUse[0] = s_drawUse[1] = 0;
     }
     {
         const bool alone = mode >= 3 && !s_pair && s_r[REG_FEATURE] != 2 &&
@@ -2176,26 +2374,61 @@ void frameEnd() {
     static uint32_t n;
     if (++n == 60) {
         n = 0;
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u fill=%u | runs %u/fr %uB sram=%u%u | pair pidx %u pal %u full %u lut %u",
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u",
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
-                   s_pDraws > s_pSkips ? s_pDrawUs / (s_pDraws - s_pSkips) : 0, s_pDraws - s_pSkips, s_pSkips, s_qw - s_qr,
-                   s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1],
+                   s_pDraws > s_pSkips ? s_pDrawUs / (s_pDraws - s_pSkips) : 0, s_pDraws - s_pSkips, s_pSkips,
+                   s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
+                   s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
                    s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush);
-        if (s_pCellTop | s_pCellBot | s_pCellMix) Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u",
-                                                             s_pCellTop / 60, s_pCellBot / 60, s_pCellMix / 60, s_pPushPoll, s_pPushLate, s_pPushCap, s_pPushBeamMin, s_pPushBeamMax, VIDEO::screenTopRows(),
-                                                             s_pRowPump / 60, s_pRowSkip / 60);
+        if (s_pCellTop | s_pCellBot | s_pCellMix) {
+            Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u | lut free %u lost %u (%u px)",
+                       s_pCellTop / 60, s_pCellBot / 60, s_pCellMix / 60, s_pPushPoll, s_pPushLate, s_pPushCap, s_pPushBeamMin, s_pPushBeamMax, VIDEO::screenTopRows(),
+                       s_pRowPump / 60, s_pRowSkip / 60, s_pLutFree, s_pLutLost, s_pLutLostPx);
+            // LIVE: the pair palette as dealt this frame (s_hot->pal), the guest's HRXC table
+            // (first four entries, BGR bytes as written) and whether a push is still staged.
+            const uint32_t* lp = s_hot->pal;
+            const uint8_t* ht = hrxcTable ? hrxcTable : (const uint8_t*)VIDEO::grmem + HRXC_TABLE;
+            Debug::log("[HGFX] pair pal now: %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X %06X | table %02X%02X%02X %02X%02X%02X %02X%02X%02X %02X%02X%02X | pend %d go %d lutOn %d",
+                       (unsigned)lp[0], (unsigned)lp[1], (unsigned)lp[2], (unsigned)lp[3], (unsigned)lp[4], (unsigned)lp[5], (unsigned)lp[6], (unsigned)lp[7],
+                       (unsigned)lp[8], (unsigned)lp[9], (unsigned)lp[10], (unsigned)lp[11], (unsigned)lp[12], (unsigned)lp[13], (unsigned)lp[14], (unsigned)lp[15],
+                       ht[0], ht[1], ht[2], ht[3], ht[4], ht[5], ht[6], ht[7], ht[8], ht[9], ht[10], ht[11],
+                       (int)s_pairPendValid, (int)s_pairGo, (int)s_hot->lutOn);
+            (void)s_pLutPal;
+            // The guest's tables whole (top screen, then the bottom one), RGB per entry, and
+            // the deal's weights: which indices the histogram saw at all.
+            for (int half = 0; half < (keyBottom ? 2 : 1); half++) {
+                const uint8_t* t = ht + half * HRXC_BYTES;
+                char line[240]; int pos = 0;          // 32 x 7 + 3 = 227 B; Debug::log takes 256
+                for (int i = 0; i < 32 && pos < (int)sizeof line - 10; i++)
+                    pos += snprintf(line + pos, sizeof line - (size_t)pos, "%06X%s", (unsigned)tableRgb(t + i * 3), i == 15 ? " / " : " ");
+                Debug::log("[HGFX] hrxc %s: %s", half ? "bottom" : "top", line);
+            }
+            Debug::log("[HGFX] deal: n %u slots %u owned %u | h0..7 %u %u %u %u %u %u %u %u | pidx0..7 %u %u %u %u %u %u %u %u",
+                       s_pDealN, s_pDealSlots, s_pDealOwned, (unsigned)s_pDealH[0], (unsigned)s_pDealH[1], (unsigned)s_pDealH[2], (unsigned)s_pDealH[3],
+                       (unsigned)s_pDealH[4], (unsigned)s_pDealH[5], (unsigned)s_pDealH[6], (unsigned)s_pDealH[7],
+                       s_hot->pidx[0], s_hot->pidx[1], s_hot->pidx[2], s_hot->pidx[3], s_hot->pidx[4], s_hot->pidx[5], s_hot->pidx[6], s_hot->pidx[7]);
+            {   // which screen is which: the latch, the key, the first attribute bytes of each
+                const uint8_t* tp = keyTop ? keyTop : (const uint8_t*)VIDEO::grmem;
+                const uint8_t* bt = keyBottom;
+                Debug::log("[HGFX] screens: vl %d top %08X bottom %08X grmem %08X key %u | top at %02X %02X %02X %02X %02X %02X %02X %02X | bottom at %02X %02X %02X %02X %02X %02X %02X %02X | hb0..7 %u %u %u %u %u %u %u %u",
+                           (int)MemESP::videoLatch, (unsigned)(uintptr_t)tp, (unsigned)(uintptr_t)bt, (unsigned)(uintptr_t)VIDEO::grmem, keyColour,
+                           tp[0x3000], tp[0x3001], tp[0x3002], tp[0x3003], tp[0x3100], tp[0x3101], tp[0x3800], tp[0x3801],
+                           bt ? bt[0x3000] : 0, bt ? bt[0x3001] : 0, bt ? bt[0x3002] : 0, bt ? bt[0x3003] : 0, bt ? bt[0x3100] : 0, bt ? bt[0x3101] : 0, bt ? bt[0x3800] : 0, bt ? bt[0x3801] : 0,
+                           (unsigned)s_pDealHb[0], (unsigned)s_pDealHb[1], (unsigned)s_pDealHb[2], (unsigned)s_pDealHb[3], (unsigned)s_pDealHb[4], (unsigned)s_pDealHb[5], (unsigned)s_pDealHb[6], (unsigned)s_pDealHb[7]);
+            }
+        }
         s_pPidxChg = s_pPalChg = s_pFullFlip = s_pLutPush = 0; s_pCellTop = s_pCellBot = s_pCellMix = 0;
         s_pPushPoll = s_pPushLate = s_pPushCap = 0; s_pPushBeamMin = 999; s_pPushBeamMax = 0; s_pRowPump = s_pRowSkip = 0;
 #if PERF_HIST
         ::pcprof_dump();   // core0 PC sampler (PcProf.cpp): only the Next and the EP dumped it
 #endif
         s_pPush = s_pWaitUs = s_pDrop = 0;
-        s_pDrawUs = s_pDraws = s_pSkips = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = s_pCmdUs = 0;
+        s_pDrawUs = s_pDraws = s_pSkips = s_pExecUs = s_pExecN = s_pRuns = s_pRunBytes = s_pCmdUs = s_pRows = 0;
     }
 #endif
 }
 
-void repaint() { if (s_live) { drain(); s_pairStale = true; frameSetup(); renderFrame(); } }
+void repaint() { if (s_live) { drain(); s_pairStale = true; s_fullDraw = true; frameSetup(); renderFrame(); } }
 
 // core1: a bounded batch, then back to the loop for the other pumps.
 ELM_HOT void core1Pump() {
@@ -2289,8 +2522,7 @@ ELM_HOT void core1Pump() {
 #if PERF_TRACE
             const uint32_t d0 = time_us_32();
 #endif
-            renderFrame();
-            s_use[s_e[REG_VP] & 1] = s_use[s_e[REG_VP] & 1] + WIDTH * HEIGHT;
+            drawFrame();                     // renderFrame + the PSRAM-cost accounting (flash)
 #if PERF_TRACE
             draw += time_us_32() - d0;
             s_pDraws = s_pDraws + 1;
@@ -2312,7 +2544,7 @@ ELM_HOT void core1Pump() {
     }
 #endif
 }
-void paletteLost() { s_palDirty = true; s_palAll = true; }
+void paletteLost() { s_palDirty = true; s_palAll = true; s_fullDraw = true; }
 
 }
 

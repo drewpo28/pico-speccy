@@ -1686,3 +1686,33 @@ wave = 42 bars, so `pp::MAX_CH` 40 -> 48. A YMF262 beside it is listed unsupport
 test `tools/opl4vgm_test.cpp` (recipe in its header; with a file argument it renders a
 real VGM to WAV). Octave 0 plays at HALF rate (+1 =
 native), which a test expectation got wrong once.
+
+## Warm reboot: the boot framebuffer lands in a fragmented heap and Config::load panicked (2026-11-17, fix NOT hw-tested)
+
+Every `esp_hard_reset` from the menu (a reboot-class setting) with the USB keyboard attached ended in
+`*** PANIC *** Out of memory` right after `setup: initFileSystem done` - on `split26` (owner's log 10:34,
+build Nov 16 23:31:54) as on `stage0b`, three reboots in a row; a cold boot was fine. The chain
+(`__breakpoint` <- `panic` <- `__wrap_malloc` <- `std::string::_M_mutate`): the boot framebuffer is
+claimed before the filesystem ("The framebuffer is claimed FIRST", above) on the assumption that the
+heap is pristine there - on a warm reboot it is not (`VIDEO: main FB 75KB in 4 chunks x 60 rows
+(fragmented heap) ... freeHeap=4928 largest=4684`, another boot 8 x 30 rows / 5072 / 4828), so the FB
+takes whole-row pieces and leaves a few KB, and `Config::load` read the whole `storage.nvs` (4.6-7 KB) into
+ONE std::string, which pico_malloc could not place and panicked. What fragments the heap before `setup()`
+is still unmeasured - the attached keyboard enumerating at once is the suspect (the comment at the FB claim
+names USB's ~10 KB mid-heap); `main: before ESPectrum::setup()` and `initFileSystem done` now print
+`freeHeap/largest`, the next warm-reboot log answers it.
+Fix, two halves. (1) `NvsLines` (Config.cpp) keeps the file in 1 KB `tryMalloc` blocks, a line never across a
+block, and `nvs_get_str` walks a table of line pointers; no memory at all = compiled defaults for the session with
+a `Config: storage.nvs not read` line, never a panic. `loadPendingVideoMode` reads through the same struct.
+That alone turned the panic into "boots with default settings" (owner, stage0c log 14:07: the chunked FB left
+4 896 B, four blocks went in, the fifth did not). (2) The EARLY framebuffer claim (before the mount) is made only
+while the heap can give it one block (`VIDEO::mainFbBytes()` <= `getLargestAllocatable()`); on a split heap it
+logs `setup: early FB claim skipped` and the claim after Config::load (the donated `.ram_128k` strip on butter
+boards, the same chunker elsewhere) takes it - a chunked early claim bought nothing there and ate Config's room.
+Measured at the warm reboot, before setup: `freeHeap=82920 largest=49908` (a cold boot: the whole 84 KB region
+in one piece); `main: after flash_qe_fix / after tuh_init / psram init done / testPins` print the figures now, so
+the next warm-reboot log names the step that splits it. A non-butter board on a warm reboot is still exposed:
+its post-Config claim has only the chunker, and `VIDEO::Init`'s last fallback is pico_malloc (panics).
+Side note from the same round: `.dmaovl` already reaches 384 B below `__ftovl_win_start`, so growing it
+lowers `__ovl_low_start` (the pre-apply heap ceiling of every machine) byte for byte - a +1.5 KB attempt
+made this panic certain and was reverted (other-machines.md, "HGFX render, stage 0").

@@ -5186,6 +5186,11 @@ void VIDEO::fbHeapPlan(size_t* held, size_t* after) {
 // hw 2026-08-13 OOM-panicked in Init with 149 KB free but no hole that big:
 // 576p + NeoGS + MIDI. Idempotent, and safe to skip — Init() allocates exactly the
 // same way if this was never called, or if it failed.
+size_t VIDEO::mainFbBytes() {
+    const int Mode = fbModeIndex();
+    return fbMainBytes(fbModeLines(Mode), fbModeStride(Mode));
+}
+
 void VIDEO::reserveFrameBuffer(bool configKnown) {
     int Mode = fbModeIndex();
     int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
@@ -9771,10 +9776,14 @@ IRAM_ATTR void VIDEO::EndFrame() {
             // XIP cache hit ratio over the window (both cores, flash + butter
             // PSRAM together — the RP2350 has ONE XIP cache and one counter pair).
             // Saturating 32-bit counters, write-any-to-clear.
+#if HOST_BUILD
+            uint32_t xh = 0, xa = 0;   // no XIP cache on the bench
+#else
             volatile uint32_t *xip_hit = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_HIT_OFFSET);
             volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
             uint32_t xh = *xip_hit, xa = *xip_acc;
             *xip_hit = 0; *xip_acc = 0;
+#endif
             extern uint32_t g_frm_int_miss, g_brd_min, g_brd_max, g_brd_delta, g_int_last_t, g_halt_t;
             Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f intMiss=%u/60f brdT=%u..%u d=%u intT=%u haltT=%u",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,

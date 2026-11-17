@@ -81,7 +81,9 @@
 #define ZX_PSRAM_PAGES 0x5F
 #define NEXT_HOT_FRAMES 1
 #define FB_FORCE_CHUNKS 0
-#define PERF_TRACE 0
+#ifndef PERF_TRACE
+#define PERF_TRACE 0      // -DCMAKE_CXX_FLAGS=-DPERF_TRACE=1: the firmware's [PERF] / [HGFX] 60f lines on the bench
+#endif
 #define PERF_HIST 0
 
 // cmake/board.cmake's image flags, as on a 4 MB image: MoonSound is on and reads its

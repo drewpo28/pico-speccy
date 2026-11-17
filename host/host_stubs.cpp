@@ -146,6 +146,8 @@ volatile uint8_t g_sd_as_need = 0;
 volatile unsigned int g_sd_as_done = 0;
 volatile uint32_t g_sd_as_seq = 0;
 volatile uint32_t g_sd_as_c1_us = 0, g_sd_as_c1_max = 0, g_sd_as_c0wait_us = 0, g_sd_as_c0wait_max = 0;
+volatile uint32_t g_sd_as_c1_n = 0, g_sd_as_cut_n = 0, g_sd_as_yield_n = 0;   // the [PERF] SD counters (PERF_TRACE bench)
+volatile uint32_t g_sd_ph[4] = { 0, 0, 0, 0 };
 volatile uint32_t g_disk_write_gen = 0;
 void sd_async_abort(void) {}
 int sdcard_alive(void) { return 1; }

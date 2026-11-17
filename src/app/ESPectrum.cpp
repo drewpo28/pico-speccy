@@ -1014,10 +1014,24 @@ void ESPectrum::setup() {
   // Config::load() re-sizes the block if the user picked a different mode, and is
   // a no-op when the size already matches.
   resolveVideoOutput();
-  VIDEO::reserveFrameBuffer(/*configKnown=*/false);
+  // ...but only while the heap can give it ONE block. A WARM reboot (esp_hard_reset
+  // from the menu, the USB keyboard attached) arrives here with the heap already split
+  // - `freeHeap=82920 largest=49908` against the 76 800 B framebuffer (hw 2026-11-17)
+  // - and the claim then went into whole-row chunks that left ~4.9 KB: Config::load had
+  // nowhere to put storage.nvs (4.6-7 KB; first a PANIC, then "defaults for this
+  // session"). A chunked early claim buys nothing that the claim after Config::load
+  // (the donated .ram_128k strip on butter boards, the same chunker elsewhere) does
+  // not, so on a split heap the early one is skipped and Config keeps the room.
+  {
+      const size_t fbNeed = VIDEO::mainFbBytes();
+      const size_t big = getLargestAllocatable();
+      if (big >= fbNeed) VIDEO::reserveFrameBuffer(/*configKnown=*/false);
+      else Debug::log("setup: early FB claim skipped: largest %u < %u (split heap), the claim after Config::load takes it",
+                      (unsigned)big, (unsigned)fbNeed);
+  }
   Debug::log("setup: initFileSystem begin");
   FileUtils::initFileSystem();
-  Debug::log("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
+  Debug::log("setup: initFileSystem done, fsMount=%d, freeHeap=%u largest=%u", FileUtils::fsMount, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
   Debug::log2SD("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
 
   mem_desc_t::reset();

@@ -1409,6 +1409,80 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   per-instruction cost down first: reads on the fast path (per-slot table), PERF_HIST's loop-head histograms off
   (E40/E50 buckets ~1.3 ms on HIST builds), the switch-dispatched loop (exec_nocheck_next's shape) for the eLeMeNt.
 
+**HGFX render, stage 0 of the one-core plan (2026-11-17, host-tested, NOT hw-tested; `debug/DVp2w-elm-stage0-1.1.3`,
+PERF_TRACE + GS_PERF_TRACE, no HIST; superseded by `stage0b` below).** The owner's direction: the HGFX draw moves to core0 (a row behind the
+emulated beam, as ATM / SAM / EP) so core1 is the NeoGS's and the SD's alone; stage 0 shrinks the draw first, on
+either core, and the hw numbers decide whether stages 1-2 (row tick on core0, then the queue / gate / gsAhead /
+rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
+- **Dirty rows.** `s_dirty`: one bit per 256-byte unit of the 128 KB buffer space, set by every engine store
+  (`execVram`, `execBytes`, `execRun`, `execCmd` = all, `chunkyWrite`, `chunkyWriteRun`), taken with an exchange at
+  the start of a draw; `renderFrame` skips a row whose units are clean. A draw is FULL on `s_fullDraw` (setMode,
+  reset, loadState, repaint, paletteLost, every palette program / pair deal, pairFbClear), on the draw key (shown
+  buffer, FEATURE, g20, mode), under the ZX layer (index 0 transparent: its writes are not tracked) and on every
+  tenth partial draw (an overlay's carve going away, as the s_cleanRun rule). The pair paths of HGFX 2 / 3 and the
+  360 / 720-wide modes take it too; HRC / HRXC / KeyLayer keep `pairSig`. Bench: PF2026 draws 99-104 of 192 rows a
+  frame (the video band + the scroller), HGFXAGON 192 (COPY_ALL every frame), a static picture 0. The `[HGFX] 60f`
+  line prints `rows N` (per draw) and `h1=N` (which buffer's half is in SRAM, -1 none).
+- **Row renderers in the RAM window: tried and REVERTED the same day (the boot PANIC).** `hamLine`, `outDirect`,
+  `outPair`, `zxLine`, `fillLine` and the per-pixel loops of `renderFrame` (now `mapLine8`, `mapLinePx`,
+  `halveLine`, `underLine`, all `ELM_ROW` = flash) went into `.dmaovl` with the window raised 8192 / 8448 ->
+  9984 / 10240. `.dmaovl` sits UNDER `.nxovl` and already reaches 384 B below `__ftovl_win_start`, so the raise
+  lowered `__ovl_low_start` (the pre-apply heap ceiling of EVERY machine) by 1 792 B: on the owner's warm reboot
+  (esp_hard_reset after a menu change, the USB stack's hole mid-heap) the boot framebuffer went into 8 chunks
+  with `freeHeap=3176 largest=628` and `Config::load` PANICked "Out of memory" (hw 13:13, three reboots in a row;
+  `__breakpoint` <- `panic` <- `__wrap_malloc` <- `std::string::_M_mutate`). The first hw log also showed no gain
+  from it where it was measurable (LIMSHOWM 11.3 ms, `pairRowFast` was RAM already). Rule: `.dmaovl` must not
+  grow at all - the eLeMeNt's RAM code wants its own window at the `.nxovl` addresses (the plan's "Next and
+  eLeMeNt resident mutually exclusive"), not this one. Even the dirty-row marks had to be trimmed to fit the old
+  8448: one unit per row (the first unit of the row, which the draw's test always covers), `writeVramRun` and the
+  draw's accounting (`drawFrame`, noinline) to flash, `putCarved` / `rowPump` / `pxGet` back to plain inlines.
+  Content 8 256 / 8 448 (PERF), 7 936 / 8 192 (plain); `__ovl_low_start` back at 0x200650E0, `end` +176 B.
+  Test ELF `debug/DVp2w-elm-stage0d-1.1.3` (stage0 / stage0b / stage0c deleted). The PANIC itself turned out to be older than stage 0 - `split26` panicked the same way on the same warm reboot (owner's log 10:34): `Config::load` read storage.nvs into ONE std::string on a heap the boot framebuffer had already chunked; fixed in Config.cpp (1 KB blocks, no panic), see memory-sram-flash.md "Warm reboot".
+- **The arena takes the buffer that matters.** `h1Manage` used to take buffer 1's half always (PF2026's decode
+  target) while the draw read the SHOWN buffer 0 from PSRAM (split2: no gain). Now `s_h1Pref`, decided on each
+  half-second window: while core1 is the limit (`s_c1Limits` = core0 found core1 still drawing on 15+ of 30
+  frames) the buffer the draw read most (`s_drawUse`), else the one with the most traffic (`s_use`, which now
+  counts the chunky stores too); the other buffer only with twice the figure, and the same answer on three windows
+  in a row (HGFXZOOM double-buffers: a per-window pick swapped the half every hold), then a move = h1Off + the
+  other half, 250-frame hold. Bench: PF2026 takes buffer 0 (`h1=0`), HGFXZOOM one move, TETRIS buffer 0.
+- Bench A/B against the pre-change build (HGFXAGON, HGFXZOOM, LIMSHOWM, PF2026, TETRIS, HGFXDEM2 HAM): pictures
+  the same. The PERF_TRACE bench: `cmake -S host -B build-all/host-perf -DCMAKE_CXX_FLAGS=-DPERF_TRACE=1`
+  (host_config.h takes the define now; Video.cpp's XIP counters and four sdcard.c counters got host stubs).
+- **First hw log of stage0 (13:13, GS off; 13:24, GS on; both at 3.5 MHz, `mult=0`, so no PF2026 figure):**
+  PF2026 at 3.5 MHz draws 42-45 of 192 rows a frame (`rows 44`), draw 3.8-5.2 ms. LIMSHOWM HRXC pictures: draw
+  11.3 ms x6 skip 54 with GS off, 17-19.7 ms with the NeoGS on (rowPump hands the card the rows' time), `lut`
+  re-deals in both. The arena was NOT taken on the 13:13 config (`largest 36844` < H1_MIN 40 KB; GS off, URAM
+  2 MB), taken on the 13:24 one (AA-SRAM, GS on: `largest 49132`).
+- **LIMSHOWM lamp picture dark / no yellow: the HRXC slot deal at 28 MHz (FIXED 2026-11-17, hw-confirmed DVp2w the same
+  day on `debug/DVp2w-elm-stage0g-1.1.3`, owner: "LIMSHOWM на 28 MHz ок"; with the NeoGS on, the HRXC draw is 17.6-19.8 ms a frame
+  and `pidx` moves 60-120 per 60 frames at a picture change, 0 on a still one).** First read as GS on/off (it tracked the SetUp's CPU speed), then as a
+  hardware palette fault - the bench reproduced it the moment it ran at 28 MHz (FRAM byte #30 = 5): the guest's
+  table holds the yellow (index 1 = FBDC64), the histogram sees it (`h1 = 13` cells + 27 on the bottom screen), and
+  `pairPalette`'s mode-2 deal gave all sixteen slots to the dark bulk - `pidx 0 12 12 12 15 11 13 12`, every bright
+  index on the grey of slot 12 - because (1) the bottom screen's table is the top one's, so each colour was two
+  owners and sixteen slots held eight colours, and (2) new indices took free slots HEAVIEST FIRST. At 3.5 MHz the
+  viewer draws the picture over many frames, the small bright indices turned up early and claimed slots while they
+  were free - luck, not a rule; a picture that lands whole in one frame (28 MHz) has none. Now: an index whose colour
+  equals an earlier index's folds into it (its pixels map to that slot exactly), free slots go by VISIBILITY
+  (weight x squared distance to the nearest owned colour, + a floor of 16 levels a channel), and with every slot
+  owned the least visible owner yields to a candidate twice as visible, one eviction a frame (a fade scales every
+  colour alike, the ranking holds). Bench: the lamp at 28 and 3.5 MHz pixel-identical (2 396 yellow px, 0
+  differing), `pidx` moves only at picture changes (60-120 per 60 frames) and 0 on still pictures; fade-ins at
+  3.5 MHz still re-map slotless indices (130-270 / 60 f), as before. The pair diagnostics stay in the PERF build:
+  `[HGFX] pair pal now` (live palette, table head, push state), `hrxc top/bottom` (both tables), `deal` (weights,
+  pidx) and `screens` (latch, pointers, attribute bytes, bottom weights).
+- **hw numbers, PF2026 at 28 MHz on `stage0g` (owner's log 15:25, `clk: mult=3`, arena = buffer 0 `#0000..#BF00`,
+  `h1=0`):** cpu 25.6-27.2 ms (was 31-32 on sdc1), realFPS 35.5-36.7 (was ~31), core1 draw 4.3-5.4 ms (was
+  15-20), rows 41-47 of 192 a draw, frameEnd wait 0.4-1.6 ms (was 2.7-5). The draw is off the critical path; what
+  is left on core0 is the Z80 core and the FastDMA, i.e. the pf2026-50fps-plan levers. Consequence for the
+  one-core plan: moving a 5 ms draw onto a core0 that runs 26 ms a frame costs FPS here; stages 1-2 pay only on
+  3.5-7 MHz programs, where core0 is idle anyway - not where the FPS is short. Two cores stay.
+- Not done, after the hw numbers: the mixed KeyLayer cells of `pairRowFast` (12288 a frame on LIMSHOWM, the
+  per-pixel merge), the engine on core0 for every program (stage 1), the queue and its gates removed (stage 2),
+  the eLeMeNt RAM-code window at the `.nxovl` addresses (the prerequisite for any more RAM code here).
+  What decides: `[HGFX] draw` and `wait`, `PERF[... GS:x.x MHz]` on LIMSHOWM fades and HGFXAGON, realFPS on PF2026
+  (`[PERF] clk: mult=3` first).
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

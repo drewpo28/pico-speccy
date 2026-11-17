@@ -31,6 +31,8 @@
 #include "drivers/sound/pwm_audio.h"
 #include "Buffer.h"
 #include "TryAlloc.h"
+extern size_t getFreeHeap(void);
+extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp (host: host_stubs)
 #include "Debug.h"
 #include "drivers/graphics/graphics.h"
 #include <hardware/vreg.h>
@@ -1068,47 +1070,81 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 // RAM fallback for Config when no SD card
 static string nvs_ram_buf;
 
-// The parsed NVS text: ONE buffer (each '\n' turned into '\0') plus a table of
-// line starts. Config::load() used to build a vector<string>, one heap string per
-// line in a doubling vector — with ~300 lines that is a 12 KB (0x3000) vector
-// reallocation next to the 6 KB it replaces plus a few hundred small blocks, all
-// BEFORE CodeOverlay::apply() hands the overlay windows to the heap, i.e. on the
-// ~34 KB the framebuffer leaves. It panicked there ("Out of memory" right after
-// "initFileSystem done", hw 2026-10-08, Next build). This is ~file size + 4 B a line.
+// The parsed NVS text: 1 KB heap blocks (tryMalloc, never pico_malloc's panic), a line
+// never across a block, plus a table of line starts. Two earlier shapes died here:
+// a vector<string> (a 12 KB vector reallocation beside the 6 KB it replaced, hw
+// 2026-10-08, Next build) and then ONE std::string of the file's size - which needs a
+// hole as large as the file, and a WARM reboot (esp_hard_reset from the menu, the USB
+// keyboard already attached) does not have one: the boot framebuffer lands in 4-8 chunks
+// with `freeHeap=4928 largest=4684` and the 4.6-7 KB storage.nvs panicked
+// "Out of memory" in std::string::_M_mutate right after "initFileSystem done" (hw
+// 2026-11-17, split26 and stage0b alike, every warm reboot). Nothing here may ask for
+// more than a KB in one piece; no memory at all = defaults for the session, logged.
 struct NvsLines {
-    string buf;
-    vector<uint32_t> off;
-    void split() {
-        size_t n = 0;
-        for (char c : buf) if (c == '\n') ++n;
-        off.clear();
-        off.reserve(n + 1);
-        size_t start = 0;
-        for (size_t i = 0; i < buf.size(); ++i) {
-            if (buf[i] == '\n') {
-                buf[i] = '\0';
-                off.push_back((uint32_t)start);
-                start = i + 1;
+    enum { BLK = 1024 };
+    vector<char*> blocks;
+    vector<const char*> lines;
+    char* cur = nullptr;
+    size_t fill = 0, lineStart = 0;
+    bool oom = false;
+    ~NvsLines() { for (char* b : blocks) free(b); }
+    bool newBlock() {
+        char* b = (char*)tryMalloc(BLK);
+        if (!b) { oom = true; return false; }
+        blocks.push_back(b);
+        cur = b; fill = 0; lineStart = 0;
+        return true;
+    }
+    // Text in; '\n' ends a line, '\r' is dropped, an unfinished line at a block's end
+    // moves whole to the next block (a line of BLK bytes or more is dropped).
+    bool feed(const char* p, size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            const char c = p[i];
+            if (c == '\r') continue;
+            if (!cur && !newBlock()) return false;
+            if (c == '\n') {
+                cur[fill++] = '\0';
+                if (fill - lineStart > 1) lines.push_back(cur + lineStart);
+                lineStart = fill;
+            } else cur[fill++] = c;
+            if (fill >= BLK - 1) {
+                const size_t keep = fill - lineStart;
+                char* prev = cur; const size_t from = lineStart;
+                if (keep >= BLK - 1) { fill = lineStart; continue; }   // an absurd line: dropped
+                if (!newBlock()) return false;
+                memcpy(cur, prev + from, keep); fill = keep;
             }
         }
-        if (start < buf.size()) off.push_back((uint32_t)start);   // no trailing '\n'
+        return true;
     }
-    // Whole file in one read; false on any FatFs error.
+    void finish() {
+        if (cur && fill > lineStart) { cur[fill++] = '\0'; lines.push_back(cur + lineStart); lineStart = fill; }
+    }
+    // The whole file, a sector at a time; false on a FatFs error or no memory.
     bool read(FIL* f) {
-        const FSIZE_t sz = f_size(f);
-        buf.assign((size_t)sz, '\0');
-        UINT br = 0;
-        if (sz && (f_read(f, &buf[0], (UINT)sz, &br) != FR_OK || br != sz)) return false;
-        split();
+        lines.reserve(400);
+        char tmp[256];
+        for (;;) {
+            UINT br = 0;
+            if (f_read(f, tmp, sizeof tmp, &br) != FR_OK) return false;
+            if (!br) break;
+            if (!feed(tmp, br)) return false;
+            if (br < sizeof tmp) break;
+        }
+        finish();
+        return true;
+    }
+    bool parse(const string& data) {
+        lines.reserve(400);
+        if (!feed(data.data(), data.size())) return false;
+        finish();
         return true;
     }
 };
 
 static bool nvs_get_str(const char* key, string& v, const NvsLines& sts) {
     const size_t kl = strlen(key);
-    const char* base = sts.buf.c_str();
-    for (uint32_t o : sts.off) {
-        const char* s = base + o;
+    for (const char* s : sts.lines) {
         if (strncmp(key, s, kl) == 0 && s[kl] == '=') {
             if (s[kl + 1] == '\0') return false;
             v = s + kl + 1;
@@ -1426,10 +1462,9 @@ extern "C" uint8_t TFT_FLAGS;
 extern "C" uint8_t TFT_INVERSION;
 #endif
 
-// Parse NVS data from a raw string into vector of lines
+// Parse NVS data from a raw string (the card-less RAM copy) into the line blocks
 static void nvs_parse_lines(const string& data, NvsLines& sts) {
-    sts.buf = data;
-    sts.split();
+    sts.parse(data);
 }
 
 // Read config from FS
@@ -1449,7 +1484,11 @@ void Config::load() {
         }
         const bool ok = sts.read(handle);
         fclose2(handle);
-        if (!ok) return;
+        if (!ok) {
+            Debug::log("Config: storage.nvs not read (%s), defaults for this session; freeHeap=%u largest=%u",
+                       sts.oom ? "no memory" : "read error", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+            return;
+        }
     } else if (!nvs_ram_buf.empty()) {
         nvs_parse_lines(nvs_ram_buf, sts);
     } else {

@@ -203,6 +203,7 @@ public:
   // configKnown=false for the pre-Config::load() claim in setup(): the mode is the
   // compiled default there, so the failure branch must not downgrade or announce it.
   static void reserveFrameBuffer(bool configKnown = true);
+  static size_t mainFbBytes();          // what the claim above wants, for the caller to test the heap first
 
   // Donated SRAM for the main framebuffer (plan item A, 2026-10-13): register a
   // block BEFORE reserveFrameBuffer(); the allocator fills as many whole rows from
