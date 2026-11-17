@@ -987,6 +987,428 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   that differ from the previous one - before, two in a row per picture (20-90 % of the pixels, then back); after,
   one per picture, 0 doubles over 161 frames. It does not change which colours a settled picture has.
 
+**PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
+- The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,
+  steady. core1 is not the limit (`[HGFX] c1 engine ~650 us/fr`, `draw ~13.5 ms`). XIP 99.6 % hit, 0.6 M misses/s.
+- PROF values are PER MILLE (the first reading of this log took them for counts and called the profile "5 % covered";
+  wrong: the printed buckets cover ~80 %). perf2 has `PCPROF_SLOTS=512 PCPROF_LINES=16` (new CMake knobs); lines past
+  ~240 chars are cut and the UART drops some, so sum per window before trusting a share.
+- core0 split (share of the printed samples, 11 windows): `Ports::input` 20 % (the whole decode chain, for the SD data
+  port #EB: `Ports::dmaInput` sends every eLeMeNt DMA read to `input()`, and the Elm/DivMMC branches sit deep in it;
+  the Next has an early #EB branch, the eLeMeNt none); card I/O `pio_spi_repeat8_read8_blocking` 9 % + `DivMMC::spiRead`
+  3 %; Z80 core (`exec_nocheck_ts`, peek/fetch, decode) ~12 %; FLASH out-of-line `MemESP::readbyte` 8 % +
+  `writebyte` 3 % (from `Elm::busRead/busWrite`, `fdmaRun`, `dmaCopy`, and through a veneer from RAM
+  `Z80DMA::executeTransfer`); `Hgfx::drain` 6 % + `timer_*` 4.5 % (core0 spinning on core1: `frameEnd` drains every
+  frame when `s_pair || mode == 4 || hrcGiga()`); `Elm::fdmaRun` 5 % (flash); `Z80DMA::executeTransfer` 5 %;
+  `Elm::windowsRebuild` 3 % + `remap` 2 % (flash); `multicore_lockout_handler` 2 %.
+- Levers, in order: (1) early #EB answer for the eLeMeNt in `dmaInput` / `inputImpl` (Next shape) and a bulk
+  port->memory DMA piece through `spiReadBulk`; (2) RAM byte paths for FastDMA / Elm bus (no flash readbyte/writebyte);
+  (3) the per-frame `drain()` (double-buffer the pair tables instead of waiting); (4) why `windowsRebuild` runs so often.
+  Even all of them is ~2x, not the 3x that 50 FPS at 28 MHz needs.
+- **Lever (1) written 2026-11-16 (NOT hw-tested; test ELF `debug/DVp2w-elm-pf2026eb-1.1.2`, perf2's knobs).**
+  `inputImpl`: the Next's early #EB branch takes the eLeMeNt too (low byte tested first; nothing in between claims
+  #xxEB there: Elm::isPort, SMUC `&#A3`, Nemo IDE `&6`, MB-02+ `&#9F`, divIDE `&#E3`, +3e `#EF` all miss).
+  `Z80DMA::executeTransfer`: next to `Elm::dmaCopy`, `Elm::dmaFromCard` (flash, once per piece) moves a piece of a
+  CMD17/18 data block from the sector buffer straight into the RAM page (`mmc_read_bulk`, the Next INIR batch's
+  shape); pieces stay in one 256-byte page, end at the frame's end, skip HGFX windows / ROM / accessor banks / slots
+  0-1 / breakpoints, and charge (port + memory cycles + input()'s 1 T) a byte, uncontended, as before. R1, token and
+  CRC stay per byte. SRAM +104 B (`Ports::input` +40, `executeTransfer` +56, veneer 8). Host bench, perf on
+  PF2026 80 s: `Ports::input` 1.59 % -> 0.17 %, `executeTransfer` 0.31 -> 0.05, `spiRead` 0.27 -> 0.04; picture
+  and scroller as before (the host was not limited by it, so no FPS figure there).
+  **hw-run 2026-11-16 (DVp2w, owner's UART log `logs/devttyACM0_2026_11_16.10.29.08.391.txt`; picture not judged in
+  words):** `cpu=43.0-46.1 ms` a frame (was 55-59), realFPS 21.1-22.5 (was 16.4-17.9), -22 %. PROF over the demo
+  windows: `Ports::input` 1.9 % (was 20 %). Now on top: card PIO `pio_spi_repeat8_read8_blocking` 12.7 % (the real
+  card reads, same absolute work), Z80 core `exec_nocheck_ts` 12.7 %, FLASH `MemESP::readbyte` 9.6 % (lever 2),
+  `Hgfx::drain` 6.2 % + `timer_*` ~5 % (lever 3), `fdmaRun` 5.1 %, `windowsRebuild` 3.8 % + `remap` 2.9 % (lever 4),
+  flash `memcpy` 3.8 %.
+- **Lever (2), first part, written 2026-11-16 (NOT hw-tested; `debug/DVp2w-elm-pf2026fd-1.1.2`, build 10:51:10).**
+  The flash `readbyte` came from `fdmaRun` (host perf, DWARF call graph): PF2026 starts ~17k FastDMA runs a second
+  on the bench, `par=03` (both addresses carried on), mostly `len=20 db=8 ds=F8` (8 x 4-byte blits) plus
+  `len=200/380`, all on the plain path, which read and stored every byte through the out-of-line flash
+  `MemESP::readbyte/writebyte`. `rdRun/wrRun` (Element.cpp) copy a run inside one 8K slot when the slot is a plain
+  page under the same rules (no mem breakpoints, no accessor bank, no divMMC window for reads; writes only at
+  >= #4000, no Next write overlay, RAM pointer, bank marked dirty), else the per-byte calls. `dmaCopy` uses them too
+  when the destination does not start inside the source (the overlap replicates byte by byte). SRAM +0 (flash code).
+  Host: `readbyte` 0.37 % -> 0.02 %; FDMATEST frames identical old/new, HGFXAGON and PF2026 pictures as before.
+  The Z80 DMA memPeek/memPoke (`Elm::busRead/busWrite`, flash) and `fdmaRun` itself stay in flash.
+  **hw-run 2026-11-16 (DVp2w, `logs/devttyACM0_2026_11_16.10.58.14.683.txt`, only 4 demo windows):** `cpu=39.5-40.5
+  ms` (was 43-46), realFPS 24.0-24.6 (was 21.1-22.5), -10 %. PROF: `MemESP::readbyte` gone (was 9.6 %), `fdmaRun`
+  2.1 % (was 5.1 %). Top now: card PIO 13.3 %, `exec_nocheck_ts` 12.4 %, `Hgfx::drain` 7.1 % + `timer_*` ~6 %
+  (lever 3), FLASH `memcpy` 6.3 % (the runs' copies + the rest), `windowsRebuild` 3.6 % + `remap` 2.5 % (lever 4).
+  `sleep_us`/`sleep_until` (~10 %) is ESPectrum::loop's idle wait after a light frame, not work.
+- **Lever (3) written 2026-11-16 (NOT hw-tested; `debug/DVp2w-elm-pf2026dr-1.1.2`, build 11:09:24).** The "per-frame
+  drain" reading was WRONG: PF2026 is mode 3 (HGFX 1), no pair frame, so frameEnd's own drain never runs. A host
+  census of `drain()` return addresses (temporary) named `Hgfx::direct(true)`: the demo maps its chunky window
+  (`remap` -> `direct(hg != 0)`) ~9 times a second, right after a frameEnd, and the full drain waited for the queued
+  Q_DRAW, i.e. for the beam to leave the picture (core1Pump holds Q_DRAW up to 25 ms) and the ~14 ms draw.
+  `direct(true)` now waits for the ENGINE work only (`drainWait(true)`): frameEnd records where its Q_DRAW sits
+  (`s_drawAt` / `s_drawQw`); with nothing pushed after it and core1 past everything before it, the wait ends. The
+  draw only reads the buffers and already runs beside core0's direct stores; engine ops read no mutable `s_hot`
+  scratch (only `nib`). `sramOff` still drains in full when it has blocks to move. SRAM +8 B. Host: PF2026,
+  TETRIS, HGFXZOOM pictures as before.
+  **hw-run 2026-11-16 (`logs/devttyACM0_2026_11_16.11.15.39.390.txt`): no gain**, cpu 40.5-41.2 ms, `drainWait` 8.1 %.
+  A second census (what sits behind the draw at `direct(true)`): 799 of 800 times ~30 Q_REG + 16 Q_BYTES + 2 Q_RUN -
+  the demo writes the VRAM window and the registers, then maps the chunky window, so the engine-only wait still
+  waits out the draw.
+- **Lever (3) round 2, 2026-11-16 (NOT hw-tested; `debug/DVp2w-elm-pf2026dh-1.1.2`, build 11:23:16).** Direct
+  mode outlives the window by `DIRECT_HOLD` = 50 frames (`direct(false)` only drops the wish, frameEnd counts down;
+  the machine reset turns it off at once, `direct(false, true)`). PF2026 then moves to core0 once and stays: its
+  engine work is ~0.7 ms a frame, the waits were ~3 ms. Direct mode is correct whether a window is mapped or not.
+  SRAM +2 B. Host: PF2026, TETRIS, HGFXZOOM, HGFXAGON as before.
+  **hw-run 2026-11-16 (`logs/devttyACM0_2026_11_16.11.26.08.882.txt`; picture not judged in words):** cpu 36.5-37.9
+  ms (was 40.5-41.2), realFPS 25.3-26.5; `[HGFX] q=1/fr c1 engine 13 us` (the engine is on core0 now), `drainWait`
+  gone from PROF, `Hgfx::execVram` 1.9 % on core0. Top now: `exec_nocheck_ts` 14.7 %, card PIO 14.2 %, FLASH
+  `memcpy` 6.6 %, `windowsRebuild` 4.7 % + `remap` 3.4 % (lever 4), `fdmaRun` 3.1 %, `ElmSid::renderTo` 2.6 %.
+  Sum so far from 55-59 ms / 16.4-17.9 FPS: -35 % cpu, +50 % FPS.
+- **Lever (4) written 2026-11-16 (NOT hw-tested; `debug/DVp2w-elm-pf2026rm-1.1.2`, build 11:32:36).** Host census of
+  `remap()` callers over one PF2026 run: 2.1 M from `uramOut` (OUT #07/#27/#47/#67/#53, ~35k a second), 36k from
+  the HGFX VP/OffsetY writes under a chunky window, a handful elsewhere. Each was the 8-slot loop plus the 256-byte
+  `windowsRebuild`, whose inputs a page change never touches. Now: a page write for a Zone already mapped as plain
+  URAM with an unchanged write protect and a page that exists moves that slot's pointer only; `remap` calls
+  `windowsRefresh`, which rebuilds only when a key of everything the table reads (HGFX mode / g20 / REG_MODE, the
+  zone masks, g 021-023 040 041 048 049 060 061) moved; the direct `windowsRebuild()` callers set the key. Host perf:
+  `windowsRebuild` + `remap` + `uramPtr` 0.48 % -> 0.03 %. SRAM +20 B. The same ELF dumps PROF without the extra
+  video too (BASIC at 28 MHz: 17.5 FPS, 944-958 ns an instruction, ~4x the Next's 220 ns/M1 - next question).
+  **hw-run 2026-11-16 (`logs/devttyACM0_2026_11_16.11.33.33.659.txt`):** cpu 31.3-33.8 ms (was 36.5-37.9), realFPS
+  28.7-30.5; `windowsRebuild` / `remap` gone from PROF. Top now: `exec_nocheck_ts` 18.8 %, card PIO 18.4 %, FLASH
+  `memcpy` 8.3 %, `fdmaRun` 4.1 %, `au_alarm_isr` 3.6 %, `peek8` 3.4 %, `Ports::input` 3.3 %, `ElmSid::renderTo` 3.1 %.
+  Levers 1-4 together: 55-59 ms / 16.4-17.9 FPS -> 31-34 ms / ~29 FPS.
+- **BASIC 48 at 28 MHz, eLeMeNt vs Next (2026-11-16, same ELF `pf2026rm`, logs `...11.33.33.659` tail = eZX,
+  `...11.37.56.922` = Next).** eZX: cpu 57.3 ms, 17.3 FPS, 45-59k instructions a frame (the whole 48 ROM key wait:
+  KEY-INPUT / INPUT-AD / CALL-SUB, no HALT). Next: 51 FPS, `NXPROF 139 ops/fr, cpu 0.7 ms/fr`: its `pollskip`
+  fast-forwards that loop to the next INT (calls 459, long 51). Second cause, per instruction: eZX PROF in BASIC is
+  `exec_nocheck` 36 % + `peek16/peek8/poke8_generic` + `romPeek` + `addressOnBus_generic` ~29 %: the generic
+  accessors, because `tsFastMemRecalc` gives the eLeMeNt fastmem only with `paper_hold && ts_fast_armed`, i.e.
+  only while the HGFX extra video runs the whole-line renderer; a plain ZX screen stays on the per-T MainScreen
+  path. Levers: (a) the Next's key-poll fast-forward for the eLeMeNt (idle only); (b) the fast accessor path on a
+  plain ZX screen (needs the whole-line renderer there, every ZX-mode program at 28 MHz).
+- **(a) + (b) written 2026-11-16 (NOT hw-tested; `debug/DVp2w-elm-zx28-1.1.2`, build 12:02:48).**
+  (a) `Elm::keyWaitSkip` (Element.cpp, flash), called from `Z80::check_trdos` on a RET to #15E1 (one PC compare
+  behind `isElm`, +16 B there): with Z set / C clear (no key), IFF1 + IM1, IY = #5C3A, channel K's input = #10A8,
+  no ED-COPY due, no key flag, a byte signature of WAIT-KEY1 / INPUT-AD / CALL-SUB / CALL-JUMP / KEY-INPUT (cached
+  per slot 0/1 pointer) and two passes with the same registers and a period <= 1024 T, the clock moves by whole
+  passes to min(stFrame, statesInFrame - IntEnd) through VIDEO::Draw, R by k x the pass's fetches
+  (NextPorts::pollSkip's arithmetic). (b) `col16Arm` / `col16DrawTick` take the eLeMeNt too: at a turbo clock only
+  (`multiplicator > 0`) a plain ZX screen (no paper_hold / Timex modes / Gigascreen / 16col / borderless / overlay /
+  OSD stats rows / snow) runs TsDraw with a standard line at the end of its paper (AluByte, FLASH, the DMA attribute
+  shadow), and `tsFastMemRecalc` gives the eLeMeNt fastmem 1 there as under HGFX. SRAM +61 B (EndFrame +8,
+  check_trdos +16, state). Host at 28 MHz (FRAM byte #030 = 5 in the bench copy): PRINT 2*3 -> 6 on both builds;
+  BASIC idle and GALWAY1 lose `exec_nocheck` + `peek*/poke8_generic` from the profile; GALWAY1, AYCPU, ELTBRD and
+  FDMATEST's text screen look the same as before.
+  On hw the Next could not open the menu on that ELF (3296 B of heap after boot; `pf2026rm` had 3368, the same
+  edge): PcProf's `s_key`/`s_cnt` (512 slots = 4 KB of .bss) now come from `Buffer::palloc(PREFER_PSRAM)` in
+  `pcprof_start` (sampler off if none). SRAM -4088 B; `debug/DVp2w-elm-zx28b-1.1.2`, build 12:08:39.
+  Did not help: the freed SRAM went to HdmiAudioSubsys (it had failed before, -7.5 KB now), and the menu's
+  `DynRows` wants 3.3 KB in ONE block (largest was 1212 of 4304 free). `DynRows` now comes from
+  `Buffer::palloc(PREFER_PSRAM)` first, tryCalloc only without PSRAM (UiNav.cpp dynAlloc/dynFree);
+  `debug/DVp2w-elm-zx28c-1.1.2`, build 12:12:38.
+  **Where the heap went (owner: "10-15 KB less than main").** Measured, `build_all.sh PICO_DV_W` on both
+  (main 18b585d8 in a worktree vs this branch with today's changes): `.data` +1 192 B, `.bss` +1 312 B, `end` +2 504 B;
+  `.dmaovl` window 3 456 -> 6 656 B (eLeMeNt HGFX hot paths since 2026-11-13; a Next boot gets it back as heap).
+  The rest is the PERF_TRACE + PERF_HIST test configuration itself: `end` +41.6 KB over the same branch without it
+  (`ts_int_ring` 8 K, `nx_pc_hist` 8 K, `nx_pfx_hist` 4 K, `perf_port_us/n` 4 K, EndFrame +7 KB of RAM code, ...):
+  Next boots on the perf ELFs had ~15 KB after the framebuffer against 123 KB on the 2026-11-15 20:49 build.
+  Also found: the non-PERF build no longer linked (`.dmaovl` overflowed 6400 by the +56 B of lever 1) -> 6656.
+  **PERF tables to PSRAM (2026-11-16, `debug/DVp2w-elm-zx28d-1.1.2`, build 12:26:48, NOT hw-tested):**
+  `ts_int_ring` (TsConf::reset allocates; `ts_int_ring_n` for tools/memdump.gdb, which no longer uses sizeof),
+  `nx_pfx_hist` + `nx_pc_hist` (`nxprofAlloc`, Z80_COLD) and `perf_port_us/n` (`perfPortAlloc`) come from
+  `Buffer::palloc(PREFER_PSRAM)`, the last two from `pcprof_start`; every writer tests the pointer. SRAM -24 364 B
+  (RAM region 236 960 -> 212 608). The 1 KB tables (`z80_op_hist`, `ts_page_hist`, `ts_dma_*_hist`) stay.
+- **PF2026 on zx28d (hw 2026-11-16, `logs/devttyACM0_2026_11_16.12.29.16.776.txt`): unchanged ~29 FPS** (a/b do not
+  touch an HGFX demo). `multicore_lockout_handler` 2.4 % is NOT a lockout: the 64-byte PROF bucket #20037F00 covers
+  the tail of `pio_spi_repeat8_read8_blocking` (ends #20037F2C) and sym.py split it; nothing in the tree pushes the
+  inter-core FIFO. So the card read loop is ~19 % of core0: real data, ~1000 sectors/s (video + sound streams) at
+  SCK 25.2 MHz (the SD default-speed ceiling, 163 us a sector). The only lever is reading off core0: the core1
+  read-ahead (`sdAsyncMachine`) is Next / ZC only, esxDOS divSD on other machines "deliberately synchronous";
+  on the eLeMeNt core1 also draws HGFX (~14 ms a frame in one call) and runs the NeoGS, so a posted read can wait
+  past the 3 ms fallback. A read-path change can damage the card (memory: sd-read-path-can-corrupt-card).
+- **memcpy + SID round (2026-11-16, NOT hw-tested; `debug/DVp2w-elm-zx28e-1.1.2`, build 12:53:41).** memcpy's hot
+  PROF bucket was its small-size tail (#10145C40: the 16/4-byte loops), i.e. many short copies: PF2026's FastDMA
+  blits (8-byte rows) went src -> `buf` -> `chunkyWriteRun`/`wrBytes`, two flash memcpy calls behind a veneer per row.
+  Now `fdmaRun` reads a plain-page source in place (`rdPtr`, readbyte's rules; no `buf`), pieces up to 32 bytes are
+  copied inline (`cpy`, an empty asm keeps GCC from turning the loop back into memcpy), `chunkyWriteRun` the same;
+  URAM -> URAM uses memmove. `ElmSid::renderTo`: a silent SID (no gate, envelopes 0, no kick, bias 0) clocks its
+  oscillators + envelopes once for the whole span and writes zeros (every write/read renders up to itself first).
+  Host: FDMATEST 7 frames identical old/new and new/new; SIDTEST audio byte-identical old/new after a start window
+  that also differs old/old (bench nondeterminism); PF2026 / TETRIS pictures as before. SRAM +0.
+  **hw-run (`logs/devttyACM0_2026_11_16.12.56.31.579.txt`): no gain**, cpu 31.3-34.1 ms. memcpy 7.9 -> 2.2 % but
+  `chunkyWriteRun` 1.2 -> 8.0 %: the cost is the STORES into the HGFX buffer in PSRAM (`sram=00`), not the call, and
+  the inline byte loop stored a byte at a time (10.2 % against 9.0 %). Reverted to memcpy from 4 bytes (the in-place
+  source read stays). `envClock` 1.3 %: the silent span still looped once per rate period (rate 0 = 9 cycles); with
+  the envelope held at zero it is now arithmetic (`expCnt < expPeriod` guard, else the loop).
+  `debug/DVp2w-elm-zx28f-1.1.2`, build 13:08:11. Bench: SIDTEST audio identical outside the known start window;
+  FDMATEST 3 old + 3 new runs, all 7 frames hash-identical. Bench caveat: each run SAVES fram.bin, so a run right
+  after another program starts from a different FRAM - two "differences" today were that, not the code.
+  zx28f on hw (`logs/devttyACM0_2026_11_16.13.09.31.401.txt`, 2 demo windows): ~29 FPS, SID gone from PROF, copy
+  cost back at memcpy 8.6 % + chunkyWriteRun 1.0 %.
+- **HGFX buffer writes in PF2026 (host census, 2026-11-16; temporary counters removed):** per frame ~19 KB of FastDMA
+  `chunkyWriteRun` into buffer HALF 1, spread evenly over all six 8 KB blocks of its 48 KB picture, plus ~7.7 KB of
+  engine `execVram` into half 0 (blocks 0, 4, 5); no CPU `chunkyWrite`. No hot sub-range: only the whole half 1 in
+  SRAM would help. eLeMeNt boot heap on the PERF ELF: 73 KB free. Obstacles: `s_buf` is one 128 KB block addressed as
+  `base + s_b1` with `& (BUF_SIZE-1)` wraps; the chunky windows map raw 8 KB pointers into it (`chunkyRead`, the
+  guest reads them through ramCurrent), and `sramPromote`'s row blocks are refused in direct mode for that reason.
+  (Latent: `chunkyRead`/`chunkyWrite` wrap at 128 KB from the CURRENT buffer's base, so buffer 1 + a large offset
+  points past the allocation.) Not started.
+- **Card reads on core1 for the eLeMeNt (2026-11-16, NOT hw-tested; `debug/DVp2w-elm-sdc1-1.1.2`, build 13:20:58).**
+  `sdAsyncMachine()` takes `Z80Ops::isElm` beside the Next and the ZC card: the divSD card's CMD17/CMD18 go through
+  the same c17 / read-ahead / prefetch path the Next has run on hw since October (the guest polls the token while
+  core1 reads; 3 ms untaken -> core0 reads). The eLeMeNt's core1 draws a whole HGFX frame in one ~14 ms call, so
+  `Hgfx::outDirect/outPair` start with `rowPump()`: `sd_async_pump()` when a request is posted and the caller is
+  core1 (a byte test otherwise; not on the host). Host: no async there (the card is a folder), PF2026 runs as before;
+  non-PERF build links. What to read in the hw log: `[SD] ... c1 N/Mms ... c17 ok/hit/fb` (fb = core0 fallbacks)
+  and PROF `pio_spi_repeat8_read8_blocking` on core0. Card-safety: a wrong sector handed to the guest becomes a write
+  (memory sd-read-path-can-corrupt-card); the mechanism is the hw-proven Next/ZC one, the new parts are the gate,
+  the row pump and lever 1's `dmaFromCard` reading `mmc_sector_buf` - owner asked to keep a card backup.
+  **hw-run (`logs/devttyACM0_2026_11_16.13.26.01.796.txt`): works, small gain.** `[SD] sync 0/0ms`, `c1 33/253ms`,
+  `c17 ok 35 hit 624 fb 0`; the PIO loop is gone from core0's PROF, but cpu only 32-34 -> 31-32 ms, ~31 FPS: core1's
+  draw grew 15 -> 20 ms (the reads ride in it) and core0 waits 2-4 ms a frame for it in frameEnd (3.5 %), HDMI audio
+  now initialises (heap freed by the PSRAM tables) at 2.8 %, the Z80 core rose 18 -> 22 % (token polls on misses).
+- **Buffer 1 of HGFX in SRAM (2026-11-16, NOT hw-tested; `debug/DVp2w-elm-h1-1.1.2`, build 13:57:10).** ElmHgfx:
+  `at(a)` maps an absolute offset of the 128 KB space - BUF1..BUF1+H1_SIZE to `s_h1` (SRAM), the rest to `s_buf`;
+  `rowOf`, `chunkyRead`, `chunkyWrite`, `chunkyWriteRun` go through it (a run is split at the edges). `h1Manage`
+  (frameEnd) promotes only where the row-block `sramPromote` cannot (direct mode, mode 3, 256x192x8, no row blocks)
+  with H1_SIZE + 12 KB heap free, after a full drain, then `Elm::remap()` so the mapped windows re-read their
+  pointers; `h1Off` (setMode/reset/video off/leaving the conditions/a window across an edge, 1 s retry) drains,
+  copies back if live, frees, and the caller remaps (`Elm::remap` runs one more pass when `chunkyStale()`).
+  H1_SIZE = #F000 (60 KB): PF2026 maps its two windows at OffsetY 164-168, down to #E800 - with 48 / 56 KB it bounced
+  35 times a minute ("window across the end", bench). Bench: PF2026 promotes once and stays; HGFXZOOM, HGFXCUBE,
+  HGFXAGON, FDMATEST frame-identical old/new; TETRIS's falling piece differs run to run on the OLD build too (o vs
+  p/q/s), so its frame differences are not this. SRAM +171 B static; `.dmaovl` 6 592 / 6 656 (PERF 6 832 / 6 912).
+  Heap: needs 72 KB free; the PERF ELF had 73 KB after an eLeMeNt boot - the log says "in SRAM" or "stays in PSRAM".
+  **hw (`logs/devttyACM0_2026_11_16.14.18.30.837.txt`): "stays in PSRAM: heap free 60248 < 73728"** - 13 KB of the
+  boot's 73 KB go before the demo runs. Static RAM (`end`): no PERF #2004D340, PERF_TRACE only +5.2 KB, +PERF_HIST
+  +17.2 KB. H1_SIZE -> #E800 (58 KB, exactly PF2026's window reach), test ELF on PERF_TRACE without PERF_HIST
+  (`build-all/PICO_DV_W-elmperf-nohist`, no PROF lines): `debug/DVp2w-elm-h1b-1.1.2`, build 14:25:18.
+- **One HGFX SRAM arena (owner's call 2026-11-16, NOT hw-tested; `debug/DVp2w-elm-arena-1.1.2`, build 14:49:06,
+  PERF+HIST).** `Hgfx::arenaEnsure()` at the end of `Elm::reset` (after `ensure()`, so the per-pixel `Hot` tables get
+  SRAM first) takes ONE 58 KB block when ARENA + 20 KB is free, for the whole eLeMeNt session; `CPU::reset` on any
+  other machine calls `Hgfx::arenaFree()` (a null test). It serves either buffer 1's half in direct mode (`h1Manage`,
+  PF2026) or the six 8 KB row blocks of either buffer (`sramPromote`, HGFXAGON: "buffer 0 in SRAM (the arena)"), never
+  both; without an arena both keep their old per-need tryMalloc. FRAM's 8 KB image -> `Buffer::palloc(PREFER_PSRAM)`.
+  Bench: arena taken; PF2026 and HGFXZOOM put buffer 1 there once; HGFXAGON with PICOSPECCY_ELM_SRAM=1 puts buffer 0
+  there; HGFXZOOM, FDMATEST frame-identical old/new, HGFXAGON identical over 3 runs (old x2, new).
+  **hw (`logs/devttyACM0_2026_11_16.14.55.01.553.txt`): "arena not taken: heap free 73464 < 79872"** at Elm::reset (FRAM's
+  move does not show there - it is allocated later), and the per-need path "68488 < 71680" when PF2026 ran (FRAM in
+  PSRAM gave +8 KB there). Margins lowered: ARENA_KEEP 12 KB, H1_KEEP 8 KB -> the arena is taken at boot and ~9 KB of
+  heap stays during the demo on the PERF ELF (non-PERF: +17 KB). `debug/DVp2w-elm-arena2-1.1.2`, build 14:56:02.
+  **hw (`logs/devttyACM0_2026_11_16.14.57.19.672.txt`): "arena refused (58 KB), heap free 73464"** - enough in total, no
+  58 KB piece: the heap is region 0 (#20051688..#20066060, 84 KB, the framebuffer's chunks in it) and region 1
+  (#20067B60..#20075B60, exactly 56 KB: the Next / VDAC2 / TS-Conf windows given to the heap, between the resident
+  `.dmaovl` (HGFX hot path) below and `.dmarovl` (Z80 DMA registers, 2 688 B) above).
+- **Arena sized by the largest piece (2026-11-16, NOT hw-tested; `debug/DVp2w-elm-arena3-1.1.2`, build 15:05:48).**
+  `arenaEnsure` takes min(#E800, largest - 64, free - 12 KB) rounded to 256, at least 48 KB (the row blocks); buffer 1's
+  SRAM range is `[s_h1Base, +s_h1Size)` ENDING at #E800 (`at()`, chunkyRead / chunkyWriteRun edges follow it). Bench
+  with PICOSPECCY_ELM_ARENA=57088 (the hw region): range #0900..#E800, and PF2026 then crossed the START too - it maps
+  windows from OffsetY 0 as well, so it needs the whole #0000..#E800 (58 KB) contiguous. After 3 edge demotions the half
+  stays in PSRAM for that program (`s_h1Edge`, reset by setMode / reset): no 35-a-minute round trips. The row blocks
+  (HGFXAGON-style) fit any arena >= 48 KB.
+  **Correction (same day): moving `.dmarovl` does NOT give 58 KB.** rp2350-memmap.ld: `.dmaovl` sits under min(.nxovl,
+  .tsovl) and `.dmarovl` over them, so the eLeMeNt's free piece between them is max(nxovl, tsovl) = the Next window:
+  57 344 B on the PERF build, 50 560 B on a plain one (NXOVL AUTO). A larger piece costs the Next: e.g. a .nxovl window
+  of max(nx, ts + ft) = 59 648 lowers every machine's pre-apply heap ceiling by ~2.3 KB and the Next's own heap by the
+  same, and the margin over 58 KB would be ~256 B. PF2026's half stays in PSRAM; not pursued.
+- **Data check (2026-11-16, afternoon): the h1 / arena / arena2 hw runs were at 3.5 MHz.** Logs `...14.18.30.837`,
+  `...14.55.01.553`, `...14.57.19.672` print `[PERF] clk: mult=0 T/fr=71680` for the whole demo (the morning runs
+  `mult=3 T/fr=573440`), and their FRAM boot line differs (`e_01D=00 ... gs 0` against `e_01D=03 ... gs 2`): the SetUp's
+  CPU speed and the GS were changed between 13:26 and 14:18. Their "48-49 FPS" is the demo crawling at 3.5 MHz
+  (`3292-5772 instr/frame`, DJNZ 18-31 %), not a result. **The last valid 28 MHz figure is the sdc1 run (`13.26`):
+  cpu 31-32 ms, ~31 FPS.** `haltT=532981` of 573440 there: the demo uses 93 % of its 28 MHz frame and HALTs
+  (the classic loop flushes the rest, `host: halt=0` is the Next/TS counter) - at 50 FPS the emulation must do its
+  533k T in < 20 ms.
+- **sdc1 PROF, demo windows, symbolised against its ELF (sym.py, 64-byte buckets; shares of core0's 31.5 ms):**
+  Z80 core ~37 % (`exec_nocheck_ts` 22, `peek8` 3.9, `fetchOpcode` 2.9, `decodeLD8` 2.5, `exec_nocheck` 2.1, `peek16`
+  1.2, ...; the PERF_HIST loop head carries `z80_op_hist` and the TS page test), flash `memcpy` 9.5 (the 8-byte
+  FastDMA stores into the PSRAM buffer), `fdmaRun` 5.8, `Ports::input` 4.3 + `portIn` 0.8, `frameEnd` 3.6 + `timer_*`
+  ~3 (the wait for core1's 19-20 ms draw), `execVram` 2.9, `hdmi_audio_write_sample` 2.7, `Ports::output` 2.1 +
+  `portOut` 1.1, `memWriteCold` 1.9, `chunkyWriteRun` 1.9, `poke8_cold` 1.6, `ElmSdma::renderTo` 1.2.
+- **What the demo does (host census, `PICOSPECCY_ELMLOG=1`, 60 s = ~3000 frames):** 1.06 M FastDMA runs = 354 a frame,
+  ALL `par=03 len=20 db=8 ds=F8` (an 8x4 block, 32 bytes) from a URAM stream (`s=Dxxx`, +#20 a run) into the chunky
+  window at #0000 (`d=0030..`; slots 0-1 are HGFX, the ROM is out); per run 2 OUTs (#07 and #47, 1.06 M each: the
+  URAM page of both Zone-0 slots) and one HGFX reg 05 (OffsetX) write (1.07 M). OffsetY (reg 07) 38k writes = ~13 a
+  frame, values #00, #18, #1C, #58 and #70..#A8 in steps of 4 (~930 each) plus #9C/#A8 (the video band): the window
+  slides over the WHOLE buffer, so no edge inside #0000..#E800 is ever safe for a window. The video frame sequence
+  (reg 00=00/06, 01=00/01/02, 03=FF/3C/1B) runs 1625 times = ~27 video frames a second with the demo at full speed.
+  The COPY of the decoded frame into the shown buffer is FastDMA with its SOURCE in the chunky window and its
+  destination the VRAM window (#4000) in COPY mode: `fast = false` there (`g_elm_vram_rd`), i.e. ~8 KB a frame
+  through `fdRead -> busRead -> readbyte` + `fdWrite -> busWrite -> memWrite -> writeVram` per byte, all flash.
+- **Reads of the Z80 core in PF2026 all take the generic path:** COPY mode sets `g_elm_vram_rd`, `fastReadOk()` is
+  then false and `g_ts_fastrd` = 0 for EVERY address (Video.cpp tsFastRdFor), although only reads of the VRAM
+  window need the latch hook and the demo's CPU never reads it (the FastDMA does). That is the out-of-line `peek8`
+  / `peek16` / `addressOnBus` above, ~2 ms. A per-slot fast table (`g_ts_lo8[a >> 13]` instead of `a < 0x4000` in
+  tsFastLo8; the loop head's `cmp #0x4000 / ite` becomes a byte load) would keep the fast path on and mark only the
+  window's slot slow; touches every machine's hot loop -> z80bench first. NOT done.
+- **Split chunky windows instead of 58 KB in one piece (2026-11-16, bench, NOT hw-tested; test ELF
+  `debug/DVp2w-elm-split-1.1.2`, PERF_TRACE without HIST).** The half now starts at #0000 (the 48 KB picture) and
+  runs as far as the arena goes (min(arena, #E800)); a chunky window across its END is a *split* window
+  (`Hgfx::chunkyRead(off, lowSlot, &split)`): its slot's bit goes into `Elm::g_elm_split`, and reads of that slot go
+  byte by byte through `Elm::splitRead` -> `Hgfx::chunkyReadByte` (the `at()` mapping) from the generic read funnel
+  (`gsDmaPeek8`, one test on the generic path of every machine, +8 B of RAM) and from `Elm::busRead` / `rdByte`
+  (Z80 DMA, dmaCopy, FastDMA fallbacks); writes went through `at()` already (memWrite -> chunkyWrite,
+  chunkyWriteRun). The raw slot pointer then serves opcode fetches only (none in PF2026). Only a window below #4000
+  can be split (level-1 fastmem reads #4000+ raw); a window at #4000+ across the edge still sends the half back as
+  before. So the arena needs 48 KB, not 58, and the eLeMeNt's 56 KB overlay region (49 KB on a plain build) is enough.
+  FastDMA with a chunky-window SOURCE reads it through `Hgfx::chunkyReadRun` (never the raw pointer); with the
+  destination the VRAM window in COPY mode the run is taken when the source is not a VRAM page and no latch is armed
+  (then every per-byte write would have been a plain one anyway): `writeVramRun` + `wrBytes`, time charged as before.
+  Bench (build 15:45, `PICOSPECCY_ELM_ARENA=50560` and `=57344` = the plain / PERF hw pieces): PF2026 "buffer 1
+  #0000..#C500 / #E000 in SRAM" once, never back, **0 split-window reads in 100 s** (the host counter never logged:
+  the demo only writes through the windows); title, scroller, video and the final scene as on the baseline build.
+  FDMATEST 29 frames hash-identical old/new; HGFXAGON (row blocks, `PICOSPECCY_ELM_SRAM=1`), HGFXZOOM, TETRIS as
+  before. SRAM: `.dmaovl` 6896 / 6912 (PERF, no HIST). What to read on hw: `[ELM] HGFX buffer 1 #0000..#xxxx in SRAM
+  (the arena)` once after the demo starts, no "back to PSRAM" lines, PROF `memcpy` down from 9.5 %, `fdmaRun` down from
+  5.8 %, `[HGFX] ... draw` under 15 ms, and `[PERF] clk: mult=3` (the afternoon runs were at mult=0, see above).
+  Expected from the sdc1 split: -2.5..-3 ms core0 (the PSRAM stores), -1.5..-2 ms (the per-byte COPY transfer), and
+  core1's draw reading SRAM instead of PSRAM; ~24-25 ms / ~40 FPS if it all lands. Still to do for 50: the per-slot
+  fast-read table (-2 ms, above), `fdmaRun` + the FDMA register writes (`memWriteCold` -> `fdmaWrite`) RAM-resident
+  (-1 ms, `.dmaovl` AUTO +2 KB), an early #FE / URAM-OUT port path (-1 ms, `iFE` 1094 a frame at 0.77 us), and a
+  faster HAM line on core1 (`hamLine`: `s_col` lives in PSRAM, the per-pixel switch + clamp + 4096-bin LUT).
+- **hw 2026-11-16 15:52 (split, build 15:46): arena NOT taken** - `heap free 91888, largest 49132` against H1_MIN
+  49152 (this build's largest piece is the 50680-of-51584 Next window minus what sits in it). H1_MIN -> 40 KB; the
+  half takes whole rows as far as the arena goes (48896 = `#0000..#BF00`, the last row of the picture in PSRAM); the
+  row blocks (sramPromote) use the arena only when it holds the full 48 KB, else their own mallocs.
+  **hw 15:57 (split2, build 15:56:12): arena taken, "buffer 1 #0000..#BF00 in SRAM", and NO gain:** cpu 29-30 ms,
+  33 FPS, `[HGFX] draw 18.4-20 ms`, `wait 3.7-5.2 ms`. The demo SHOWS buffer 0 (VP bit 0 = 0; buffer 1 is the decode
+  target, `h00=06`, the COPY `h00=04` moves it into buffer 0 through the VRAM window), so core1's draw still reads
+  48 KB of PSRAM a frame and the frame cannot be shorter than its beam hold + ~19.5 ms; whatever core0 saved went
+  into the wait. core1 is the critical path now; the SRAM half only pays once core0 is - and then the half must be
+  the buffer the limiting core touches (buffer 1 for core0's blits, the shown buffer for core1's draw).
+- **hamLine rewritten (2026-11-16, NOT hw-tested; `debug/DVp2w-elm-split3-1.1.2`, build 16:02:17; split3h = the
+  PERF+HIST twin, 16:02:45):** per pixel one switch, three saturating adds (`usat` on the M33, a C clamp on the host),
+  the bin, one LUT load; the table's 64 colours come from `Hot::colRgb`, a per-frame copy renderFrame takes (s_col is
+  PSRAM). Same arithmetic (clamp and bin bit-identical); bench picture as before. What to read: `[HGFX] draw` against
+  18.4-20 ms.
+- **The flashing picture (owner's recording `debug/2026-11-16 15-58-49.mp4`, split2): the HAM palette refresh.**
+  Frame-to-frame difference of the recording: a 1-2 frame burst of noise every ~38 recorded frames = every 25
+  emulated frames at 33 FPS = `s_hamHold`. `hamProgram` gave box k to slot k on every refresh, so all 168 slot colours
+  changed at once and the frame on screen (drawn through the old mapping) showed as noise until core1 redrew it - the
+  paletteProgram / Kolbass mechanism again, only visible because the draw lags 1-2 frames. Now sticky: a new colour
+  takes the free slot whose old colour is nearest (heaviest boxes first), unmatched old slots keep their colour, only
+  the slots that moved are written; the LUT is still rebuilt (lazily). Not speed: the same at 50 FPS, one frame.
+  `debug/DVp2w-elm-split4-1.1.2` (build 16:07:28, PERF no HIST) and `split4h` (16:07:41, PERF+HIST) = split3 + this.
+  **hw (split4h, log `15.57.23.053` from line 3250; split5h = 16-byte PROF buckets, log `16.24.12.908`): draw 15.6 ms
+  (was 19.5), wait 2.7 ms, cpu 28.7-29.0 ms, 33.2-33.4 FPS; the negative still flashes, less.** Sticky slots were not
+  enough (the median cut of a video frame moves most colours past any threshold): now the refresh only STAGES the
+  changed slots (`s_hamPend` + mask) and core1 writes them at the start of its next draw (`hamPendApply`, the first
+  thing renderFrame does): the beam is off the picture then and the draw stays ahead of it (81 us a row against the
+  beam's 69, with the vblank's lead), so the FB the beam reads is the new frame from row 0. `split6` (build 16:32:45,
+  no HIST) / `split6h` (16:32:57, HIST, 16-byte buckets). Bench: PF2026 as before.
+  **hw split6h (log `16.34.20.546`): still flashes.** "Off the picture" includes the TOP border: a draw that starts
+  there is overtaken by the beam (69 us a row against 78), and the rows below the crossing are the old frame under
+  the new slots. Now the refresh is fully staged (`s_hamPend*`: new rgb + the moved slots) and core1 takes it over -
+  slots, `s_ham->rgb`, the LUT, in one go (`hamPendApply`) - only at a draw that starts with the beam BELOW the
+  picture or in blanking (`beamBelowPicture`, core1Pump's Q_DRAW gate waits for that while a refresh is staged, same
+  25 ms cap); until then core1 keeps drawing through the OLD mapping, and a refresh computed while one is staged is
+  skipped (`s_hamPending`). The first palette of a session is still written at once. From below the picture the beam
+  needs bottom border + blanking + top border (>= 3 ms) to reach row 0; the draw is ~40 rows ahead by then and stays
+  ahead. `.dmaovl` AUTO 6656/6912 -> 6912/7168 (the gate). `split7` (build 16:40:58, no HIST) / `split7h` (16:41:11).
+  **hw split7h (log `16.42.17.865`): still flashes.** The SD reads riding in core1's draw (rowPump) let the beam
+  catch the draw even from below the picture; there is NO safe moment for a live-slot write with one framebuffer.
+  **Append-only palette (split8, build 16:49:34 / split8h 16:49:45, NOT hw-tested):** a slot that drawn pixels refer
+  to is never recoloured. Live slots come free from the LUT (filled lazily by the pixels core1 draws since the last
+  clear = the last refresh); a new colour without a slot within HAM_STICK takes a slot the LUT does not hold, with
+  none left the nearest live one (a scene change). The staged / beam-gated code is gone. Bench PF2026, 45 s: 13
+  refreshes, 1-9 slots written each, **0 live slots moved** (59 once: the free slots after the first palette).
+  LIMSHOWM (HRXC pair frames, `pairPalette` / `pairLutUpdate`, the owner: "a similar problem in its fades"): bench
+  copy at `root/E/LIMSHOWM`, launcher `LIM.TAP`; every frame of a fade-in + fade-out captured (1680..2230,
+  `PICOSPECCY_SHOTS_FROM/_TO`), the jump-and-back meter (|b-a| > 24, |c-b| > 24, |c-a| < 12 on a 360x288 grey) finds
+  0 flash frames in 551 - the bench has no beam race, a hw recording is needed to see what moves there (candidates:
+  `full` flipping 12/16 slots mid-fade as the merged colour count crosses 12, the per-frame merge choices).
+  **hw: split8h PF2026 clean (owner), LIMSHOWM not; recording `debug/2026-11-16 17-14-08.mp4` (549 frames) has three
+  artefacts:** (1) frames 36-37, a green block on black at the pair mode's switch-on (`[VID] 512 px pair mode on`):
+  the FB's old bytes read as pairs through the fresh table before core1's first draw; (2) frames 73-83, the fade-in:
+  speckles in the dark foreground + torn border bands: `pairLutUpdate` dealt the shared 256-pair table again on
+  every fade step (the nearest-surviving-pair choice follows the palette), and the 18 ms redraw against the beam
+  showed the moved pairs through the wrong slot; (3) frame 452, coloured blocks at the switch-off: pair bytes read
+  through the ZX palette. Fixes (split9: `full` sticky while the pair frame is up - the count crossing 12 in a fade
+  sent slots 12-15 back to the ZX brights under live pixels; split10, builds 17:2x: the pair LUT is kept while the
+  SET of drawn slot pairs is unchanged (`s_lutSig`), and `pairFbClear` paints the picture rows black in the table
+  about to be live - the black pair before `samPairSync(true)`, slot 0 in `pairOff()` before the switch-off).
+  Bench: LIMSHOWM fade frames 1680..2230 still 0 flash frames. Left: the border bands tear because the pair
+  palette push (`samPairPush`) is immediate, mid-beam; a push at vblank would need a driver hook.
+  **hw split10 (recording `17-27-27.mp4`, 1058 frames): not fixed.** The flash frames (153-183, 490-511, 649-669,
+  966-987 = every fade-in) are speckles over the WHOLE picture rows 48-240, not a beam split: a one-frame
+  disagreement between the slots core0 pushed and the bytes core1 had drawn a frame earlier, i.e. the table-index ->
+  slot map (`pidx`) moved between fade steps: `pairPalette` dealt slots by COLOUR (frequency order, nearest to the
+  last frame's slot colour), and as the fading colours crossed and folded, indices swapped slots and a freed slot took
+  another index's colour under the old pixels. **split11 (builds 17:33:58 / 17:34:08): HRXC slots are dealt by TABLE
+  INDEX** (`s_slotIdx[16]`, pairPalette's mode-2 branch): a slot stays with its index while the index is in use and
+  just takes the index's colour of this frame; a new index takes a free slot (nearest old colour); indices beyond the
+  slots map to the nearest colour without moving anything; `full` sticky; the map resets when the pair frame comes
+  up. A fade then never moves a slot. Bench fade window: 2 small flash frames (307 px, the first frames of a
+  fade-in from black), pictures as before.
+  **hw split11: not fixed. split12 = counters in the `[HGFX] 60f` line (`pair pidx N pal N full N lut N`: pidx
+  entries changed, slot colours changed, 12/16 flips, pair-LUT re-deals per 60 frames). hw log `17.44.29.455`:
+  fade-in 136 / 115 / 1 / 21 then 104 / 100 / 0 / 14; the still picture 0 / 0 / 0 / 0; the fade-out 0 / 55 / 0 / 0.**
+  So the owners hold, but the indices WITHOUT a slot (the pictures have up to 32 colours on 16 slots, KeyLayer's two
+  screens) re-pick their nearest slot every frame of a fade-in: the colours separate from black in coarse 3-bit
+  steps and near-ties flip, every flip a pixel drawn through a different slot a frame late, and every changed slot
+  pair re-deals the LUT. split13 (build 17:4x): hysteresis - a slotless index keeps last frame's slot unless the new
+  nearest is clearly nearer (`dk <= 2 * best + 3 * 12^2`). Bench fade window: 0 flash frames. Read the counters
+  again: `pidx` and `lut` should be ~0 through a fade.
+  **hw split13: fade-out right, fade-in still sandy (counters: fade-in `pidx 59-120 lut 8-18`, the re-maps of
+  slotless indices as the colours separate from black are inherent: 32 colours on 16 slots). split14 pushed the
+  palette one frame late (after the draw with its pidx): fade-in AND fade-out sandy - reverted.** The owner's
+  pointer: this is the Kolbass problem (tsconf.md) - one FB, two consistent states, flip BETWEEN sweeps - which
+  needs a draw that fits the beam's lead. **split15 (build 18:1x, NOT hw-tested):** (1) `pairRowFast`: HRC / HRXC
+  pair frames a CELL at a time (INK/PAPER -> four pair bytes through the driver table, the 8 pixel bits pick one per
+  pair, one word store; pair counts for the LUT by popcount; KeyLayer per cell, the mixed cells per pixel) - bench:
+  static LIMSHOWM frames byte-identical to the per-pixel path; expected core1 18 -> ~3 ms. (2) The pair palette is
+  STAGED (`s_pairPendPal`) and core1 pushes it (`pairPendApply`, from core1, a refresh push allocates nothing) at the
+  start of the draw it belongs to, and that draw starts only with the beam below the picture / in blanking
+  (`beamBelowPicture`, the Q_DRAW gate, 25 ms cap): bottom border + blanking + top border = 96 rows = 6.6 ms of
+  lead for a ~3 ms draw. The first frame of a pair session still pushes at once from core0. Bench fade window:
+  0 flash frames. What to read: `[HGFX] draw` (18.5 ms before) and the sand in a fade-in.
+  **split16-23 (2026-11-16 evening, all hw DVp2w):** (a) core1 CANNOT push the palette: `hdmi_set_profi_ds80_mode`
+  has ~1 KB of locals on core1's 2 KB stack (SIGBUS stackOvf). The push is core0's: core1 raises `g_pairPushNow` at the
+  Q_DRAW gate, core0 polls `pairPushPoll` (tsDrawTick, the vsync wait, every idle branch incl. a spin instead of
+  `delayMicroseconds(idle)` while `g_elm_c1_live`, NeoGS/BT/ZiFi idle loops, drainWait, the frameEnd wait) and pushes
+  when `beamBelowPicture()`, then sets `s_pairGo`. (b) `pairRowFast` from flash was SLOWER (21 ms: core1 XIP fetches
+  behind core0's traffic) - `ELM_HOT` in `.dmaovl` (AUTO 7936 / 8192 PERF): 11-13.7 ms; popcount -> shift sums.
+  (c) Counters in the second `[HGFX]` line: `push at draw N late N cap N beam A..B`: the beam row at the push must
+  read `240..240` (below the picture) - split21 got there, sand gone (owner), but core0 IDL 18000 -> 11000 and the
+  NeoGS "sounds terrible": the gate spin starved GS::pump (core1) for the lead + the draw. split22 let core1 leave the
+  gate between polls: one GS slice of latency after `go` and the draw started INSIDE the picture (`late 28 cap 28`),
+  sand back. split23: spin at the gate but feed `GS::pump` + `sd_async_pump` (`gatePump`), plus a pump every 8 rows of
+  the draw - picture clean, sound still not clean: GS::pump drains at most 4000 T a call, 8 rows = 0.5 ms = 11000 T at
+  24 MHz, so the card ran at a third through the draw. split24 (build 22:5x, NOT hw-tested): a pump EVERY row, but only
+  while the draw leads the beam by >= 24 rows (`rowPump(fy)`, counters `gs row pumps N skipped N`), and GS_PERF_TRACE
+  in the nohist twin for the `PERF[...GS:x.xMhz dtmax clamp]` line. The structural budget: draw 13.7 ms + lead spin
+  ~6 ms of a 20.5 ms frame - the card gets the spin at full rate and whatever the rows can spare; `mixed 12288` cells
+  (every HRXC cell has ONE of INK/PAPER = key, the per-pixel merge path) is why the draw is 13.7 and not 3 ms. If the
+  sound is still short: make the mixed cell path cheaper (a 16-entry pair table per cell), or stop redrawing when
+  nothing changed (a static picture still draws x60/s: no screen-write detector for the pair frame).
+  **hw split24: `PERF[504/20MHz] GS:13.7-14.8Mhz cred=40000` (the credit cap, every second), draw 17.6-18.8 ms, only
+  ~60 of 192 rows ahead of the beam enough to pump (`gs row pumps 60 skipped 131`), core0 cpu 11 -> 16.5 ms (the card's
+  PSRAM traffic against the demo's): core1 at 97 % between the draw and the card, nothing left. The owner: "the render
+  starves the GS, 100 %".** split25 (build 22:56:29, NOT hw-tested): the pair draw is SKIPPED while nothing it reads
+  changed - `pairSig` (ELM_HOT) hashes both screens, pidx, the LUT, the layout, FLASH for HRC - at most 9 frames in a
+  row (`PAIR_CLEAN`, the HGFX modes' s_cleanRun rule: whatever paints over the FB is gone within 10 frames);
+  `s_pairStale` (pairFbClear, repaint) forces one. The pair census (`s_cnt2`) is zeroed at the START of a draw and kept
+  over skipped ones, no longer consumed by pairLutUpdate. Bench: LIMSHOWM fade window 1600..2300 against
+  `PICOSPECCY_ELM_NOSKIP=1` - the same fade profile (grey / black fraction per frame; the two runs are 1-3 frames out
+  of phase, the host is not frame-deterministic), 0 flash frames. `[HGFX] 60f: draw %uus x%u skip %u`: a static
+  picture should read `x6 skip 54`, and the GS line should come back to 20 MHz there.
+  **hw split25: static `draw x6 skip 54`, GS 19.5 MHz, core0 cpu 16.5 -> 2.4 ms; fades `x19-28`, GS 17.5-18.9 MHz.
+  Owner: "not clean, a little short by ear".** The GS-A line names it: `ring=1..129/4096 und=500-3500/s rate=36375`
+  - the ring parks at 128 samples (3.4 ms), the drain controller sits at its -3 % floor and every draw still runs it
+  dry: the card may not run ahead (credit cap 2 ms, gaps over 1 ms clamped), so a 20 ms draw at a third of its rate
+  is 2-3 % of samples lost for good, as holds. split26 (build 23:31:54, NOT hw-tested): `GS::setAhead(ms)` (GS.cpp):
+  credit cap = ms, gap clamp = ms (64-bit credit product), ring target = ms of samples (<= ring/2), one-shot credit
+  injection so the ring fills at once rather than at -3 %; the eLeMeNt engine asks for 24 ms while on core1
+  (`gsAhead`, every frameEnd - the card may come up later; off in arenaFree / the stuck fallback), GS::reset drops
+  the injection. Expect `ring=~800..1000 und=0 rate=~37500` and `cred=480000`; the card's audio runs ~24 ms late.
+- **PROF reading rule, learned the hard way (2026-11-16):** a per-mille entry above 1000 (`200244B0:27830`) is a UART
+  corruption, and the dumps after the demo ends (menu, BASIC) are not the demo: filter entries > 1000, keep only dumps
+  whose sum is 700..1050 and only the windows with `[HGFX] 60f` lines (scratchpad `prof.py`). Two "57 % poke8_cold"
+  and "39 % Z80::otx" lumps were exactly that. Clean split5h profile over 29 demo windows (cpu ~29 ms):
+  `exec_nocheck_ts` 32 %, `memcpy` 8.2 (the FastDMA source reads: the URAM stream is PSRAM), `peek8` 4.9,
+  `hdmi_audio_write_sample` 4.2, `Ports::input` 4.1, `fetchOpcode` 3.5, `decodeLD8` 3.2, `fdmaRun` 3.0, `exec_nocheck`
+  2.1, `memWriteCold` 2.0, `execVram` 2.0, `chunkyWriteRun` 2.0, `poke8_cold` 1.8, `frameEnd` 1.3. The Z80 core is
+  ~50 % = ~14 ms: at ~110 ns an iteration that is ~85-90k instructions a frame (the 21-31k of the `[PERF] z80:` line
+  came from a lighter window), i.e. the demo decodes with the CPU, 250 instructions a blit. 50 FPS therefore needs the
+  per-instruction cost down first: reads on the fast path (per-slot table), PERF_HIST's loop-head histograms off
+  (E40/E50 buckets ~1.3 ms on HIST builds), the switch-dispatched loop (exec_nocheck_next's shape) for the eLeMeNt.
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

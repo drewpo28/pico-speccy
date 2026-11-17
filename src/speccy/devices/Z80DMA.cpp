@@ -1171,12 +1171,18 @@ DMA_LOOP_ATTR void Z80DMA::executeTransfer() {
         transfer_started = true;
 
         // eLeMeNt ZX: an HGFX COPY inside the VRAM window goes as a run (Elm::dmaCopy).
+        // ...and a sector from the SD data port #EB into RAM goes as a run (Elm::dmaFromCard, PF2026).
         uint32_t done = 0;
-        if (__builtin_expect(Z80Ops::isElm, 0) && !port_a_is_io && !port_b_is_io && port_a_inc == 1 && port_b_inc == 1)
-            done = Elm::dmaCopy(transfer_dir ? cur_port_a : cur_port_b, transfer_dir ? cur_port_b : cur_port_a,
-                                byte_counter, port_a_cycles + port_b_cycles);
+        if (__builtin_expect(Z80Ops::isElm, 0)) {
+            const uint16_t src = transfer_dir ? cur_port_a : cur_port_b, dst = transfer_dir ? cur_port_b : cur_port_a;
+            const bool srcIo = transfer_dir ? port_a_is_io : port_b_is_io, dstIo = transfer_dir ? port_b_is_io : port_a_is_io;
+            const int8_t srcInc = transfer_dir ? port_a_inc : port_b_inc, dstInc = transfer_dir ? port_b_inc : port_a_inc;
+            const uint32_t cyc = port_a_cycles + port_b_cycles;
+            if (!srcIo && !dstIo && srcInc == 1 && dstInc == 1) done = Elm::dmaCopy(src, dst, byte_counter, cyc);
+            else if (srcIo && !dstIo && srcInc == 0 && dstInc == 1) done = Elm::dmaFromCard(src, dst, byte_counter, cyc);
+        }
         if (done) {
-            cur_port_a += done; cur_port_b += done; byte_counter -= done;
+            cur_port_a += (uint16_t)(done * port_a_inc); cur_port_b += (uint16_t)(done * port_b_inc); byte_counter -= done;
         } else {
         uint8_t val;
         // Memory cycles deliberately take NO ULA contention (`false`): a 2+2-cycle

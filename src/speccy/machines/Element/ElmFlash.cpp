@@ -184,7 +184,8 @@ static void installBuiltin(bool existing) {
 
 bool ensure() {
     if (!s_fram) {
-        s_fram = (uint8_t*)tryMalloc(FRAM_SIZE);
+        // PSRAM: read through its window now and then; 8 KB of SRAM is HGFX's arena (2026-11-16).
+        s_fram = (uint8_t*)Buffer::palloc(FRAM_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (s_fram) {
             memset(s_fram, 0xFF, FRAM_SIZE);
             if (readFile(ELM_FRAM_PATH, s_fram, FRAM_SIZE)) Debug::log("[ELM] FRAM from " ELM_FRAM_PATH);

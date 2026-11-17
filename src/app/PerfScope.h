@@ -7,15 +7,15 @@
 #pragma once
 #if PERF_TRACE && PERF_HIST
 #include "hardware/timer.h"
-extern uint32_t perf_port_us[512];    // [0..255] IN by low address byte, [256..511] OUT
-extern uint32_t perf_port_n[512];
+extern uint32_t* perf_port_us;    // [0..255] IN by low address byte, [256..511] OUT (PSRAM, may be null)
+extern uint32_t* perf_port_n;
 enum { PB_HALT, PB_DRAWTICK, PB_PALPOLL, PB_ENDFRAME, PB_N };
 extern uint32_t perf_bucket_us[PB_N];
 extern uint32_t perf_bucket_n[PB_N];
 struct PerfPortScope {
     uint32_t t0; uint16_t i;
     explicit PerfPortScope(uint16_t idx) : t0(time_us_32()), i(idx) {}
-    ~PerfPortScope() { perf_port_us[i] += time_us_32() - t0; perf_port_n[i]++; }
+    ~PerfPortScope() { if (perf_port_us) { perf_port_us[i] += time_us_32() - t0; perf_port_n[i]++; } }
 };
 struct PerfBucketScope {
     uint32_t t0; uint8_t i;

@@ -1093,8 +1093,11 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // it up to 12800 times after every sector write (enNextZX page 2 0x1925 /
   // 0x19A1 — its busy wait only ends on timeout). Nothing between here and the
   // DivMMC branch claims 0xEB on the Next, so the answer is the same one.
-  if (Z80Ops::isNext && (address & 0xFF) == 0xEB && DivMMC::enabled && !DivMMC::divide_mode &&
-      NextReg::portOn(NextReg::PE_SPI)) {
+  // eLeMeNt ZX the same (PF2026's sector reads, by DMA and by IN): nothing in between
+  // claims #xxEB there either (Elm::isPort, SMUC &#A3, Nemo IDE &6, MB-02+ &#9F all miss);
+  // portOn is all-ones off the Next.
+  if (!PROFI && (address & 0xFF) == 0xEB && (Z80Ops::isNext || Z80Ops::isElm) &&
+      DivMMC::enabled && !DivMMC::divide_mode && NextReg::portOn(NextReg::PE_SPI)) {
     LED::touchR(LED::SD);
     return DivMMC::mmc_read();
   }

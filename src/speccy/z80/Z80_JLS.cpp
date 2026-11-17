@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <algorithm>
 
+#include "app/Buffer.h"
 #include "z80.h"
 #include "speccy/core/Ports.h"
 #include "speccy/video/Video.h"
@@ -934,6 +935,8 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
         if ((g_hobbit & 2) && REG_PCh >= 0x40) Hobbit::dosLeave();
         return;
     }
+    // eLeMeNt ZX: the 48 ROM key wait returns here every pass (Elm::keyWaitSkip, flash).
+    if (__builtin_expect(Z80Ops::isElm, 0) && REG_PC == 0x15E1) Elm::keyWaitSkip();
     if (Z80Ops::isEnt) return;      // Enterprise: no Beta, no #3Dxx trap
     if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
         if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
@@ -1430,8 +1433,16 @@ uint32_t z80_chk_cnt;
 // Next profile (PERF_HIST, exec_nocheck_next): second byte of every prefixed
 // instruction ([0] CB, [1] DD, [2] ED, [3] FD) and guest PC in 32-byte buckets.
 // nxprof_dump() logs and clears them once a second (ESPectrum::loop).
-uint32_t nx_pfx_hist[4][256];
-uint32_t nx_pc_hist[2048];
+// Both in PSRAM (nxprofAlloc, from pcprof_start): 12 KB of SRAM on every PERF build.
+uint32_t (*nx_pfx_hist)[256];
+uint32_t* nx_pc_hist;
+Z80_COLD void nxprofAlloc() {
+    uint32_t* t = (uint32_t*)Buffer::palloc((4 * 256 + 2048) * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!t) return;
+    memset(t, 0, (4 * 256 + 2048) * sizeof(uint32_t));
+    nx_pc_hist = t + 4 * 256;
+    nx_pfx_hist = (uint32_t (*)[256])t;
+}
 uint32_t nx_int_cnt;
 
 static void nxprofTop(const char* tag, const uint32_t* h, int n, int show, int shift, uint64_t total) {
@@ -1451,6 +1462,7 @@ static void nxprofTop(const char* tag, const uint32_t* h, int n, int show, int s
 
 void nxprof_dump(uint32_t frames) {
     uint64_t total = 0, ptot = 0;
+    if (!nx_pc_hist) return;
     for (int i = 0; i < 256; i++) total += z80_op_hist[i];
     for (int i = 0; i < 2048; i++) ptot += nx_pc_hist[i];
     if (!frames) frames = 1;
@@ -1522,8 +1534,8 @@ void nxprof_dump(uint32_t frames) {
         g_nxps[6] = 0xFFFFFFFFu;
     }
     for (int i = 0; i < 256; i++) z80_op_hist[i] = 0;
-    memset(nx_pfx_hist, 0, sizeof nx_pfx_hist);
-    memset(nx_pc_hist, 0, sizeof nx_pc_hist);
+    memset(nx_pfx_hist, 0, 4 * 256 * sizeof(uint32_t));
+    memset(nx_pc_hist, 0, 2048 * sizeof(uint32_t));
     nx_int_cnt = 0;
     NextInt::ctcProfDump();
     extern void pcprof_dump();
@@ -1783,8 +1795,8 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
         nxFetchM1();
 #if PERF_TRACE && PERF_HIST
         z80_op_hist[nx_op]++;
-        nx_pc_hist[(uint16_t)(nx_pc - 1) >> 5]++;
-        if (nx_op == 0xCB || nx_op == 0xDD || nx_op == 0xED || nx_op == 0xFD) {
+        if (nx_pc_hist) nx_pc_hist[(uint16_t)(nx_pc - 1) >> 5]++;
+        if (nx_pc_hist && (nx_op == 0xCB || nx_op == 0xDD || nx_op == 0xED || nx_op == 0xFD)) {
             const uint16_t q = nx_pc;
             const uint8_t* sp = MemESP::ramCurrent[q >> 13];
             if (sp) nx_pfx_hist[nx_op == 0xCB ? 0 : nx_op == 0xDD ? 1 : nx_op == 0xED ? 2 : 3][sp[q & 0x1fff]]++;

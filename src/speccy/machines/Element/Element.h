@@ -63,12 +63,23 @@ extern const uint8_t* vramHi;                 // g_zxi_021: the VRAM window's hi
 extern uint16_t slotPage[8];                  // chunky window: its 8K step per slot
 void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY
 extern volatile uint8_t g_elm_vram_rd;        // non-zero while memRead is wanted (COPY mode)
+// Chunky windows across the edge of the HGFX SRAM half (ElmHgfx.cpp): a bit per 8K slot.
+// A read of such a slot goes byte by byte through splitRead (the generic read funnel,
+// CPU.cpp gsDmaPeek8, and busRead); the slot's raw pointer serves a fetch only.
+extern volatile uint8_t g_elm_split;
+uint8_t splitRead(uint16_t address);
 bool fastReadOk();                            // the fast read path may bypass memRead
 void busWrite(uint16_t address, uint8_t v);   // a DMA write, windows included
 uint8_t busRead(uint16_t address);            // a DMA read: arms the HGFX COPY latch too
 // A Z80 DMA memory-to-memory piece, both ends counting up: an HGFX COPY inside the VRAM
 // window goes to the engine as a run. Returns the bytes done (time charged), 0 = none.
 uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles);
+// A Z80 DMA piece from the SD data port #EB (fixed) into plain RAM (counting up): the
+// block's data bytes straight from the sector buffer. Returns the bytes done (time
+// charged), 0 = none (read the next byte through dmaInput).
+uint32_t dmaFromCard(uint16_t port, uint16_t dst, uint32_t n, uint32_t cycles);
+// The 48 ROM key wait (RET to #15E1, Z80::check_trdos): skip whole idle passes to the slice end.
+void keyWaitSkip();
 bool nmiBlocked();                            // SafeNMI: the button is locked
 void nmiTaken(uint16_t pc);                   // SafeNMI: the return address
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM

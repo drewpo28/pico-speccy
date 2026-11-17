@@ -25,6 +25,7 @@
 #include "UiBrowser.h"
 #include "app/Subsystem.h"
 #include "OSDMain.h"
+#include "app/Buffer.h"
 #include "app/TryAlloc.h"
 #include "app/ESPectrum.h"
 #include "speccy/video/Video.h"
@@ -708,6 +709,23 @@ static void openPath(const Node* target) {
 // enterSaves: what Enter means in a focused K_PICK for this session. Only the F4
 // hot key sets it — every other way in is a "load" (or a list where it means
 // nothing), so it must be re-stated on every open rather than left standing.
+// The pool goes to PSRAM first: 3.3 KB in one piece is more than a fragmented SRAM
+// heap may have (a PERF_HIST Next build: 4304 B free, largest block 1212, and the
+// menu never opened - hw 2026-11-16). Heap only when there is no PSRAM block.
+static bool s_dynPsram;
+static DynRows* dynAlloc() {
+    if (void* p = Buffer::palloc(sizeof(DynRows), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {
+        memset(p, 0, sizeof(DynRows));
+        s_dynPsram = true;
+        return (DynRows*)p;
+    }
+    s_dynPsram = false;
+    return (DynRows*)tryCalloc(sizeof(DynRows));
+}
+static void dynFree() {
+    if (s_dynPsram) Buffer::pfree(S.dyn); else free(S.dyn);
+    S.dyn = nullptr;
+}
 static void runInternal(const Node* openAt, bool enterSaves = false) {
     const size_t heapIn = getFreeHeap();
     Debug::log("runInternal: sp=%08x heap=%u largest=%u\n", debug_sp(), (unsigned)heapIn, (unsigned)getLargestAllocatable());
@@ -716,11 +734,11 @@ static void runInternal(const Node* openAt, bool enterSaves = false) {
     // (a hot key opening a level while another session is up) reuses the outer one.
     const bool ownDyn = (S.dyn == nullptr);
     if (ownDyn) {
-        S.dyn = (DynRows*)tryCalloc(sizeof(DynRows));
+        S.dyn = dynAlloc();
         if (!S.dyn) { gfxEnd(); return; }        // no 3 KB for the menu: not our day
     }
     computeLayout();
-    if (!layoutFits()) { if (ownDyn) { free(S.dyn); S.dyn = nullptr; } gfxEnd(); return; }
+    if (!layoutFits()) { if (ownDyn) dynFree(); gfxEnd(); return; }
 
     // Classic text pages (ChipInfo, ...) render in the new style while we are up,
     // and long operations (Speed test, ZIP extract, DLS convert) report in the
@@ -904,7 +922,7 @@ resume:
     joyProfilesSessionEnd();
     snapSessionEnd();
     OSD::osdInfoRelease();      // ...and the info pages' text buffer
-    if (ownDyn) { free(S.dyn); S.dyn = nullptr; }
+    if (ownDyn) dynFree();
     gfxEnd();
     // A session must hand back every byte it took: this pair is the leak detector.
     Debug::log("runInternal: done heap=%u (in %u) largest=%u", (unsigned)getFreeHeap(), (unsigned)heapIn, (unsigned)getLargestAllocatable());

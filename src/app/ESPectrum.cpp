@@ -86,6 +86,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/machines/Element/ElmSid.h"
 #include "speccy/devices/tape/Tape.h"
+#include "speccy/machines/Element/ElmHgfx.h"
 #include "speccy/video/Video.h"
 #if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
 #include "drivers/hdmi/hdmi.h"
@@ -5744,6 +5745,9 @@ void ESPectrum::loop() {
           // A TS-Conf palette change waiting for the beam to reach its row
           // (VIDEO::tsPalettePoll): the beam moves while we wait here.
           if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
+          // eLeMeNt pair frame: core1 started the draw of a staged palette (Hgfx::pairPushPoll).
+          // Its line tick does not run here, and in HRXC core0 spends most of the frame here.
+          if (Hgfx::g_pairPushNow) Hgfx::pairPushPoll();
           // TS-Conf: take queued lines off core1 while there is nothing else to do.
           if (g_ts_c1_live) VIDEO::tsC1HelpOne();
 #if HOST_BUILD
@@ -5785,6 +5789,7 @@ void ESPectrum::loop() {
               BtHost::pump();
               if (GS::neogs) NgsSd::service();
               if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
+              if (Hgfx::g_pairPushNow) Hgfx::pairPushPoll();   // eLeMeNt pair frame: the staged palette, at its draw
               if (g_ts_c1_live) VIDEO::tsC1HelpOne();
             }
           } else
@@ -5794,6 +5799,7 @@ void ESPectrum::loop() {
             while ((int64_t)time_us_64() < e) {
               ZiFi::cdcPump();
               if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
+              if (Hgfx::g_pairPushNow) Hgfx::pairPushPoll();   // eLeMeNt pair frame: the staged palette, at its draw
               if (g_ts_c1_live) VIDEO::tsC1HelpOne();
             }
           } else
@@ -5803,6 +5809,7 @@ void ESPectrum::loop() {
             while ((int64_t)time_us_64() < e) {
               NgsSd::service();
               if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
+              if (Hgfx::g_pairPushNow) Hgfx::pairPushPoll();   // eLeMeNt pair frame: the staged palette, at its draw
               if (g_ts_c1_live) VIDEO::tsC1HelpOne();
             }
           } else
@@ -5814,6 +5821,17 @@ void ESPectrum::loop() {
             while ((int64_t)time_us_64() < e) {
               if (VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
               if (!g_ts_c1_live || !VIDEO::tsC1HelpOne()) tight_loop_contents();
+            }
+          } else
+          if (Z80Ops::isElm && g_elm_c1_live) {
+            // eLeMeNt: core1 starts a pair-frame draw with the beam below the picture and
+            // needs its staged palette pushed from core0 within a line (pairPushPoll); a
+            // sleep through the idle pushed it up to a frame late, wherever the beam was
+            // (hw 2026-11-16: "beam 33..240" at the push, speckles in LIMSHOWM's fade-in).
+            int64_t e = (int64_t)time_us_64() + idle;
+            while ((int64_t)time_us_64() < e) {
+              if (Hgfx::g_pairPushNow) Hgfx::pairPushPoll();
+              tight_loop_contents();
             }
           } else
           {

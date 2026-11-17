@@ -39,6 +39,10 @@ option(PERF_HIST "Per-access Z80/TS-Conf histograms in the PERF log (slow; needs
 # 56 buckets one dump prints — the Next core spread over 200 x 64 B buckets left
 # 40% of the samples unlisted (STNICCC, 2026-10-15).
 set(PCPROF_SHIFT "6" CACHE STRING "PERF_HIST PC sampler: log2 of the code bucket size (6 = 64 B, 8 = 256 B)")
+# Hash slots (power of two, 8 B each) and printed lines (14 buckets a line). A wide profile
+# (eLeMeNt PF2026: 56 buckets = 5% of the samples) wants 512 / 16.
+set(PCPROF_SLOTS "256" CACHE STRING "PERF_HIST PC sampler: hash slots (power of two)")
+set(PCPROF_LINES "4" CACHE STRING "PERF_HIST PC sampler: PROF lines printed per window")
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 option(TS_VIDEO_TRACE "TS-Conf: capped trace of VConfig/TSConfig/page/offset register writes with frame line + PC" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)

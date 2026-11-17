@@ -105,7 +105,8 @@ endforeach ()
 
 # Per-60-frame CPU/HDMI/FPS performance logging (see Video.cpp `#if PERF_TRACE`).
 if (PERF_HIST)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=1 PCPROF_SHIFT=${PCPROF_SHIFT})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=1 PCPROF_SHIFT=${PCPROF_SHIFT}
+        PCPROF_SLOTS=${PCPROF_SLOTS}u PCPROF_LINES=${PCPROF_LINES})
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=0)
 endif()

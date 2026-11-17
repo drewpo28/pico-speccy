@@ -33,8 +33,10 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/Buffer.h"
 #include "CPU.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Element/ElmHgfx.h"
 #include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Enterprise/EpFast.h"   // the EP accessor fast path (MEMGATES_EP)
@@ -79,7 +81,15 @@ uint32_t c16_rd[9], c16_wr[9], c16_fe[9], c16_flip, c16_bank;
 // bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
 // i.e. what an SRAM page policy would have to hold. Dumped by the [PERF] block.
 uint32_t ts_page_hist[257];   // [256] = bank-0 ROM
-uint32_t perf_port_us[512], perf_port_n[512];      // PerfScope.h
+uint32_t* perf_port_us;   // PerfScope.h: 2 x 512 words in PSRAM (perfPortAlloc, from pcprof_start)
+uint32_t* perf_port_n;
+void perfPortAlloc() {
+    uint32_t* t = (uint32_t*)Buffer::palloc(1024 * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!t) return;
+    memset(t, 0, 1024 * sizeof(uint32_t));
+    perf_port_n = t + 512;
+    perf_port_us = t;
+}
 uint32_t perf_bucket_us[PB_N], perf_bucket_n[PB_N];
 #define TS_PAGE_HIT(addr) do { if (Z80Ops::isTsconf) ts_page_hist[TsConf::r.page[(addr) >> 14]]++; } while (0)
 #else
@@ -638,7 +648,7 @@ void CPU::reset() {
     if (Z80Ops::isElm) {
         Config::betadisk = false;
         Elm::reset();
-    }
+    } else Hgfx::arenaFree();   // the eLeMeNt's HGFX SRAM arena, if a switch left it (flash, a null test)
 
     // Interface 2 cartridge: esxDOS off the bus while it is in (its automap entry
     // points are the cartridge's own vectors), back once it is out.
@@ -1400,6 +1410,8 @@ static inline uint8_t gsDmaPeek8(uint16_t address) {
         return timexPeek8(address);
     // eLeMeNt HGFX in COPY mode: a read of the VRAM window arms the copy latch.
     if (__builtin_expect(Elm::g_elm_vram_rd != 0, 0)) Elm::memRead(address);
+    // eLeMeNt chunky window across the edge of the HGFX SRAM half: byte by byte (Element.h).
+    if (__builtin_expect(Elm::g_elm_split != 0, 0) && ((Elm::g_elm_split >> (address >> 13)) & 1)) return Elm::splitRead(address);
     // Spectrum Next slot with no SRAM behind it: the data latch (MemESP.h).
     if (__builtin_expect(MemESP::next_stale_mask != 0, 0) && ((MemESP::next_stale_mask >> (address >> 13)) & 1))
         return MemESP::nextStaleByte();

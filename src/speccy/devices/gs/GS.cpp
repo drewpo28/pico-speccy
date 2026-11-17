@@ -639,9 +639,20 @@ static uint32_t           GS_INT_PERIOD     = 350;        // set in init()
 //   s_credit_cap   — backlog ceiling, GS_CLOCK_HZ/500 ≈ 2 ms of GS time
 static uint32_t           s_t_per_us_q16    = (13125000ull << 16) / 1000000u;
 static int32_t            s_credit_cap      = 13125000 / 500;
+// GS::setAhead: the card may run this far AHEAD of the wall clock (ms), 0 = the default
+// 2 ms cushion. A renderer sharing core1 (the eLeMeNt's HGFX pair draw, 14-20 ms a
+// frame) leaves the card a third of its rate for that long; with a 2 ms backlog cap and
+// a 3.4 ms ring the deficit is a sample hold every few ms (hw 2026-11-16, LIMSHOWM:
+// `ring=1..129 und=500-3500/s rate=36375`, the drain already at -3 %). Ahead, the card
+// banks up to s_ahead_ms of credit through the draw (s_dt_cap_us lets the gaps count),
+// drains it at emulation speed on the free stretches, and the ring parks s_ring_target
+// deep (set below GS_RING_TARGET) so the output never runs dry meanwhile.
+static uint32_t           s_ahead_ms        = 0;
+static uint32_t           s_dt_cap_us       = 1000;
+static volatile uint32_t  s_ahead_inject_t  = 0;   // core1 adds it to the credit once: the ring fills at once, not at -3 %
 static inline void gs_derive_clock_consts() {
     s_t_per_us_q16 = (uint32_t)(((uint64_t)GS_CLOCK_HZ << 16) / 1000000u);
-    s_credit_cap   = (int32_t)(GS_CLOCK_HZ / 500u);
+    s_credit_cap   = (int32_t)(GS_CLOCK_HZ / 1000u * (s_ahead_ms ? s_ahead_ms : 2u));
 }
 
 // Adaptive-drain state (consumer side, see getLiveLR). Target depth is the
@@ -668,6 +679,7 @@ static inline void gs_derive_clock_consts() {
 // without it the ring sat at 1..78 with its trough on the floor, with it at
 // 11..144 — same ripple, lifted clear.
 static constexpr uint32_t GS_RING_TARGET  = 128;
+static uint32_t           s_ring_target   = GS_RING_TARGET;   // GS::setAhead raises it
 static constexpr uint32_t GS_DEPTH_WINDOW = 256;      // calls per update (~8 ms)
 static constexpr int32_t  GS_DRAIN_GAIN   = 16;       // rate units per entry of error
 static constexpr uint32_t GS_DRAIN_MIN    = GS_INT_HZ - GS_INT_HZ * 3 / 100;
@@ -2262,6 +2274,19 @@ uint32_t GS::configuredRamBytes() {
 
 uint32_t GS::clockHz() { return GS_CLOCK_HZ; }
 
+void GS::setAhead(uint32_t ms) {
+    if (ms == s_ahead_ms) return;
+    s_ahead_ms  = ms;
+    s_dt_cap_us = ms ? ms * 1000u : 1000u;
+    uint32_t t = ms ? ms * GS_INT_HZ / 1000u : GS_RING_TARGET;
+    if (t > s_ring_size / 2) t = s_ring_size / 2;
+    s_ring_target = t;
+    gs_derive_clock_consts();
+#if !HOST_BUILD
+    if (ms && enabled && !s_ngs_boot_hold) s_ahead_inject_t = ms * (GS_CLOCK_HZ / 1000u);
+#endif
+}
+
 void GS::setClock() {
     if (neogs) {
         // NeoGS follows GSCFG0 CKSEL unless Config::ngs_clock forces a rate;
@@ -2591,6 +2616,7 @@ static void gs_reset_state() {
     s_pump_last_us = 0;
     s_pump_credit_t = 0;
     s_pump_frac_t = 0;
+    s_ahead_inject_t = 0;
     s_ring_wpos = 0;
     s_ring_rpos = 0;
     s_drain_frac = 0;
@@ -3031,7 +3057,7 @@ void __not_in_flash_func(GS::pump)() {
     // now one 32-bit multiply and two shifts.
     uint32_t q16 = s_t_per_us_q16;
     int32_t  cap = s_credit_cap;
-    uint32_t dt_cap = 1000;                  // clamp: max 1 ms of GS time per pump
+    uint32_t dt_cap = s_dt_cap_us;           // clamp: max 1 ms of GS time per pump (more when ahead, setAhead)
     // Turbo-boot is OFF while the TS-Conf renderer has core1: at 8x the boot
     // wanted more of this core than the renderer could spare, and a card
     // rebooting under a running demo (F11, a boot with a title autoloaded) cost
@@ -3090,10 +3116,13 @@ void __not_in_flash_func(GS::pump)() {
         GS_PERF(s_perf_dt_clamps++);
         dt_us = dt_cap;
     }
-    uint32_t scaled = dt_us * q16 + s_pump_frac_t;
+    // 64-bit product (one umull): dt_us * q16 overflows 32 bits past ~3 ms at 20 MHz,
+    // and the ahead mode (setAhead) lets a gap of s_ahead_ms count in full.
+    const uint64_t scaled = (uint64_t)dt_us * q16 + s_pump_frac_t;
     s_pump_credit_t += (int32_t)(scaled >> 16);
-    s_pump_frac_t = scaled & 0xFFFFu;
+    s_pump_frac_t = (uint32_t)scaled & 0xFFFFu;
     s_pump_last_us = now;
+    if (__builtin_expect(s_ahead_inject_t != 0, 0)) { s_pump_credit_t += (int32_t)s_ahead_inject_t; s_ahead_inject_t = 0; }
     // Bound the backlog. Under a genuine capacity deficit (hw: HDMI-audio ISR
     // load at 378 MHz leaves ~16.6M T/s of core1 for a 20 MHz GS) the credit
     // would otherwise grow without limit — observed climbing ~3.3M/s — and any
@@ -4202,7 +4231,7 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
             s_depth_acc = 0;
             s_depth_cnt = 0;
             int32_t rate = (int32_t)GS_INT_HZ
-                         + (mean - (int32_t)GS_RING_TARGET) * GS_DRAIN_GAIN;
+                         + (mean - (int32_t)s_ring_target) * GS_DRAIN_GAIN;
             if (rate < (int32_t)GS_DRAIN_MIN) rate = (int32_t)GS_DRAIN_MIN;
             if (rate > (int32_t)GS_DRAIN_MAX) rate = (int32_t)GS_DRAIN_MAX;
             s_drain_rate = (uint32_t)rate;

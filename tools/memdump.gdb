@@ -317,7 +317,7 @@ if Z80Ops::isTsconf
   # line below for w/n. LAST in the block so that a build whose ring layout
   # ever changes cannot cost the register/CRAM/NVRAM dump above it.
   if $has_intring
-    printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)(sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
+    printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)ts_int_ring_n
   end
   # DMA event ring (TS_VIDEO_TRACE builds): every DMACtrl write with its raster
   # position, modelled duration and the renderer's state. Decode with
@@ -328,7 +328,7 @@ if Z80Ops::isTsconf
   set logging enabled off
   set logging redirect off
   if $has_intring
-    dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
+    dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + ts_int_ring_n)
   else
     echo \nintring: not in this build (PERF_TRACE=OFF)\n
   end

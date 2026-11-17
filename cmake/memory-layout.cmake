@@ -334,9 +334,19 @@ if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
     # pieces to Elm::dmaCopy): content 5 936 B; the PERF counters no longer fit 6144.
     # 6144 -> 6400 the same day: Elm::memWrite's RAM front (chunky and VRAM windows) +
     # Hgfx::chunkyWrite, content 6 184 B (PERF_TRACE ~6 420).
-    set(DMAOVL_WIN_SIZE_EFFECTIVE 6400)
+    # 6400 -> 6656 on 2026-11-16: the Z80 DMA loop hands eLeMeNt #EB -> RAM pieces to
+    # Elm::dmaFromCard (+56 B); the non-PERF build overflowed 6400 (PERF_TRACE content 6 664).
+    # Same day, Hgfx::at() (buffer 1 in SRAM) inlined into the hot HGFX path: content 6 592,
+    # PERF_TRACE 6 832 of 6 912 - the next growth needs both terms raised.
+    # 6656/6912 -> 6912/7168 on 2026-11-16: core1Pump's Q_DRAW gate holds the draw for a
+    # staged HAM palette (beamBelowPicture), PERF_TRACE content overflowed 6 912.
+    # +1024 the same day: Hgfx::pairRowFast (the HRC / HRXC pair frame a cell at a time) in the
+    # window - from flash it ran at 21 ms a frame on core1.
+    # +256 the same day: Hgfx::pairSig (the pair frame's draw skipped while nothing it reads
+    # changed) and rowPump's beam test; PERF_TRACE content was 8 136 of 8 192.
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 8192)
     if (PERF_TRACE)
-        set(DMAOVL_WIN_SIZE_EFFECTIVE 6912)
+        set(DMAOVL_WIN_SIZE_EFFECTIVE 8448)
     endif()
 else()
     set(DMAOVL_WIN_SIZE_EFFECTIVE ${DMAOVL_WIN_SIZE})

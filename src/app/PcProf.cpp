@@ -13,22 +13,32 @@
 #include "hardware/exception.h"
 #include "hardware/clocks.h"
 #include "Debug.h"
+#include "Buffer.h"
 
 #if PERF_TRACE && PERF_HIST
 
 #define PCPROF_HZ    8000u
+#ifndef PCPROF_SLOTS
 #define PCPROF_SLOTS 256u        // power of two (2 KB with the counts)
+#endif
 #ifndef PCPROF_SHIFT
 #define PCPROF_SHIFT 6           // 64-byte buckets (CMake PCPROF_SHIFT; 8 = 256 B)
 #endif
+#ifndef PCPROF_LINES
 #define PCPROF_LINES 4           // 14 buckets a line: 56 named, the rest is "unlisted"
+#endif
 
-static uint32_t s_key[PCPROF_SLOTS];
-static uint32_t s_cnt[PCPROF_SLOTS];
+// The table lives in PSRAM (2 x 4 B a slot): 512 slots in SRAM were 4 KB of .bss on
+// a machine with 3.3 KB of heap left, and the Next could not open the menu on a
+// PERF_HIST build (hw 2026-11-16). A missed sample costs nothing; the PSRAM latency
+// is a few hundred ns at 8 kHz.
+static uint32_t* s_key;
+static uint32_t* s_cnt;
 static volatile uint32_t s_total, s_lost;
 static uint32_t s_hz = 0;   // clk_sys the SysTick reload was derived from
 
 extern "C" void __not_in_flash_func(pcprof_sample)(const uint32_t* frame) {
+    if (!s_key) return;
     const uint32_t k = (frame[6] >> PCPROF_SHIFT) + 1u;   // + 1: 0 means empty
     uint32_t h = (k * 2654435761u) >> 24;                  // 8 bits
     for (uint32_t i = 0; i < 16; i++, h = (h + 1) & (PCPROF_SLOTS - 1)) {
@@ -60,7 +70,18 @@ static void pcprof_reload() {
     Debug::log("PROF: SysTick PC sampling at %u Hz (clk_sys %u)", PCPROF_HZ, (unsigned)s_hz);
 }
 
+void nxprofAlloc();     // Z80_JLS.cpp: the Next prefix / PC histograms
+void perfPortAlloc();   // CPU.cpp: [PERF] ports host time
 void pcprof_start() {
+    // The PERF_HIST tables go to PSRAM here, before the guest runs (each user tests
+    // its pointer): ~16 KB of SRAM on every PERF build otherwise.
+    nxprofAlloc();
+    perfPortAlloc();
+    uint32_t* t = (uint32_t*)Buffer::palloc(2u * PCPROF_SLOTS * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!t) { Debug::log("PROF: no memory for %u slots, sampler off", (unsigned)PCPROF_SLOTS); return; }
+    memset(t, 0, 2u * PCPROF_SLOTS * sizeof(uint32_t));
+    s_cnt = t + PCPROF_SLOTS;
+    s_key = t;
     exception_set_exclusive_handler(SYSTICK_EXCEPTION, pcprof_isr);
     pcprof_reload();
 }
@@ -70,6 +91,7 @@ void pcprof_dump() {
     // scarce on the Next). Samples missed while it is masked are ~1 ms/s.
     // The 56 hottest buckets over PCPROF_LINES lines ("PROF", "PROF+", ...):
     // the handlers are spread thinly, 14 buckets covered only ~60% of the time.
+    if (!s_key) return;
     systick_hw->csr &= ~0x2u;
     const uint32_t total = s_total, lost = s_lost;
     for (int part = 0; total && part < PCPROF_LINES; part++) {
@@ -88,7 +110,7 @@ void pcprof_dump() {
         if (part == PCPROF_LINES - 1 && lost) snprintf(line + n, sizeof line - n, " lost=%u", (unsigned)lost);
         Debug::log("%s", line);
     }
-    memset(s_key, 0, sizeof s_key); memset(s_cnt, 0, sizeof s_cnt);
+    memset(s_key, 0, PCPROF_SLOTS * sizeof(uint32_t)); memset(s_cnt, 0, PCPROF_SLOTS * sizeof(uint32_t));
     s_total = s_lost = 0;
     if (clock_get_hz(clk_sys) != s_hz) pcprof_reload();
     else systick_hw->csr |= 0x2u;

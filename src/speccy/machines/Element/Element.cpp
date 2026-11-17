@@ -29,6 +29,7 @@
 #include "speccy/video/Video.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/z80/z80.h"
+#include "speccy/core/Rzx.h"
 #include "drivers/graphics/graphics.h"   // graphics_set_scanlines: the SetUp's CRT effect applied live
 
 uint8_t g_elm_nodiv;                  // DivMMC.h: no automap entry in Zone 0 URAM
@@ -135,6 +136,14 @@ static void framCount(uint16_t off) {
     ElmFlash::framDirty();
 }
 uint16_t slotPage[8];                 // HGFX Area: its 8K step in the Zone
+volatile uint8_t g_elm_split;         // chunky windows across the SRAM half's edge (Element.h)
+uint8_t splitRead(uint16_t a) {
+#if HOST_BUILD
+    static uint32_t n; if (++n == 1 || n == 1000 || n == 100000) Debug::log("[ELM] split window reads: %u", (unsigned)n);
+#endif
+    return Hgfx::chunkyReadByte(slotPage[a >> 13] * 0x2000u + (a & 0x1FFF));
+}
+static inline bool isSplit(uint16_t a) { return (g_elm_split >> (a >> 13)) & 1; }
 uint8_t* wrKind;
 static const uint8_t s_vramHi0 = 0x40;
 const uint8_t* vramHi = &s_vramHi0;
@@ -145,7 +154,30 @@ static_assert(W_CHUNKY == WK_CHUNKY && W_VRAM == WK_VRAM, "Element.h WK_*");
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
 static void readHookUpdate();
-static void windowsRebuild() {
+// Everything windowsRebuild reads. remap runs on every URAM page / zone write and on the
+// HGFX VP / OffsetY writes under a chunky window - PF2026: ~35k a second on the bench,
+// 4.7 % of core0 on hw in the 256-byte rebuild (PERF_HIST 2026-11-16) - and almost none
+// of them change a window: the table is rebuilt only when this key moves.
+struct WinKey { uint8_t mode, g20, regMode, act, wp, lcu, hg, fl, fr, g[9]; };
+static WinKey s_winKey;
+static bool s_winKeyValid;
+static WinKey winKey() {
+    WinKey k;
+    k.mode = Hgfx::mode; k.g20 = Hgfx::g20; k.regMode = Hgfx::reg(Hgfx::REG_MODE);
+    k.act = s_active; k.wp = s_wpSlots; k.lcu = s_lcuSlots; k.hg = s_hgfxSlots; k.fl = s_flashSlots; k.fr = s_framSlots;
+    static const uint8_t gi[9] = { 0x021, 0x022, 0x023, 0x040, 0x041, 0x048, 0x049, 0x060, 0x061 };
+    for (int i = 0; i < 9; i++) k.g[i] = s_r->g[gi[i]];
+    return k;
+}
+static void windowsRebuildNow();
+static void windowsRebuild() { s_winKey = winKey(); s_winKeyValid = true; windowsRebuildNow(); }
+static void windowsRefresh() {
+    const WinKey k = winKey();
+    if (s_winKeyValid && !memcmp(&k, &s_winKey, sizeof k)) return;
+    s_winKey = k; s_winKeyValid = true;
+    windowsRebuildNow();
+}
+static void windowsRebuildNow() {
     uint8_t* w = s_r->win;
     memset(w, 0, 256);
     // HGFX modes only: under HRC / HRXC #4000-#7BFF is their screen, plain RAM, and the
@@ -241,11 +273,53 @@ static uint8_t fdRead(uint32_t a, bool uram) {
     if (uram) { const uint8_t* p = uramByte(a); return p ? *p : 0xFF; }
     return busRead((uint16_t)a);
 }
+// A run of c bytes inside one 8K slot of the Z80 space, read / stored as
+// MemESP::readbyte / writebyte would do it byte by byte, when the slot is a plain page:
+// those two are out-of-line FLASH copies here, and PF2026's ~350 FastDMA blits a frame
+// (8 x 4 bytes each) spent ~10 % of core0 in them (PERF_HIST 2026-11-16). false = the
+// slot needs the per-byte rules (breakpoints, accessor bank, divMMC / ROM / Next windows).
+// memcpy from 4 bytes up: it stores words, and the destinations here are PSRAM pages,
+// where the store, not the call, is the cost - an inline byte loop moved PF2026's 7.9 %
+// from memcpy into the caller and made it slightly worse (hw 2026-11-16, zx28e).
+static inline void cpy(uint8_t* d, const uint8_t* s, uint32_t n) {
+    if (n >= 4) { memcpy(d, s, n); return; }
+    for (uint32_t k = 0; k < n; k++) { d[k] = s[k]; __asm__ volatile(""); }
+}
+// The bytes at a as MemESP::readbyte would serve them, when the slot is a plain page.
+static inline const uint8_t* rdPtr(uint16_t a) {
+    const uint8_t* p = MemESP::ramCurrent[a >> 13];
+    if (!p || Config::numMemReadBP || (a < 0x4000 && MemESP::divmmc_mapped) || isSplit(a)) return nullptr;
+    return p + (a & 0x1FFF);
+}
+// A byte as the guest's generic read path serves it: a split chunky window byte by byte.
+static inline uint8_t rdByte(uint16_t a) { return isSplit(a) ? splitRead(a) : MemESP::readbyte(a); }
+static inline bool rdRun(uint16_t a, uint8_t* buf, uint32_t c) {
+    const uint8_t* p = rdPtr(a);
+    if (!p) return false;
+    cpy(buf, p, c);
+    return true;
+}
+static inline bool wrRun(uint16_t a, const uint8_t* buf, uint32_t c) {
+    const uint8_t slot = a >> 13;
+    uint8_t* p = MemESP::ramCurrent[slot];
+    if (a < 0x4000 || Config::numMemWriteBP || ((MemESP::wr_overlay_mask >> slot) & 1) ||
+        (uintptr_t)p < 0x11000000u) return false;
+    cpy(p + (a & 0x1FFF), buf, c);
+    *mem_desc_t::bank_dirty[slot] = true;
+    return true;
+}
+static inline void rdBytes(uint16_t a, uint8_t* buf, uint32_t c) {
+    if (!rdRun(a, buf, c)) for (uint32_t k = 0; k < c; k++) buf[k] = rdByte((uint16_t)(a + k));
+}
+static inline void wrBytes(uint16_t a, const uint8_t* buf, uint32_t c) {
+    if (!wrRun(a, buf, c)) for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(a + k), buf[k]);
+}
+
 // A DMA / FastDMA read: the wiki says both scroll HGFX in COPY mode, so their reads of
 // the window arm the latch exactly like the CPU's.
 uint8_t busRead(uint16_t a) {
     if (g_elm_vram_rd) memRead(a);
-    return MemESP::readbyte(a);
+    return rdByte(a);
 }
 void busWrite(uint16_t a, uint8_t v) {
     if (s_r && s_r->win[a >> 8] && memWrite(a, v)) return;
@@ -271,8 +345,9 @@ uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
         if (c > left) c = left;
         if ((src < 0x4000 || dst < 0x4000) && MemESP::divmmc_mapped) return 0;
         uint8_t buf[256];
-        for (uint32_t k = 0; k < c; k++) {
-            buf[k] = MemESP::readbyte((uint16_t)(src + k));
+        if (dst <= src || dst >= src + c) { rdBytes(src, buf, c); wrBytes(dst, buf, c); }
+        else for (uint32_t k = 0; k < c; k++) {
+            buf[k] = rdByte((uint16_t)(src + k));
             MemESP::writebyte((uint16_t)(dst + k), buf[k]);
         }
         Hgfx::writeVramRun((uint16_t)(dst - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
@@ -288,12 +363,110 @@ uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
     const uint16_t base = (uint16_t)s_r->g[0x021] << 8;
     Hgfx::copyRun((uint16_t)(dst - base), (uint16_t)(src - base), c);
     // The stores land in RAM too, byte by byte: an overlapping copy replicates.
-    for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(dst + k), MemESP::readbyte((uint16_t)(src + k)));
+    if (dst <= src || dst >= src + c) { uint8_t buf[256]; rdBytes(src, buf, c); wrBytes(dst, buf, c); }
+    else for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(dst + k), rdByte((uint16_t)(src + k)));
     s_rdArmed = false;
     uint32_t t = c * cycles;
     while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
     return c;
 }
+// PF2026 reads every sector from the SD data port #EB with the Z80 DMA: per byte that
+// was dmaInput -> the whole Ports::input decode -> spiRead, then busWrite + writebyte
+// (a fifth of core0 at 15-20 FPS, PERF_HIST 2026-11-16). Here a piece of the block's
+// data phase goes from the sector buffer straight into the RAM page (mmc_read_bulk, the
+// Next INIR batch's shape); the protocol bytes around it (R1, token, CRC) stay on the
+// per-byte path. The piece keeps the per-byte path's time: port + memory cycles and the
+// 1 T early I/O cycle input() draws, uncontended, and stops at the frame's end.
+uint32_t dmaFromCard(uint16_t port, uint16_t dst, uint32_t n, uint32_t cycles) {
+    if ((port & 0xFF) != 0xEB || !DivMMC::enabled || DivMMC::divide_mode) return 0;
+    if (Config::numPortReadBP || Config::numMemWriteBP || dst < 0x4000) return 0;
+    if (s_r && s_r->win[dst >> 8] != W_NONE) return 0;      // a window: busWrite per byte
+    const uint8_t slot = dst >> 13;
+    if ((MemESP::wr_overlay_mask >> slot) & 1) return 0;
+    uint8_t* p = MemESP::ramCurrent[slot];
+    if ((uintptr_t)p < 0x11000000u) return 0;              // ROM / accessor bank
+    const uint32_t per = cycles + 1;
+    uint32_t c = n;
+    if (c > 0x100u - (dst & 0xFF)) c = 0x100u - (dst & 0xFF);
+    if (CPU::tstates >= CPU::statesInFrame) return 0;
+    const uint32_t left = (CPU::statesInFrame - CPU::tstates) / per;
+    if (c > left) c = left;
+    if (!c) return 0;
+    const uint32_t k = DivMMC::mmc_read_bulk(p + (dst & 0x1FFF), c);
+    if (!k) return 0;
+    *mem_desc_t::bank_dirty[slot] = true;
+    LED::touchR(LED::SD);
+    uint32_t t = k * per;
+    while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
+    return k;
+}
+// The 48 ROM's key wait at 28 MHz: no HALT, the whole frame is passes of
+// WAIT-KEY1 (#15DE: CALL INPUT-AD / RET C / JR Z) -> INPUT-AD -> CALL-SUB -> KEY-INPUT
+// (#10A8: BIT 3,(IY+2) / CALL NZ / AND A / BIT 5,(IY+1) / RET Z) - 45-59k
+// instructions a frame for nothing (BASIC 48: 17 FPS against the Next's 51, whose
+// NextIdle skips its own loop; hw 2026-11-16). Only the ISR can end it (KEYBOARD
+// sets FLAGS bit 5), so once two passes meet at the return to #15E1 with Z set,
+// C clear and the same registers, guest time moves on by whole passes to the
+// slice end - NextPorts::pollSkip's arithmetic. The pass writes nothing but the
+// same stack words each time. Called from Z80::check_trdos (RET to #15E1).
+static const struct { uint16_t a; uint8_t n; uint8_t b[10]; } s_kwSig[] = {
+    { 0x15DE, 6,  { 0xCD, 0xE6, 0x15, 0xD8, 0x28, 0xFA } },
+    { 0x15E6, 9,  { 0xD9, 0xE5, 0x2A, 0x51, 0x5C, 0x23, 0x23, 0x18, 0x08 } },
+    { 0x15F7, 10, { 0x5E, 0x23, 0x56, 0xEB, 0xCD, 0x2C, 0x16, 0xE1, 0xD9, 0xC9 } },
+    { 0x162C, 1,  { 0xE9 } },
+    { 0x10A8, 10, { 0xFD, 0xCB, 0x02, 0x5E, 0xC4, 0x1D, 0x11, 0xA7, 0xFD, 0xCB } },
+    { 0x10B2, 3,  { 0x01, 0x6E, 0xC8 } },
+};
+static const uint8_t* s_kwPg[2];
+static bool s_kwOk;
+static uint32_t s_kwT, s_kwR, s_kwRegs;
+#if PERF_TRACE
+uint32_t g_elm_kw[2];   // skips, passes skipped
+#endif
+void keyWaitSkip() {
+    const uint16_t af = Z80::getRegAF();
+    if (!(af & 0x40) || (af & 0x01)) return;   // Z set, C clear: no key, loop again
+    if (!Z80::isIFF1() || Z80::getIM() != Z80::IM1 || Z80::isNMI() || Rzx::mode) return;
+    if (Z80::getRegIY() != 0x5C3A || MemESP::divmmc_mapped || Config::numPcBP) return;
+    if (MemESP::ramCurrent[0] != s_kwPg[0] || MemESP::ramCurrent[1] != s_kwPg[1]) {
+        s_kwPg[0] = MemESP::ramCurrent[0]; s_kwPg[1] = MemESP::ramCurrent[1];
+        s_kwOk = true;
+        for (const auto& s : s_kwSig)
+            for (int i = 0; i < s.n && s_kwOk; i++) s_kwOk = MemESP::readbyte((uint16_t)(s.a + i)) == s.b[i];
+    }
+    if (!s_kwOk) return;
+    // Channel K's input routine, no ED-COPY due, no key yet.
+    const uint16_t ch = (uint16_t)(MemESP::readbyte(0x5C51) | MemESP::readbyte(0x5C52) << 8);
+    if ((MemESP::readbyte((uint16_t)(ch + 2)) | MemESP::readbyte((uint16_t)(ch + 3)) << 8) != 0x10A8) return;
+    if ((MemESP::readbyte(0x5C3C) & 0x08) || (MemESP::readbyte(0x5C3B) & 0x20)) return;
+    const uint32_t t = CPU::tstates, r = Z80::getFetchCounter();
+    const uint32_t regs = Z80::getRegBC() ^ (uint32_t)Z80::getRegDE() << 16 ^ (uint32_t)Z80::getRegHL() << 5 ^
+                          (uint32_t)Z80::getRegSP() << 11 ^ (uint32_t)Z80::getRegIX() << 21 ^
+                          (uint32_t)Z80::getRegBCx() << 3 ^ (uint32_t)Z80::getRegDEx() << 9 ^ (uint32_t)Z80::getRegHLx() << 14;
+    const uint32_t g = (uint32_t)(CPU::global_tstates + t);
+    const uint32_t d = g - s_kwT, dR = r - s_kwR;
+    const bool same = regs == s_kwRegs;
+    s_kwT = g; s_kwR = r; s_kwRegs = regs;
+    if (!same || d == 0 || d > 1024) return;
+    if ((int32_t)t < CPU::IntEnd) return;
+    uint32_t lim = CPU::statesInFrame - (uint32_t)CPU::IntEnd;
+    if (CPU::stFrame && CPU::stFrame < lim) lim = CPU::stFrame;
+    if (lim <= t) return;
+    const uint32_t k = (lim - t) / d;
+    if (!k) return;
+    const uint32_t to = t + k * d;
+    while (CPU::tstates < to) {
+        uint32_t n = to - CPU::tstates;
+        if (VIDEO::tStatesPerLine && n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+        VIDEO::Draw(n, false);
+    }
+    Z80::incRegR(k * dR);
+    s_kwT = (uint32_t)(CPU::global_tstates + CPU::tstates); s_kwR = Z80::getFetchCounter();
+#if PERF_TRACE
+    g_elm_kw[0]++; g_elm_kw[1] += k;
+#endif
+}
+
 static void fdWrite(uint32_t a, bool uram, uint8_t v) {
     if (uram) { uint8_t* p = uramByte(a); if (p) *p = v; return; }
     busWrite((uint16_t)a, v);
@@ -346,24 +519,38 @@ static void fdmaRun(int set, bool wide24) {
         const uint8_t* sp = fill ? nullptr : suram ? uramByte(sa) : MemESP::ramCurrent[(sa >> 13) & 7] + (sa & 0x1FFF);
         uint8_t* dp = duram ? uramByte(da) : MemESP::ramCurrent[(da >> 13) & 7] + (da & 0x1FFF);
         const uint8_t kind = duram ? W_NONE : s_r->win[(da >> 8) & 0xFF];
-        bool fast = fill || suram || !g_elm_vram_rd;                  // a COPY read latch is per byte
+        // The source in a chunky window: read through the HGFX buffer (the SRAM half,
+        // a split window), never the slot's raw pointer. PF2026 moves its decoded video
+        // from buffer 1 to the shown buffer this way, ~8 KB a frame into the VRAM
+        // window in COPY mode, which the per-byte path below ran at ~2 ms a frame of
+        // flash calls (hw PERF_HIST 2026-11-16).
+        const bool schunk = !fill && !suram && ((s_hgfxSlots >> ((sa >> 13) & 7)) & 1);
+        // COPY mode's read latch is per byte: only a read of the VRAM window arms it
+        // (memRead), so a run from anywhere else, with nothing armed, is the plain
+        // writes the per-byte path would have made.
+        const bool svram = !fill && !suram && s_r->win[(sa >> 8) & 0xFF] == W_VRAM;
+        bool fast = true;
         if (!fill && !suram && sa < 0x4000 && MemESP::divmmc_mapped) fast = false;
         if (sp && dp && dp > sp && dp < sp + c) fast = false;
         if (!duram) {
             if (da < 0x4000 && (MemESP::divmmc_mapped || kind == W_NONE)) fast = false;   // ROM, divMMC: the generic rules
-            if (kind == W_VRAM) { if (!Hgfx::reg(Hgfx::REG_MASK) || g_elm_vram_rd) fast = false; }
-            else if (kind == W_CHUNKY) { if (!fill && !suram && ((s_hgfxSlots >> ((sa >> 13) & 7)) & 1)) fast = false; }
+            if (kind == W_VRAM) { if (!Hgfx::reg(Hgfx::REG_MASK) || (g_elm_vram_rd && (svram || s_rdArmed))) fast = false; }
+            else if (kind == W_CHUNKY) { if (schunk) fast = false; }
             else if (kind != W_NONE) fast = false;
         }
         if (fast) {
+            // The source is read in place when it is a plain page (no copy into buf);
+            // the overlap test above already sent a destination inside it per byte.
+            const uint8_t* src = buf;
             if (fill) memset(buf, fv, c);
-            else if (suram) { if (sp) memcpy(buf, sp, c); else memset(buf, 0xFF, c); }
-            else for (uint32_t k = 0; k < c; k++) buf[k] = MemESP::readbyte((uint16_t)(sa + k));
-            if (duram) { if (dp) memcpy(dp, buf, c); }
-            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), buf, c);
+            else if (suram) { if (sp) src = sp; else memset(buf, 0xFF, c); }
+            else if (schunk) Hgfx::chunkyReadRun(slotPage[(sa >> 13) & 7] * 0x2000u + (sa & 0x1FFF), buf, c);
+            else if (!(src = rdPtr((uint16_t)sa))) { rdBytes((uint16_t)sa, buf, c); src = buf; }
+            if (duram) { if (dp) memmove(dp, src, c); }
+            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), src, c);
             else {
-                if (kind == W_VRAM) Hgfx::writeVramRun((uint16_t)(da - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
-                for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(da + k), buf[k]);   // under the window too
+                if (kind == W_VRAM) Hgfx::writeVramRun((uint16_t)(da - ((uint16_t)s_r->g[0x021] << 8)), src, c);
+                wrBytes((uint16_t)da, src, c);   // under the window too
             }
         } else for (uint32_t k = 0; k < c; k++)
             fdWrite((da + k) & amask, duram, fill ? fv : fdRead((sa + k) & amask, suram));
@@ -526,7 +713,7 @@ static bool gamaOut(uint8_t lo, uint8_t v) {
 void remap() {
     if (!s_r) return;
     const bool on = (s_r->g[0x000] & 1) && uramMode();
-    uint8_t active = 0, wp = 0, lcu = 0, hg = 0, fl = 0, fr = 0;
+    uint8_t active = 0, wp = 0, lcu = 0, hg = 0, fl = 0, fr = 0, split = 0;
     for (uint8_t z = 0; z < 4; z++) {
         const uint8_t layout = on ? s_z[z].par >> 4 : LAYOUT_OFF;
         const bool mapped = layout == LAYOUT_RAM || layout == LAYOUT_HGFX || layout == LAYOUT_HGFX1 ||
@@ -547,12 +734,13 @@ void remap() {
             // over both Areas; layout 9 has one HGFX Area, and it starts at OffsetY too
             // (TETRIS writes each 32-row band of its photo to #2000 with OffsetY = row).
             const uint8_t hgStep = layout == LAYOUT_HGFX ? a : 0;
+            bool sp = false;
             uint8_t* p = isLcu ? lcuBlock()
-                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(hgStep * 0x2000u)
+                       : isHg && Hgfx::ensure() ? Hgfx::chunkyRead(hgStep * 0x2000u, slot < 2, &sp)
                        : isFl ? (ElmFlash::ensure() ? ElmFlash::page(s_r->e[0x00F], s_z[z].page[a]) : nullptr)
                        : isFr ? (ElmFlash::ensure() ? ElmFlash::fram() : nullptr)
                        : uramPtr(s_z[z].page[a]);
-            if (isHg) { hg |= 1u << slot; slotPage[slot] = hgStep; }
+            if (isHg) { hg |= 1u << slot; slotPage[slot] = hgStep; if (sp) split |= 1u << slot; }
             if (!p) { wp |= 1u << slot; p = (uint8_t*)MemESP::ram[0].direct(); }
             MemESP::ramCurrent[slot] = p;
             mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
@@ -571,10 +759,14 @@ void remap() {
     s_hgfxSlots = hg;
     s_flashSlots = fl;
     s_framSlots = fr;
+    g_elm_split = split;
     Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
     g_elm_nodiv = (active & 1) && !(s_r->e[0x02D] & 0x80);
-    windowsRebuild();
+    windowsRefresh();
+    // A window across the edge of the SRAM half sent it back to PSRAM in this pass:
+    // slots mapped before it point into freed memory. One more pass (nothing in SRAM now).
+    if (Hgfx::chunkyStale()) remap();
 }
 
 static const uint8_t* s_hrxcSrc;      // the screen the table was latched from
@@ -1133,7 +1325,7 @@ void reset() {
     g_elm_nodiv = 0;        // the reset goes through esxDOS at #0000 again
     Hgfx::reset();
     s_rdArmed = false;
-    Hgfx::direct(false);
+    Hgfx::direct(false, true);
     g_atm_ro = 0;
     if (s_lcu) ElmLcu::reset(s_lcu);
     ElmLcu::reset(s_lcu2);
@@ -1203,6 +1395,7 @@ void reset() {
     romsBind();
     divRomApply();
     windowsRebuild();       // no window yet; the ROM write gate on window 0
+    Hgfx::arenaEnsure();    // the HGFX SRAM block, while the heap is still whole (once a session)
 }
 
 static uint8_t gRead(uint8_t r) {
@@ -1422,6 +1615,20 @@ static bool uramOut(uint8_t lo, uint8_t v) {
     case 0x53: z.par = v;                                        break;
     case 0x73: s_zone = v & 3;                                   return true;
     default:   return false;
+    }
+    // A new page for a Zone already mapped as plain URAM, its write protect unchanged:
+    // only that slot's pointer moves (PF2026 pages URAM tens of thousands of times a
+    // second). Anything else - a layout or protect change, a page with no memory - goes
+    // through the full remap.
+    if (lo != 0x53 && (s_active >> s_zone) & 1 && (z.par >> 4) == LAYOUT_RAM && (s_r->g[0x000] & 1) && uramMode()) {
+        const uint8_t a = (lo == 0x47 || lo == 0x67) ? 1 : 0, slot = s_zone * 2 + a;
+        const bool wp = !(z.par & (1u << a));
+        uint8_t* p = uramPtr(z.page[a]);
+        if (p && ((s_wpSlots >> slot) & 1) == wp) {
+            MemESP::ramCurrent[slot] = p;
+            mem_desc_t::bank_dirty[slot] = &mem_desc_t::dirty_sink;
+            return true;
+        }
     }
     remap();
     return true;

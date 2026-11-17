@@ -67,6 +67,10 @@ public:
     // Wall-clock-locked pump. Call in a tight loop on core1; runs the GS-Z80
     // at exactly 12 MHz regardless of how fast the emulator could go.
     static void pump();
+    // The card may run `ms` ahead of the wall clock (credit cap, gap clamp, ring depth):
+    // a core1 renderer that starves pump() for a whole draw is bridged by the backlog.
+    // 0 = the default 2 ms cushion. Lives in the GS overlay: call only with `enabled`.
+    static void setAhead(uint32_t ms);
 #if HOST_BUILD
     // Host build: the GS-Z80 runs on the emulator thread in lockstep with the
     // guest's clock. Call at every host port access and once per frame; it

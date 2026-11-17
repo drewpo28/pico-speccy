@@ -1494,8 +1494,11 @@ static void sqAsyncDiscard() {
 // loop runs): a request nobody takes would otherwise wait for the 3 ms fallback.
 extern "C" volatile uint8_t g_sd_c1_live;
 static inline bool sdAsyncMachine() {
+    // eLeMeNt ZX: its divSD (esxDOS) card too - PF2026 streams ~1000 sectors a second,
+    // ~19 % of core0 in the blocking PIO read loop (hw PERF_HIST 2026-11-16). Its core1
+    // pumps between HGFX picture rows (ElmHgfx rowPump) as the Next's between line batches.
     return g_sd_c1_live && DivMMC::medium(DivMMC::currentCard()).raw && raw_pdrv() == 0 &&
-           (Z80Ops::isNext || DivMMC::currentCard() == DivMMC::CARD_ZC);
+           (Z80Ops::isNext || Z80Ops::isElm || DivMMC::currentCard() == DivMMC::CARD_ZC);
 }
 
 // The cap the window may reach right now: inside a CMD18 the guest itself

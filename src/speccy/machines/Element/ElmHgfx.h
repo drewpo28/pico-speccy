@@ -51,11 +51,22 @@ void    writeReg(uint8_t reg, uint8_t v);
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F
 uint8_t reg(uint8_t r);
-uint8_t* chunkyRead(uint32_t off);
+// The raw 8 KB of a chunky window; lowSlot = the slot is below #4000 (the generic read
+// path serves it), split = the window lies across the SRAM half's edge: its reads must
+// go through chunkyReadByte, the pointer serves a fetch only.
+uint8_t* chunkyRead(uint32_t off, bool lowSlot, bool* split);
+uint8_t  chunkyReadByte(uint32_t off);
+void     chunkyReadRun(uint32_t off, uint8_t* p, uint32_t n);
+void    arenaEnsure();          // Elm::reset: the one SRAM block for buffer 1 / the row blocks (eLeMeNt session)
+void    arenaFree();            // another machine: give it back
+bool    chunkyStale();          // chunkyRead sent buffer 1 back to PSRAM: Elm::remap maps every slot again
 void    chunkyWrite(uint32_t off, uint8_t v);
 void    chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n);   // n chunkyWrite calls in a row
 void    drain();              // core0: wait until core1 has run everything queued
-void    direct(bool on);      // chunky windows mapped: no queue, the guest reads the pixels
+extern volatile bool g_pairPushNow;   // core1: the staged pair palette is due now (its draw started)
+void    pairPushPoll();        // core0, once a line (VIDEO::tsDrawTick): push it
+void    direct(bool on, bool now = false);   // chunky windows mapped: no queue, the guest reads the pixels
+                                             // (off: after DIRECT_HOLD frames unless now)
 void    core1Pump();          // core1 loop, while g_elm_c1_live
 void    frameEnd();           // EndFrame: mode change, palette, the picture
 void    repaint();            // the same, machine stopped

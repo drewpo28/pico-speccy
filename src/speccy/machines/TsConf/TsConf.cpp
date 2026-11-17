@@ -14,6 +14,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 */
 
+#include "app/Buffer.h"
 #include "TsConf.h"
 #include "TsDram.h"
 #include "app/CodeOverlay.h"
@@ -304,7 +305,10 @@ struct TsIntRec { uint16_t pc, sp, ppc, vs; uint32_t t; uint8_t lat, src; };  //
 // unscaled T, so a uint16 silently wrapped everything past line 292 (65536/224)
 // and made healthy late-frame accepts read as "line 0" — a trace bug that
 // false-fired the freeze trigger below (hw 2026-09-09).
-TsIntRec ts_int_ring[TS_INT_RING_N];
+// In PSRAM (TsConf::reset), 8 KB of SRAM otherwise on every PERF build, whatever the
+// machine (2026-11-16: PERF ELFs left the Next ~15 KB of heap). n for tools/memdump.gdb.
+TsIntRec* ts_int_ring;
+uint16_t ts_int_ring_n = TS_INT_RING_N;   // read by the allocation below, so it survives --gc-sections
 uint16_t ts_int_ring_w = 0;
 uint8_t  ts_int_frozen = 0;           // 1 = trigger fired, ring holds the transition (see intTrace)
 static uint8_t  s_int_last_lat = 0;   // set by intAck for the record intTrace is about to write
@@ -1103,7 +1107,7 @@ TS_HOT void TsConf::intTrace(uint16_t pc, uint16_t sp, uint8_t vect, bool halted
     // (w=196, lines 165..187), i.e. the failure is fully deterministic, so
     // the trigger can be moved earlier and earlier until it catches the
     // origin. ROM is kept as a fallback for a run that skips the slide.
-    if (ts_int_frozen) { s_int_prev_pc = pc; s_int_last_lat = 0; return; }
+    if (ts_int_frozen || !ts_int_ring) { s_int_prev_pc = pc; s_int_last_lat = 0; return; }
     const uint32_t t = CPU::tstates >> ESPectrum::multiplicator;
     TsIntRec& r_ = ts_int_ring[ts_int_ring_w & (TS_INT_RING_N - 1)];
     r_.pc = pc; r_.sp = sp; r_.ppc = s_int_prev_pc; r_.t = t; r_.vs = r.vsint;
@@ -1879,6 +1883,10 @@ void TsConf::reset(bool cold) {
     s_steal_half = s_dma_steal_t = s_poll_steal = 0;
     memcycRecalc();
 #if PERF_TRACE
+    if (!ts_int_ring) {
+        ts_int_ring = (TsIntRec*)Buffer::palloc(sizeof(TsIntRec) * ts_int_ring_n, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (ts_int_ring) memset(ts_int_ring, 0, sizeof(TsIntRec) * ts_int_ring_n);
+    }
     ts_int_frozen = 0; ts_int_ring_w = 0;                      // re-arm the INT-accept trigger per load
     s_int_prev_pc = 0; s_int_prev_t = 0; s_int_run = 0;
 #endif

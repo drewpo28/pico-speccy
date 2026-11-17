@@ -7076,7 +7076,7 @@ void VIDEO::tsFastMemRecalc() {
     // Next: off while ULA contention is live (NEXTVID::contend) — the fast path
     // never calls Draw, so it cannot charge the wait states.
     const uint8_t v = Z80Ops::isNext ? ((nobp && !NEXTVID::contend && !NextReg::l2MapHigh && !MemESP::next_stale_mask) ? 1 : 0)
-                    : Z80Ops::isElm ? ((nobp && paper_hold && ts_fast_armed) ? 1 : 0)   // level 1: the divSD window stays generic; the COPY read hook takes the READ level down (tsFastRdFor)
+                    : Z80Ops::isElm ? ((nobp && (paper_hold || col16_fast) && ts_fast_armed) ? 1 : 0)   // level 1: the divSD window stays generic; the COPY read hook takes the READ level down (tsFastRdFor)
                     : (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
                                             (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live) ||
                                             (col16_fast && ts_fast_armed && col16_memok))
@@ -7751,6 +7751,7 @@ IRAM_ATTR void VIDEO::tsDrawTick() {
     PERF_BUCKET_SCOPE(PB_DRAWTICK);
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
+    if (__builtin_expect(Hgfx::g_pairPushNow, 0)) Hgfx::pairPushPoll();   // eLeMeNt pair frame: core1 started the draw of a staged palette
     if (__builtin_expect(tsCramDirty, 0)) {
         tsPalettePoll(false);   // beam-scheduled palette apply, once per line
         // The poll may have RELEASED a held re-index: tsReindexRelease renders
@@ -8131,7 +8132,34 @@ void VIDEO::atmDrawTick() {
 // Everything refused here keeps MainScreen's 16col branch: the borderless scaler
 // and RedrawPausedFrame need MainScreen's line hooks, Timex hi-res and Profi take
 // precedence in that branch too.
+// eLeMeNt ZX, a plain ZX screen at a turbo clock (2026-11-16): the same TsDraw clock
+// with a standard line at the end of its paper (attributes, FLASH, the DMA attribute
+// shadow, AluByte - MainScreen's plain branch), and the fast guest-memory path with
+// it. BASIC 48 at 28 MHz ran MainScreen's beam bookkeeping and the generic accessors
+// on every access (~29 % of core0, PERF_HIST). At 3.5 MHz the beam renderer stays:
+// multicolour timing matters there. Refused like 16col for anything MainScreen's
+// other branches own (Timex modes, Gigascreen, 16col, borderless, overlays, the OSD
+// stats rows, snow).
+static bool elmZxArm() {
+    if (!ESPectrum::multiplicator || VIDEO::paper_hold || VIDEO::paper_off || VIDEO::bl_live || ov_y1 > ov_y0
+        || VIDEO::timex_hires_live || (Config::timex_video && VIDEO::timex_mode != 0)
+        || VIDEO::gigascreen_enabled || VIDEO::mode16col_enabled || VIDEO::snow_toggle
+        || VIDEO::Draw_OSD169 != VIDEO::MainScreen)
+        return false;
+    return true;
+}
 bool VIDEO::col16Arm() {
+    if (Z80Ops::isElm) {
+        if (!elmZxArm()) return false;
+        ts_line_t = (uint32_t)(tStatesScreen + 128) << ESPectrum::multiplicator;
+        ts_row_idx = 0;
+        col16_fast = true;
+        col16_memok = false;          // the eLeMeNt's gate is its own (tsFastMemRecalc)
+        Draw = &TsDraw;
+        Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
+        return true;
+    }
     if (!mode16col_decode_lut || !Z80Ops::isPentagon || bl_live || ov_y1 > ov_y0 || paper_off
         || timex_hires_live || (Config::timex_video && timex_mode == 6)
         || profi_ds80_active || gmx_ext_live)
@@ -8151,6 +8179,24 @@ void VIDEO::col16DrawTick() {
         const uint32_t line = ts_row_idx;                 // content line 0..191
         const uint32_t frow = line + (uint32_t)lin_end;
         if (brdChange) DrawBorder();
+        if (Z80Ops::isElm) {
+            if (vga.frameBuffer && frow < (uint32_t)vga.yres) {
+                curline = line;
+                linedraw_cnt = frow;
+                uint32_t* dst = (uint32_t*)vga.frameBuffer[frow] + lineptr_offset;
+                const uint8_t* bm = grmem + offBmp[line];
+                const uint8_t* at = grmem + offAtt[line];
+                if (Config::dma_mode && Z80DMA::dma_attr_valid && Z80DMA::dma_attr_valid[line]
+                    && Z80DMA::dma_attr_page[line >> 3] == grmem)
+                    at = &Z80DMA::dma_attr_shadow[line * 32];
+                for (int j = 0; j < 32; j++) {
+                    const uint8_t att = at[j];
+                    const uint8_t bmp = bm[j] ^ (uint8_t)(-((att & flashing) >> 7));
+                    *dst++ = AluByte[bmp >> 4][att];
+                    *dst++ = AluByte[bmp & 0xF][att];
+                }
+            }
+        } else
         if (__builtin_expect(!mode16col_enabled, 0)) {
             // Guest left 16col: the beam renderer takes the rest of the frame from
             // this line on. Its clock is the UNSCALED raster (the documented turbo
@@ -8164,7 +8210,7 @@ void VIDEO::col16DrawTick() {
             tsFastMemRecalc();
             return;
         }
-        if (vga.frameBuffer && frow < (uint32_t)vga.yres && mode16col_decode_lut) {
+        else if (vga.frameBuffer && frow < (uint32_t)vga.yres && mode16col_decode_lut) {
             curline = line;
             linedraw_cnt = frow;
             Pentagon::col16RenderLine((uint32_t*)vga.frameBuffer[frow] + lineptr_offset,
@@ -9739,6 +9785,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (float)(xa - xh) * fps / 60.0f / 1e6f, fps, (unsigned)g_frm_int_miss,
                 (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
                 (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
+            Debug::log("[PERF] clk: mult=%u T/fr=%u", (unsigned)ESPectrum::multiplicator, (unsigned)CPU::statesInFrame);
             g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
             PerfFdc::dump();
             // Border landing position, its own line for the same reason. Both
@@ -9896,8 +9943,8 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
                     {   // host time inside CPU::loop: ports by low byte, then the big buckets
                         const double fr = 10.0 * 60.0;
                         int p = 0; uint8_t used[512] = {0};
-                        uint64_t ptot = 0; for (int i = 0; i < 512; i++) ptot += perf_port_us[i];
-                        for (int j = 0; j < 8 && p < (int)sizeof(line) - 28; j++) {
+                        uint64_t ptot = 0; if (perf_port_us) for (int i = 0; i < 512; i++) ptot += perf_port_us[i];
+                        for (int j = 0; perf_port_us && j < 8 && p < (int)sizeof(line) - 28; j++) {
                             int best = -1; uint32_t bv = 0;
                             for (int i = 0; i < 512; i++) if (!used[i] && perf_port_us[i] > bv) { bv = perf_port_us[i]; best = i; }
                             if (best < 0) break;
@@ -9913,7 +9960,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
                             perf_bucket_us[PB_PALPOLL] / fr / 1000.0, (unsigned)(perf_bucket_n[PB_PALPOLL] / fr),
                             perf_bucket_us[PB_ENDFRAME] / fr / 1000.0);
                         DivMMC::perfDump((float)fr);
-                        for (int i = 0; i < 512; i++) perf_port_us[i] = perf_port_n[i] = 0;
+                        if (perf_port_us) for (int i = 0; i < 512; i++) perf_port_us[i] = perf_port_n[i] = 0;
                         for (int i = 0; i < PB_N; i++) perf_bucket_us[i] = perf_bucket_n[i] = 0;
                     }
                     hist_cpu_us = 0; hist_windows = 0;
@@ -10159,7 +10206,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         Draw = &Blank;
         Draw_Opcode = &Blank_Opcode;
         ts_fast_armed = true;
-    } else if (mode16col_enabled && col16Arm()) {
+    } else if ((mode16col_enabled || Z80Ops::isElm) && col16Arm()) {
         // Pentagon 16col: whole line at the end of its paper (col16DrawTick) and the
         // fast memory path — armed by the flash helper (one test + call here: the
         // condition chain inlined cost this RAM function 300 B).

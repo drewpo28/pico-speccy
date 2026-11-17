@@ -76,6 +76,20 @@ void filterCoef() {
 }
 
 void envClock(Voice& v, uint32_t n) {
+    // Held at zero (decay / release ran out): only the rate and exponent counters move,
+    // so a long span is arithmetic, not one loop pass per rate period - with rate 0 that
+    // was ~2000 passes a voice per silent span (PF2026, hw 2026-11-16).
+    if (v.holdZero && v.state != ATTACK && n && v.expCnt < v.expPeriod) {
+        const uint32_t need = v.rateCnt < v.ratePeriod ? v.ratePeriod - v.rateCnt
+                                                       : 0x8000u - v.rateCnt + v.ratePeriod;
+        if (n < need) { v.rateCnt = (uint16_t)((v.rateCnt + n) & 0x7FFF); return; }
+        n -= need;
+        const uint32_t p = v.ratePeriod ? v.ratePeriod : 1;
+        const uint32_t ticks = 1 + n / p;
+        v.rateCnt = (uint16_t)(n % p);
+        if (v.expPeriod) v.expCnt = (uint8_t)((v.expCnt + ticks) % v.expPeriod);
+        return;
+    }
     while (n) {
         const uint32_t need = v.rateCnt < v.ratePeriod ? v.ratePeriod - v.rateCnt
                                                        : 0x8000u - v.rateCnt + v.ratePeriod;
@@ -288,6 +302,24 @@ uint8_t read(uint8_t reg) {
 void renderTo(int to) {
     if (!s) return;
     if (to > MAX_SAMPLES) to = MAX_SAMPLES;
+    // A silent SID (no gate, every envelope at 0, no kick, the bias settled at 0) stays
+    // silent until a register write, and the caller renders up to the write first. Its
+    // oscillators and envelope counters still run - one clock of the whole span instead
+    // of three oscillators and three envelopes per output sample (2.8 % of core0 in
+    // PF2026, which never touches the SID; PERF_HIST 2026-11-16). Phases and the noise
+    // LFSR come out where the per-sample path leaves them; only the sync edges of an
+    // inaudible span are not resolved per sample.
+    if (s->n < to && s->bias == 0 && !live()) {
+        const uint64_t cyc = (uint64_t)s->cyc + (uint64_t)s->cycStep * (uint32_t)(to - s->n);
+        const uint32_t n = (uint32_t)(cyc >> 16);
+        s->cyc = (uint32_t)cyc & 0xFFFF;
+        oscClock(n);
+        for (int c = 0; c < 3; c++) envClock(s->v[c], n);
+        memset(s->out + s->n, 0, (size_t)(to - s->n) * sizeof(int16_t));
+        s->wasLive = false;
+        s->n = to;
+        return;
+    }
     for (int i = s->n; i < to; i++) {
         s->cyc += s->cycStep;
         const uint32_t n = s->cyc >> 16;
