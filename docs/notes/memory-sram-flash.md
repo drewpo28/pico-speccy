@@ -88,6 +88,23 @@ void pages) are unchanged and run after/independently. Pattern validated on
 host against the user's photo (block geometry exact; render script regenerates
 the fill byte-for-byte).
 
+## No PSRAM + no SD: the page-descriptor table was only 8 long (2026-11-18, hw-confirmed 2026-11-18 by the owner)
+
+Owner report: on a board with neither PSRAM nor an SD card the menu could not switch
+to Pentagon 128 (it came back as 48K). Cause: setup()'s `no ext_ram` path kept
+`MemESP::ram = temp[8]` while `MEM_PG_CNT` stayed 64, so every walk of the strip read
+past the array — `powerOnRamFill()` (host: SIGSEGV at boot), the snapshot paths, and
+the Profi-layout marker `ram[56].memType()` in `requestMachine()` /
+`MachineSwitch::commit()`. A garbage POINTER there reads as "Profi SRAM layout", the
+switch hard-resets, and a card-less board loses its RAM-only config (`nvs_ram_buf`
+is .bss) and boots 48K again. Fix: that path now builds the full `MEM_PG_CNT + 2`
+table too; pages 8+ are SWAP descriptors with no backing (the swap file works once a
+card is inserted, which is also when `p_extRam()` offers the bigger machines). Every
+machine the menu shows without ext RAM was host-checked (Pentagon 128, Quorum 128,
+Hobbit, TC2068, +3, EP, ALF): none touches a page above 7.
+Host bench: `PICOSPECCY_NOSD=1` (empty slot) and `PICOSPECCY_NOPSRAM=1` (no butter).
+Boot also says `MSG_NO_SD` through `OSD::bootNotice` when no card (and no USB root) mounted.
+
 ## RP2350 chip temperature (chipTempX10) + the ZERO2 ADC-leak (hw-proven 2026-08-14)
 
 `chipTempX10()` (OSDMain.cpp, non-static) is the ONE reader: SDK `hardware_adc`,

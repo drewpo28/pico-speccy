@@ -72,7 +72,8 @@ uint8_t rx[4] = { 0xEF, 0x40, 0x16, 0x16 };   // JEDEC id: a 4 MB Winbond part
 uint8_t psram_pin = 255;
 char** host_argv = nullptr;
 
-static bool s_butter_off = false;
+// PICOSPECCY_NOPSRAM=1: a board without the QSPI PSRAM chip.
+static bool s_butter_off = getenv("PICOSPECCY_NOPSRAM") != nullptr;
 uint32_t butter_psram_size() { return s_butter_off ? 0 : HOST_BUTTER; }
 bool butter_psram_probed() { return true; }
 void board_psram_disable() { s_butter_off = true; }

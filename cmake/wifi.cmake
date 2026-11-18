@@ -48,6 +48,13 @@ if (PICOSPECCY_WIFI)
     set_target_properties(cybt_shared_bus PROPERTIES INTERFACE_SOURCES "${_cybt_srcs}")
     target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder)
+    # BTstack's link-key bank writes flash through flash_safe_execute from code that
+    # lives in flash; the wrappers (end of BtHost.cpp) restore the overclocked QMI
+    # timing before returning into it. Pairing hung the board at 504 MHz without them.
+    target_link_options(${PROJECT_NAME} PRIVATE
+        "LINKER:--wrap=flash_range_erase"
+        "LINKER:--wrap=flash_range_program"
+        "LINKER:--wrap=flash_safe_execute")
     # The SBC encoder runs on core0 for every 128 samples of the A2DP stream: -O2
     # (the project default is -Os) — it is a few KB of flash.
     file(GLOB _sbc_enc_srcs "${PICO_BTSTACK_PATH}/3rd-party/bluedroid/encoder/srce/*.c")

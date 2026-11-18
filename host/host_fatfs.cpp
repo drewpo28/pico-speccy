@@ -242,6 +242,8 @@ static void fillInfo(FILINFO* fno, const std::string& cpName, const struct stat&
 static inline int fdOf(const FIL* fp) { return (int)fp->obj.sclust; }
 #define CHECK_FIL(fp) do { if (!(fp) || (fp)->obj.fs != &s_fs) return FR_INVALID_OBJECT; } while (0)
 
+extern "C" bool host_no_sd();   // host_disk.cpp
+
 extern "C" {
 
 FRESULT f_mount(FATFS* fs, const TCHAR* path, BYTE opt) {
@@ -258,6 +260,7 @@ FRESULT f_mount(FATFS* fs, const TCHAR* path, BYTE opt) {
         return FR_OK;
     }
     if (vol != 0) return opt ? FR_NOT_READY : FR_OK;
+    if (host_no_sd()) return opt ? FR_NOT_READY : FR_OK;
     mkdirs(rootDir());
     s_fs.fs_type = FS_EXFAT;
     if (fs) fs->fs_type = FS_EXFAT;

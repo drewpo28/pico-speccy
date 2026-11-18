@@ -493,3 +493,33 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
   free-heap log lets us see if a TLS handshake (IN16K+OUT4K + alt-stack, all from
   heap) is too tight — if so, route mbedTLS allocs to PSRAM (`PSRAM_DATA`) later.
   SD-swap is NOT usable for TLS buffers (no MMU/demand-paging on RP2350).
+
+## Bluetooth (BtHost): pairing freeze at 504 MHz, Switch-protocol pads (2026-11-18)
+
+Status: flash-bank fix **hw-confirmed 2026-11-18** (owner, DVp2w at 504 MHz: mouse and
+keyboard paired, no hang; the old build was not re-run there to show the hang).
+Switch-pad handshake **NOT hw-tested** (needs the user's pads).
+
+User report (1.1.2, DVp2w image on a Pimoroni Pico Plus 2 W): configuring a BT device
+froze the board at the high clock, fine at 378; at 378 an 8BitDo Ultimate 2C Bluetooth
+and a Switch clone paired, showed "connected", and did nothing (both work with
+ESPectrum/Bluepad32). Test build `debug/DVp2w-btpad-1.1.3`.
+
+- **Freeze:** pairing stores the link key in BTstack's TLV bank (`pico_flash_bank` ->
+  `flash_safe_execute` -> `flash_range_erase/program`). The SDK hands XIP back with
+  boot2's QMI timing (CLKDIV 2), and the bank's callback lives in FLASH, so the return
+  from `flash_range_*` fetches at SCK = clk_sys/2 (252 MHz at 504). Fix: `--wrap` of
+  `flash_range_erase/program/flash_safe_execute` (cmake/wifi.cmake, wrappers at the end
+  of BtHost.cpp): inside a `flash_safe_execute` window the RAM wrapper re-applies
+  `flash_timings(mhz)` + XIP invalidate before returning. Outside the window (Buffer,
+  OSDMain, MidiSynth, which re-tune themselves) the wrapper only forwards. Verified
+  in the ELF: wrappers, `flash_timings`, `xip_cache_invalidate_all` all at 0x2xxxxxxx.
+  "RUN button not enough, had to unplug" is not explained by this.
+- **Switch pads:** detected by descriptor (report IDs 0x21 + 0x30 + 0x3F); after
+  connect the host sends subcommand 0x03/0x30 (full report mode) then 0x30/0x01 (player
+  LED), retried by a btstack timer, advanced on the 0x21 ack. Reports 0x30/0x21 are
+  decoded by `switchReport` (Nintendo layout renumbered like the 0x3F simple report:
+  B fire, A alt, Y/X, L/R, ZL/ZR, -/+); 0x3F still goes through the generic parser.
+  Log lines `switch: ...` show the handshake and the first changes.
+- The classic path never reset `s_repLog`, so the "report N B" log lines were spent on
+  the first connection of the session; now reset per descriptor.

@@ -16,6 +16,9 @@
 #include "pico/time.h"
 #include "hardware/sync.h"
 #include "hardware/timer.h"
+#include "hardware/clocks.h"
+#include "hardware/flash.h"
+#include "hardware/xip_cache.h"
 #include "btstack.h"
 #include "hci_dump.h"
 
@@ -870,6 +873,118 @@ void inputReport(const uint8_t* desc, uint16_t dlen, const uint8_t* rep, uint16_
     }
 }
 
+// ── Nintendo Switch Pro protocol (classic HID) ──────────────────────────────
+// The 8BitDo Ultimate 2C Bluetooth, Switch clones, Pro Controllers: their descriptor
+// declares only the simple report 0x3F as usable fields, and many of them send
+// nothing (or 0x3F only on a change) until the host does what the console does —
+// subcommand 0x03 "input report mode 0x30", then 0x30 "player lights". Owner report
+// 2026-11-08: both pads "connected" and did nothing; they work with ESPectrum, whose
+// Bluepad32 does this handshake. Afterwards they stream report 0x30 (vendor page in
+// the descriptor, so the generic parser sees no fields) decoded here.
+bool     s_sw = false;          // the connected classic device speaks Switch
+uint8_t  s_swStep = 0;          // index into kSwSteps; == count when done
+uint8_t  s_swPkt = 0;           // the 4-bit packet counter every output report carries
+uint8_t  s_swTries = 0;
+uint8_t  s_swOut[11];           // hid_host_send_report keeps the pointer until sent
+btstack_timer_source_t s_swTimer;
+const uint8_t kSwSteps[][2] = { { 0x03, 0x30 }, { 0x30, 0x01 } };
+constexpr uint8_t kSwNSteps = sizeof(kSwSteps) / sizeof(kSwSteps[0]);
+
+// Report IDs 0x21 (subcommand reply), 0x30 (full input) and 0x3F (simple input).
+bool switchDescriptor(const uint8_t* d, uint16_t n) {
+    bool r21 = false, r30 = false, r3f = false;
+    for (uint16_t i = 0; d && i + 1 < n; i++) {
+        if (d[i] != 0x85) continue;             // Report ID item
+        r21 |= d[i + 1] == 0x21; r30 |= d[i + 1] == 0x30; r3f |= d[i + 1] == 0x3F;
+    }
+    return r21 && r30 && r3f;
+}
+
+void switchSend();
+void switchTimer(btstack_timer_source_t*) {
+    // No reply to the last subcommand: send it again, a few times.
+    if (!s_sw || s_swStep >= kSwNSteps) return;
+    if (++s_swTries > 5) { blog("switch: no reply to subcommand %02X", kSwSteps[s_swStep][0]); return; }
+    switchSend();
+}
+
+void switchArm(uint32_t ms) {
+    btstack_run_loop_remove_timer(&s_swTimer);
+    btstack_run_loop_set_timer_handler(&s_swTimer, switchTimer);
+    btstack_run_loop_set_timer(&s_swTimer, ms);
+    btstack_run_loop_add_timer(&s_swTimer);
+}
+
+void switchSend() {
+    if (!s_hidCid || s_swStep >= kSwNSteps) return;
+    static const uint8_t kRumbleOff[8] = { 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40 };
+    s_swOut[0] = s_swPkt++ & 0x0F;
+    memcpy(s_swOut + 1, kRumbleOff, 8);
+    s_swOut[9]  = kSwSteps[s_swStep][0];
+    s_swOut[10] = kSwSteps[s_swStep][1];
+    const uint8_t rc = hid_host_send_report(s_hidCid, 0x01, s_swOut, sizeof(s_swOut));
+    blog("switch: subcommand %02X %02X (rc 0x%02x)", s_swOut[9], s_swOut[10], rc);
+    switchArm(rc == ERROR_CODE_SUCCESS ? 300 : 100);
+}
+
+void switchBegin() {
+    s_sw = true; s_swStep = 0; s_swTries = 0;
+    blog("Switch-protocol pad: asking for full reports");
+    switchArm(150);       // let hid_host finish its own SET_PROTOCOL first
+}
+
+void switchEnd() {
+    if (s_sw) btstack_run_loop_remove_timer(&s_swTimer);
+    s_sw = false;
+}
+
+// 0x30 full input / 0x21 subcommand reply (same first 12 bytes): r[0] = ID,
+// r[3] right buttons (Y X B A SR SL R ZR), r[4] shared (- + RS LS Home Capture),
+// r[5] left (Down Up Right Left SR SL L ZL), r[6..8] left stick 12+12 bit.
+void switchReport(const uint8_t* r, uint16_t n) {
+    if (n < 12) return;
+    if (r[0] == 0x21 && n >= 15 && s_swStep < kSwNSteps && r[14] == kSwSteps[s_swStep][0]) {
+        blog("switch: subcommand %02X acknowledged (%02X)", r[14], r[13]);
+        s_swStep++; s_swTries = 0;
+        if (s_swStep < kSwNSteps) switchSend(); else btstack_run_loop_remove_timer(&s_swTimer);
+    }
+    const uint8_t rb = r[3], sb = r[4], lb = r[5];
+    // Numbered like the 0x3F simple report (B A Y X L R ZL ZR - + LS RS Home Capture),
+    // which pad_apply reads as 1 fire, 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9/10.
+    uint32_t b = 0;
+    if (rb & 0x04) b |= 1u << 0;   // B
+    if (rb & 0x08) b |= 1u << 1;   // A
+    if (rb & 0x01) b |= 1u << 2;   // Y
+    if (rb & 0x02) b |= 1u << 3;   // X
+    if (lb & 0x40) b |= 1u << 4;   // L
+    if (rb & 0x40) b |= 1u << 5;   // R
+    if (lb & 0x80) b |= 1u << 6;   // ZL
+    if (rb & 0x80) b |= 1u << 7;   // ZR
+    if (sb & 0x01) b |= 1u << 8;   // -
+    if (sb & 0x02) b |= 1u << 9;   // +
+    if (sb & 0x08) b |= 1u << 10;  // LS
+    if (sb & 0x04) b |= 1u << 11;  // RS
+    if (sb & 0x10) b |= 1u << 12;  // Home
+    if (sb & 0x20) b |= 1u << 13;  // Capture
+    int32_t x = r[6] | ((r[7] & 0x0F) << 8);
+    int32_t y = (r[7] >> 4) | (r[8] << 4);               // up = larger
+    if (x == 0 && y == 0) x = y = 2048;                  // no stick data (some clones)
+    const bool up    = (lb & 0x02) || y > 3072;
+    const bool down  = (lb & 0x01) || y < 1024;
+    const bool left  = (lb & 0x08) || x < 1024;
+    const bool right = (lb & 0x04) || x > 3072;
+    // 0x30 streams ~60 reports/s: log the first ones and then only changes.
+    static uint32_t s_last = 0xFFFFFFFFu;
+    const uint32_t sig = b | (uint32_t)up << 28 | (uint32_t)down << 29 | (uint32_t)left << 30 | (uint32_t)right << 31;
+    if (s_repLog < 12 && (s_repLog < 2 || sig != s_last)) {
+        s_last = sig;
+        s_repLog++;
+        blog("switch %02X: %02X %02X %02X x=%ld y=%ld -> btn=%lX", r[0], rb, sb, lb,
+             (long)x, (long)y, (unsigned long)b);
+    }
+    bt_hid_gamepad(up, down, left, right, b);
+}
+
 void saveInput() {
     Known k = {};
     memcpy(k.addr, s_inAddr, 6);
@@ -931,6 +1046,7 @@ void inputReady() {
 }
 
 void inputClosed(const char* why) {
+    switchEnd();
     inputRelease();
     s_basCid = 0;              // the battery client drops itself with the link
     infoReset();
@@ -973,18 +1089,17 @@ void hidHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             blog("connected, reading its HID descriptor...");
             break;
         }
-        case HID_SUBEVENT_DESCRIPTOR_AVAILABLE:
+        case HID_SUBEVENT_DESCRIPTOR_AVAILABLE: {
             s_hidDescOk = hid_subevent_descriptor_available_get_status(p) == ERROR_CODE_SUCCESS;
-            if (s_hidDescOk) {
-                axesScan(hid_descriptor_storage_get_descriptor_data(s_hidCid),
-                         hid_descriptor_storage_get_descriptor_len(s_hidCid));
-                descKind(hid_descriptor_storage_get_descriptor_data(s_hidCid),
-                         hid_descriptor_storage_get_descriptor_len(s_hidCid));
-            }
-            blog(s_hidDescOk ? "descriptor %u bytes" : "no descriptor (boot protocol)",
-                 (unsigned)hid_descriptor_storage_get_descriptor_len(s_hidCid));
+            const uint8_t* dd = hid_descriptor_storage_get_descriptor_data(s_hidCid);
+            const uint16_t dl = hid_descriptor_storage_get_descriptor_len(s_hidCid);
+            if (s_hidDescOk) { axesScan(dd, dl); descKind(dd, dl); }
+            blog(s_hidDescOk ? "descriptor %u bytes" : "no descriptor (boot protocol)", (unsigned)dl);
+            s_repLog = 0;
             inputReady();
+            if (s_hidDescOk && switchDescriptor(dd, dl)) switchBegin();
             break;
+        }
         case HID_SUBEVENT_SET_PROTOCOL_RESPONSE:
             if (hid_subevent_set_protocol_response_get_handshake_status(p) == HID_HANDSHAKE_PARAM_TYPE_SUCCESSFUL)
                 s_hidMode = (hid_protocol_mode_t)hid_subevent_set_protocol_response_get_protocol_mode(p);
@@ -994,6 +1109,7 @@ void hidHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             uint16_t n = hid_subevent_report_get_report_len(p);
             if (n < 1 || r[0] != 0xA1) break;        // DATA | Input
             r++; n--;
+            if (s_sw && n && (r[0] == 0x30 || r[0] == 0x21)) { switchReport(r, n); break; }
             if (s_hidMode == HID_PROTOCOL_MODE_BOOT || !s_hidDescOk)
                 inputReport(btstack_hid_get_boot_descriptor_data(), btstack_hid_get_boot_descriptor_len(), r, n);
             else
@@ -1655,5 +1771,46 @@ const char* stateStr() {
 }
 
 }  // namespace BtHost
+
+// ── BTstack's link-key store vs the overclocked flash timing ─────────────────
+// Pairing writes the link key / LE bond to the TLV bank at the top of flash
+// (pico_flash_bank -> flash_safe_execute -> flash_range_erase/program). The SDK's
+// flash calls hand XIP back with boot2's DEFAULT QMI timing (CLKDIV 2, made for the
+// 150 MHz boot clock), and the bank's callback that called them lives in FLASH: the
+// very return from flash_range_* fetches flash at SCK = clk_sys/2 — 252 MHz at
+// 504 — and the board hangs (owner report 2026-11-08: "configuring a Bluetooth
+// device freezes at the default clock, works at 378"). OSDMain::flash_block and
+// Buffer::flashErase re-tune themselves (from RAM); BTstack cannot, so the two flash
+// calls are --wrap'ed (cmake/wifi.cmake) and re-tune BEFORE returning — but only
+// inside a flash_safe_execute window (the only caller is the BTstack bank), so the
+// other writers' own clock handling (Buffer drops to 252 MHz) is untouched.
+extern void flash_timings(int mhz);                    // main.cpp, RAM
+extern "C" {
+void __real_flash_range_erase(uint32_t off, size_t count);
+void __real_flash_range_program(uint32_t off, const uint8_t* data, size_t count);
+int  __real_flash_safe_execute(void (*func)(void*), void* param, uint32_t enter_exit_timeout_ms);
+
+static volatile int s_btFlashMhz = 0;   // non-zero = inside a flash_safe_execute window
+
+void __not_in_flash_func(__wrap_flash_range_erase)(uint32_t off, size_t count) {
+    __real_flash_range_erase(off, count);
+    if (s_btFlashMhz) { flash_timings(s_btFlashMhz); xip_cache_invalidate_all(); }
+}
+
+void __not_in_flash_func(__wrap_flash_range_program)(uint32_t off, const uint8_t* data, size_t count) {
+    __real_flash_range_program(off, data, count);
+    if (s_btFlashMhz) { flash_timings(s_btFlashMhz); xip_cache_invalidate_all(); }
+}
+
+int __wrap_flash_safe_execute(void (*func)(void*), void* param, uint32_t enter_exit_timeout_ms) {
+    // Read while XIP is healthy: clock_get_hz lives in flash.
+    s_btFlashMhz = (int)(clock_get_hz(clk_sys) / 1000000u);
+    Debug::log("BT: flash bank write at %d MHz", s_btFlashMhz);
+    const int rc = __real_flash_safe_execute(func, param, enter_exit_timeout_ms);
+    s_btFlashMhz = 0;
+    if (rc) Debug::log("BT: flash_safe_execute rc=%d", rc);
+    return rc;
+}
+}  // extern "C"
 
 #endif  // PICOSPECCY_WIFI

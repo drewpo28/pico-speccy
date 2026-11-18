@@ -232,6 +232,9 @@ visit https://zxespectrum.speccy.org/contacto
 // A card pulled out from under a running session: the volume is dropped
 // (FatFs cache included) and the watch waits for it — or another — to return.
 #define MSG_SD_REMOVED "SD card removed"
+// Boot without a card (and no USB stick standing in for it): settings live only
+// until power-off, and the machines that need SD or PSRAM are not offered.
+#define MSG_NO_SD "No SD card - settings are not saved"
 // ...and a DIFFERENT card went in: the volume works, but nothing that was
 // mounted from the old one is reopened (see FileUtils::storageTick).
 #define MSG_SD_SWAPPED "Card changed - disks not restored"

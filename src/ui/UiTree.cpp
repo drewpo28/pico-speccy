@@ -996,7 +996,9 @@ static const Node kIf2Cart[] = {
 static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_SPECTRUM, SET_MACHINE, opt_mach_spectrum, nullptr),
     NM_SUB    (NM_IND TXT_MACH_IF2_CART, kIf2Cart, p_if2Active),
-    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
+    // Byte is a 48K/128K romset: pages 0-7 only, so no extended-RAM gate (shown on a
+    // board with neither PSRAM nor SD too — owner 2026-11-18, host-checked).
+    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  nullptr),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO  (TXT_MACH_TIMEX,    SET_MACHINE, opt_mach_timex,    nullptr),
     NM_SUB    (NM_IND TXT_MACH_TIMEX_CART, kTimexCart, p_tc2068Active),
