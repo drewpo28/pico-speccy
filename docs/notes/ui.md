@@ -29,6 +29,15 @@ MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations g
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+## A machine switch resets the CPU turbo (2026-11-18, hw-confirmed 2026-11-18 by the owner)
+
+Owner: switching machine sets the CPU clock back to that machine's default.
+Every machine powers up at its native clock (multiplicator 0); faster is the user's
+pick (`Config::turbo` / `multUser`) or a guest register that reset already undoes. So
+`MachineSwitch::resetTurbo()` zeroes the pick (persisted by commit's own save) with a
+"CPU turbo off" toast when it was on — in `commit()` for any arch/romset change and in
+`commitAlf()`. Host: Alt+F2 twice (14 MHz) then Pentagon 128 -> `[MACH switch] mult=0`.
+
 ## F5 browser: extension list matched in place (hw-confirmed 2026-11-15, DVp2w)
 
 `browseFile` split the type's comma list into a `vector<string>`: ~200 entries for

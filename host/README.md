@@ -109,6 +109,9 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   the raw card (`disk_read`) is `host_disk.cpp`: the folder as a virtual FAT32
   volume (`host_vfat.cpp`), or the `--sd` image. Audio: SDL at 31250 Hz. Video: the
   framebuffer rows of `VIDEO::vga`, palette and packed-pair (DS80/GMX) modes.
+* `PICOSPECCY_NOSD=1` boots with an empty card slot (`disk_initialize` fails, no
+  `SD:` volume), `PICOSPECCY_NOPSRAM=1` without the QSPI PSRAM: together they are the
+  bare board (no PSRAM, no SD).
 * `PICOSPECCY_SHOT=file.bmp:N` saves the N-th presented frame,
   `PICOSPECCY_SHOTS=prefix:N` every N-th one as `prefix_<frame>.bmp`.
 * `PICOSPECCY_KEYS="frame:Key[:N],..."` holds keyboard keys,

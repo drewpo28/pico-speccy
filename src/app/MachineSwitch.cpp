@@ -33,7 +33,22 @@ using std::string;
 
 namespace MachineSwitch {
 
+// A new machine starts at its own clock: every machine here powers up at its native
+// speed (multiplicator 0 — 3.5 MHz, SAM's 6, EP's 4) and anything faster is either the
+// user's pick or a guest register (EFF7 D4, #028B, ZCLK, NR 07) that reset clears back
+// to the pick. So the pick is what has to go: a 14 MHz chosen for one machine must not
+// carry into the next (owner 2026-11-18). Persisted by the caller's Config::save();
+// the Z80 timing follows at the ESPectrum::reset() / setup() that ends every switch.
+static void resetTurbo() {
+    if (!Config::turbo && !ESPectrum::multUser && !ESPectrum::multiplicator) return;
+    Config::turbo = 0;
+    ESPectrum::multUser = 0;
+    ESPectrum::multiplicator = 0;
+    OSD::osdCenteredMsg("CPU turbo off", LEVEL_INFO, 1000);
+}
+
 void commitAlf() {
+    resetTurbo();
     Config::romSet = R_ALF1;
     // Leaving Profi's forced-SRAM layout (no butter PSRAM) MUST reboot:
     // ESPectrum::reset() does NOT free the ~96 KB Profi pages + DS80
@@ -416,6 +431,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // a running machine does not always go through setup() again.
         if (arch == A_PROFI && romset != R_PROFI)
             FileUtils::ensureKarabasBoot();
+        resetTurbo();
         Config::save();
         // Profi on SPI-PSRAM boards (no butter PSRAM) needs its
         // hires colour/working pages 56/58/61/60/40 backed by

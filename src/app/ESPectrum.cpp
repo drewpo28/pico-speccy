@@ -1007,6 +1007,7 @@ void ESPectrum::setup() {
   FileUtils::initFileSystem();
   Debug::log("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
   Debug::log2SD("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
+  if (!FileUtils::fsMount) OSD::bootNotice(MSG_NO_SD);   // shown once the screen is up
 
   mem_desc_t::reset();
   Ports::portAFF7 = 0;
@@ -1490,6 +1491,25 @@ void ESPectrum::setup() {
     // `pages46` (MemESP.cpp). Pages 5,7 historically not counted.
     ram_pages += 4;
     ram_pages += 2;
+    // The descriptor table still has to span MEM_PG_CNT + 2 entries: the static
+    // `temp[8]` is only the first 8, and plenty of code walks or probes the whole
+    // strip — powerOnRamFill(), the snapshot paths, and the Profi-layout marker
+    // ram[56].memType() in requestMachine()/MachineSwitch::commit(). Reading those
+    // past temp[8] was garbage: a POINTER there faked "Profi SRAM layout" and every
+    // menu machine switch hard-reset, which on a card-less board also drops the
+    // RAM-only config and lands back on 48K (owner 2026-11-18, Pentagon 128 on a
+    // board with neither PSRAM nor SD). Pages 8+ get no backing: SWAP, served by
+    // the swap file once a card appears; the menu offers no machine that needs them
+    // until then (p_extRam).
+    {
+      mem_desc_t *temp = MemESP::ram;
+      MemESP::ram = new mem_desc_t[MEM_PG_CNT + 2];
+      for (size_t i = 0; i < 8; ++i) MemESP::ram[i] = temp[i];
+      for (size_t i = 8; i < (MEM_PG_CNT + 2); ++i) {
+        MemESP::ram[i].assign_vram(i, mem_type_t::SWAP);
+        ++swap_pages;
+      }
+    }
     Debug::log("setup: no ext_ram: pages done, freeHeap=%u", getFreeHeap());
   }
   // Initialise every SRAM/butter-backed ZX RAM page to a DEFINED power-on

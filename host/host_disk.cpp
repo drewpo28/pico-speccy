@@ -46,8 +46,10 @@ void disk_invalidate(void) {}
 
 static bool ensureVfat();
 
+// PICOSPECCY_NOSD=1: the slot is empty (a card-less board).
+bool host_no_sd() { static const bool v = getenv("PICOSPECCY_NOSD") != nullptr; return v; }
 DSTATUS disk_initialize(BYTE pdrv) {
-    if (pdrv != 0) return STA_NOINIT | STA_NODISK;
+    if (pdrv != 0 || host_no_sd()) return STA_NOINIT | STA_NODISK;
     std::lock_guard<std::mutex> lk(s_mx);
     if (!host_sd_path) return ensureVfat() ? 0 : STA_NOINIT;
     if (s_fd < 0) {
@@ -58,7 +60,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
     return s_ro ? STA_PROTECT : 0;
 }
 DSTATUS disk_status(BYTE pdrv) {
-    if (pdrv != 0) return STA_NOINIT | STA_NODISK;
+    if (pdrv != 0 || host_no_sd()) return STA_NOINIT | STA_NODISK;
     if (!host_sd_path) return 0;
     return s_fd < 0 ? STA_NOINIT : (s_ro ? STA_PROTECT : 0);
 }
