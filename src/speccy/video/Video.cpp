@@ -647,9 +647,41 @@ bool g_next_fastrd = false; // Z80_JLS/next_memory.h: inline operand reads
 // Z80::exec_nocheck_next() no longer tests g_next_fastrd per instruction: a
 // writer that turns it OFF mid-slice (port 0x123B L2 mapping, NR 08 contention,
 // a NeoGS ZX-DMA window) ends the slice instead, within the current instruction.
+// The per-slot twins (next_memory.h): the shared prefix decoders and the two
+// machine loops read these. Written only on a change, or while on, so the two
+// setters below (both run on every recalc) never zero each other's slots.
+bool g_z80_rd_all = false;
+uint8_t g_z80_rd_fast = 0, g_z80_wr_fast = 0;
 static inline void nextFastrdSet(bool on) {
     if (g_next_fastrd && !on && CPU::stFrame > CPU::tstates + 1) CPU::stFrame = CPU::tstates + 1;
+    if (g_next_fastrd || on) { g_z80_rd_all = on; g_z80_rd_fast = on ? 0xFF : 0; g_z80_wr_fast = on ? 0xFC : 0; }
     g_next_fastrd = on;
+}
+// The eLeMeNt loop's gate (elm_memory.h, Z80::exec_nocheck_elm): fastmem level 1 on
+// the eLeMeNt. A drop ends the slice the same way (the loop tests it after a shared
+// handler only).
+bool g_elm_fastrd = false;
+namespace Elm { extern volatile uint8_t g_elm_rdmask, g_elm_wrmask; }   // Element.cpp: slot bit set = generic access
+// Slots 0-1 read plain only while nothing sits between the guest and ramCurrent
+// there: no divMMC page up (MemESP::readbyte serves page0_lo/hi then; DivMMC::
+// applyMapping re-runs this), no NeoGS ZX-DMA window (gsDmaPeek8), both slots
+// plugged. Writes there stay generic (ROM drop, divMMC RAM, AA-SRAM, flash areas).
+void elmFastSlotsUpdate() {
+    extern volatile uint8_t g_ngs_zxdma;
+    uint8_t rd = g_elm_fastrd ? (uint8_t)~Elm::g_elm_rdmask : 0;
+    if ((rd & 0x03) && (MemESP::divmmc_mapped || g_ngs_zxdma || !MemESP::ramCurrent[0] || !MemESP::ramCurrent[1])) rd &= 0xFC;
+    if ((rd & 0x03) && MemESP::overlayCount)   // a flash ROM overlay in slot 0 reads through romPeek, not the pointer
+        for (uint8_t i = 0; i < MemESP::overlayCount; i++) if (MemESP::overlayBase[i] == MemESP::ramCurrent[0]) { rd &= 0xFC; break; }
+    g_z80_rd_fast = rd;
+    g_z80_wr_fast = g_elm_fastrd ? (uint8_t)~Elm::g_elm_wrmask : 0;
+    g_z80_rd_all = rd == 0xFF;
+}
+static inline void elmFastrdSet(bool on) {
+    on = on && CodeOverlay::elmResident();   // the loop lives in the .elmovl window: never without it
+    if (g_elm_fastrd && !on && CPU::stFrame > CPU::tstates + 1) CPU::stFrame = CPU::tstates + 1;
+    const bool was = g_elm_fastrd;
+    g_elm_fastrd = on;
+    if (was || on) elmFastSlotsUpdate();
 }
 bool     VIDEO::ts_tsu_live = false;
 bool     VIDEO::ts_pal256_live = false;
@@ -7057,6 +7089,7 @@ static inline uint8_t tsFastRdFor(uint8_t mem) {
 void ts_fastrd_recalc() {
     g_ts_fastrd = tsFastRdFor(g_ts_fastmem);
     nextFastrdSet(g_ts_fastmem == 1 && g_ts_fastrd == 2);
+    elmFastrdSet(Z80Ops::isElm && g_ts_fastmem == 1);
 }
 void VIDEO::tsFastMemRecalc() {
     extern volatile uint8_t g_ngs_zxdma;
@@ -7089,6 +7122,7 @@ void VIDEO::tsFastMemRecalc() {
                                            && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 2 : 0;
     g_ts_fastrd = tsFastRdFor(v);
     nextFastrdSet(v == 1 && g_ts_fastrd == 2);
+    elmFastrdSet(Z80Ops::isElm && v == 1);
     if (v != g_ts_fastmem) {
         g_ts_fastmem = v;
         // The NeoGS ZX-DMA window flips this on EVERY open/close, and a demo that

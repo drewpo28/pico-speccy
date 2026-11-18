@@ -57,7 +57,11 @@ for e in json.load(open('$B/compile_commands.json')):
     FLAGS=$(echo "$CMD" | sed -e 's/^[^ ]* //' -e 's/ -o [^ ]*//' -e 's/ -c [^ ]*//' -e 's/-Os//')
     arm-none-eabi-ld -r -o "$WORK/core.o" "$O/Z80_JLS.cpp.o" "$O/CPU.cpp.o"
     arm-none-eabi-nm -u "$WORK/core.o" | awk '{print $2}' > "$WORK/undef.txt"
-    arm-none-eabi-readelf -sW "$(ls "$B"/bin/*/*.elf | grep -v bs2_default | head -1)" | awk 'NF>=8 {print $8, $4, $3}' > "$WORK/fw.sym"
+    # The NEWEST firmware ELF (a stale older-version ELF in the same dir sorts first by
+    # name): a symbol missing from fw.sym becomes a FUNCTION stub, and a data read at
+    # its thumb address lands one byte in - 0x20, "true" (2026-11-17: g_elm_fastrd read
+    # true in TS mode and the TS figures were the eLeMeNt loop's).
+    arm-none-eabi-readelf -sW "$(ls -t "$B"/bin/*/*.elf | grep -v bs2_default | head -1)" | awk 'NF>=8 {print $8, $4, $3}' > "$WORK/fw.sym"
     (cd "$WORK" && python3 "$HERE/gen_stubs.py")
     arm-none-eabi-as -mcpu=cortex-m33 -mthumb -o "$WORK/stubs.o" "$WORK/stubs.s"
     (cd "$REPO" && eval arm-none-eabi-g++ $FLAGS -O2 -c "$HERE/harness.cpp" -o "$WORK/harness.o")

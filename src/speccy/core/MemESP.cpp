@@ -705,7 +705,10 @@ mem_desc_t MemESP::rom[64];
 // in Video.cpp reads pages 4-7 via direct() in the HDMI/VGA ISR and requires
 // guaranteed POINTER backing.
 #define Z80_RAM_PAGE_ATTR __attribute__((section(".ram_128k"), aligned(4)))
-Z80_RAM_PAGE_ATTR static uint8_t pages57[MEM_PG_SZ * 2];
+// pages57 FIRST in the region (its own input section, rp2350-memmap.ld): on an eLeMeNt
+// boot pages 5/7 go to butter and this SRAM holds the .elmovl code window instead
+// (CodeOverlay, 2026-11-18) - the banks 0-1 SRAM is otherwise idle there.
+__attribute__((section(".ram_128k.p57"), aligned(4))) static uint8_t pages57[MEM_PG_SZ * 2];
 Z80_RAM_PAGE_ATTR static uint8_t pages0123[MEM_PG_SZ * 4];
 Z80_RAM_PAGE_ATTR static uint8_t pages46[MEM_PG_SZ * 2];
 #undef Z80_RAM_PAGE_ATTR

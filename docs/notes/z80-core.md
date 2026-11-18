@@ -1,5 +1,179 @@
 <!-- Moved verbatim from CLAUDE.md on 2026-11-02; sections in their original order. -->
 
+## eLeMeNt loop: the Next-shaped switch loop on the eLeMeNt ZX (`Z80::exec_nocheck_elm`, `.elmovl`; 2026-11-17/18, z80bench + host-tested, hw-confirmed DVp2w 2026-11-18 on `z80n`: PF2026 ~40 FPS (was 36), HGFXAGON a steady 50 (owner); committed 2026-11-18)
+
+The lever for PF2026 at 28 MHz (`pf2026-50fps-plan`): at fastmem level 1 the eLeMeNt ran
+`exec_nocheck_ts` above 0x4000, i.e. the shared handlers with the generic accessors (a call
+and three gate bytes per operand), ~58 ARM instructions per Z80 instruction on the `game`
+mix where the Next loop takes 40. Now the eLeMeNt runs the Next loop's shape with its own
+accessors:
+
+- **`tools/gen_next_dispatch.py` writes a second table, `src/speccy/z80/elm_dispatch.inc`**,
+  from the same source: `NextMemory::X_nx(` -> `ElmMemory::X_elm(`, `nxPush` / `nxPop` ->
+  `elmPush` / `elmPop`, the pasted ED subset -> `goto nx_slow` (nothing Next-specific is
+  worth pasting for this machine), `nxIdleNote()` -> `nxCheckTrdos()` (the eLeMeNt's
+  key-wait skip lives in `check_trdos`), `g_next_fastrd` -> `g_elm_fastrd`. It asserts no
+  `NextMemory` / `NextReg` / `NextInt` survives. Re-run the generator after a change to the
+  Next table; both `.inc` files are committed.
+- **`src/speccy/z80/elm_memory.h`: the accessors.** The Next's are gate-free because every
+  Next window is below 0x4000; the eLeMeNt maps its windows anywhere (HGFX VRAM / register /
+  colour pages, chunky and LCU slots, FastDMA / SoundDMA / LCU2, the HRXC table, FRAM /
+  flash / write-protected URAM, and in COPY mode a READ of the VRAM window arms the latch).
+  So a read is `(g_z80_rd_fast >> (a >> 13)) & 1` (bit set = plain) then `t += 3` and the
+  load; a write the same on `g_z80_wr_fast` plus the page's dirty mark (ZX pages live in
+  PSRAM with the sync rule); the other case takes an out-of-line fallback in `.elmovl`
+  (`elmPeek8Slow` / `elmPeek16Slow` / `elmPoke8Slow` / `elmPoke16Slow`: publish `t`, the
+  generic accessor, reload). Words across a slot edge go per byte. No time test on reads,
+  the Next's `lim_nx()` / `NX_WIN` rule.
+- **The loop** (`Z80_JLS.cpp`, after the Next loop's helpers): the Next head (`nx_t` /
+  `nx_pc` / `nx_r` / `nx_lim` locals, the slice-end and raster-line tests once per
+  instruction, lazy Q), `elmFetchM1` = a plain load (no divMMC trap test: the loop leaves at
+  `PC < 0x4000` - ROM, divSD, URAM zone 0, the HE2025 window at #2300 all fetch in the
+  shared loop with the automap hooks and `page0_lo/hi`). Entered from `exec_nocheck` on
+  `g_elm_fastrd && nbp <= 0 && !prefixOpcode && PC >= 0x4000`, left on a prefix, a gate drop
+  (a port write that remaps), PC below 0x4000 or the slice end.
+- **Gates and masks.** `g_elm_fastrd` (Video.cpp `elmFastrdSet`, from `ts_fastrd_recalc` /
+  `tsFastMemRecalc`: eLeMeNt at fastmem level 1; a drop ends the slice through `stFrame`
+  like the Next's). `Element.cpp elmMasksUpdate` (end of `windowsRebuildNow`, `remap`'s
+  split, the COPY read hook): `g_elm_wrmask` = slots 0-1 + every slot with a window entry +
+  the split slots, `g_elm_rdmask` = the split slots + the VRAM slots while the COPY read
+  hook is on. `Video.cpp elmFastSlotsUpdate` turns them into the loop's `g_z80_rd_fast` /
+  `g_z80_wr_fast` and, for the READS of slots 0-1, adds what `MemESP::readbyte` would do
+  differently there: a divMMC page up (`page0_lo/hi`), the NeoGS ZX-DMA window, an unplugged
+  slot. `DivMMC::applyMapping` re-runs `ts_fastrd_recalc` for `A_ELM` as it did for the
+  Next, so every esxDOS call flips the slot bits.
+- **The shared prefix decoders got the same reads** (this is half of the gain on
+  prefix-heavy code): `next_memory.h` / `next_opcode.h`'s inline wrappers used to test
+  `g_next_fastrd`; they test **`g_z80_rd_all`** now - one bool, "a read in ANY slot is a
+  plain load": the Next on its fast path, the eLeMeNt with `g_z80_rd_fast == 0xFF`. Their
+  write wrapper keeps `g_next_fastrd && a >= 0x4000` (the shared handlers call
+  `Z80Ops::poke8` directly, whose gates the eLeMeNt's windows already set). The fetch
+  wrapper sends a divMMC trap page to the generic fetch instead of `nextOpcodeSlow`: that
+  one reads the raw slot pointer, right on the Next (`nextDivPlug` puts the divMMC page in
+  `ramCurrent[0/1]`), wrong on the eLeMeNt after an instant map at #3Dxx.
+  **Dead ends:** (1) a per-slot mask test in those wrappers: the TS-Conf runs EVERY
+  instruction through the shared handlers, and the disassembly of `pop()` showed GCC
+  hoisting the slot arithmetic above the test and widening its push/pop from 2 to 6
+  registers - whatever the shared wrappers test should stay one byte load + one
+  branch. (The "+5 % on the TS loop" the bench showed for it was an ARTIFACT, see the
+  bench bug below; the cost is real in the code, its size on the TS-Conf unmeasured.)
+  (2) the `page0_lo/hi` rule inside `nextOpcodeSlow` cost 144-370 B of SRAM from jump
+  threading through the inlined `preOpcFetch` - hence the test in the wrapper.
+- **Below 0x4000: tried and REVERTED (2026-11-18).** The first hw PROF showed PF2026
+  running ~1 900 instructions a frame in the shared loop (`gen` on the `[HGFX] 60f`
+  line; `exec_nocheck` + `fetchOpcode` + the ED decoders ~7 % of core0). The loop was
+  let go on in a plain-read slot below 0x4000 with the Next's trap-page fetch
+  (`DivMMC::nextOpcodeSlow` + a `page0_hi` fix-up for the instant #3Dxx map). It bought
+  nothing: those instructions are the IM1 handler under the esxDOS #38 hook, i.e. with
+  the divMMC page UP, which the loop cannot read (page0_lo/hi are not in ramCurrent on
+  this machine) - `loop 2/fr gen 1900/fr`, the loop entered at #38 and left on the map.
+  Taking them needs the Next's page plug (`MemESP::nextDivPlug`) for the eLeMeNt first;
+  with esxDOS the ROM is otherwise idle. The head test is `PC < 0x4000` again.
+- **`.elmovl`** (`cmake/memory-layout.cmake` `ELM_CODE_OVERLAY` / `ELMOVL_WIN_SIZE` AUTO
+  12544, 13056 with PERF_TRACE; content 12 336 B = the loop + `fdmaRun` + `chunkyWriteRun`;
+  `rp2350-memmap.ld`): it **aliases the SRAM of the static ZX pages 5/7** (`pages57`,
+  the first 32 KB of RAM_128K, banks 0-1, its own input section `.ram_128k.p57` placed
+  first). An eLeMeNt boot re-binds pages 5 and 7 to butter before the guest starts
+  (ESPectrum.cpp `elmCodeInPages57` / `donateZxPagesToFb`: `s_fbPages |= 0xA0`, the
+  tail of pages57 past the window is the FB's last donor), `CodeOverlay::apply(..., elm)`
+  loads the window, `Video.cpp elmFastrdSet` gates the loop on `CodeOverlay::elmResident()`
+  so a boot without butter keeps the shared loop. It is NOT a heap window: the first
+  version (2026-11-17) sat at the top of the Next region and cost the HGFX SRAM arena
+  10-12 KB - PF2026's arena fell to 36.6 KB and HGFXAGON lost its 48 KB of row blocks
+  (`sramPromote` needs them whole; owner: "HGFXAGON стал тормозить", 2026-11-18). The
+  host build has `ELM_CODE_OVERLAY 0` (`ELM_OVL_CODE` = `__not_in_flash("elm")`, pages
+  5/7 untouched).
+- **Bench** (`tools/z80bench`, `Z80BENCH_MODE=elm`: the harness sets `g_elm_fastrd`,
+  `g_z80_rd_all`, the masks 0xFF / 0xFC; `high` and `game` run at 0x8000, `low` is the
+  `game` code at 0x100 (`mkmix.py low.com` with no mode); 50 M T each; `elm7.elf`):
+
+  | workload | TS loop | Next loop | eLeMeNt loop |
+  |---|---|---|---|
+  | `game` (short unprefixed) | 556.5 M (76.2 / M1) | 273.5 M (37.5) | 300.5 M (41.2) |
+  | `high` (LDIR / IX / IY) | 537.7 M (93.7 / M1) | 397.6 M (69.3) | 426.1 M (74.2) |
+  | `low` (`game` below 0x4000) | 537.7 M (93.7 / M1) | 411.2 M (71.6) | 462.3 M (80.5) |
+
+  Lockstep (`lock`, 20 M T of `high` and of `low`): the state hash every 65536 slices
+  and the memory CRC identical for ts / next / elm. The eLeMeNt loop costs ~10 % more
+  than the Next's: the per-access slot test (byte load, shift, test, branch) the Next
+  does not have, and below 0x4000 the head's slot test + the trap-page test. A cached
+  mask in a loop local (reloaded after every nxSync) would take the load off; not done.
+  SRAM: `.data` -16 B against the committed state (the decoders shrank, three gate
+  bytes), `nextOpcodeSlow` untouched.
+  **Bench bug found on the way (fixed in z80bench.sh):** `build` read the firmware
+  symbols from `ls bin/*/*.elf | head -1`, which was a STALE 1.1.2 ELF - every symbol
+  new since then (`g_elm_fastrd`, `g_z80_rd_all`, `g_z80_rd_fast`) became a thumb
+  FUNCTION stub, and a byte read at a thumb address lands one byte in: 0x20, "true".
+  So "TS mode" ran the eLeMeNt loop all afternoon, and the "TS regression" of the mask
+  wrappers was that. Now `ls -t`. A `prof` of the TS mode must show `exec_nocheck_ts`
+  on top; if a new global appears in the firmware, check `stubs.s` says `.space` for it.
+- **Host A/B** (`$SP/host-perf` = the committed build, `$SP/host-perf-elm`; FRAM #30 = 5 =
+  28 MHz): HGFXAGON (COPY_ALL, 11 shots) and LIMSHOWM (HRXC pair, 11) pixel-identical on
+  every build of the day. PF2026 matched on the first pair (19 shots) and then differed on
+  15 of 19 - and so did two runs of the OLD binary (14 of 19) and two of the new: the demo
+  streams its video from the card, the host serves that with real-time timing, and the
+  picture at a given frame depends on it. **PF2026 shots are no bit-exactness test**;
+  the z80bench lockstep is. HGFXDEM2 at 3.5 MHz differs in the BASIC cursor's FLASH cell
+  only, run to run on the same binary (`flash_ctr` counts main-loop passes). The `[HGFX] 60f` line now ends in
+  `z80 loop N/fr kw a/b`: entries of the loop a frame (0 = the generic loop ran) and the
+  key-wait skips.
+- **SRAM for the eLeMeNt, final shape (hw 2026-11-18, `z80n`):** the arena is claimed right
+  after `CodeOverlay::apply` (`Hgfx::arenaClaimEarly`, before anything else grows the heap:
+  the sbrk cursor sits in the Next region then), 48 896 B = the region's usable 49 088 B
+  rounded to rows; buffer 0 of PF2026 goes there whole but for its last row (`h1`), and
+  HGFXAGON's row blocks take **5 of 6 blocks from the arena, the sixth stays in PSRAM by
+  pointer** (`sramPromote` / `sramOff`): six blocks are 49 152 B and never fit this region,
+  on HEAD either - HGFXAGON had been running on heap blocks while the heap was looser, and
+  on PSRAM (32 FPS, `drop=58-60` a frame = the engine's command queue overflowing, "half
+  the screen" on a first run) once the loop window took heap. The ZiFi rings (10 KB) moved
+  to PSRAM; `[ELM] mem:` (first `[HGFX] 60f`) + the heap regions again at `setup: COMPLETE`
+  are the lines to read when a UART capture missed the boot. Heap at COMPLETE ~11 KB on
+  the 16 MB DVp2w with NeoGS: tight; the next SRAM to free is the 13 KB between the AY
+  and tape inits and the `hot` tables (8.3 KB).
+- **FastDMA, hw 2026-11-18 (`z80e`/`z80f`/`z80g`, the `[HGFX] io/fr` and `fd/fr` lines):**
+  `fdmaRun` was 6.6 ms of the 25 ms frame: 2.45 ms on four pieces a frame (~930 B) of
+  VRAM -> VRAM in COPY mode, per byte through `fdWrite` (2.6 us a byte) - now one
+  `Hgfx::copyRun` like `dmaCopy`'s (gone); the other 4.1 -> 4.85 -> 5.0 ms are ~2 400
+  pieces of 8 bytes (the 8x4 blits, one piece per row), source a plain ZX page, destination
+  the chunky window: `chunkyWriteRun` 2.37 ms (1.0 us a piece) + the piece loop 2.6 ms
+  (1.1 us a piece). Moving both into `.elmovl` changed nothing measurable: it is
+  per-piece overhead, not flash. Next lever: a blit-aware loop (one setup per blit, a
+  row loop with precomputed pointers) - worth ~4 ms. `z80f`: cpu 23.0-24.1 ms, 38.4-40.0
+  FPS; `z80g` 23.0-23.3 ms, 39.7-40.0 FPS (arena 36.6 KB both).
+- **hw 2026-11-18 (`z80d`, arena 40 192 B = buffer 0 rows 0..156; log 11:32):** cpu
+  23.5-24.5 ms, 38.3-39.3 FPS, draw 5.0-5.7 ms - the arena changed nothing on core0.
+  **The PROF dump by dump** (`z80dh` log 11:35, the per-dump variant of pcprof_sym
+  correlated with the `cpu=` line before each dump): in the demo's heavy frames (cpu
+  25-27 ms) core0 is `exec_nocheck_elm` 25-32 %, **memcpy 18-23 %**, the idle spin
+  6-16 %, the shared loop 1.3-2.8 %, MainScreen 0 %; MainScreen's 8-11 % of the
+  aggregate is all in the light intro phase (cpu 12.6 ms, the ZX layer) and does not
+  matter. The opcode mix (`[PERF] z80:` 26 021 instr/frame, 744 ns each, ED 12.7 %)
+  and the new `[HGFX] ed/fr` / `io/fr` lines (host, FRAM #30 = 5): ED = `IN A,(C)`
+  1 800-2 100 a frame from **#7D3B with the g index at 0x4A = the SoundDMA position
+  high byte** (the demo spins on the audio position; a keyWaitSkip-style fast-forward
+  would save ~1 ms), `LD (nn),BC` 600, OTIR 430 iterations; the DMA moves
+  **dmaFromCard 9.4 KB + FastDMA runs 19 KB (+ ~930 B per byte) a frame** - the
+  memcpy share. Per-path core0 timing (`io/fr ... us`) is in `z80e`, hw owed; the
+  dirty rows span 4..183 (`dr=`), so an arena window cannot cover the hot rows.
+- **hw 2026-11-17, PF2026 at 28 MHz (`z80`, owner's log 16:56, `mult=3`):** cpu 23.7-24.0 ms
+  (stage0g: 26.0-26.7), realFPS 38.7-38.8 (35.6-36.4): -2.4 ms, less than the mix figure
+  promised. The arena was NOT taken (`h1=-1`: largest 32 188 < H1_MIN 32 768 - the
+  window took 10.5 KB of the Next region and the audio / ZiFi rings landed there too), so
+  core1's draw rose 3.8-4.8 -> 5.6 ms; H1_MIN 24 KB since (`z80b`). **PROF on the HIST
+  twin (`z80h`, log 17:06, 17 clean dumps, `tools/pcprof_sym.py` with the `.nxovl`
+  symbols dropped - it shares the window's addresses):** `exec_nocheck_elm` 17.0 %,
+  memcpy 11.3 % (the Z80 DMA block copy of the decoded video, Z80DMA.cpp:800, into
+  PSRAM while the arena is off), `ESPectrum::loop` idle spin + `time_us_64` +
+  `NgsSd::service` ~20 % (the frames the demo HALTs early in: real idle, not
+  recoverable - `IDL_min` negative on 27-29 of 60 frames), `VIDEO::MainScreen` 7.9 %
+  (the ZX layer under the picture, rendered per line), the shared loop + `fetchOpcode`
+  + ED decoders ~7 % (the IM1 handler below 0x4000: in the loop now), `Ports::input`
+  3.1 %, `fdmaRun` 2.9 % [flash], `execVram` 2.8 %, `pwKick` 2.1 %, `chunkyWriteRun`
+  1.7 % [flash], the cold write path ~2.5 %. Next levers in that order: the arena back
+  (memcpy), MainScreen skipped where the HGFX row has no index-0 pixel, `fdmaRun` /
+  `chunkyWriteRun` into `.elmovl`, the early #FE port path. Read `[PERF] clk: mult=3`,
+  `z80 loop` and `gen` before believing a figure.
+
 ## Next loop: PC / T limit in locals, reads without a time test, lazy Q (2026-11-15; hw-run DVp2w 2026-11-15, owner: "some games clearly got faster by IDL" — not itemised per title)
 
 Stage 0 + A of `docs/z80-regcore-plan.md`. `Z80::exec_nocheck_next` only; every other

@@ -1,6 +1,6 @@
 #include "CodeOverlay.h"
 
-#if TSCONF_CODE_OVERLAY || GS_CODE_OVERLAY || DMA_CODE_OVERLAY || VDAC2_CODE_OVERLAY || NEXT_CODE_OVERLAY
+#if TSCONF_CODE_OVERLAY || GS_CODE_OVERLAY || DMA_CODE_OVERLAY || VDAC2_CODE_OVERLAY || NEXT_CODE_OVERLAY || ELM_CODE_OVERLAY
 
 #include <cstring>
 #include <cstdint>
@@ -13,6 +13,8 @@ extern "C" {
 // start == end, so the code below needs no per-window #if.
 extern char __nxovl_win_start[], __nxovl_win_end[];
 extern char __nxovl_start[], __nxovl_end[], __nxovl_source[];
+extern char __elmovl_win_start[], __elmovl_win_end[];
+extern char __elmovl_start[], __elmovl_end[], __elmovl_source[];
 extern char __ftovl_win_start[], __ftovl_win_end[];
 extern char __ftovl_start[], __ftovl_end[], __ftovl_source[];
 extern char __tsovl_win_start[], __tsovl_win_end[];
@@ -66,10 +68,12 @@ static bool  s_ft_loaded = false;
 static bool  s_ts_loaded = false;
 static bool  s_dma_loaded = false;    // .dmarovl: register file + service path
 static bool  s_dmal_loaded = false;   // .dmaovl: the classic byte loop
+static bool  s_elm_loaded  = false;   // .elmovl: the eLeMeNt Z80 loop
 static bool  s_gs_loaded = false;
 static bool  s_ngs_loaded = false;
 
 static void regionsRebuild() {
+    // .elmovl is not here: it aliases the ZX pages 5/7 SRAM (RAM_128K), not the heap.
     HrWindow w[7] = {
         { __nxovl_win_start,  __nxovl_win_end,  s_nx_loaded  },
         { __ftovl_win_start,  __ftovl_win_end,  s_ft_loaded  },
@@ -103,6 +107,8 @@ extern "C" size_t heap_stranded_bytes()   { return hr_stranded_bytes(&s_hr); }
 extern "C" size_t heap_stranded_largest() { return hr_stranded_largest(&s_hr); }
 static bool windowTouched(char* ws)       { return hr_window_touched(&s_hr, ws) != 0; }
 
+static void logRegions();
+void CodeOverlay::logHeapRegions() { logRegions(); }
 static void logRegions() {
     for (unsigned i = 0; i < s_hr.n; i++)
         Debug::log("[OVL] heap region %u: %08lX..%08lX (%u B)%s", i,
@@ -129,12 +135,15 @@ static void loadWindow(char* dst, const char* src, size_t n) {
     __isb();
 }
 
-void CodeOverlay::apply(bool tsconf, bool gs, bool dma, bool dmaClassic, bool ngs, bool vdac2, bool next) {
-    // .nxovl shares its addresses with .tsovl + .ftovl: one machine at a time.
+void CodeOverlay::apply(bool tsconf, bool gs, bool dma, bool dmaClassic, bool ngs, bool vdac2, bool next, bool elm) {
+    // .nxovl shares its addresses with .tsovl + .ftovl: one machine at a time. .elmovl
+    // aliases the ZX pages 5/7 SRAM (rp2350-memmap.ld), loaded on an eLeMeNt boot only.
     if (next) { tsconf = false; vdac2 = false; }
+    if (elm) { tsconf = false; vdac2 = false; next = false; }
     struct W { const char* name; char* ws; char* we; char* cs; char* ce; char* src; bool want; bool* got; };
-    W w[7] = {
+    W w[8] = {
         { "ZX Next", __nxovl_win_start,  __nxovl_win_end,  __nxovl_start,  __nxovl_end,  __nxovl_source,  next,       &s_nx_loaded },
+        { "eLeMeNt", __elmovl_win_start, __elmovl_win_end, __elmovl_start, __elmovl_end, __elmovl_source, elm,        &s_elm_loaded },
         { "VDAC2",   __ftovl_win_start,  __ftovl_win_end,  __ftovl_start,  __ftovl_end,  __ftovl_source,  tsconf && vdac2, &s_ft_loaded },
         { "TS-Conf", __tsovl_win_start,  __tsovl_win_end,  __tsovl_start,  __tsovl_end,  __tsovl_source,  tsconf,     &s_ts_loaded  },
         { "Z80 DMA regs", __dmarovl_win_start, __dmarovl_win_end, __dmarovl_start, __dmarovl_end, __dmarovl_source, dma, &s_dma_loaded },
@@ -231,6 +240,7 @@ bool CodeOverlay::claimForDma() {
 
 // Backstop after the boot arch is final (ESPectrum::setup): the Next cannot run
 // without its renderer code, so a window the heap already took means falling back.
+bool CodeOverlay::elmResident() { return s_elm_loaded; }
 bool CodeOverlay::claimForNext() {
     if (s_nx_loaded) return true;
     if (s_ts_loaded || s_ft_loaded) {   // same addresses as .tsovl / .ftovl
@@ -300,8 +310,10 @@ extern "C" char* heap_ceiling_now() { return __HeapLimit; }
 extern "C" size_t heap_stranded_bytes()   { return 0; }
 extern "C" size_t heap_stranded_largest() { return 0; }
 
-void CodeOverlay::apply(bool, bool, bool, bool, bool, bool, bool) {}
+void CodeOverlay::apply(bool, bool, bool, bool, bool, bool, bool, bool) {}
 bool CodeOverlay::claimForNext()                  { return true; }
+bool CodeOverlay::elmResident()                   { return true; }
+void CodeOverlay::logHeapRegions()                {}
 bool CodeOverlay::claimForTsconf()                { return true; }
 bool CodeOverlay::claimDmaRegs()                  { return true; }
 bool CodeOverlay::claimForDma()                   { return true; }

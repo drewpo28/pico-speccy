@@ -57,6 +57,7 @@ option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/speccy/devices/gs/'s SRAM-r
 option(VDAC2_CODE_OVERLAY "TS-Conf VDAC2: put the FT812 hot code (coprocessor, inflate, MJPEG) in a fixed-VMA SRAM overlay loaded only when VDAC2 is on" ON)
 option(NEXT_CODE_OVERLAY "ZX Spectrum Next: put NextVideo.cpp's SRAM-resident renderer in a fixed-VMA overlay loaded only on a Next boot (~20 KB of heap back on every other machine)" ON)
 option(DMA_CODE_OVERLAY "Z80 DMA / zxnDMA: put Z80DMA.cpp's SRAM-resident code in a fixed-VMA overlay, handed to the heap when DMA is Off (~5 KB)" ON)
+option(ELM_CODE_OVERLAY "eLeMeNt ZX: put Z80::exec_nocheck_elm (the opcode switch loop) in a fixed-VMA overlay at the top of the Next window, loaded on an eLeMeNt boot only (~10 KB)" ON)
 # The AY stereo slot is a different shape from the three windows above: it is not
 # "reserved or released" but "one of four bodies loaded". ABC, ACB, BAC and
 # Mono share ONE slot (ld OVERLAY + NOCROSSREFS) sized max instead of sum.
@@ -317,6 +318,23 @@ endif()
 if (NOT NEXT_CODE_OVERLAY)
     set(NXOVL_WIN_SIZE_EFFECTIVE 0)
 endif()
+# eLeMeNt Z80 loop window (.elmovl): Z80::exec_nocheck_elm + its four fallbacks
+# (Z80_JLS.cpp, tools/gen_next_dispatch.py's elm flavour) + the FastDMA run and
+# the chunky run writer (Element.cpp fdmaRun, ElmHgfx.cpp chunkyWriteRun, 2026-11-18).
+# Sized for its content like .dmaovl; it sits inside the Next region, so every byte here is one the
+# eLeMeNt's heap (the HGFX arena) does not get. Content measured 2026-11-17.
+set(ELMOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the eLeMeNt Z80 loop overlay window, or AUTO (rp2350-memmap.ld)")
+if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
+    set(ELMOVL_WIN_SIZE_EFFECTIVE 12544)
+    if (PERF_TRACE)
+        set(ELMOVL_WIN_SIZE_EFFECTIVE 13056)
+    endif()
+else()
+    set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})
+endif()
+if (NOT ELM_CODE_OVERLAY)
+    set(ELMOVL_WIN_SIZE_EFFECTIVE 0)
+endif()
 # Two windows since 2026-10-11. The classic Z80-DMA byte loop (executeTransfer +
 # transferOneByte, 3 272 B) is unreachable on the Next — doEnable() takes
 # nxRunSync() — so it gets its own window, loaded only when the DMA card or an
@@ -509,6 +527,23 @@ else()
     PROVIDE(__nxovl_end    = __nxovl_win_start);\n\
     PROVIDE(__nxovl_source = __nxovl_win_start);\n")
 endif()
+if (ELM_CODE_OVERLAY)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ELM_CODE_OVERLAY=1)
+    set(ELMOVL_SECTION "\
+    .elmovl __elmovl_win_start : {\n\
+        __elmovl_start = .;\n\
+        *(.elmovl_code .elmovl_code.*)\n\
+        . = ALIGN(4);\n\
+        __elmovl_end = .;\n\
+    } AT > FLASH\n\
+    __elmovl_source = LOADADDR(.elmovl);\n")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ELM_CODE_OVERLAY=0)
+    set(ELMOVL_SECTION "\
+    PROVIDE(__elmovl_start  = __elmovl_win_start);\n\
+    PROVIDE(__elmovl_end    = __elmovl_win_start);\n\
+    PROVIDE(__elmovl_source = __elmovl_win_start);\n")
+endif()
 if (DMA_CODE_OVERLAY)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DMA_CODE_OVERLAY=1)
     set(DMAOVL_SECTION "\
@@ -577,7 +612,7 @@ else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE AY_STEREO_SLOT=0)
     set(AYOVL_SECTION "")
 endif()
-message(STATUS "Code overlays: .nxovl ${NXOVL_WIN_SIZE_EFFECTIVE} B, .ftovl ${FTOVL_WIN_SIZE_EFFECTIVE} B, .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .dmarovl ${DMAROVL_WIN_SIZE_EFFECTIVE} B, .ngsovl ${NGSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
+message(STATUS "Code overlays: .nxovl ${NXOVL_WIN_SIZE_EFFECTIVE} B, .elmovl ${ELMOVL_WIN_SIZE_EFFECTIVE} B, .ftovl ${FTOVL_WIN_SIZE_EFFECTIVE} B, .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .dmarovl ${DMAROVL_WIN_SIZE_EFFECTIVE} B, .ngsovl ${NGSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
 
 
 # The GM.DLS bank is everything above the firmware, to the top of flash — a dynamic

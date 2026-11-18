@@ -10,6 +10,7 @@
 #include "speccy/core/MemESP.h"
 #include "speccy/machines/Element/ElmLcu.h"
 #include "speccy/machines/Element/ElmHgfx.h"
+#include "app/CodeOverlay.h"
 #include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/machines/Element/ElmSid.h"
 #include "speccy/machines/Element/ElmFlash.h"
@@ -41,6 +42,8 @@ uint8_t g_elm_ff_off;
 const uint8_t* g_elm_divrom;          // DivMMC.cpp: esxDOS from block 4 of the ROM Area (e_zxi_02D bit 0)
 uint8_t g_elm_personality = 7;        // Config.h: e_zxi_000 as armed at the last reset
 
+void elmFastSlotsUpdate();   // Video.cpp: g_z80_rd_fast / g_z80_wr_fast from the masks below
+
 namespace Elm {
 
 // Core stamp 2026-10-12, the revision the Reference describes. Binary fields, the
@@ -50,6 +53,14 @@ static const uint8_t kStampYear = 26, kStampMonth = 10, kStampDay = 12;
 static const uint8_t kInterfaceId = 0xE1;     // "hE1 for eLeMeNt ZX, board v1.x"
 
 static uint8_t s_gIdx, s_eIdx, s_uIdx;
+#if PERF_TRACE
+extern uint32_t g_elm_io_cnt[6], g_elm_io_us[3], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];
+#endif
+#if PERF_TRACE
+}
+uint8_t elmGIdxNow() { return Elm::s_gIdx; }
+namespace Elm {   // the ZXi register index behind #7D3B reads (the IN histogram)
+#endif
 static uint8_t s_corePos;
 // 1 KB, on the heap: only this machine pays for them.
 // hrxc: the HRXC colour table as this frame's picture uses it (the Reference: the
@@ -145,6 +156,20 @@ uint8_t splitRead(uint16_t a) {
 }
 static inline bool isSplit(uint16_t a) { return (g_elm_split >> (a >> 13)) & 1; }
 uint8_t* wrKind;
+volatile uint8_t g_elm_rdmask = 0xFF, g_elm_wrmask = 0xFF;   // everything generic until the first remap
+static uint8_t s_vramSlots;
+extern volatile uint8_t g_elm_split, g_elm_vram_rd;           // slots holding a VRAM window page (windowsRebuildNow)
+static void elmMasksUpdate() {
+    uint8_t wr = 0x03, rd = 0;   // reads in slots 0-1: Video.cpp elmFastSlotsUpdate adds the divMMC / ZX-DMA terms
+    if (s_r) for (int sl = 2; sl < 8; sl++) {
+        const uint8_t* w = s_r->win + sl * 32;
+        for (int i = 0; i < 32; i++) if (w[i]) { wr |= (uint8_t)(1u << sl); break; }
+    }
+    wr |= g_elm_split; rd |= g_elm_split;
+    if (g_elm_vram_rd) rd |= s_vramSlots;
+    g_elm_rdmask = rd; g_elm_wrmask = wr;
+    ::elmFastSlotsUpdate();   // the loop's / the decoders' per-slot twins (Video.cpp)
+}
 static const uint8_t s_vramHi0 = 0x40;
 const uint8_t* vramHi = &s_vramHi0;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
@@ -182,9 +207,10 @@ static void windowsRebuildNow() {
     memset(w, 0, 256);
     // HGFX modes only: under HRC / HRXC #4000-#7BFF is their screen, plain RAM, and the
     // HGFX register page #5B sits in its pixels.
+    s_vramSlots = 0;
     if (Hgfx::mode >= 3 && !(Hgfx::g20 & 0x80)) {
         const uint8_t v = s_r->g[0x021];
-        for (int i = 0; i < Hgfx::vramPages(); i++) w[(uint8_t)(v + i)] = W_VRAM;
+        for (int i = 0; i < Hgfx::vramPages(); i++) { w[(uint8_t)(v + i)] = W_VRAM; s_vramSlots |= (uint8_t)(1u << ((uint8_t)(v + i) >> 5)); }
         const uint8_t c = s_r->g[0x023];
         for (int i = 0; i < 3; i++) w[(uint8_t)(c + i)] = W_COL;
         w[s_r->g[0x022]] = W_REG;
@@ -211,6 +237,7 @@ static void windowsRebuildNow() {
     // RAM-fill over the ROM0 block and the "48K" went dark (bench 2026-11-03).
     if (s_active & 1) g_atm_ro &= (uint8_t)~1; else g_atm_ro |= 1;
     readHookUpdate();
+    elmMasksUpdate();
 }
 
 // The HGFX COPY read latch: on while the VRAM window is mapped and the mode is COPY,
@@ -228,6 +255,7 @@ static void readHookUpdate() {
     g_elm_vram_rd = on;
     s_rdFast = fast;
     if (!on) s_rdArmed = false;
+    if (was != on) elmMasksUpdate();
     if (was != on || wasFast != fast) VIDEO::tsFastMemRecalc();
 }
 bool fastReadOk() { return s_rdFast; }
@@ -351,6 +379,9 @@ uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
             MemESP::writebyte((uint16_t)(dst + k), buf[k]);
         }
         Hgfx::writeVramRun((uint16_t)(dst - ((uint16_t)s_r->g[0x021] << 8)), buf, c);
+#if PERF_TRACE
+        g_elm_io_cnt[0] += c;
+#endif
         uint32_t t = c * cycles;
         while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
         return c;
@@ -366,6 +397,9 @@ uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles) {
     if (dst <= src || dst >= src + c) { uint8_t buf[256]; rdBytes(src, buf, c); wrBytes(dst, buf, c); }
     else for (uint32_t k = 0; k < c; k++) MemESP::writebyte((uint16_t)(dst + k), rdByte((uint16_t)(src + k)));
     s_rdArmed = false;
+#if PERF_TRACE
+    g_elm_io_cnt[1] += c;
+#endif
     uint32_t t = c * cycles;
     while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
     return c;
@@ -392,10 +426,19 @@ uint32_t dmaFromCard(uint16_t port, uint16_t dst, uint32_t n, uint32_t cycles) {
     const uint32_t left = (CPU::statesInFrame - CPU::tstates) / per;
     if (c > left) c = left;
     if (!c) return 0;
+#if PERF_TRACE
+    const uint32_t t0_ = time_us_32();
+#endif
     const uint32_t k = DivMMC::mmc_read_bulk(p + (dst & 0x1FFF), c);
+#if PERF_TRACE
+    g_elm_io_us[0] += time_us_32() - t0_;
+#endif
     if (!k) return 0;
     *mem_desc_t::bank_dirty[slot] = true;
     LED::touchR(LED::SD);
+#if PERF_TRACE
+    g_elm_io_cnt[2] += k;
+#endif
     uint32_t t = k * per;
     while (t) { const uint32_t q = t > 200 ? 200 : t; VIDEO::Draw(q, false); t -= q; }
     return k;
@@ -422,6 +465,9 @@ static bool s_kwOk;
 static uint32_t s_kwT, s_kwR, s_kwRegs;
 #if PERF_TRACE
 uint32_t g_elm_kw[2];   // skips, passes skipped
+uint32_t g_elm_io_cnt[6];   // bytes a window: dmaCopy plain / COPY, dmaFromCard, FastDMA run / per byte, (5) spare
+uint32_t g_elm_io_us[3];    // core0 time a window: dmaFromCard, fdmaRun (whole call), fdmaRun per-byte pieces
+uint32_t g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];   // fd_src: fill / URAM / chunky window / plain page (4 = per-byte read fallback)   // FastDMA pieces a window: per-byte reason (1 src divMMC, 2 overlap, 3 dst low, 4 VRAM rule, 5 split chunky src, 6 other window), destination kind
 #endif
 void keyWaitSkip() {
     const uint16_t af = Z80::getRegAF();
@@ -472,7 +518,10 @@ static void fdWrite(uint32_t a, bool uram, uint8_t v) {
     busWrite((uint16_t)a, v);
 }
 
-static void fdmaRun(int set, bool wide24) {
+ELM_OVL_CODE static void fdmaRun(int set, bool wide24) {   // .elmovl: 2 400 pieces a frame on PF2026, 6.6 ms of flash code (hw 2026-11-18)
+#if PERF_TRACE
+    struct FdT_ { uint32_t t0; FdT_() : t0(time_us_32()) {} ~FdT_() { g_elm_io_us[1] += time_us_32() - t0; } } fdT_;
+#endif
     if (s_fdBusy) return;
     s_fdBusy = true;
     const uint8_t* r = s_fd + set * 0x20;
@@ -530,30 +579,74 @@ static void fdmaRun(int set, bool wide24) {
         // writes the per-byte path would have made.
         const bool svram = !fill && !suram && s_r->win[(sa >> 8) & 0xFF] == W_VRAM;
         bool fast = true;
-        if (!fill && !suram && sa < 0x4000 && MemESP::divmmc_mapped) fast = false;
-        if (sp && dp && dp > sp && dp < sp + c) fast = false;
+#if PERF_TRACE
+        uint8_t why = 0;
+#define FD_SLOW(n) do { fast = false; if (!why) why = (n); } while (0)
+#else
+#define FD_SLOW(n) (fast = false)
+#endif
+        if (!fill && !suram && sa < 0x4000 && MemESP::divmmc_mapped) FD_SLOW(1);
+        if (sp && dp && dp > sp && dp < sp + c) FD_SLOW(2);
         if (!duram) {
-            if (da < 0x4000 && (MemESP::divmmc_mapped || kind == W_NONE)) fast = false;   // ROM, divMMC: the generic rules
-            if (kind == W_VRAM) { if (!Hgfx::reg(Hgfx::REG_MASK) || (g_elm_vram_rd && (svram || s_rdArmed))) fast = false; }
-            else if (kind == W_CHUNKY) { if (schunk) fast = false; }
-            else if (kind != W_NONE) fast = false;
+            if (da < 0x4000 && (MemESP::divmmc_mapped || kind == W_NONE)) FD_SLOW(3);   // ROM, divMMC: the generic rules
+            // COPY mode, VRAM -> VRAM: one copyRun (every byte read arms the latch, every
+            // write copies it - what dmaCopy does for the Z80 DMA); PF2026 moved ~930 B a
+            // frame this way at 2.6 us a byte through fdWrite (hw 2026-11-18, 2.45 ms).
+            if (kind == W_VRAM) { if (!Hgfx::reg(Hgfx::REG_MASK) || (g_elm_vram_rd && !svram && s_rdArmed)) FD_SLOW(4); }
+            else if (kind == W_CHUNKY) { if (schunk) FD_SLOW(5); }
+            else if (kind != W_NONE) FD_SLOW(6);
         }
+#if PERF_TRACE
+        if (!fast) g_elm_fd_why[why]++;
+        g_elm_fd_kind[kind & 7]++;
+#endif
+#undef FD_SLOW
         if (fast) {
             // The source is read in place when it is a plain page (no copy into buf);
             // the overlap test above already sent a destination inside it per byte.
             const uint8_t* src = buf;
+#if PERF_TRACE
+            g_elm_fd_src[fill ? 0 : suram ? 1 : schunk ? 2 : 3]++;
+#endif
             if (fill) memset(buf, fv, c);
             else if (suram) { if (sp) src = sp; else memset(buf, 0xFF, c); }
             else if (schunk) Hgfx::chunkyReadRun(slotPage[(sa >> 13) & 7] * 0x2000u + (sa & 0x1FFF), buf, c);
-            else if (!(src = rdPtr((uint16_t)sa))) { rdBytes((uint16_t)sa, buf, c); src = buf; }
+            else if (!(src = rdPtr((uint16_t)sa))) { rdBytes((uint16_t)sa, buf, c); src = buf;
+#if PERF_TRACE
+                g_elm_fd_src[4]++;
+#endif
+            }
             if (duram) { if (dp) memmove(dp, src, c); }
-            else if (kind == W_CHUNKY) Hgfx::chunkyWriteRun(slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), src, c);
+            else if (kind == W_CHUNKY) {
+#if PERF_TRACE
+                const uint32_t tw_ = time_us_32();
+#endif
+                Hgfx::chunkyWriteRun(slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF), src, c);
+#if PERF_TRACE
+                g_elm_io_us[2] += time_us_32() - tw_;
+#endif
+            }
             else {
-                if (kind == W_VRAM) Hgfx::writeVramRun((uint16_t)(da - ((uint16_t)s_r->g[0x021] << 8)), src, c);
+                const uint16_t vbase = (uint16_t)s_r->g[0x021] << 8;
+                if (kind == W_VRAM) {
+                    if (g_elm_vram_rd && svram) { Hgfx::copyRun((uint16_t)(da - vbase), (uint16_t)(sa - vbase), c); s_rdArmed = false; }
+                    else Hgfx::writeVramRun((uint16_t)(da - vbase), src, c);
+                }
                 wrBytes((uint16_t)da, src, c);   // under the window too
             }
-        } else for (uint32_t k = 0; k < c; k++)
-            fdWrite((da + k) & amask, duram, fill ? fv : fdRead((sa + k) & amask, suram));
+        } else {
+#if PERF_TRACE
+            const uint32_t tb_ = time_us_32();
+#endif
+            for (uint32_t k = 0; k < c; k++)
+                fdWrite((da + k) & amask, duram, fill ? fv : fdRead((sa + k) & amask, suram));
+#if PERF_TRACE
+            g_elm_io_us[2] += time_us_32() - tb_;
+#endif
+        }
+#if PERF_TRACE
+        g_elm_io_cnt[fast ? 3 : 4] += c;
+#endif
         s += c; d += c; i += c;
         if ((sn += c) == sbatch) { sn = 0; s += sskip; }
         if ((dn += c) == dbatch) { dn = 0; d += dskip; }
@@ -760,6 +853,7 @@ void remap() {
     s_flashSlots = fl;
     s_framSlots = fr;
     g_elm_split = split;
+    elmMasksUpdate();
     Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
     g_elm_nodiv = (active & 1) && !(s_r->e[0x02D] & 0x80);

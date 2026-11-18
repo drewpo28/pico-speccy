@@ -83,7 +83,7 @@ Each rule cost at least one hardware round; the story is in the notes file named
   `dur`/`gap` is the regression meter (`video-hdmi-vga.md`).
 - **core0 has an 8 KB stack, core1 2 KB.** No big arrays on the stack in the
   frameEnd / UI / renderer paths; a lone `<signal handler called>` frame = stack overflow.
-- **Overlay windows** (`.tsovl`, `.nxovl`, `.gsovl`, `.ngsovl`, `.dmaovl`, `.ftovl`)
+- **Overlay windows** (`.tsovl`, `.nxovl`, `.elmovl`, `.gsovl`, `.ngsovl`, `.dmaovl`, `.ftovl`)
   share VMAs and have AUTO size terms in `cmake/memory-layout.cmake`: raise the term of
   the object whose code grew; resolve overlay addresses against section symbols, never
   addr2line.

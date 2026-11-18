@@ -1482,6 +1482,11 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   the eLeMeNt RAM-code window at the `.nxovl` addresses (the prerequisite for any more RAM code here).
   What decides: `[HGFX] draw` and `wait`, `PERF[... GS:x.x MHz]` on LIMSHOWM fades and HGFXAGON, realFPS on PF2026
   (`[PERF] clk: mult=3` first).
+- **The Z80 side (2026-11-17, NOT hw-tested): the eLeMeNt runs the Next-shaped switch loop** (`Z80::exec_nocheck_elm`
+  in its own `.elmovl` window at the top of the Next region, per-slot read / write masks from the window table, the
+  shared prefix decoders on the all-slots gate `g_z80_rd_all`): 76 -> 41 ARM instructions per Z80 instruction on the
+  `game` mix (the Next loop: 37.5), bit-exact against the TS loop; hw PF2026 28 MHz 26.3 -> 23.9 ms, 36 -> 38.7 FPS. Everything about it, the bench table, the dead ends and what to read in
+  the hw log (`[HGFX] 60f ... z80 loop N/fr gen M/fr`, `[ELM] mem:`), the FastDMA figures and the SRAM shape (the `.elmovl` window on the ZX pages 5/7 SRAM, the early arena, 5-of-6 row blocks) are in `z80-core.md` "eLeMeNt loop". hw-confirmed DVp2w 2026-11-18 (`z80n`): PF2026 ~40 FPS, HGFXAGON a steady 50; committed.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

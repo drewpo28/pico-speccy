@@ -59,6 +59,15 @@
 #else
 #define NX_OVL_CODE __attribute__((noinline)) __not_in_flash("next")
 #endif
+// eLeMeNt ZX: Z80::exec_nocheck_elm and its fallbacks (Z80_JLS.cpp), the FastDMA run
+// (Element.cpp) and the chunky run writer (ElmHgfx.cpp). Its window (.elmovl) aliases
+// the SRAM of the static ZX pages 5/7 (RAM_128K), which an eLeMeNt boot re-binds to
+// butter; the heap and the HGFX SRAM arena are untouched (rp2350-memmap.ld).
+#if defined(ELM_CODE_OVERLAY) && ELM_CODE_OVERLAY
+#define ELM_OVL_CODE __attribute__((noinline, section(".elmovl_code")))
+#else
+#define ELM_OVL_CODE __attribute__((noinline)) __not_in_flash("elm")
+#endif
 
 #if !defined(TSCONF_CODE_OVERLAY)
 #define TSCONF_CODE_OVERLAY 0
@@ -140,7 +149,8 @@ namespace CodeOverlay {
 // dma = "something can reach the Z80 DMA register file" (Config::dma_mode, an
 // MB-02+, or the Next's zxnDMA); dmaClassic = "the CLASSIC byte loop can run",
 // which is dma minus the Next — see the two windows in rp2350-memmap.ld.
-void apply(bool tsconf, bool gs, bool dma, bool dmaClassic, bool ngs, bool vdac2, bool next);
+// elm = "this boot comes up as the eLeMeNt ZX" (its Z80 loop window, .elmovl).
+void apply(bool tsconf, bool gs, bool dma, bool dmaClassic, bool ngs, bool vdac2, bool next, bool elm);
 
 // Enabling a feature OUTSIDE that window: load its overlay if the window is
 // still untouched (the heap grows upward and rarely reaches the top tens of KB,
@@ -156,6 +166,10 @@ bool claimForDma();
 // adds the classic byte loop's window on top of it, for the DMA card / MB-02+.
 bool claimDmaRegs();
 bool claimForNext();
+// The eLeMeNt window is loaded (Video.cpp gates the eLeMeNt loop on it).
+bool elmResident();
+// The heap regions again (setup: COMPLETE), for a UART capture that missed the boot.
+void logHeapRegions();
 
 // Diagnostics for Hardware/Memory Info: window size, bytes used by the content,
 // and whether the window is currently code (true) or heap (false).

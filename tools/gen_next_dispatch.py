@@ -222,6 +222,22 @@ for n in ('decodeRETcc', 'decodeJPcc', 'decodeCALLcc'):
     out.append(nxt('nx_%s: %s break;' % (n, call(n))))
 out.append('nx_dec8: dec8(*nx_p); nx_qs = nx_r; break;')
 open(os.path.join(ROOT, 'src/speccy/z80/next_dispatch.inc'), 'w').write('\n'.join(out) + '\n')
+# The eLeMeNt flavour (Z80::exec_nocheck_elm, elm_memory.h): the same switch with
+# the ElmMemory accessors (a per-slot read / write mask test instead of the Next's
+# ">= 0x4000"), the ED prefix on the shared route (no Z80N; decodeED as the generic
+# loop runs it), push/pop/the gate renamed. The JR idle hook is Next-only
+# (guarded by Z80Ops::isNext in the bodies) and goes to the plain jump tail.
+elm = []
+for line in out:
+    if line.startswith('case 0xED:'):
+        line = 'case 0xED: goto nx_slow;'
+    line = re.sub(r'NextMemory::(addressOnBus|addressOnBusIR|peek8|peek16|poke8|poke16)_nx\(', r'ElmMemory::\1_elm(', line)
+    line = line.replace('nxPush(', 'elmPush(').replace('nxPop()', 'elmPop()').replace('nxIdleNote()', 'nxCheckTrdos()')
+    line = line.replace('g_next_fastrd', 'g_elm_fastrd')
+    line = line.replace('next_dispatch.inc', 'elm_dispatch.inc').replace('Z80::exec_nocheck_next', 'Z80::exec_nocheck_elm')
+    elm.append(line)
+assert not any('NextMemory::' in l or 'NextReg' in l or 'NextInt' in l for l in elm), [l for l in elm if 'NextMemory::' in l or 'NextReg' in l or 'NextInt' in l][:2]
+open(os.path.join(ROOT, 'src/speccy/z80/elm_dispatch.inc'), 'w').write('\n'.join(elm) + '\n')
 # The handlers called directly must carry NX_DISP_INL at their definition.
 missing = [n for n in sorted(inl) if not re.search(r'NX_DISP_INL void Z80::%s\(' % n, src)]
 if missing:

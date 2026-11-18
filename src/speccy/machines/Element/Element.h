@@ -83,6 +83,11 @@ void keyWaitSkip();
 bool nmiBlocked();                            // SafeNMI: the button is locked
 void nmiTaken(uint16_t pc);                   // SafeNMI: the return address
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM
+// Per 8K slot, for Z80::exec_nocheck_elm (elm_memory.h): a set bit sends the loop's
+// reads / writes of that slot to the generic accessors. Bits 0-1 always (ROM, divSD,
+// URAM zone 0); a slot with any window page in it (writes); the VRAM window's slots
+// in COPY mode and a split chunky window (reads). elmMasksUpdate keeps them.
+extern volatile uint8_t g_elm_rdmask, g_elm_wrmask;
 
 // The ports the machine claims ahead of the generic decode, tested in the RAM path:
 // #xx3B, #9EFD/#9FFD, the URAM ports #07 #27 #47 #67 #53 #73 and the DACs #0F-#7F

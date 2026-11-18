@@ -429,6 +429,7 @@ public:
     static void execute();
     static void exec_nocheck();
     static void exec_nocheck_next(bool divmmc);
+    static void exec_nocheck_elm(bool divmmc);    // eLeMeNt ZX: the same switch, elm_memory.h (Z80_JLS.cpp, .elmovl)
     static void exec_nocheck_ts();   // TS-Conf / ATM fast memory path inner loop (Z80_JLS.cpp)
 
     // Check INT

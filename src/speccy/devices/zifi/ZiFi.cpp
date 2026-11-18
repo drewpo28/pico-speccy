@@ -622,14 +622,14 @@ void ZiFi::init(bool background) {
     if (!zifi_in_buf) {
         // The size the link needs NOW; fall back a step at a time rather than fail.
         for (uint16_t sz = rxWantSize(); sz >= 2048 && !zifi_in_buf; sz >>= 1)
-            if (s_in_buf.alloc(sz, Buffer::NEED_POINTER)) {
+            if (s_in_buf.alloc(sz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {   // 2026-11-18: the rings off the SRAM heap (main-loop consumers only)
                 zifi_in_buf  = s_in_buf.data();
                 zifi_in_size = sz;
                 zifi_in_mask = (uint16_t)(sz - 1);
             }
     }
     // TX ring (256 B) + the spill read-back staging block behind it.
-    if (!zifi_out_buf && s_out_buf.alloc(256 + ZIFI_OUT_STAGE, Buffer::NEED_POINTER)) {
+    if (!zifi_out_buf && s_out_buf.alloc(256 + ZIFI_OUT_STAGE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {
         zifi_out_buf = s_out_buf.data();
         g_out_buf    = zifi_out_buf + 256;
     }

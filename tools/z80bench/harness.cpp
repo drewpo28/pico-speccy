@@ -26,6 +26,9 @@ extern uint8_t old_ro asm("g_atm_ro") __attribute__((weak));
 extern uint32_t new_gates asm("g_memgates") __attribute__((weak));
 extern uint8_t g_ts_fastrd;                       // operand reads (CPU.cpp / Video.cpp)
 extern bool g_next_fastrd __attribute__((weak));  // Z80::exec_nocheck_next (Next loop)
+extern bool g_elm_fastrd __attribute__((weak));   // Z80::exec_nocheck_elm (eLeMeNt loop)
+extern uint8_t g_z80_rd_fast __attribute__((weak)), g_z80_wr_fast __attribute__((weak));   // next_memory.h: per-slot fast masks (Next / eLeMeNt)
+extern bool g_z80_rd_all __attribute__((weak));   // next_memory.h: the shared handlers' inline reads
 __attribute__((section(".guestmem"))) alignas(16) static uint8_t mem[65536];
 static bool dirty_sink;
 static volatile bool done;
@@ -138,8 +141,19 @@ int main(int argc, char** argv) {
     g_ts_fastrd = 2;
     if (next) {   // the Next machine flag too: check_trdos / the switch take their Next branches
         if (&g_next_fastrd) g_next_fastrd = true;
+        if (&g_z80_rd_fast) { g_z80_rd_fast = 0xFF; g_z80_wr_fast = 0xFC; }
+        if (&g_z80_rd_all) g_z80_rd_all = true;
         Z80Ops::isTsconf = false; Z80Ops::isNext = true;
         printf("mode: Next loop\n");
+    }
+    // argv[5] == "elm": the eLeMeNt loop (Z80::exec_nocheck_elm) on the TS harness's
+    // flat memory - the slot masks say 0x4000+ is plain, as with no window mapped.
+    if (argc > 5 && !strcmp(argv[5], "elm")) {
+        if (&g_elm_fastrd) g_elm_fastrd = true;
+        if (&g_z80_rd_fast) { g_z80_rd_fast = 0xFF; g_z80_wr_fast = 0xFC; }   // every slot reads plain, writes at 0x4000+, as the firmware with no window and no divMMC page up
+        if (&g_z80_rd_all) g_z80_rd_all = true;
+        Z80Ops::isTsconf = false; Z80Ops::isElm = true;
+        printf("mode: eLeMeNt loop\n");
     }
     VIDEO::Draw = benchDraw; VIDEO::Draw_Opcode = benchDrawOp;
     CPU::tstates = 0;

@@ -58,6 +58,7 @@ uint8_t* chunkyRead(uint32_t off, bool lowSlot, bool* split);
 uint8_t  chunkyReadByte(uint32_t off);
 void     chunkyReadRun(uint32_t off, uint8_t* p, uint32_t n);
 void    arenaEnsure();          // Elm::reset: the one SRAM block for buffer 1 / the row blocks (eLeMeNt session)
+void    arenaClaimEarly();      // ESPectrum::setup after the FB, eLeMeNt boots: the same block while the Next region is whole
 void    arenaFree();            // another machine: give it back
 bool    chunkyStale();          // chunkyRead sent buffer 1 back to PSRAM: Elm::remap maps every slot again
 void    chunkyWrite(uint32_t off, uint8_t v);

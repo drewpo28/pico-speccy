@@ -764,7 +764,29 @@ static void assign_ram(int i, bool butterOnly = false) {
 #define ELM_SRAM46_MIN_FREE_KB 0
 #endif
 static uint32_t s_fbPages = 0;   // bit i = ZX page i's SRAM belongs to the framebuffer
+// eLeMeNt ZX: the .elmovl code window aliases the SRAM of ZX pages 5/7 (rp2350-memmap.ld),
+// so an eLeMeNt boot sends those two pages to butter like the pages the framebuffer
+// takes. Decided ONCE (CodeOverlay::apply asks before resolveVideoOutput / the FB, the
+// donor after, and the two must agree: hw 2026-11-18 15:12 had the window loaded and
+// pages 5/7 still in SRAM - the guest's screen writes landed on the loop, UNDEFINSTR at
+// exec_nocheck_elm+0xf44). A board without the butter budget loads no window.
+static bool s_elmPages57;
+static bool elmCodeInPages57() {
+#if ELM_CODE_OVERLAY
+  static int8_t decided = -1;
+  if (decided < 0) {
+    const bool elm = Config::arch == A_ELM || (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM);
+    const size_t wanted = Config::wantedPages(Config::arch);
+    decided = elm && butter_psram_size() && Buffer::pageBudgetButter() >= (wanted + 2) * (size_t)MEM_PG_SZ;
+    Debug::log("setup: eLeMeNt code window on pages 5/7: %s", decided ? "yes" : "no");
+  }
+  return decided > 0;
+#else
+  return false;
+#endif
+}
 static void donateZxPagesToFb() {
+  s_elmPages57 = elmCodeInPages57();   // whatever happens below, the window's pages leave SRAM
   if (!butter_psram_size()) return;
   // The strip takes pages 8..wanted+1 out of the butter budget (assign_ram); pages
   // 0-7 come on top. A short budget would push the tail onto SD swap — the "degraded"
@@ -845,6 +867,15 @@ static void donateZxPagesToFb() {
     }
     if (!keep46) VIDEO::fbDonate(p4, 2u * MEM_PG_SZ, 0x50u);   // pages 4/6; pages57 is NOT donated (see above)
   }
+#if ELM_CODE_OVERLAY
+  // eLeMeNt: what the .elmovl window leaves of pages57 is the last donor, so the FB's
+  // last rows come from there instead of the heap (~5 KB at 360 wide).
+  if (s_elmPages57) {
+    extern char __elmovl_win_size[];
+    const size_t win = (size_t)(uintptr_t)__elmovl_win_size;
+    if (win < 2u * MEM_PG_SZ) VIDEO::fbDonate(p5 + win, 2u * MEM_PG_SZ - win, 0xA0u);
+  }
+#endif
 }
 
 // One line with everything a machine-switch bug hides in: the paging latches that
@@ -1114,7 +1145,15 @@ void ESPectrum::setup() {
                      vdac2Win,
                      // Next renderer window: same rule as the zxnDMA half of dmaWin
                      Config::arch == A_NEXT ||
-                       (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_NEXT));
+                       (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_NEXT),
+                     elmCodeInPages57());
+#if ELM_CODE_OVERLAY
+  // The HGFX SRAM arena NOW, before anything else grows the heap: the sbrk cursor sits
+  // in the Next region after apply() (region 0 is the USB / lwIP hole), so every
+  // allocation from here on would come out of it - after the framebuffer the largest
+  // piece was 49 132 B, 20 B short of HGFXAGON's six 8 KB row blocks (hw 2026-11-18).
+  if (elmCodeInPages57()) Hgfx::arenaClaimEarly();
+#endif
   // Framebuffer re-check: the block was already claimed at the top of setup(), from
   // a pristine heap and for the DEFAULT mode. This is where the mode the user
   // actually picked is honoured — a no-op when it matches, a resize when it does
@@ -1132,6 +1171,7 @@ void ESPectrum::setup() {
   donateZxPagesToFb();
   VIDEO::reserveFrameBuffer();
   s_fbPages = VIDEO::fbDonorsUsed();
+  if (s_elmPages57) s_fbPages |= 0xA0u;   // pages 5/7 to butter even when the FB took none of their tail
   if (s_fbPages) {
     char pg[24]; int n = 0;
     for (int i = 0; i < 8; ++i) if (s_fbPages & (1u << i)) n += snprintf(pg + n, sizeof(pg) - n, "%d ", i);
@@ -1445,6 +1485,10 @@ void ESPectrum::setup() {
     // keeps 5/7 (and 4/6) ADJACENT in butter, as the static arrays were: ZipExtract's
     // tightest-board fallback borrows ram[5] as a 32 KB inflate dictionary.
     static const uint8_t kOrder[8] = { 0, 1, 2, 3, 4, 6, 5, 7 };
+#if ELM_CODE_OVERLAY
+    if (CodeOverlay::elmResident()) s_fbPages |= 0xA0u;   // the .elmovl window sits in pages57: never ZX RAM then
+#endif
+    Debug::log("setup: pages to butter: %02X", (unsigned)s_fbPages);
     for (int k = 0; k < 8; ++k) {
       const int i = kOrder[k];
       if (!(s_fbPages & (1u << i))) continue;
@@ -2039,6 +2083,7 @@ void ESPectrum::setup() {
   VIDEO::gigascreenPreferSram();
 
   Debug::log("setup: COMPLETE, freeHeap=%u", getFreeHeap());
+  CodeOverlay::logHeapRegions();
 #if PERF_TRACE && PERF_HIST
   { extern void pcprof_start(); pcprof_start(); }   // PcProf.cpp: core0 PC sampling
 #endif

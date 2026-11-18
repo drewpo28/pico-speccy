@@ -134,6 +134,8 @@ SECTIONS
      * the framebuffer/heap which lands in banks SRAM2-7. */
     .ram_128k (NOLOAD): {
         . = ALIGN(4);
+        __ram128k_p57_start = .;      /* pages57 (MemESP.cpp): the .elmovl window aliases it */
+        *(.ram_128k.p57)
         *(.ram_128k*)
         . = ALIGN(4);
     } > RAM_128K
@@ -342,6 +344,17 @@ SECTIONS
        with .tsovl, directly under .dmarovl (which a Next boot loads too). */
     __nxovl_win_start  = __dmarovl_win_start - __nxovl_win_size;
     __nxovl_win_end    = __nxovl_win_start + __nxovl_win_size;
+    /* eLeMeNt ZX RAM code (.elmovl: Z80::exec_nocheck_elm, the FastDMA run): ALIASES
+       the static ZX pages 5/7 (pages57, the first 32 KB of RAM_128K, banks 0-1). An
+       eLeMeNt boot re-binds pages 5 and 7 to butter PSRAM before the guest starts
+       (ESPectrum.cpp donateZxPagesToFb, like the pages the framebuffer takes), so
+       nothing reads that SRAM as ZX RAM there; every other machine never loads the
+       window. It is NOT a heap window (HeapRegions never sees it): the first try put
+       it at the top of the Next region, which cost the HGFX SRAM arena 10-12 KB and
+       HGFXAGON its row blocks (owner, 2026-11-18). */
+    __elmovl_win_size  = @ELMOVL_WIN_SIZE_EFFECTIVE@;
+    __elmovl_win_start = __ram128k_p57_start;
+    __elmovl_win_end   = __elmovl_win_start + __elmovl_win_size;
     /* Classic Z80-DMA byte loop (.dmaovl), directly UNDER .nxovl (or .tsovl if that
        reaches lower, e.g. with the Next overlay compiled out), i.e. inside the
        lower part of .ftovl (2026-10-11). The Next never loads it (doEnable() takes
@@ -363,6 +376,7 @@ SECTIONS
 @DMAOVL_SECTION@
 @TSOVL_SECTION@
 @NXOVL_SECTION@
+@ELMOVL_SECTION@
     ASSERT(__ngsovl_bss_end <= __ngsovl_win_end,
         "ERROR: .ngsovl overflowed the NeoGS overlay window. Re-link with -DNGSOVL_WIN_SIZE=16384, read the real size from `arm-none-eabi-size -A <elf> | grep ngsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__gsovl_bss_end <= __gsovl_win_end,
@@ -375,6 +389,9 @@ SECTIONS
         "ERROR: .tsovl overflowed the TS-Conf code overlay window. Re-link with -DTSOVL_WIN_SIZE=24576, read the real size from `arm-none-eabi-size -A <elf> | grep .tsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__ftovl_end <= __ftovl_win_end,
         "ERROR: .ftovl overflowed the VDAC2 overlay window. Re-link with -DFTOVL_WIN_SIZE=32768, read the real size from `arm-none-eabi-size -A <elf> | grep ftovl`, then fix the AUTO arithmetic in cmake/memory-layout.cmake")
+    ASSERT(__elmovl_win_size <= 32768, "ERROR: .elmovl is larger than the ZX pages 5/7 SRAM it aliases (32 KB)")
+    ASSERT(__elmovl_end <= __elmovl_win_end,
+        "ERROR: .elmovl overflowed the eLeMeNt Z80 loop window. Re-link with -DELMOVL_WIN_SIZE=16384, read the real size from `arm-none-eabi-size -A <elf> | grep elmovl`, then fix the AUTO arithmetic in cmake/memory-layout.cmake")
     ASSERT(__nxovl_end <= __nxovl_win_end,
         "ERROR: .nxovl overflowed the ZX Next renderer overlay window. Re-link with -DNXOVL_WIN_SIZE=32768, read the real size from `arm-none-eabi-size -A <elf> | grep nxovl`, then fix the AUTO arithmetic in cmake/memory-layout.cmake")
     ASSERT(__end__ <= __ovl_low_start,

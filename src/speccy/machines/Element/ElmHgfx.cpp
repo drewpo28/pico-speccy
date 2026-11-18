@@ -4,6 +4,7 @@
 // take the direct path (docs/element-zx-plan.md).
 #include "speccy/devices/gs/GS.h"
 #include "speccy/machines/Element/ElmHgfx.h"
+#include "app/CodeOverlay.h"
 #include "speccy/machines/Element/Element.h"
 #include <string.h>
 #include <stdlib.h>
@@ -24,6 +25,13 @@ extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp (host: host_stub
 #if PERF_HIST
 void pcprof_dump();
 #endif
+#if PERF_TRACE
+extern uint32_t g_elm_loop_n, g_elm_gen_n;   // Z80_JLS.cpp: Z80::exec_nocheck_elm entries, shared-loop instructions
+extern uint32_t g_elm_ed_hist[256], g_elm_in_hist[256];   // Z80_JLS.cpp: ED second bytes the loop handed to the shared decoders, IN r,(C) ports
+namespace Elm { extern uint32_t g_elm_kw[2]; }   // Element.cpp: key-wait skips / passes
+namespace Elm { extern uint32_t g_elm_io_cnt[6], g_elm_io_us[3], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8]; }   // Element.cpp: DMA / FastDMA bytes and core0 us a window
+#endif
+
 namespace Hgfx {
 
 uint8_t mode, g20;
@@ -62,7 +70,7 @@ static uint8_t* s_buf;              // 128K, PSRAM
 // without HIST, 2026-11-16): the arena takes what there is, whole rows, and the last rows
 // of the picture stay in PSRAM. The row blocks (sramPromote) want the full 48 KB and fall
 // back to their own mallocs with a smaller arena.
-enum { H1_END = 0xE800, H1_MIN = 40 * 1024 };
+enum { H1_END = 0xE800, H1_MIN = 24 * 1024 };   // 40 -> 24 KB 2026-11-18: hw missed a 40 380 B largest piece by 580 B twice; the arena takes what there is (rows from the top)
 static uint8_t* s_h1;
 static uint32_t s_h1Base, s_h1Size;  // absolute offset of s_h1[0] in the 128 KB space, length
 static uint8_t s_h1Edge;             // demotions by a window across an edge; 3 = this program does not fit
@@ -94,6 +102,7 @@ static bool s_sramOn[2];
 enum { SRAM_MAX = 1 };
 static volatile uint32_t s_use[2];  // PSRAM transactions a buffer would cost: writes x2
 static uint8_t s_lagFrames, s_lagWindow;
+static uint32_t s_waitedUs;         // this frame's wait for core1 (frameEnd)
 static uint8_t s_sramRetry;         // half-second windows before a refused move is tried again
 // Dirty units: one bit per 256 bytes of the 128 KB space, set by every store the engine
 // makes (core0 in direct mode, core1 otherwise), taken and cleared by the draw at its
@@ -384,7 +393,9 @@ static void sramOff(bool keep) {
         s_sramOn[n] = false;
         for (int i = 0; i < SRAM_PER; i++) {
             uint8_t*& b = s_sram[n * SRAM_PER + i];
-            if (keep) memcpy(s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK, b, SRAM_BLOCK);
+            uint8_t* home = s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK;
+            if (b == home) { b = nullptr; continue; }   // a block that stayed in PSRAM by pointer
+            if (keep) memcpy(home, b, SRAM_BLOCK);
             if (!s_sramArena) free(b);
             b = nullptr;
         }
@@ -454,15 +465,21 @@ static void sramPromote() {
     if (s_sramOn[n]) return;
     const size_t free0 = getFreeHeap();
     uint8_t** b = s_sram + n * SRAM_PER;
-    if (s_arena && s_arenaSize >= SRAM_PER * SRAM_BLOCK) {
+    // The arena holds as many whole blocks as it has (the Next region's usable 49 088 B
+    // never fit all six: 49 152; hw 2026-11-18, HGFXAGON at PSRAM speed with a 48 896 B
+    // arena beside it). The blocks past it keep their PSRAM bytes by pointer: at() and
+    // the engine never know the difference, sramOff copies nothing back for them.
+    if (s_arena && s_arenaSize >= SRAM_BLOCK) {
+        const int inArena = (int)(s_arenaSize / SRAM_BLOCK) < SRAM_PER ? (int)(s_arenaSize / SRAM_BLOCK) : SRAM_PER;
         drain();
         for (int i = 0; i < SRAM_PER; i++) {
-            b[i] = s_arena + i * (uint32_t)SRAM_BLOCK;
-            memcpy(b[i], s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK, SRAM_BLOCK);
+            uint8_t* src = s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK;
+            if (i < inArena) { b[i] = s_arena + i * (uint32_t)SRAM_BLOCK; memcpy(b[i], src, SRAM_BLOCK); }
+            else b[i] = src;
         }
         s_sramArena = true;
         s_sramOn[n] = true;
-        Debug::log("[ELM] HGFX buffer %d in SRAM (the arena)", n);
+        Debug::log("[ELM] HGFX buffer %d in SRAM (the arena): %d of %d blocks", n, inArena, SRAM_PER);
         return;
     }
     int got = 0;
@@ -485,8 +502,25 @@ static void sramPromote() {
 // blocks), leaving ARENA_KEEP of heap.
 enum { ARENA_KEEP = 12 * 1024 };
 static_assert(H1_END >= SRAM_PER * SRAM_BLOCK, "the arena holds a buffer's row blocks too");
+// The early claim (ESPectrum::setup, right after the framebuffer, eLeMeNt boots only):
+// the Next region is whole then - 51 KB, buffer 0 and HGFXAGON's six row blocks fit.
+// Claimed at Elm::reset it came after the audio / ZiFi / tape allocations had nibbled
+// it to 40 KB (hw 2026-11-18: arena missed by 580 B, HGFXAGON 32 FPS on PSRAM).
+void arenaClaimEarly() {
+    if (s_arena) return;
+    const size_t f = getFreeHeap(), big = getLargestAllocatable();
+    uint32_t want = H1_END;
+    if (big < want + 64) want = big > 64 ? (uint32_t)((big - 64) & ~0xFFu) : 0;
+    if (f < want + ARENA_KEEP) want = f > ARENA_KEEP ? (uint32_t)((f - ARENA_KEEP) & ~0xFFu) : 0;
+    if (want < H1_MIN) { Debug::log("[ELM] HGFX SRAM arena not taken early: heap free %u, largest %u", (unsigned)f, (unsigned)big); return; }
+    s_arena = (uint8_t*)tryMalloc(want);
+    s_arenaSize = s_arena ? want : 0;
+    Debug::log("[ELM] HGFX SRAM arena %s early (%u B; heap free %u, largest %u before)", s_arena ? "taken" : "refused",
+               (unsigned)want, (unsigned)f, (unsigned)big);
+}
 void arenaEnsure() {
-    if (s_arena || !ensure()) return;     // the per-pixel tables first: they want SRAM too
+    if (s_arena) { ensure(); return; }   // claimed early: the tables still want their SRAM
+    if (!ensure()) return;               // the per-pixel tables first: they want SRAM too
     const size_t f = getFreeHeap(), big = getLargestAllocatable();
     uint32_t want = H1_END;
     if (big < want + 64) want = big > 64 ? (uint32_t)((big - 64) & ~0xFFu) : 0;   // a malloc header, whole rows
@@ -555,6 +589,7 @@ static uint32_t s_pDealH[8], s_pDealHb[8];                         // HRXC deal:
 static uint8_t  s_pDealN, s_pDealSlots, s_pDealOwned;              // ...n, slots, indices that own a slot
 static uint32_t s_pLutPal[16];                                     // ...and the 16 pair colours it dealt for
 static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN, s_pCmdUs, s_pSkips, s_pRows;   // core1
+static volatile uint32_t s_pDrMin = ~0u, s_pDrMax;   // core1: the dirty rows' range in the shown buffer this window
 #endif
 
 ELM_INL void pushRaw(uint32_t e) {
@@ -978,7 +1013,7 @@ ELM_HOT void chunkyWrite(uint32_t off, uint8_t v) {
     dirtyMark(a);                         // s_use: the runs count, a byte store is not worth the RAM bytes
 }
 
-void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {
+ELM_OVL_CODE void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {   // .elmovl: the FastDMA's 8-byte pieces (PF2026)
     if (!s_buf) return;
     s_fbDirty = true;
     const uint8_t m = s_r[REG_MASK];
@@ -2098,6 +2133,15 @@ static void renderFrame() {
     if (full) { s_partialDraws = 0; s_drawKey = key; }
     uint32_t snap[BUF_SIZE / 256 / 32];
     for (uint32_t i = 0; i < BUF_SIZE / 256 / 32; i++) snap[i] = __atomic_exchange_n(&s_dirty[i], 0u, __ATOMIC_ACQ_REL);
+#if PERF_TRACE
+    {   // the dirty rows' range in the shown buffer (rows of 256 B): where the arena should sit
+        const uint32_t u0 = (uint32_t)shown * (BUF1 / 256);
+        for (uint32_t u = 0; u < BUF1 / 256; u++) if (snap[((u0 + u) >> 5) & (BUF_SIZE / 256 / 32 - 1)] & (1u << ((u0 + u) & 31))) {
+            if (u < s_pDrMin) s_pDrMin = u;
+            if (u > s_pDrMax) s_pDrMax = u;
+        }
+    }
+#endif
     const auto rowDirty = [&](uint32_t a) {
         uint32_t u = a >> 8;
         const uint32_t ue = (a + (uint32_t)s_stride - 1) >> 8;
@@ -2324,14 +2368,24 @@ void frameEnd() {
     if (!s_q) { renderFrame(); return; }
     g_elm_c1_live = true;
     gsAhead(true);                          // every frame: the card may have come up after us
-    if (s_drawDone != s_drawPosted) s_lagFrames++;
+    // A lag frame is one core0 actually WAITED on: "core1 not done yet" alone counted the
+    // Q_DRAW gate's beam hold (up to 25 ms) and kept s_c1Limits true with a 5 ms draw, so
+    // the arena stayed with the buffer the draw reads while core0's FastDMA stores went
+    // to PSRAM (PF2026 stage0g hw 2026-11-17: h1=0 throughout, memcpy still ~9 %).
+    if (s_waitedUs > 1000) s_lagFrames++;
+    s_waitedUs = 0;
     if (++s_lagWindow == 30) {              // half a second, most of it behind
 #if HOST_BUILD
         static const bool forceSram = getenv("PICOSPECCY_ELM_SRAM") != nullptr;   // bench: the hw lag rule never fires here
         if (forceSram) s_lagFrames = 15;
 #endif
         s_c1Limits = s_lagFrames >= 15;
+#if HOST_BUILD
+        static const bool forcePromote = getenv("PICOSPECCY_ELM_PROMOTE") != nullptr;   // bench: the hw's row-block path
+        if (s_c1Limits || forcePromote) sramPromote();
+#else
         if (s_c1Limits) sramPromote();
+#endif
         {   // The buffer whose half the arena holds (h1Manage): the one the draw reads most
             // while core1 is the limit, else the one with the most traffic; the other one
             // only with twice the figure, and the same answer on three windows in a row
@@ -2355,14 +2409,15 @@ void frameEnd() {
     // core1 still on the last frame: the machine waits for it. Dropping the frame instead
     // let core0 run ten frames ahead and showed one in ten (HGFXAGON: 5 of 60, in jerks).
     if (s_drawDone != s_drawPosted) {
-#if PERF_TRACE
         const uint32_t t0 = time_us_32();
+#if PERF_TRACE
         s_pDrop++;
 #endif
         const uint64_t lim = time_us_64() + 100000;
         while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow) pairPushPoll(); }
+        s_waitedUs = time_us_32() - t0;
 #if PERF_TRACE
-        s_pWaitUs += time_us_32() - t0;
+        s_pWaitUs += s_waitedUs;
 #endif
     }
     s_drawPosted = s_drawPosted + 1;
@@ -2374,12 +2429,64 @@ void frameEnd() {
     static uint32_t n;
     if (++n == 60) {
         n = 0;
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u",
+        static bool memOnce;
+        if (!memOnce) {   // the SRAM picture once, for a UART capture that missed the boot
+            memOnce = true;
+            Debug::log("[ELM] mem: arena %u B h1 %d size %u blocks %u%u sramArena %u hot %u B | heap free %u largest %u",
+                       (unsigned)s_arenaSize, s_h1 ? (int)(s_h1Base ? 1 : 0) : -1, (unsigned)s_h1Size,
+                       (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], (unsigned)s_sramArena, (unsigned)sizeof(Hot),
+#if HOST_BUILD
+                       (unsigned)getFreeHeap(), 0u);   // the probe mallocs tens of MB on a PC: a stall that shifts the run
+#else
+                       (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+#endif
+            CodeOverlay::logHeapRegions();
+        }
+        // z80 loop = entries of Z80::exec_nocheck_elm a frame (0 = the generic loop ran: fastmem
+        // level 0, a COPY window at #4000+, a breakpoint); kw = key-wait skips / passes skipped.
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u | dr=%u..%u | z80 loop %u/fr gen %u/fr kw %u/%u",
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
                    s_pDraws > s_pSkips ? s_pDrawUs / (s_pDraws - s_pSkips) : 0, s_pDraws - s_pSkips, s_pSkips,
                    s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
-                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush);
+                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1]);
+        s_pDrMin = ~0u; s_pDrMax = 0;
+        ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0;
+        {   // the ED mix a frame: which block / 16-bit ops would pay to paste into the loop
+            uint32_t tot = 0; for (int i = 0; i < 256; i++) tot += ::g_elm_ed_hist[i];
+            if (tot) {
+                char line[120]; int pos = 0;
+                for (int k = 0; k < 8 && pos < (int)sizeof(line) - 12; k++) {
+                    int best = -1; uint32_t bv = 0;
+                    for (int i = 0; i < 256; i++) if (::g_elm_ed_hist[i] > bv) { bv = ::g_elm_ed_hist[i]; best = i; }
+                    if (best < 0) break;
+                    pos += snprintf(line + pos, sizeof(line) - pos, " %02X:%u", best, (unsigned)(bv / 60));
+                    ::g_elm_ed_hist[best] = 0;
+                }
+                pos += snprintf(line + pos, sizeof(line) - pos, " | in C/B:");
+                for (int k = 0; k < 4 && pos < (int)sizeof(line) - 12; k++) {
+                    int best = -1; uint32_t bv = 0;
+                    for (int i = 0; i < 256; i++) if (::g_elm_in_hist[i] > bv) { bv = ::g_elm_in_hist[i]; best = i; }
+                    if (best < 0) break;
+                    pos += snprintf(line + pos, sizeof(line) - pos, " %02X:%u", best, (unsigned)(bv / 60));
+                    ::g_elm_in_hist[best] = 0;
+                }
+                Debug::log("[HGFX] ed/fr: %u |%s", (unsigned)(tot / 60), line);
+                Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus)",
+                           Elm::g_elm_io_cnt[0] / 60, Elm::g_elm_io_cnt[1] / 60, Elm::g_elm_io_cnt[2] / 60, Elm::g_elm_io_us[0] / 60,
+                           Elm::g_elm_io_cnt[3] / 60, Elm::g_elm_io_cnt[4] / 60, Elm::g_elm_io_us[1] / 60, Elm::g_elm_io_us[2] / 60);
+                Debug::log("[HGFX] fd/fr: src fill %u uram %u chunky %u page %u (bytewise %u) | pieces by dst kind %u %u %u %u %u %u %u %u | per-byte why %u %u %u %u %u %u %u",
+                           Elm::g_elm_fd_src[0] / 60, Elm::g_elm_fd_src[1] / 60, Elm::g_elm_fd_src[2] / 60, Elm::g_elm_fd_src[3] / 60, Elm::g_elm_fd_src[4] / 60,
+                           Elm::g_elm_fd_kind[0] / 60, Elm::g_elm_fd_kind[1] / 60, Elm::g_elm_fd_kind[2] / 60, Elm::g_elm_fd_kind[3] / 60,
+                           Elm::g_elm_fd_kind[4] / 60, Elm::g_elm_fd_kind[5] / 60, Elm::g_elm_fd_kind[6] / 60, Elm::g_elm_fd_kind[7] / 60,
+                           Elm::g_elm_fd_why[1] / 60, Elm::g_elm_fd_why[2] / 60, Elm::g_elm_fd_why[3] / 60, Elm::g_elm_fd_why[4] / 60,
+                           Elm::g_elm_fd_why[5] / 60, Elm::g_elm_fd_why[6] / 60, Elm::g_elm_fd_why[7] / 60);
+                for (int i = 0; i < 6; i++) Elm::g_elm_io_cnt[i] = 0;
+                for (int i = 0; i < 3; i++) Elm::g_elm_io_us[i] = 0;
+                for (int i = 0; i < 8; i++) { Elm::g_elm_fd_why[i] = 0; Elm::g_elm_fd_kind[i] = 0; Elm::g_elm_fd_src[i] = 0; }
+                for (int i = 0; i < 256; i++) { ::g_elm_ed_hist[i] = 0; ::g_elm_in_hist[i] = 0; }
+            }
+        }
         if (s_pCellTop | s_pCellBot | s_pCellMix) {
             Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u | lut free %u lost %u (%u px)",
                        s_pCellTop / 60, s_pCellBot / 60, s_pCellMix / 60, s_pPushPoll, s_pPushLate, s_pPushCap, s_pPushBeamMin, s_pPushBeamMax, VIDEO::screenTopRows(),

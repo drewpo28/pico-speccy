@@ -63,6 +63,7 @@
 #include "speccy/machines/Next/NextMf.h"
 #include "speccy/z80/next_memory.h"
 #include "speccy/z80/next_opcode.h"
+#include "speccy/z80/elm_memory.h"
 
 
 // #include "speccy/core/Snapshot.h"
@@ -1845,6 +1846,96 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
     nxPub();
 }
 
+// ---- eLeMeNt ZX: the same opcode switch (tools/gen_next_dispatch.py, `elm`
+// flavour) with elm_memory.h's accessors - a per-slot read / write mask instead of
+// the Next's ">= 0x4000" - in the .elmovl window (CodeOverlay: loaded on an eLeMeNt
+// boot only). Measured on tools/z80bench 2026-11-17: the TS loop the eLeMeNt ran on
+// (exec_nocheck_ts, dcOpcode[] per instruction, state in memory) was 76 ARM
+// instructions per Z80 instruction on the `game` mix, the Next switch 37.5. Below
+// 0x4000 (ROM, divSD, URAM zone 0) the shared loop fetches; the ED prefix, the
+// ports and the traps go to it as well (nx_slow). The idle hook is Next-only.
+namespace ElmMemory {
+ELM_OVL_CODE __attribute__((noinline)) uint32_t elmPeek8Slow(uint32_t t, uint32_t address) {
+    CPU::tstates = t;
+    return Z80Ops::peek8((uint16_t)address);
+}
+ELM_OVL_CODE __attribute__((noinline)) uint32_t elmPeek16Slow(uint32_t t, uint32_t address) {
+    CPU::tstates = t;
+    return Z80Ops::peek16((uint16_t)address);
+}
+ELM_OVL_CODE __attribute__((noinline)) void elmPoke8Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+    CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
+    Z80Ops::poke8((uint16_t)address, (uint8_t)value);
+}
+ELM_OVL_CODE __attribute__((noinline)) void elmPoke16Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+    CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
+    for (int i = 1; i >= 0; i--) Z80Ops::poke8((uint16_t)(address + i), (uint8_t)(value >> (8 * i)));
+}
+}
+#define elmPush(w) do { const uint16_t nx_pw_ = (uint16_t)(w); REG_SP -= 2; ElmMemory::poke16_elm(nx_t, nx_pc, REG_SP, nx_pw_); } while (0)
+#define elmPop() ({ const uint16_t nx_pw_ = ElmMemory::peek16_elm(nx_t, REG_SP); REG_SP += 2; nx_pw_; })
+// The first M1: the loop runs at 0x4000+ only (the head leaves below it), so the
+// fetch is the plain slot load - no divSD automap, no ROM, no URAM zone 0 here.
+#if PERF_TRACE
+uint32_t g_elm_loop_n, g_elm_gen_n;   // ElmHgfx.cpp prints and clears them: loop entries, shared-loop iterations
+uint32_t g_elm_ed_hist[256];          // second byte of every ED the loop sent to the shared handlers
+uint32_t g_elm_in_hist[256];          // the C of every IN r,(C) among them
+#endif
+#define elmFetchM1() do { nx_op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; nx_r++; nx_pc++; } while (0)
+ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool divmmc) {
+    uint32_t nx_t = CPU::tstates, nx_r = regR, nx_lim = NextMemory::lim_nx();
+    uint16_t nx_pc = regPC.word;
+    uint32_t nx_qs = lastFlagQ ? nx_r : nx_r - 1;
+    uint8_t nx_op;
+    pendingEI = false;
+    for (;;) {
+        // Below 0x4000 the shared loop fetches (its divMMC automap, page0 and ROM hooks).
+        // Tried 2026-11-17: the loop going on in a plain-read slot with the Next's trap
+        // page branch - PF2026's ~1 900 instructions a frame there are its IM1 handler
+        // under the esxDOS #38 hook, i.e. with the divMMC page UP, which the loop cannot
+        // read (page0_lo/hi are not in ramCurrent on this machine), and the host A/B
+        // diverged (15 of 19 PF2026 shots); reverted. Needs the Next's page plug first.
+        if (__builtin_expect(nx_pc < 0x4000, 0)) goto elm_out;
+        nx_t += 4;
+        if (__builtin_expect(nx_t >= nx_lim, 0)) {
+            if (nx_t >= CPU::stFrame + 4) break;
+            if (nx_t >= VIDEO::ts_line_t) nxSync(VIDEO::tsDrawTick());
+            nx_lim = NextMemory::lim_nx();
+            if (nx_t >= nx_lim) {
+                elmFetchM1();
+                goto nx_slow;
+            }
+        }
+        elmFetchM1();
+#if PERF_TRACE && PERF_HIST
+        z80_op_hist[nx_op]++;
+#endif
+        uint8_t nx_v; uint8_t* nx_p; bool nx_cc;
+        switch (nx_op) {
+#include "elm_dispatch.inc"
+        }
+        continue;
+    nx_slow:
+#if PERF_TRACE
+        if (nx_op == 0xED) { const uint8_t e2 = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; g_elm_ed_hist[e2]++; if ((e2 & 0xC7) == 0x40) { extern uint8_t elmGIdxNow(); g_elm_in_hist[REG_C == 0x3B ? (REG_B == 0x7D ? elmGIdxNow() : REG_B) : REG_C]++; } }   // C: the port; #xx3B: B, and for #7D3B (the g file) the register index
+#endif
+        lastFlagQ = (nx_qs == nx_r - 1);
+        flagQ = false;
+        opCode = nx_op;
+        nxSyncHot(dcOpcode[nx_op]());
+        if (__builtin_expect(!g_elm_fastrd || prefixOpcode, 0)) { lastFlagQ = flagQ; return; }
+        if (flagQ) nx_qs = nx_r;
+        if (__builtin_expect(pendingEI, 0) && nx_t < CPU::stFrame) pendingEI = false;
+        continue;
+    nx_jump:
+        nxSync(check_trdos());   // the eLeMeNt's key-wait skip lives there (Elm::keyWaitSkip)
+    }
+    nx_t -= 4;                       // the fetch that did not happen
+elm_out:
+    lastFlagQ = (nx_qs == nx_r);
+    nxPub();
+}
+
 IRAM_ATTR void Z80::exec_nocheck() {
 
     int nbp = Config::numPcBP;
@@ -1858,6 +1949,15 @@ IRAM_ATTR void Z80::exec_nocheck() {
     while (CPU::tstates < CPU::stFrame) {
 
 #if !NEO8_TRAP
+        // eLeMeNt at fastmem level 1 (HGFX / the turbo ZX screen): its own switch loop
+        // at 0x4000+ (elm_memory.h); below that the fetch here, one instruction at a time.
+        if (g_elm_fastrd && nbp <= 0 && prefixOpcode == 0 && REG_PC >= 0x4000) {
+#if PERF_TRACE
+            g_elm_loop_n++;   // entries a frame: the [HGFX] 60f line's `z80 loop`
+#endif
+            exec_nocheck_elm(divmmc);
+            continue;
+        }
         if (g_next_fastrd && nbp <= 0 && prefixOpcode == 0) {   // mid DD/FD chain: one instruction below
             exec_nocheck_next(divmmc);
             continue;
@@ -1875,6 +1975,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
 #endif
 
         if (nbp > 0 && Config::pcBreakHit(REG_PC)) { z80_in_nocheck = false; return; }
+#if PERF_TRACE
+        if (g_elm_fastrd) g_elm_gen_n++;   // an instruction the eLeMeNt loop did not take (PC < 0x4000, a prefix chain)
+#endif
 #if NEO8_TRAP
         Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
 #endif

@@ -3,17 +3,21 @@
 #pragma once
 #include <stdint.h>
 
-extern bool g_next_fastrd;
+extern bool g_z80_rd_all;   // next_memory.h: every slot reads plain (Next on its fast path, eLeMeNt with nothing hooked)
 
 namespace NextOpcode {
 __attribute__((always_inline)) inline uint8_t fetch() {
 #if !DEBUG
     const uint32_t end = CPU::tstates + 4;
-    if (g_next_fastrd && end < VIDEO::ts_line_t) {
+    if (g_z80_rd_all && end < VIDEO::ts_line_t) {
         const uint16_t pc = Z80::getRegPC();
-        CPU::tstates = end;
-        if (DivMMC::enabled) return DivMMC::nextOpcode(pc);
-        return MemESP::ramCurrent[pc >> 13][pc & 0x1FFF];
+        // A divMMC trap page takes the generic fetch (its automap hooks around the
+        // load): on the Next that is DivMMC::nextOpcode's slow half, on the eLeMeNt
+        // the page0_lo/hi rule - nextOpcodeSlow's raw slot read is the Next's only.
+        if (!(DivMMC::enabled && DivMMC::opcodeTrapPage(pc))) {
+            CPU::tstates = end;
+            return MemESP::ramCurrent[pc >> 13][pc & 0x1FFF];
+        }
     }
 #endif
     // Let the original fetch process a raster/MMU change before loading the

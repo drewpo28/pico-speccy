@@ -8,19 +8,30 @@
 // Derived with the fast-memory gates: Next only, direct reads in all 8 slots,
 // no memory breakpoints or NeoGS DMA overlay. Mapping changes update the slots.
 extern bool g_next_fastrd;
+// The gate the inline wrappers below test (Video.cpp): "a read in ANY slot is a
+// plain ramCurrent load" - the Next's g_next_fastrd, or the eLeMeNt at fastmem
+// level 1 with nothing hooking a read (no divMMC page up, no NeoGS ZX-DMA window,
+// no COPY-mode VRAM window, no split chunky window; elmFastSlotsUpdate). One
+// bool, as the Next-only test was: the shared handlers serve EVERY machine
+// (TS-Conf runs all its instructions through them), and a per-slot test here
+// cost the TS-Conf +5% ARM instructions on z80bench high (2026-11-17).
+extern bool g_z80_rd_all;
+// The per-8K-slot twins, for Z80::exec_nocheck_elm's accessors (elm_memory.h)
+// only: bit n set = a plain load / store in slot n is the whole access.
+extern uint8_t g_z80_rd_fast, g_z80_wr_fast;
 
 namespace NextMemory {
 
 __attribute__((always_inline)) inline void addressOnBus(uint16_t address, int32_t cycles) {
     // Match addressOnBus's counter-only fast path: internal cycles defer the
     // raster tick until the next memory/M1 access, even across a line boundary.
-    if (g_next_fastrd) CPU::tstates += (uint32_t)cycles;
+    if (g_z80_rd_all) CPU::tstates += (uint32_t)cycles;
     else Z80Ops::addressOnBus(address, cycles);
 }
 
 __attribute__((always_inline)) inline uint8_t peek8(uint16_t address) {
     const uint32_t end = CPU::tstates + 3;
-    if (g_next_fastrd && end < VIDEO::ts_line_t) {
+    if (g_z80_rd_all && end < VIDEO::ts_line_t) {
         CPU::tstates = end;
         return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
     }
@@ -31,7 +42,7 @@ __attribute__((always_inline)) inline uint8_t peek8(uint16_t address) {
 
 __attribute__((always_inline)) inline uint16_t peek16(uint16_t address) {
     const uint32_t end = CPU::tstates + 6;
-    if (g_next_fastrd && end < VIDEO::ts_line_t) {
+    if (g_z80_rd_all && end < VIDEO::ts_line_t) {
         CPU::tstates = end;
         const uint16_t next = address + 1;
         const uint8_t lo = MemESP::ramCurrent[address >> 13][address & 0x1FFF];
@@ -44,7 +55,7 @@ __attribute__((always_inline)) inline uint16_t peek16(uint16_t address) {
 // IR on the bus (INC/DEC rr, LD SP,HL, PUSH ...): on the fast path only the
 // T-states, exactly as Z80Ops::addressOnBusIR does there.
 __attribute__((always_inline)) inline void addressOnBusIR(int32_t cycles) {
-    if (g_next_fastrd) CPU::tstates += (uint32_t)cycles;
+    if (g_z80_rd_all) CPU::tstates += (uint32_t)cycles;
     else Z80Ops::addressOnBusIR(cycles);
 }
 
