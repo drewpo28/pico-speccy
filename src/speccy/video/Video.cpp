@@ -4294,6 +4294,26 @@ void VIDEO::fbDonate(uint8_t* p, size_t bytes, uint32_t tag) {
 uint32_t VIDEO::fbDonorsUsed() {
     return sharedFB_main ? sharedFB_donor_used : 0;
 }
+size_t VIDEO::fbDonorSpare(uint32_t tag, uint8_t** p) {
+    if (!sharedFB_main) return 0;               // not built: the map may still take it
+    for (int d = 0; d < sharedFB_ndonors; d++) {
+        const FbDonor& o = sharedFB_donor[d];
+        if (o.tag != tag) continue;
+        size_t used = 0;
+        if (sharedFB_nchunks) {
+            int all = 0;
+            for (int c = 0; c < sharedFB_nchunks; c++) all += sharedFB_chunk[c].rows;
+            const size_t stride = all ? sharedFB_main_size / (size_t)all : 0;
+            for (int c = 0; c < sharedFB_nchunks; c++)
+                if (sharedFB_chunk[c].ext && sharedFB_chunk[c].p == o.p) used = (size_t)sharedFB_chunk[c].rows * stride;
+        }
+        used = (used + 7) & ~(size_t)7;
+        if (used >= o.bytes) return 0;
+        *p = o.p + used;
+        return o.bytes - used;
+    }
+    return 0;
+}
 
 // Prove the chunk map before anything renders through it: every row must be
 // 4-byte aligned (the renderers write rows as uint32/uint16 pairs — lineptr32,

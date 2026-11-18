@@ -23,6 +23,7 @@
 #include "speccy/machines/Next/NextVideo.h"
 #include "app/ESPectrum.h"
 #include "app/TryAlloc.h"
+#include "app/Buffer.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/machines/Element/Element.h"
 
@@ -108,16 +109,25 @@ bool     Z80DMA::mb02_deferred = false;
 // so the feature reserves ZERO SRAM when disabled (only the pointers below, which
 // are null when off). dma_attr_shadow/valid/charrow_active are public because the
 // video renderer (Video.cpp) and captureAttrAfterTransfer() index into them.
+// Two blocks (docs/elm-sram-plan.md item 2, 2026-11-18): the flags the renderer tests on
+// EVERY scanline stay on the SRAM heap (~360 B); the snapshot bytes, read only on a line
+// a DMA multicolour pass marked valid and written only by a DMA into #5800-#5AFF, go to
+// butter PSRAM on the eLeMeNt (6 912 B its HGFX tables want). Other machines keep both
+// in SRAM: they have the heap, and a DMA-multicolour title is theirs to show.
 struct DmaAttrBuf {
-    uint8_t shadow[Z80DMA::DMA_ATTR_SHADOW_SZ];  // 6144 — per-scanline attr snapshot
     bool    valid[192];
     const uint8_t* page[24];   // the RAM page each charrow's shadow was taken from
     bool    charrow_active[24];
     uint8_t charrow_write_cnt[24];
-    uint8_t prev_attrs[24][32];
     bool    prev_attrs_saved[24];
 };
-static DmaAttrBuf* g_dma_buf = nullptr;
+struct DmaAttrBytes {
+    uint8_t shadow[Z80DMA::DMA_ATTR_SHADOW_SZ];  // 6144 — per-scanline attr snapshot
+    uint8_t prev_attrs[24][32];
+};
+static DmaAttrBuf*   g_dma_buf = nullptr;
+static DmaAttrBytes* g_dma_bytes_buf = nullptr;
+static bool          g_dma_bytes_buffer = false;   // g_dma_bytes_buf came from Buffer::palloc
 
 uint8_t* Z80DMA::dma_attr_shadow    = nullptr;
 bool*    Z80DMA::dma_attr_valid     = nullptr;
@@ -195,6 +205,7 @@ void Z80DMA::reset() {
 
     if (Config::dma_mode) ensureAttrShadow();
     if (g_dma_buf) memset(g_dma_buf, 0, sizeof(DmaAttrBuf));
+    if (g_dma_bytes_buf) memset(g_dma_bytes_buf, 0, sizeof(DmaAttrBytes));
 }
 
 void Z80DMA::resetAttrShadow() {
@@ -207,14 +218,20 @@ void Z80DMA::resetAttrShadow() {
 
 bool Z80DMA::ensureAttrShadow() {
     if (!g_dma_buf) {
-        g_dma_buf = (DmaAttrBuf*)tryCalloc(sizeof(DmaAttrBuf));   // calloc panics on NULL
+        if (!g_dma_bytes_buf && Config::arch == A_ELM) {
+            g_dma_bytes_buf = (DmaAttrBytes*)Buffer::palloc(sizeof(DmaAttrBytes), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+            g_dma_bytes_buffer = g_dma_bytes_buf != nullptr;
+        }
+        if (!g_dma_bytes_buf) g_dma_bytes_buf = (DmaAttrBytes*)tryMalloc(sizeof(DmaAttrBytes));   // malloc panics on NULL
+        if (g_dma_bytes_buf) {
+            memset(g_dma_bytes_buf, 0, sizeof(DmaAttrBytes));
+            g_dma_buf = (DmaAttrBuf*)tryCalloc(sizeof(DmaAttrBuf));
+        }
         if (!g_dma_buf) {
-            dma_attr_shadow = nullptr;
-            dma_attr_valid = nullptr;
-            dma_charrow_active = nullptr;
+            freeAttrShadow();
             return false;
         }
-        dma_attr_shadow    = g_dma_buf->shadow;
+        dma_attr_shadow    = g_dma_bytes_buf->shadow;
         dma_attr_valid     = g_dma_buf->valid;
         dma_attr_page      = g_dma_buf->page;
         dma_charrow_active = g_dma_buf->charrow_active;
@@ -226,6 +243,12 @@ void Z80DMA::freeAttrShadow() {
     if (g_dma_buf) {
         free(g_dma_buf);
         g_dma_buf = nullptr;
+    }
+    if (g_dma_bytes_buf) {
+        if (g_dma_bytes_buffer) Buffer::pfree(g_dma_bytes_buf);
+        else free(g_dma_bytes_buf);
+        g_dma_bytes_buf = nullptr;
+        g_dma_bytes_buffer = false;
     }
     dma_attr_shadow    = nullptr;
     dma_attr_valid     = nullptr;
@@ -1068,7 +1091,7 @@ static IRAM_ATTR void captureAttrAfterTransfer(uint16_t dest_start) {
 
     if (sub == 0) {
         // First write: save as reference
-        memcpy(g_dma_buf->prev_attrs[charrow], &page[attr_base], 32);
+        memcpy(g_dma_bytes_buf->prev_attrs[charrow], &page[attr_base], 32);
         g_dma_buf->prev_attrs_saved[charrow] = true;
         return;
     }
@@ -1083,14 +1106,14 @@ static IRAM_ATTR void captureAttrAfterTransfer(uint16_t dest_start) {
     // Shadow previous scanline with prev_attrs (before DMA overwrote)
     int prev_scanline = charrow * 8 + sub - 1;
     if (prev_scanline >= 0 && prev_scanline < 192) {
-        memcpy(&Z80DMA::dma_attr_shadow[prev_scanline * 32], g_dma_buf->prev_attrs[charrow], 32);
+        memcpy(&Z80DMA::dma_attr_shadow[prev_scanline * 32], g_dma_bytes_buf->prev_attrs[charrow], 32);
         Z80DMA::dma_attr_valid[prev_scanline] = true;
     }
     // Also shadow the current scanline with the row as written (may be overwritten by the next DMA)
     memcpy(&Z80DMA::dma_attr_shadow[scanline * 32], &page[attr_base], 32);
     Z80DMA::dma_attr_valid[scanline] = true;
 
-    memcpy(g_dma_buf->prev_attrs[charrow], &page[attr_base], 32);
+    memcpy(g_dma_bytes_buf->prev_attrs[charrow], &page[attr_base], 32);
 }
 
 #if NEXT_TRACE

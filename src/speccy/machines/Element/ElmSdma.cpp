@@ -3,8 +3,10 @@
 #include <string.h>
 #if __has_include("pico.h")
 #include "app/TryAlloc.h"
+#include "ElmTail.h"
+#define stateAlloc Elm::tailAlloc   // session-lifetime, per sample: the pages57 tail first
 #else
-#define tryMalloc malloc
+#define stateAlloc malloc           // the host tools (tools/elm_*_test.cpp)
 #endif
 
 namespace ElmSdma {
@@ -111,7 +113,7 @@ void renderCh(int c, int from, int to, int32_t* l, int32_t* r) {
 
 bool init(PageFn fn, int outputRate) {
     s_page = fn;
-    if (!s) s = (State*)tryMalloc(sizeof(State));
+    if (!s) s = (State*)stateAlloc(sizeof(State));
     if (!s) return false;
     memset(s, 0, sizeof(State));
     s->rate = outputRate;

@@ -6,6 +6,7 @@
 #include "speccy/machines/Element/ElmHgfx.h"
 #include "app/CodeOverlay.h"
 #include "speccy/machines/Element/Element.h"
+#include "speccy/machines/Element/ElmTail.h"
 #include <string.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -85,6 +86,7 @@ extern volatile bool g_pairPushNow;
 // there any more: 60 KB free when PF2026 ran against 72 KB wanted (hw 2026-11-16).
 static uint8_t* s_arena;
 static bool s_sramArena;             // the row blocks are slices of s_arena (not freed one by one)
+static uint16_t s_sramOwn;           // ...except these (bit = s_sram index): the heap's, past the arena
 // HGFX 1 is two 49152-byte buffers and COPY walks them every frame: while the heap has
 // room they live in SRAM (the XIP port was the limit, core0's guest pages share it).
 // Each is six blocks of 32 rows: 136 KB are free on this machine, but in regions and
@@ -363,7 +365,7 @@ static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
 bool ensure() {
     if (!s_hot) {
-        s_hot = (Hot*)tryMalloc(sizeof(Hot));
+        s_hot = (Hot*)Elm::tailAlloc(sizeof(Hot));   // per pixel: SRAM, the pages57 tail first
         if (s_hot) { memset(s_hot->mapK, 0xFF, sizeof s_hot->mapK); memset(s_hot->cnt, 0, sizeof s_hot->cnt); s_hot->lutOn = false; }
         if (s_hot) for (int n = 0; n < 16; n++)
             s_hot->nib[n] = ((n & 8) ? 0xFFu : 0) | ((n & 4) ? 0xFF00u : 0) | ((n & 2) ? 0xFF0000u : 0) | ((n & 1) ? 0xFF000000u : 0);
@@ -396,12 +398,13 @@ static void sramOff(bool keep) {
             uint8_t* home = s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK;
             if (b == home) { b = nullptr; continue; }   // a block that stayed in PSRAM by pointer
             if (keep) memcpy(home, b, SRAM_BLOCK);
-            if (!s_sramArena) free(b);
+            if (!s_sramArena || (s_sramOwn & (1u << (n * SRAM_PER + i)))) free(b);
             b = nullptr;
         }
         Debug::log("[ELM] HGFX buffer %d back to the heap, free %u", n, (unsigned)getFreeHeap());
     }
     s_sramArena = false;
+    s_sramOwn = 0;
 }
 // Back to PSRAM (keep = the SRAM bytes are the live ones). core1 may be drawing from it.
 static void h1Off(bool keep, const char* why) {
@@ -471,15 +474,23 @@ static void sramPromote() {
     // the engine never know the difference, sramOff copies nothing back for them.
     if (s_arena && s_arenaSize >= SRAM_BLOCK) {
         const int inArena = (int)(s_arenaSize / SRAM_BLOCK) < SRAM_PER ? (int)(s_arenaSize / SRAM_BLOCK) : SRAM_PER;
+        int heapN = 0;
         drain();
         for (int i = 0; i < SRAM_PER; i++) {
             uint8_t* src = s_buf + n * (uint32_t)BUF1 + i * (uint32_t)SRAM_BLOCK;
             if (i < inArena) { b[i] = s_arena + i * (uint32_t)SRAM_BLOCK; memcpy(b[i], src, SRAM_BLOCK); }
-            else b[i] = src;
+            // Past the arena: a heap block where the heap can spare it (the pages57 tail
+            // took the machine's tables off it, elm-sram-plan item 1), else PSRAM by pointer.
+            else if (getFreeHeap() >= SRAM_BLOCK + SRAM_KEEP && (b[i] = (uint8_t*)tryMalloc(SRAM_BLOCK)) != nullptr) {
+                memcpy(b[i], src, SRAM_BLOCK);
+                s_sramOwn |= (uint16_t)(1u << (n * SRAM_PER + i));
+                heapN++;
+            } else b[i] = src;
         }
         s_sramArena = true;
         s_sramOn[n] = true;
-        Debug::log("[ELM] HGFX buffer %d in SRAM (the arena): %d of %d blocks", n, inArena, SRAM_PER);
+        Debug::log("[ELM] HGFX buffer %d in SRAM (the arena): %d of %d blocks + %d from the heap, heap free %u", n, inArena, SRAM_PER,
+                   heapN, (unsigned)getFreeHeap());
         return;
     }
     int got = 0;

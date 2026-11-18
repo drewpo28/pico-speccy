@@ -14,6 +14,7 @@
 #include "speccy/machines/Element/ElmSdma.h"
 #include "speccy/machines/Element/ElmSid.h"
 #include "speccy/machines/Element/ElmFlash.h"
+#include "speccy/machines/Element/ElmTail.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
@@ -51,6 +52,27 @@ namespace Elm {
 // at least #32CB = 25/06/11.
 static const uint8_t kStampYear = 26, kStampMonth = 10, kStampDay = 12;
 static const uint8_t kInterfaceId = 0xE1;     // "hE1 for eLeMeNt ZX, board v1.x"
+
+// ElmTail.h. The donor tag is ESPectrum's: the ZX page bits 5 and 7. Asked for at the
+// first allocation (Elm::reset, after VIDEO::Init built the framebuffer for good).
+void* tailAlloc(size_t n) {
+    static uint8_t* s_tail;
+    static size_t s_tailLeft;
+    static bool s_asked;
+    if (!s_asked) {
+        s_asked = true;
+        s_tailLeft = VIDEO::fbDonorSpare(0xA0u, &s_tail);
+        if (s_tailLeft) Debug::log("[ELM] pages57 tail: %u B of SRAM at %p for the machine's tables", (unsigned)s_tailLeft, s_tail);
+    }
+    n = (n + 7) & ~(size_t)7;
+    if (n <= s_tailLeft) {
+        void* p = s_tail;
+        s_tail += n;
+        s_tailLeft -= n;
+        return p;
+    }
+    return tryMalloc(n);
+}
 
 static uint8_t s_gIdx, s_eIdx, s_uIdx;
 #if PERF_TRACE
@@ -1403,7 +1425,7 @@ static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again
 void reset() {
     s_gIdx = s_eIdx = s_uIdx = 0;
     s_corePos = 0;
-    if (!s_r) s_r = (Regs*)tryMalloc(sizeof(Regs));
+    if (!s_r) s_r = (Regs*)tailAlloc(sizeof(Regs));
     if (!s_r) { Debug::log("[ELM] no heap for the ZXi registers"); return; }
     if (s_powered) memcpy(s_keep, s_r->e, sizeof s_keep);
     memset(s_r, 0, sizeof(Regs));

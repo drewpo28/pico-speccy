@@ -787,6 +787,13 @@ static bool elmCodeInPages57() {
 }
 static void donateZxPagesToFb() {
   s_elmPages57 = elmCodeInPages57();   // whatever happens below, the window's pages leave SRAM
+#if HOST_BUILD
+  // Bench: PICOSPECCY_ELM_TAIL=<window bytes> lays out the hw strip without the .elmovl
+  // window, so Elm::tailAlloc runs on the pages57 tail as on the board (elm-sram-plan).
+  const char* tailEnv = getenv("PICOSPECCY_ELM_TAIL");
+  const size_t hostWin = tailEnv ? (size_t)atoi(tailEnv) : 0;
+  if (hostWin && Config::arch == A_ELM) s_elmPages57 = true;
+#endif
   if (!butter_psram_size()) return;
   // The strip takes pages 8..wanted+1 out of the butter budget (assign_ram); pages
   // 0-7 come on top. A short budget would push the tail onto SD swap — the "degraded"
@@ -875,6 +882,8 @@ static void donateZxPagesToFb() {
     const size_t win = (size_t)(uintptr_t)__elmovl_win_size;
     if (win < 2u * MEM_PG_SZ) VIDEO::fbDonate(p5 + win, 2u * MEM_PG_SZ - win, 0xA0u);
   }
+#elif HOST_BUILD
+  if (s_elmPages57 && hostWin < 2u * MEM_PG_SZ) VIDEO::fbDonate(p5 + hostWin, 2u * MEM_PG_SZ - hostWin, 0xA0u);
 #endif
 }
 

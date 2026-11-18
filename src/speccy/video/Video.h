@@ -213,6 +213,11 @@ public:
   // a donor the map did not use stays the caller's memory.
   static void     fbDonate(uint8_t* p, size_t bytes, uint32_t tag);
   static uint32_t fbDonorsUsed();
+  // What the live map left of the donor registered with `tag`: *p = the first byte past
+  // the rows it took (the whole donor when it took none), return = bytes, 0 = no such
+  // donor or no framebuffer yet. The FB is fixed from VIDEO::Init on (a mode change is
+  // a reboot), so the caller may keep these bytes for the session - it owns the donor.
+  static size_t   fbDonorSpare(uint32_t tag, uint8_t** p);
   // Before reserveFrameBuffer(): *held = heap bytes the FB holds now, *after = heap
   // bytes it will hold once rebuilt over the donors registered so far (active mode).
   // getFreeHeap() + held - after = the free heap right after that rebuild.
