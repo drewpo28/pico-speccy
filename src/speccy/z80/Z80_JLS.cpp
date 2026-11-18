@@ -1929,7 +1929,7 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
             // the machine runs (no line ticks, no idle at < 50 FPS) - the 30 ms cap then drew
             // the new pixels under the OLD palette (WOWDEMO's one-frame flashes, hw 2026-11-18)
             // and core0 waited for the draw at the next frame end. A look every 4 K T.
-            if (__builtin_expect(Hgfx::g_pairPushNow, 0)) nxSync(Hgfx::pairPushPoll());
+            if (__builtin_expect(Hgfx::g_pairPushNow | Hgfx::g_cowRelease, 0)) nxSync(Hgfx::c0Poll());
             if (nx_lim > nx_t + 4096) nx_lim = nx_t + 4096;
             if (nx_t >= nx_lim) {
                 elmFetchM1();
@@ -1949,6 +1949,15 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
 #if PERF_TRACE
         if (nx_op == 0xED) { const uint8_t e2 = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; g_elm_ed_hist[e2]++; if ((e2 & 0xC7) == 0x40) { extern uint8_t elmGIdxNow(); g_elm_in_hist[REG_C == 0x3B ? (REG_B == 0x7D ? elmGIdxNow() : REG_B) : REG_C]++; } }   // C: the port; #xx3B: B, and for #7D3B (the g file) the register index
 #endif
+        // LDIR / LDDR in the eLeMeNt's RAM code (WOWDEMO: ~350 a frame of ~10 bytes, each
+        // entering decodeED + ldx + the generic accessors per repeat until the measured batch
+        // caught on, hw PC profile 2026-11-18 23:52): a repeat in this loop costs exactly 21 T
+        // (no waits in its accessors; the 20/22 MHz stretch applies to run T), so every repeat
+        // but the last goes as one copy here and the core runs the last one (its flags, WZ).
+        if (nx_op == 0xED && REG_BC > 2) {
+            const uint8_t e2 = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
+            if ((e2 | 8) == 0xB8) nxSyncHot(elmLdirBatch(e2 == 0xB0 ? 1 : -1, 21));
+        }
         lastFlagQ = (nx_qs == nx_r - 1);
         flagQ = false;
         opCode = nx_op;
@@ -1998,9 +2007,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
             }
             // The staged pair palette, as in the eLeMeNt loop (WOWDEMO: half its frame is
             // esxDOS reads in this loop). pairPushPoll reads the beam: not every instruction.
-            if (__builtin_expect(Hgfx::g_pairPushNow, 0)) {
+            if (__builtin_expect(Hgfx::g_pairPushNow | Hgfx::g_cowRelease, 0)) {
                 static uint32_t s_pollT;
-                if (CPU::tstates - s_pollT >= 4096) { s_pollT = CPU::tstates; Hgfx::pairPushPoll(); }
+                if (CPU::tstates - s_pollT >= 4096) { s_pollT = CPU::tstates; Hgfx::c0Poll(); }
             }
             if (nbp <= 0 && prefixOpcode == 0 && REG_PC >= 0x4000) {
 #if PERF_TRACE

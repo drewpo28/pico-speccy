@@ -65,6 +65,15 @@ void    chunkyWrite(uint32_t off, uint8_t v);
 void    chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n);   // n chunkyWrite calls in a row
 void    drain();              // core0: wait until core1 has run everything queued
 extern volatile bool g_pairPushNow;   // core1: the staged pair palette is due now (its draw started)
+// The pair frame's screens captured copy-on-write (ElmHgfx.cpp, 2026-11-18): while g_cowOn the
+// captured pages' 256-byte blocks are saved before their first write; every raw writer that
+// does not go through the window kinds (URAM FastDMA) calls cowGuard first.
+extern volatile bool g_cowOn;
+extern volatile bool g_cowRelease;    // core1: the draw that read the capture is done (core0 ends it: c0Poll)
+void    cowWrite(uint16_t a);         // Elm::memWrite: a CPU-address store into a captured page
+void    cowGuard(const uint8_t* p, uint32_t n);
+void    cowMark();                    // Element.cpp windowsRebuildNow: mark the captured pages' kinds again
+void    c0Poll();                     // core0: pairPushPoll + the capture's end
 void    pairPushPoll();        // core0, once a line (VIDEO::tsDrawTick): push it
 void    direct(bool on, bool now = false);   // chunky windows mapped: no queue, the guest reads the pixels
                                              // (off: after DIRECT_HOLD frames unless now)

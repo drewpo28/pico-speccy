@@ -1074,6 +1074,28 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   palette (no late push: `s_superseding`) / screens (`pairSnap` on core0: the queue's head is the draw) for that queued
   draw and posts nothing; core1 backs off at the gate while `s_c0Hold` is up (Dekker, full barriers). Only in pair modes
   1/2 with nothing queued behind the draw. `[HGFX] c0/fr: superseded N | ...`. `.dmaovl` +56 B (8032 / 8192).
+  **hw 23:15 (wowperf11): drain max 10-17 -> 3-5 ms, superseded 0-1 a window (core1 is usually already drawing), realFPS
+  45.5-49.3; owner: SAA better, sags only when FPS drops or the log writes.**
+- **Copy-on-write capture of the pair frame's screens (2026-11-18, host-tested, NOT hw-tested; `debug/DVp2w-elm-wowfix9-1.1.3`
+  23:52:14 / PERF `wowperf12` 23:53:14).** The full copy (1.6 ms of core1, 30 KB through the shared 16 KB XIP cache)
+  slowed core0's flash code beside it (frameSetup 1.3 -> 2.0 ms) and core1's draw (5.4 -> 8-9 ms). Now `cowBegin` keeps
+  the screens' pointers and marks their CPU pages with the window kind `WK_COW` (13) in `s_r->win`: the eLeMeNt loop's
+  masks send those slots to the slow write path, every store reaches `Elm::memWrite`, whose first line saves the 256-byte
+  block's frame-end bytes into `s_snap` (`cowWrite` -> `cowSave`: copy, barrier, bit) and drops the page back to plain.
+  Z80 DMA / FastDMA by CPU address go per byte through `busWrite` (the kind), URAM FastDMA calls `cowGuard`, the LDIR /
+  INIR batches decline on the masked slots. core1 draws each row from the saved block or live and reads it again if a bit
+  appeared under it (`pairRowFast` takes bm / at / bm2 / at2 now); `pairSigCow` hashes the same view. core1 raises
+  `g_cowRelease` after that draw, core0 ends the capture in `Hgfx::c0Poll` (every place that polled `g_pairPushNow`).
+  > 24 blocks saved in a window -> 50 frames of the full copy (`COW_BACKOFF`). Host: WOWDEMO 3 500 captures, 0 blocks
+  saved, frames identical to `PICOSPECCY_ELM_NOCOW=1`; LIMSHOWM, TOCHIHRC, HRXCIMGS, HRCDEMO as before. A first build
+  had `c0Poll` call itself (a bulk replace hit its own push line): ZX colours, no palette push - fixed before hand-out.
+  `[HGFX] cow/fr: captures N, blocks saved M (max K in one, ...)`. RAM +64 B, `.dmaovl` +16 B (8048 / 8192).
+  **hw 23:52 (wowperf12): frameEnd 1.0-1.9 ms (was 2.4-3.5), frameSetup 0.8-1.0 (was 2.0), 39-164 blocks saved per 60
+  frames (max 13 in a window; one window over 24 -> backoff), drain small; realFPS 47-48.3, neg 16-22.** PROF: ~22 % is
+  now the idle loop; the load's top is still LDIR (decodeED / ldx / gate / ED dispatch / generic accessors ~12 %).
+  Next (host-tested, NOT hw-tested; `wowfix10` / PERF `wowperf13`): `ED B0` / `ED B8` met in the eLeMeNt loop's
+  `nx_slow` batch every repeat but the last at once (`elmLdirBatch(d, 21)`: a repeat there is always 21 T), the core
+  runs the last; LDT tape 30816 / 31 with and without batches, WOWDEMO / PF2026 as before.
 
 **PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
 - The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,

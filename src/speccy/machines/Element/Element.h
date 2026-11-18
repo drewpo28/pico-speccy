@@ -62,7 +62,8 @@ void cpuFlags();
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM)
-enum { WK_VRAM = 1, WK_CHUNKY = 6 };         // wrKind of the HGFX VRAM / chunky windows
+enum { WK_VRAM = 1, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
+void masksRefresh();                          // the eLeMeNt loop's slot masks again after a wrKind change (Hgfx's COW)
 extern const uint8_t* vramHi;                 // g_zxi_021: the VRAM window's high address byte
 extern uint16_t slotPage[8];                  // chunky window: its 8K step per slot
 void memRead(uint16_t address);               // a read of the HGFX VRAM window arms COPY

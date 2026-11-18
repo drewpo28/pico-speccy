@@ -579,7 +579,7 @@ static void drainWait(bool engineOnly) {
     for (;;) {
         const uint32_t qr = s_qr, qw = s_qw;
         if (qr == qw && s_drawDone == s_drawPosted) return;
-        if (g_pairPushNow) pairPushPoll();   // core1 just started a draw that waits for its palette
+        if (g_pairPushNow | g_cowRelease) c0Poll();   // core1 just started a draw that waits for its palette
         // Only the frame's draw left (waiting for the beam, or drawing): the engine's
         // queued work is done.
         if (engineOnly && qw == s_drawQw && (int32_t)(qr - s_drawAt) >= 0) return;
@@ -1531,16 +1531,15 @@ static uint32_t s_pCellTop, s_pCellBot, s_pCellMix;   // KeyLayer cells per 60 f
 // In the RAM window (ELM_HOT): on core1 flash code runs through the XIP cache core0 keeps
 // busy, and this loop from flash took 21 ms a frame (hw 2026-11-16), MORE than the per-pixel
 // path it replaced.
-ELM_HOT void pairRowFast(const uint8_t* scr, const uint8_t* scr2, int y, bool indexed, const uint8_t* lut, int fy, int x0) {
+// bm / at: the row's 64 bitmap bytes and its 64 attribute bytes, bm2 / at2 the KeyLayer's
+// bottom screen's (nullptr: none) - per row, so a copy-on-write capture can take each from the
+// live screen or the saved block (renderFrame).
+ELM_HOT void pairRowFast(const uint8_t* bm, const uint8_t* at, const uint8_t* bm2, const uint8_t* at2, bool indexed, const uint8_t* lut, int fy, int x0) {
     rowPump(fy);
     Hot* H = s_hot;
     uint8_t* row = VIDEO::vga.frameBuffer[fy];
     int cx[8][2];
     const int nc = VIDEO::rowCarves(fy, cx);
-    const uint8_t* bm = scr + (uint32_t)y * 64;
-    const uint8_t* at = scr + 0x3000 + (y >> 2) * 64;
-    const uint8_t* bm2 = scr2 ? scr2 + (uint32_t)y * 64 : nullptr;
-    const uint8_t* at2 = scr2 ? scr2 + 0x3000 + (y >> 2) * 64 : nullptr;
     const bool flash = VIDEO::flashing != 0;
     const uint8_t own = indexed ? 32 : 0;
     const bool fast = !nc && !(x0 & 3);
@@ -1558,7 +1557,7 @@ ELM_HOT void pairRowFast(const uint8_t* scr, const uint8_t* scr2, int y, bool in
         }
         uint8_t b0, b1, b2, b3;
         bool plain = true;
-        if (scr2) {
+        if (bm2) {
             const bool kI = keyIs(ink), kP = keyIs(pap);
             if (kI || kP) {
                 uint8_t bits2 = bm2[c], ink2, pap2;
@@ -2135,13 +2134,148 @@ static void pairSnapWait() {            // core0, end of frameEnd: the machine m
 #endif
     const uint32_t start = time_us_32();
     while (s_snapDone != s_snapReq) {
-        if (g_pairPushNow) pairPushPoll();
+        if (g_pairPushNow | g_cowRelease) c0Poll();
         if (time_us_32() - start > 50000) { Debug::log("[ELM] pair snapshot on core1 stuck, copied on core0"); pairSnap(); s_snapDone = s_snapReq; break; }
     }
 #if PERF_TRACE
     const uint32_t d = time_us_32() - t0;
     s_pSnapUs += d; if (d > s_pSnapMax) s_pSnapMax = d;
 #endif
+}
+// Copy-on-write capture (2026-11-18, owner: "делай copy-on-write"). The full copy (core1,
+// 1.6 ms) ran 30 KB of PSRAM traffic through the 16 KB XIP cache both cores share every
+// frame: core0's flash code beside it slowed (frameSetup 1.3 -> 2.0 ms, pairLutUpdate x5) and
+// core1's draw read PSRAM it had just evicted (5.4 -> 8-9 ms). Now the frame end keeps only
+// the screens' pointers; their CPU pages get the window kind WK_COW (Element.cpp masks those
+// slots off the eLeMeNt loop's fast path, every store then reaches Elm::memWrite), and the
+// first store into a 256-byte block saves the block's frame-end bytes into s_snap before it
+// lands. core1 reads each row's bitmap / attributes from the saved block if there is one,
+// else live, and reads again from the saved copy if a block was saved under it (core0 sets
+// the bit only after the copy, before the store). Ends when that draw is done (core1 raises
+// g_cowRelease, core0 drops the kinds in c0Poll). A program that rewrites its shown screen
+// in the window pays per block on core0: past COW_FALLBACK blocks the next frames use the
+// full copy again for a while.
+enum { COW_BLOCKS = SNAP_BYTES / 256, COW_FALLBACK = 24, COW_BACKOFF = 50 };
+volatile bool g_cowOn;
+#if HOST_BUILD
+uint32_t g_cowRetries;
+#endif
+volatile bool g_cowRelease;
+static const uint8_t* s_cowBase[2];     // the captured screens (top, KeyLayer bottom)
+static volatile uint32_t s_cowSaved[2][2];   // bit per block: its frame-end bytes are in s_snap
+static uint32_t s_cowDraw;              // the s_drawPosted number of the draw that reads it
+static uint32_t s_cowSavedN;            // blocks saved in this window
+static uint8_t  s_cowBackoff;           // frames on the full copy after a heavy window
+#if PERF_TRACE
+static uint32_t s_pCowFrames, s_pCowBlocks, s_pCowMax;   // per 60 frames: captures, blocks saved, the most in one
+#endif
+static inline bool cowBit(int i, uint32_t b) { return (s_cowSaved[i][b >> 5] >> (b & 31)) & 1; }
+static void cowSave(int i, uint32_t b) {
+    if (cowBit(i, b)) return;
+    memcpy(s_snap + i * SNAP_BYTES + b * 256, s_cowBase[i] + b * 256, 256);
+    __sync_synchronize();
+    s_cowSaved[i][b >> 5] = s_cowSaved[i][b >> 5] | (1u << (b & 31));
+    __sync_synchronize();
+    s_cowSavedN++;
+}
+void cowGuard(const uint8_t* p, uint32_t n) {
+    if (!g_cowOn || !n) return;
+    for (int i = 0; i < 2; i++) {
+        const uint8_t* base = s_cowBase[i];
+        if (!base || p + n <= base || p >= base + SNAP_BYTES) continue;
+        const uint32_t lo = p > base ? (uint32_t)(p - base) : 0;
+        uint32_t hi = (uint32_t)(p + n - base);
+        if (hi > SNAP_BYTES) hi = SNAP_BYTES;
+        for (uint32_t b = lo >> 8; b <= (hi - 1) >> 8; b++) cowSave(i, b);
+    }
+}
+void cowWrite(uint16_t a) {
+    const uint8_t* slot = MemESP::ramCurrent[a >> 13];
+    if (slot) cowGuard(slot + (a & 0x1FFF), 1);
+    if (Elm::wrKind && Elm::wrKind[a >> 8] == Elm::WK_COW) Elm::wrKind[a >> 8] = 0;   // the block is saved: plain from now on
+}
+// The captured pages' CPU pages: WK_COW where nothing else claims them and the block is not
+// saved yet. A slot holding half of a captured page maps blocks (its offset >> 8) + 0..31.
+void cowMark() {
+    if (!g_cowOn || !Elm::wrKind) return;
+    for (int s = 0; s < 8; s++) {
+        const uint8_t* rp = MemESP::ramCurrent[s];
+        if (!rp) continue;
+        for (int i = 0; i < 2; i++) {
+            const uint8_t* base = s_cowBase[i];
+            if (!base || rp < base || rp >= base + 0x4000) continue;
+            const uint32_t b0 = (uint32_t)(rp - base) >> 8;
+            for (uint32_t k = 0; k < 32; k++) {
+                const uint32_t b = b0 + k;
+                uint8_t& w = Elm::wrKind[s * 32 + k];
+                if (b < COW_BLOCKS && !cowBit(i, b) && w == 0) w = Elm::WK_COW;
+            }
+        }
+    }
+}
+static void cowEnd() {                  // core0, core1 not reading it (its draw done, or held off)
+    if (!g_cowOn) return;
+    g_cowOn = false;
+    g_cowRelease = false;
+    if (Elm::wrKind) for (int p = 0; p < 256; p++) if (Elm::wrKind[p] == Elm::WK_COW) Elm::wrKind[p] = 0;
+    Elm::masksRefresh();
+    s_cowBase[0] = s_cowBase[1] = nullptr;
+#if PERF_TRACE
+    s_pCowBlocks += s_cowSavedN; if (s_cowSavedN > s_pCowMax) s_pCowMax = s_cowSavedN;
+#endif
+    if (s_cowSavedN > COW_FALLBACK) s_cowBackoff = COW_BACKOFF;
+#if HOST_BUILD
+    {   // bench: what the captures cost (no PERF lines on the host)
+        static uint32_t n, blocks, heavy; n++; blocks += s_cowSavedN; if (s_cowSavedN > COW_FALLBACK) heavy++;
+        extern uint32_t g_cowRetries;
+        if (n == 1 || !(n % 500)) Debug::log("[ELMCOW] captures %u, blocks saved %u, heavy %u, row retries %u", (unsigned)n, (unsigned)blocks, (unsigned)heavy, (unsigned)g_cowRetries);
+    }
+#endif
+}
+static bool cowBegin(uint32_t draw) {   // core0, frame end: the screens as they are now, for that draw
+    if (!s_snap) s_snap = (uint8_t*)Buffer::palloc(2 * SNAP_BYTES, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!s_snap || !Elm::wrKind) return false;
+    s_cowBase[0] = keyTop ? keyTop : VIDEO::grmem;
+    s_cowBase[1] = keyBottom;
+    s_cowSaved[0][0] = s_cowSaved[0][1] = s_cowSaved[1][0] = s_cowSaved[1][1] = 0;
+    s_cowSavedN = 0;
+    s_cowDraw = draw;
+    g_cowRelease = false;
+    __sync_synchronize();
+    g_cowOn = true;
+    cowMark();
+    Elm::masksRefresh();
+#if PERF_TRACE
+    s_pCowFrames++;
+#endif
+    return true;
+}
+void c0Poll() {
+    if (g_cowRelease) {
+        g_cowRelease = false;
+        if (g_cowOn && (int32_t)(s_drawDone - s_cowDraw) >= 0) cowEnd();
+    }
+    if (g_pairPushNow) pairPushPoll();
+}
+// The pair frame's signature over what the draw reads under a capture: each block from where
+// the rows will take it.
+static uint32_t pairSigCow(bool idx, const uint8_t* lut, int x0, int y0) {
+    const uint8_t* b0 = s_cowBase[0]; const uint8_t* b1 = s_cowBase[1];
+    uint32_t h = 0x811C9DC5u ^ (uint32_t)x0 ^ (uint32_t)y0 << 8 ^ (uint32_t)keyColour << 16 ^ (idx ? 1u << 24 : 0) ^ (uint32_t)(uintptr_t)lut;
+    if (!idx && VIDEO::flashing) h ^= 1u << 25;
+    h ^= (uint32_t)(uintptr_t)b0 ^ (uint32_t)(uintptr_t)b1 << 4;
+    for (int i = 0; i < 2; i++) {
+        const uint8_t* base = i ? b1 : b0;
+        if (!base) continue;
+        for (uint32_t b = 0; b < COW_BLOCKS; b++) {
+            const uint32_t* w = (const uint32_t*)((cowBit(i, b) ? s_snap + i * SNAP_BYTES : base) + b * 256);
+            for (int k = 0; k < 64; k++) h = (h ^ w[k]) * 0x9E3779B1u;
+        }
+    }
+    const uint32_t* w = (const uint32_t*)s_hot->pidx;
+    for (int i = 0; i < 64 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u;
+    if (lut == s_hot->lut) { w = (const uint32_t*)lut; for (int i = 0; i < 256 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u; }
+    return h;
 }
 // The whole screen the draw reads (SNAP_BYTES): it hashed 6912 bytes, the ZX size, and a
 // change below row 108 or in the attributes alone was skipped as "nothing changed".
@@ -2197,9 +2331,10 @@ static void renderFrame() {
             // fades it with the palette alone (hw 2026-11-16: `pidx 0 pal 0 ... draw x60`, the
             // NeoGS at 14 of 20 MHz underneath). At most PAIR_CLEAN frames in a row, as the HGFX
             // modes' s_cleanRun: whatever paints over the FB (OSD, notify) is gone within 10.
-            const uint8_t* top = s_drawTop ? s_drawTop : zx0;            // the frame end's screens (pairSnap)
-            const uint8_t* bot = s_drawTop ? s_drawBot : keyBottom;
-            const uint32_t sig = pairSig(top, bot, idx, lut, x0, y0);
+            const bool cow = g_cowOn && s_cowBase[0];                 // copy-on-write capture (cowBegin)
+            const uint8_t* top = cow ? s_cowBase[0] : s_drawTop ? s_drawTop : zx0;   // the frame end's screens
+            const uint8_t* bot = cow ? s_cowBase[1] : s_drawTop ? s_drawBot : keyBottom;
+            const uint32_t sig = cow ? pairSigCow(idx, lut, x0, y0) : pairSig(top, bot, idx, lut, x0, y0);
             static uint32_t s_sig; static uint8_t s_clean;
             enum { PAIR_CLEAN = 9 };
 #if HOST_BUILD
@@ -2216,7 +2351,35 @@ static void renderFrame() {
             }
             s_sig = sig; s_clean = 0; s_pairStale = false;
             if (idx && s_cnt2) memset(s_cnt2, 0, 8192);   // the census of THIS draw (pairLutUpdate)
-            for (int y = 0; y < HEIGHT; y++) pairRowFast(top, bot, y, idx, lut, y0 + y, x0);
+            if (!cow) {
+                for (int y = 0; y < HEIGHT; y++)
+                    pairRowFast(top + (uint32_t)y * 64, top + 0x3000 + (y >> 2) * 64,
+                                bot ? bot + (uint32_t)y * 64 : nullptr, bot ? bot + 0x3000 + (y >> 2) * 64 : nullptr,
+                                idx, lut, y0 + y, x0);
+            } else {
+                const uint8_t* st = s_snap; const uint8_t* sb = s_snap + SNAP_BYTES;
+                for (int y = 0; y < HEIGHT; y++) {
+                    const uint32_t bb = (uint32_t)y >> 2, ab = 0x30 + ((uint32_t)y >> 4);   // the row's bitmap / attribute blocks
+                    const uint32_t ob = (uint32_t)y * 64, oa = 0x3000 + (uint32_t)(y >> 2) * 64;
+                    for (int tries = 0; tries < 2; tries++) {
+                        const bool sb0 = cowBit(0, bb), sa0 = cowBit(0, ab);
+                        const bool sb1 = bot && cowBit(1, bb), sa1 = bot && cowBit(1, ab);
+                        pairRowFast(sb0 ? st + ob : top + ob, sa0 ? st + oa : top + oa,
+                                    bot ? (sb1 ? sb + ob : bot + ob) : nullptr, bot ? (sa1 ? sb + oa : bot + oa) : nullptr,
+                                    idx, lut, y0 + y, x0);
+                        __sync_synchronize();
+                        // A block saved while the row was read: the store may have landed under it.
+                        if ((!sb0 && cowBit(0, bb)) || (!sa0 && cowBit(0, ab)) ||
+                            (bot && ((!sb1 && cowBit(1, bb)) || (!sa1 && cowBit(1, ab))))) {
+#if HOST_BUILD
+                            extern uint32_t g_cowRetries; g_cowRetries++;
+#endif
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
         }
         return;
     }
@@ -2493,13 +2656,21 @@ static void frameEndBody() {
         else s_c0Hold = false;
     }
     if (!supersede && (s_pair || mode == 4 || hrcGiga())) drain();   // the pair tables are rewritten under the frame; the HRC mix shares scratch
+    if (g_cowOn && (supersede || s_drawDone == s_drawPosted)) cowEnd();   // its draw is done (or held off and re-dealt)
+    if (s_cowBackoff) s_cowBackoff--;
+#if HOST_BUILD
+    static const bool noCow = getenv("PICOSPECCY_ELM_NOCOW") != nullptr;   // bench A/B: the full copy
+#else
+    const bool noCow = false;
+#endif
+    const bool cowMode = was && (mode == 1 || mode == 2) && s_q && g_elm_c1_live && !s_cowBackoff && !g_cowOn && !noCow;
 #if PERF_TRACE
     { const uint32_t t = time_us_32(), d = t - tp; tp = t; s_pDrnUs += d; if (d > s_pDrnMax) s_pDrnMax = d; if (d > 2000) s_pDrnN++; }
 #endif
     // core1 copies while core0 deals the palette; posted by frameSetup itself right after
     // the HRXC histogram (3 KB of the screen read from PSRAM: beside the copy it doubled,
     // frameSetup 1.3 -> 2.1 ms, hw 2026-11-18 22:49), here for HRC (no histogram).
-    s_snapWant = was && (mode == 1 || mode == 2) && !supersede;   // superseding: the queue's head is the draw - copy here
+    s_snapWant = was && (mode == 1 || mode == 2) && !supersede && !cowMode;   // superseding: the queue's head is the draw - copy here
     s_snapPosted = false;
     s_superseding = supersede;
     frameSetup();
@@ -2509,8 +2680,10 @@ static void frameEndBody() {
 #if PERF_TRACE
     { const uint32_t d = time_us_32() - tp; s_pSetUs += d; if (d > s_pSetMax) s_pSetMax = d; }
 #endif
-    if (s_pair && (mode == 1 || mode == 2)) { if (!snapPosted) pairSnap(); }   // core1 idle (the drain above) or held off: the screens of THIS frame end
-    else s_drawTop = nullptr;
+    if (s_pair && (mode == 1 || mode == 2)) {   // core1 idle (the drain above) or held off: the screens of THIS frame end
+        if (cowMode && cowBegin(supersede ? s_drawPosted : s_drawPosted + 1)) s_drawTop = nullptr;
+        else if (!snapPosted) pairSnap();
+    } else s_drawTop = nullptr;
     if (supersede) {
         s_pairStale = true;              // the queued draw is now this frame's: draw it whatever its signature
         __sync_synchronize();
@@ -2577,7 +2750,7 @@ static void frameEndBody() {
         s_pDrop++;
 #endif
         const uint64_t lim = time_us_64() + 100000;
-        while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow) pairPushPoll(); }
+        while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow | g_cowRelease) c0Poll(); }
         s_waitedUs = time_us_32() - t0;
 #if PERF_TRACE
         s_pWaitUs += s_waitedUs;
@@ -2618,6 +2791,9 @@ posted:
                    s_pSuper, s_pFeUs / 60, s_pFeMax, s_pDrnUs / 60, s_pDrnMax, s_pDrnN, s_pSetUs / 60, s_pSetMax, s_pSnapUs / 60, s_pSnapMax,
                    s_pSnapC1Us / 60, s_pSnapC1Max);
         s_pSnapC1Us = 0; s_pSnapC1Max = 0;
+        Debug::log("[HGFX] cow/fr: captures %u, blocks saved %u (max %u in one, fallback past %u) | backoff %u",
+                   s_pCowFrames, s_pCowBlocks, s_pCowMax, (unsigned)COW_FALLBACK, (unsigned)s_cowBackoff);
+        s_pCowFrames = s_pCowBlocks = s_pCowMax = 0;
         s_pFeUs = s_pFeMax = s_pSnapUs = s_pSnapMax = 0; s_pSuper = 0;
         s_pDrnUs = s_pDrnMax = s_pDrnN = s_pSetUs = s_pSetMax = 0;
         s_pPrinted = true;
@@ -2826,6 +3002,7 @@ ELM_HOT void core1Pump() {
             s_drawDone = s_drawDone + 1;
             __sync_synchronize();
             s_c1Drawing = false;
+            if (g_cowOn && (int32_t)(s_drawDone - s_cowDraw) >= 0) g_cowRelease = true;   // core0 ends the capture (c0Poll)
             break;
         }
         }
@@ -2850,6 +3027,7 @@ void paletteLost() { s_palDirty = true; s_palAll = true; s_fullDraw = true; }
 // in RAM; every other kind is Element.cpp's memWriteCold in flash.
 namespace Elm {
 ELM_HOT bool memWrite(uint16_t a, uint8_t v) {
+    if (Hgfx::g_cowOn) Hgfx::cowWrite(a);   // the pair frame's captured screen: its block saved first (WK_COW)
     const uint8_t k = wrKind[a >> 8];
     if (a < 0x4000 && MemESP::divmmc_mapped) return false;   // the divMMC window is on top
     if (k == WK_CHUNKY) {

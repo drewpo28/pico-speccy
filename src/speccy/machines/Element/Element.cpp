@@ -208,7 +208,8 @@ static const uint8_t s_vramHi0 = 0x40;
 const uint8_t* vramHi = &s_vramHi0;
 // What a store to a 256-byte page of the Z80 space means. Regions overlap in RAM
 // terms: the store also lands in the memory under a device window.
-enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC, W_FLASH, W_FRAM };
+enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC, W_FLASH, W_FRAM, W_COW };
+static_assert(W_COW == WK_COW, "Element.h WK_COW");   // memWriteCold: no case - the store lands (false)
 static_assert(W_CHUNKY == WK_CHUNKY && W_VRAM == WK_VRAM, "Element.h WK_*");
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
 
@@ -547,8 +548,9 @@ void keyWaitSkip() {
 #endif
 }
 
+void masksRefresh() { elmMasksUpdate(); }
 static void fdWrite(uint32_t a, bool uram, uint8_t v) {
-    if (uram) { uint8_t* p = uramByte(a); if (p) *p = v; return; }
+    if (uram) { uint8_t* p = uramByte(a); if (p) { if (Hgfx::g_cowOn) Hgfx::cowGuard(p, 1); *p = v; } return; }
     busWrite((uint16_t)a, v);
 }
 
@@ -650,7 +652,7 @@ ELM_OVL_CODE static void fdmaRun(int set, bool wide24) {   // .elmovl: 2 400 pie
                 g_elm_fd_src[4]++;
 #endif
             }
-            if (duram) { if (dp) memmove(dp, src, c); }
+            if (duram) { if (dp) { if (Hgfx::g_cowOn) Hgfx::cowGuard(dp, c); memmove(dp, src, c); } }
             else if (kind == W_CHUNKY) {
 #if PERF_TRACE
                 const uint32_t tw_ = time_us_32();
@@ -888,6 +890,7 @@ void remap() {
     s_framSlots = fr;
     s_chunkSplit = split;
     g_elm_split = split | s_romWaitSlots;
+    if (Hgfx::g_cowOn) Hgfx::cowMark();  // the pair frame's captured screen in its new slots (the rebuild wiped the marks)
     elmMasksUpdate();
     Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap

@@ -7810,7 +7810,7 @@ IRAM_ATTR void VIDEO::tsDrawTick() {
     PERF_BUCKET_SCOPE(PB_DRAWTICK);
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
-    if (__builtin_expect(Hgfx::g_pairPushNow, 0)) Hgfx::pairPushPoll();   // eLeMeNt pair frame: core1 started the draw of a staged palette
+    if (__builtin_expect(Hgfx::g_pairPushNow | Hgfx::g_cowRelease, 0)) Hgfx::c0Poll();   // eLeMeNt pair frame: core1 started the draw of a staged palette
     if (__builtin_expect(tsCramDirty, 0)) {
         tsPalettePoll(false);   // beam-scheduled palette apply, once per line
         // The poll may have RELEASED a held re-index: tsReindexRelease renders
