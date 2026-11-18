@@ -16,6 +16,7 @@
 #include "speccy/machines/Element/ElmFlash.h"
 #include "speccy/machines/Element/ElmTail.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/gs/GS.h"         // g_ngs_zxdma, GS::zxDmaRead: splitRead's ROM wait path
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/devices/sound/SAASound.h"
@@ -169,14 +170,25 @@ static void framCount(uint16_t off) {
     ElmFlash::framDirty();
 }
 uint16_t slotPage[8];                 // HGFX Area: its 8K step in the Zone
-volatile uint8_t g_elm_split;         // chunky windows across the SRAM half's edge (Element.h)
+volatile uint8_t g_elm_split;         // chunky windows across the SRAM half's edge + the ROM wait slots (Element.h)
+static uint8_t s_chunkSplit;          // the chunky half of it (remap)
+static uint8_t s_romWaitSlots;        // the ROM wait half (cpuSpeed)
+uint8_t  g_elm_romWait;
+uint32_t g_elm_stretchK, g_elm_stretchFrac, g_elm_stretchDebt, g_elm_shT;
 uint8_t splitRead(uint16_t a) {
+    if (!((s_chunkSplit >> (a >> 13)) & 1)) {
+        // The OverClock ROM wait: the funnel's own tail after this gate (CPU.cpp gsDmaPeek8).
+        VIDEO::Draw(1, false);
+        if (g_ngs_zxdma && a < 0x4000 && !MemESP::page0ram && !MemESP::newSRAM && !MemESP::divmmc_mapped)
+            return GS::zxDmaRead();
+        return MemESP::readbyte(a);
+    }
 #if HOST_BUILD
     static uint32_t n; if (++n == 1 || n == 1000 || n == 100000) Debug::log("[ELM] split window reads: %u", (unsigned)n);
 #endif
     return Hgfx::chunkyReadByte(slotPage[a >> 13] * 0x2000u + (a & 0x1FFF));
 }
-static inline bool isSplit(uint16_t a) { return (g_elm_split >> (a >> 13)) & 1; }
+static inline bool isSplit(uint16_t a) { return (s_chunkSplit >> (a >> 13)) & 1; }
 uint8_t* wrKind;
 volatile uint8_t g_elm_rdmask = 0xFF, g_elm_wrmask = 0xFF;   // everything generic until the first remap
 static uint8_t s_vramSlots;
@@ -874,7 +886,8 @@ void remap() {
     s_hgfxSlots = hg;
     s_flashSlots = fl;
     s_framSlots = fr;
-    g_elm_split = split;
+    s_chunkSplit = split;
+    g_elm_split = split | s_romWaitSlots;
     elmMasksUpdate();
     Hgfx::direct(hg != 0);
     // e_zxi_02D bit 7 clear: URAM in Zone 0 is on top, the divSD entry points do not trap
@@ -1404,16 +1417,6 @@ void syncFromSettings() {
     if (n) Debug::log("[ELM] settings -> SetUp: %s", what);
 }
 
-// The turbo hot key set the clock itself: e_zxi_030 (and the SetUp's page) follow it.
-// m = the multiplicator, 3 = 28 MHz = OverClock 28.
-void syncTurbo(uint8_t m) {
-    if (!s_r) return;
-    const uint8_t v = m >= 3 ? 5 : m;
-    if (s_r->e[0x030] == v) return;
-    s_r->e[0x030] = v;
-    framPut(0x030, v);
-    Debug::log("[ELM] hot key: CPU speed -> e_030=%02X", v);
-}
 
 static uint8_t coreIdNext(uint8_t* pos) {   // "eLeMeNt ZX", a 0, then again
     static const char kId[] = "eLeMeNt ZX";
@@ -1664,18 +1667,41 @@ static uint8_t uartStatus() {
     return (uint8_t)((lsr & 1) | (lsr & 0x20 ? 0 : 2));
 }
 
-// e_zxi_030 / u_zxi_00B: the CPU clock. 20 and 22 MHz run at our 14 MHz (deviation,
-// recorded in the plan); the OverClock 28 / 30 MHz modes at 28 MHz like the Next's
-// (owner 2026-11-14: WOWDEMO writes 03 then 05 and skips frames below 28).
+// e_zxi_030 / u_zxi_00B: the CPU clock. 3.5 / 7 / 14 by the multiplicator; 20 / 22 MHz on
+// the 28 MHz frame with every T stretched, the OverClock modes at 28 with the ROM wait on 05 /
+// 07 (Element.h; owner 2026-11-18). WOWDEMO and PF2026 write 03 then 05.
 static void cpuSpeed(uint8_t sel, bool quiet) {
-    const uint8_t want = sel >= 5 ? 3 : sel >= 2 ? 2 : sel;
+    sel &= 7;
+    const uint8_t want = sel >= 3 ? 3 : sel;
+    const uint32_t k = sel == 3 ? 26214u : sel == 4 ? 17873u : 0u;   // 28/20 - 1, 28/22 - 1 in 16.16
+    const uint8_t wait = (sel == 5 || sel == 7) ? 1 : 0;
     const uint8_t old = ESPectrum::multiplicator;
-    if (want == old) return;
-    CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
-    ESPectrum::multiplicator = want;
-    CPU::updateStatesInFrame();
+    const bool same = want == old && k == g_elm_stretchK && wait == g_elm_romWait;
+    if (k != g_elm_stretchK) { g_elm_stretchFrac = 0; g_elm_stretchDebt = 0; g_elm_shT = CPU::tstates; }
+    g_elm_stretchK = k;
+    if (wait != g_elm_romWait) {
+        g_elm_romWait = wait;
+        s_romWaitSlots = wait ? 0x03 : 0;
+        g_elm_split = s_chunkSplit | s_romWaitSlots;
+        elmMasksUpdate();
+    }
+    if (same) return;
+    if (want != old) {
+        CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
+        ESPectrum::multiplicator = want;
+        CPU::updateStatesInFrame();
+    }
     if (quiet) return;
-    OSD::notifyClock(want == 3 ? " CPU: 28 MHz " : want == 2 ? " CPU: 14 MHz " : want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
+    static const char* const kClock[8] = { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 20 MHz ",
+                                           " CPU: 22 MHz ", " CPU: 28 MHz ", " CPU: 28 MHz ", " CPU: 28 MHz " };
+    OSD::notifyClock(kClock[sel]);
+}
+
+void leave() {
+    Hgfx::arenaFree();
+    g_elm_split = s_chunkSplit = s_romWaitSlots = 0;
+    g_elm_romWait = 0;
+    g_elm_stretchK = g_elm_stretchFrac = g_elm_stretchDebt = 0;
 }
 
 // The 48-bit master counter at 114.6875 MHz, i.e. 32.77 counts per 3.5 MHz T.
@@ -1904,8 +1930,28 @@ static const char* const kPersName[10] = {
     "ZX Spectrum 48", "ZX Spectrum 128/+2", nullptr, "ZX Spectrum +2A", nullptr,
     "Pentagon 128", "Pentagon 512", "Pentagon 1024", "Pentagon 4096", "Didaktik Gama 80" };
 static const char* const kSpeedName[8] = {
+    // At most 8 characters (owner 2026-11-18): the clock banner, the EXTRA notice, the fast
+    // menu's rows. 05 = OverClock 28 with the ROM wait, 06 / 07 = the SetUp's "(RAM)" ones.
     "3.5 MHz", "7 MHz", "14 MHz", "20 MHz",
-    "OverClock 22 MHz", "OverClock 28 MHz", "OverClock 28 MHz (RAM)", "OverClock 30 MHz (RAM)" };
+    "22 MHz", "28 MHz", "28M RAM", "30M RAM" };
+
+uint8_t speed() { return s_r ? (uint8_t)(s_r->e[0x030] & 7) : ESPectrum::multiplicator; }
+const char* speedName(uint8_t sel) { return kSpeedName[sel & 7]; }
+void setSpeed(uint8_t sel) {
+    sel &= 7;
+    if (s_r) {
+        s_r->e[0x030] = sel;
+        framPut(0x030, sel);   // the SetUp's page and the next power-up follow
+    }
+    cpuSpeed(sel, true);
+    ESPectrum::multUser = ESPectrum::multiplicator;
+    Config::turbo = ESPectrum::multUser;
+    Config::save();
+    char m[40];
+    snprintf(m, sizeof m, " CPU: %s ", kSpeedName[sel]);
+    OSD::notifyClock(m, true);   // a keypress always answers (OSD::setTurbo)
+    Debug::log("[ELM] hot key: CPU speed -> e_030=%02X", sel);
+}
 
 static void extraShort() {
     char m[64];

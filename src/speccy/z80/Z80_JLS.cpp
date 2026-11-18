@@ -39,6 +39,7 @@
 #include "speccy/machines/Enterprise/EpFast.h"   // the fetch of an Enterprise (MEMGATES_EP)
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Element/Element.h"
+#include "speccy/machines/Element/ElmHgfx.h"   // Hgfx::g_pairPushNow / pairPushPoll: the eLeMeNt loops poll it
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
 #include "fs/FileUtils.h"
@@ -1882,8 +1883,25 @@ uint32_t g_elm_ed_hist[256];          // second byte of every ED the loop sent t
 uint32_t g_elm_in_hist[256];          // the C of every IN r,(C) among them
 #endif
 #define elmFetchM1() do { nx_op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; nx_r++; nx_pc++; } while (0)
+// e_zxi_030 03 / 04 (Element.h): the T run from `from` to `t`, charged 28/20 or 28/22. What would
+// pass the frame end waits for the next frame: a catch-up of the video / AY larger than an
+// instruction's overshoot is not something the frame code expects. 32x32->64 multiply, no calls.
+// In the window itself (RAM, eLeMeNt boots only): the shared loop calls it from its
+// g_elm_fastrd branch, which the gate keeps off unless the window is loaded (Video.cpp).
+ELM_OVL_CODE __attribute__((noinline)) uint32_t elmStretch(uint32_t t, uint32_t from) {
+    const uint64_t x = (uint64_t)(t - from) * Elm::g_elm_stretchK + Elm::g_elm_stretchFrac;
+    Elm::g_elm_stretchFrac = (uint32_t)x & 0xFFFFu;
+    const uint32_t extra = (uint32_t)(x >> 16) + Elm::g_elm_stretchDebt;
+    const uint32_t end = CPU::statesInFrame;
+    const uint32_t room = t < end ? end - t : 0;
+    uint32_t debt = extra > room ? extra - room : 0;
+    if (debt > end) debt = end;
+    Elm::g_elm_stretchDebt = debt;
+    return t + (extra > room ? room : extra);
+}
 ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool divmmc) {
     uint32_t nx_t = CPU::tstates, nx_r = regR, nx_lim = NextMemory::lim_nx();
+    uint32_t nx_mark = nx_t;         // e_zxi_030 03/04: run T not yet stretched from here
     uint16_t nx_pc = regPC.word;
     uint32_t nx_qs = lastFlagQ ? nx_r : nx_r - 1;
     uint8_t nx_op;
@@ -1901,6 +1919,18 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
             if (nx_t >= CPU::stFrame + 4) break;
             if (nx_t >= VIDEO::ts_line_t) nxSync(VIDEO::tsDrawTick());
             nx_lim = NextMemory::lim_nx();
+            if (__builtin_expect(Elm::g_elm_stretchK != 0, 0)) {   // 20 / 22 MHz: stretch, check again within ~1K T
+                nx_t = elmStretch(nx_t, nx_mark);
+                nx_mark = nx_t;
+                if (nx_lim > nx_t + 1024) nx_lim = nx_t + 1024;
+            }
+            // The pair frame's staged palette (Hgfx::pairPushPoll): core1 waits at its draw for
+            // core0 to push it, and in a full HGFX picture nothing else on core0 polls while
+            // the machine runs (no line ticks, no idle at < 50 FPS) - the 30 ms cap then drew
+            // the new pixels under the OLD palette (WOWDEMO's one-frame flashes, hw 2026-11-18)
+            // and core0 waited for the draw at the next frame end. A look every 4 K T.
+            if (__builtin_expect(Hgfx::g_pairPushNow, 0)) nxSync(Hgfx::pairPushPoll());
+            if (nx_lim > nx_t + 4096) nx_lim = nx_t + 4096;
             if (nx_t >= nx_lim) {
                 elmFetchM1();
                 goto nx_slow;
@@ -1923,7 +1953,12 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
         flagQ = false;
         opCode = nx_op;
         nxSyncHot(dcOpcode[nx_op]());
-        if (__builtin_expect(!g_elm_fastrd || prefixOpcode, 0)) { lastFlagQ = flagQ; return; }
+        if (__builtin_expect(!g_elm_fastrd || prefixOpcode, 0)) {
+            lastFlagQ = flagQ;
+            if (__builtin_expect(Elm::g_elm_stretchK != 0, 0)) CPU::tstates = elmStretch(CPU::tstates, nx_mark);
+            Elm::g_elm_shT = CPU::tstates;
+            return;
+        }
         if (flagQ) nx_qs = nx_r;
         if (__builtin_expect(pendingEI, 0) && nx_t < CPU::stFrame) pendingEI = false;
         continue;
@@ -1932,6 +1967,8 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
     }
     nx_t -= 4;                       // the fetch that did not happen
 elm_out:
+    if (__builtin_expect(Elm::g_elm_stretchK != 0, 0)) nx_t = elmStretch(nx_t, nx_mark);
+    Elm::g_elm_shT = nx_t;
     lastFlagQ = (nx_qs == nx_r);
     nxPub();
 }
@@ -1951,12 +1988,28 @@ IRAM_ATTR void Z80::exec_nocheck() {
 #if !NEO8_TRAP
         // eLeMeNt at fastmem level 1 (HGFX / the turbo ZX screen): its own switch loop
         // at 0x4000+ (elm_memory.h); below that the fetch here, one instruction at a time.
-        if (g_elm_fastrd && nbp <= 0 && prefixOpcode == 0 && REG_PC >= 0x4000) {
+        if (g_elm_fastrd) {
+            // e_zxi_030 (Element.h): the instruction this loop ran last, stretched to 20 / 22 MHz
+            // (a gap longer than any instruction is a HALT or a frame change: not run time).
+            if (__builtin_expect(Elm::g_elm_stretchK != 0, 0)) {
+                const uint32_t t = CPU::tstates;
+                if (t - Elm::g_elm_shT < 64) CPU::tstates = elmStretch(t, Elm::g_elm_shT);
+                Elm::g_elm_shT = CPU::tstates;
+            }
+            // The staged pair palette, as in the eLeMeNt loop (WOWDEMO: half its frame is
+            // esxDOS reads in this loop). pairPushPoll reads the beam: not every instruction.
+            if (__builtin_expect(Hgfx::g_pairPushNow, 0)) {
+                static uint32_t s_pollT;
+                if (CPU::tstates - s_pollT >= 4096) { s_pollT = CPU::tstates; Hgfx::pairPushPoll(); }
+            }
+            if (nbp <= 0 && prefixOpcode == 0 && REG_PC >= 0x4000) {
 #if PERF_TRACE
-            g_elm_loop_n++;   // entries a frame: the [HGFX] 60f line's `z80 loop`
+                g_elm_loop_n++;   // entries a frame: the [HGFX] 60f line's `z80 loop`
 #endif
-            exec_nocheck_elm(divmmc);
-            continue;
+                exec_nocheck_elm(divmmc);
+                continue;
+            }
+            if (REG_PC < 0x4000) CPU::tstates += Elm::g_elm_romWait;   // OverClock 05 / 07: the M1 in the ROM area
         }
         if (g_next_fastrd && nbp <= 0 && prefixOpcode == 0) {   // mid DD/FD chain: one instruction below
             exec_nocheck_next(divmmc);
@@ -4638,6 +4691,7 @@ void Z80::decodeED(void) {
         case 0xB0:
         { /* LDIR */
             if (Z80Ops::isNext && g_ts_fastmem == 1 && REG_BC > 2) nextLdirBatch(1);
+            else if (__builtin_expect(g_elm_fastrd, 0) && REG_BC > 2) elmLdirGate(1);   // eLeMeNt (its gate: 0 elsewhere)
             ldx(1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
@@ -4665,6 +4719,7 @@ void Z80::decodeED(void) {
         { /* INIR */
             if (Z80Ops::isNext && g_ts_fastmem == 1 && REG_C == 0xEB && (REG_B == 0 || REG_B > 2)) nextInirBatch();
             else if (__builtin_expect(DivMMC::zc_enabled, 0) && REG_C == 0x57) zcInirBatch();
+            else if (__builtin_expect(g_elm_fastrd, 0) && REG_C == 0xEB && (REG_B == 0 || REG_B > 2)) elmInirBatch();
             inx(1);
             if (REG_B != 0) {
                 REG_PC = REG_PC - 2;
@@ -4689,6 +4744,7 @@ void Z80::decodeED(void) {
         case 0xB8:
         { /* LDDR */
             if (Z80Ops::isNext && g_ts_fastmem == 1 && REG_BC > 2) nextLdirBatch(-1);
+            else if (__builtin_expect(g_elm_fastrd, 0) && REG_BC > 2) elmLdirGate(-1);
             ldx(-1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
@@ -5050,6 +5106,134 @@ Z80_COLD void Z80::zcInirBatch() {
     } while (0);
     // The state the next entry measures against: this one, after any batch.
     s_zcPc = pc; s_zcB = REG_B; s_zcT = CPU::tstates; s_zcIn = DivMMC::zc_in_bytes;
+}
+
+// eLeMeNt ZX, LDIR / LDDR and INIR #EB (2026-11-18): WOWDEMO at 28 MHz ran ~7 700 LDIR
+// repeats a frame through decodeED + ldx + the generic accessors (every store through
+// poke8_cold: the window gate g_atm_ro & 0x20) - ~25 % of core0 (PC profile, hw
+// 2026-11-18 20:43). Every repeat but the last as one copy, zcInirBatch's shape: the cost
+// of one repeat is MEASURED (the T-state distance between two consecutive entries of the
+// same instruction, the same twice in a row), so the ROM wait (05 / 07), the 20 / 22 MHz
+// stretch, a contended page or an even-M1 rule are whatever they were for the last pass.
+// Only the eLeMeNt loop's plain slots (g_z80_rd_fast / g_z80_wr_fast: no HGFX window, no
+// COPY read hook, no chunky split, no write protect), slots 2-7 (plus the divMMC RAM at
+// #2000 as a destination, the Next's rule), within the slot, the slice and one raster line.
+static uint16_t s_elmLdPc, s_elmLdBc;
+static uint32_t s_elmLdT, s_elmLdDt;
+static uint16_t s_elmInPc;
+static uint8_t  s_elmInB;
+static uint32_t s_elmInT, s_elmInDt;
+volatile uint32_t g_elm_batch[4];   // PERF: LDIR batches / bytes, INIR batches / bytes
+static inline __attribute__((always_inline)) uint8_t* elmBatchDst(uint16_t a) {
+    const uint8_t ds = a >> 13;
+    if (ds >= 2) {
+        if (!((g_z80_wr_fast >> ds) & 1)) return nullptr;
+        uint8_t* dp = MemESP::ramCurrent[ds];
+        if ((uintptr_t)dp < 0x11000000u) return nullptr;              // ROM / accessor bank
+        if (!g_ts_fastmem && VIDEO::grmem && dp >= VIDEO::grmem && dp < VIDEO::grmem + 0x4000) return nullptr;   // beam-raced screen
+        *mem_desc_t::bank_dirty[ds] = true;
+        return dp;
+    }
+    if (ds != 1 || !MemESP::divmmc_mapped) return nullptr;
+    { extern volatile uint8_t g_ngs_zxdma; if (g_ngs_zxdma) return nullptr; }
+    if (MemESP::page0_hi >= (uint8_t*)0x11000000 && !MemESP::mb02_write_gate) return nullptr;
+    if (MemESP::divmmc_hi_dirty) *MemESP::divmmc_hi_dirty = true;
+    else if (MemESP::mb02_page_dirty) *MemESP::mb02_page_dirty = true;
+    return MemESP::page0_hi;
+}
+static inline __attribute__((always_inline)) bool elmBatchOk() {
+#if HOST_BUILD
+    static const bool off = getenv("PICOSPECCY_ELM_NOBATCH") != nullptr;   // bench A/B: the per-repeat path
+    if (off) return false;
+    static uint32_t n; if (++n == 1 || n == 1000 || n == 100000) Debug::log("[ELM] batch calls %u: ldir %u/%u B, inir %u/%u B", (unsigned)n,
+        (unsigned)g_elm_batch[0], (unsigned)g_elm_batch[1], (unsigned)g_elm_batch[2], (unsigned)g_elm_batch[3]);
+#endif
+    return z80_in_nocheck && !Config::numPcBP && !Config::numMemWriteBP && !Config::numMemReadBP &&
+           !Config::numPortReadBP && !Rzx::mode;
+}
+static inline __attribute__((always_inline)) uint32_t elmBatchRoom(uint32_t now, uint32_t T, uint32_t n) {
+    const uint32_t room = (CPU::stFrame - now) / T;
+    if (n > room) n = room;
+    const uint32_t tpl = VIDEO::tStatesPerLine ? VIDEO::tStatesPerLine : 224;
+    const uint32_t line = (tpl << ESPectrum::multiplicator) / T;
+    if (line > 1 && n > line - 1) n = line - 1;
+    return n;
+}
+// The measure runs on EVERY repeat (~5 500 a frame in WOWDEMO), the batch on ~300 of them:
+// in flash the bookkeeping alone was 8 % of core0 (PC profile, hw 2026-11-18 22:49), so it
+// lives in the eLeMeNt's RAM window and calls the flash batch only when it measured a cost.
+// Reached only on g_elm_fastrd, which the gate keeps off unless the window is loaded.
+ELM_OVL_CODE void Z80::elmLdirGate(int d) {
+    const uint32_t now = CPU::tstates;
+    const uint16_t pc = REG_PC;
+    uint32_t T = 0;
+    if (pc == s_elmLdPc && (uint16_t)(s_elmLdBc - 1) == REG_BC && now > s_elmLdT) T = now - s_elmLdT;
+    // A repeat in RAM at a turbo clock with no stretch is exactly 21 T (no contention, no ROM
+    // wait above #4000): one measurement is enough there. WOWDEMO's LDIRs are ~10 bytes, the
+    // second warm-up repeat was a sixth of them (hw 2026-11-18 21:55: 390 batches of ~6 B).
+    const uint32_t T0 = (T == 21 && ESPectrum::multiplicator && !Elm::g_elm_stretchK && pc >= 0x4000) ? 21 : s_elmLdDt;
+    if (T >= 16 && T <= 48 && T == T0) elmLdirBatch(d, T);
+    s_elmLdDt = T; s_elmLdPc = pc; s_elmLdBc = REG_BC; s_elmLdT = CPU::tstates;
+}
+Z80_COLD void Z80::elmLdirBatch(int d, uint32_t T) {
+    const uint32_t now = CPU::tstates;
+    do {
+        if (!elmBatchOk() || now >= CPU::stFrame) break;
+        uint32_t n = elmBatchRoom(now, T, (uint32_t)REG_BC - 1);
+        const uint16_t hl = REG_HL, de = REG_DE;
+        const uint32_t srcLeft = d > 0 ? 0x2000u - (hl & 0x1FFF) : (uint32_t)(hl & 0x1FFF) + 1;
+        const uint32_t dstLeft = d > 0 ? 0x2000u - (de & 0x1FFF) : (uint32_t)(de & 0x1FFF) + 1;
+        if (n > srcLeft) n = srcLeft;
+        if (n > dstLeft) n = dstLeft;
+        if (n < 2) break;
+        const uint8_t ss = hl >> 13;
+        if (ss < 2 || !((g_z80_rd_fast >> ss) & 1)) break;
+        const uint8_t* sp = MemESP::ramCurrent[ss];
+        if (!sp) break;
+        uint8_t* dp = elmBatchDst(de);
+        if (!dp) break;
+        uint32_t so = hl & 0x1FFF, dof = de & 0x1FFF;
+        for (uint32_t i = 0; i < n; i++) { dp[dof] = sp[so]; so += d; dof += d; }   // overlap: byte order as the CPU's
+        REG_HL = (uint16_t)(hl + (int)n * d);
+        REG_DE = (uint16_t)(de + (int)n * d);
+        REG_BC = (uint16_t)(REG_BC - n);
+        regR += 2 * n;
+        g_elm_batch[0] = g_elm_batch[0] + 1; g_elm_batch[1] = g_elm_batch[1] + n;
+        if (g_ts_fastmem) tsFastTick(T * n);
+        else VIDEO::Draw(T * n, false);
+    } while (0);
+}
+Z80_COLD void Z80::elmInirBatch() {
+    const uint32_t now = CPU::tstates;
+    const uint16_t pc = REG_PC;
+    uint32_t T = 0;
+    if (pc == s_elmInPc && (uint8_t)(s_elmInB - 1) == REG_B && now > s_elmInT) T = now - s_elmInT;
+    const uint32_t T0 = s_elmInDt;
+    do {
+        if (T < 16 || T > 48 || T != T0 || !elmBatchOk() || now >= CPU::stFrame) break;
+        if (!DivMMC::enabled || DivMMC::divide_mode) break;     // Ports::input's early #EB branch (the eLeMeNt's)
+        uint32_t n = elmBatchRoom(now, T, (REG_B ? (uint32_t)REG_B : 256u) - 1);
+        const uint16_t hl = REG_HL;
+        const uint32_t dstLeft = 0x2000u - (hl & 0x1FFF);
+        if (n > dstLeft) n = dstLeft;
+        if (n < 2) break;
+        uint8_t* dp = elmBatchDst(hl);
+        if (!dp) break;
+        uint32_t o = hl & 0x1FFF;
+        for (uint32_t i = 0; i < n; ) {           // data bytes in runs, the protocol bytes one by one
+            const uint32_t k = DivMMC::mmc_read_bulk(dp + o, n - i);
+            if (k) { o += k; i += k; }
+            else { dp[o++] = DivMMC::mmc_read(); i++; }
+        }
+        LED::touchR(LED::SD);
+        REG_HL = (uint16_t)(hl + n);
+        REG_B = (uint8_t)(REG_B - n);
+        regR += 2 * n;
+        g_elm_batch[2] = g_elm_batch[2] + 1; g_elm_batch[3] = g_elm_batch[3] + n;
+        if (g_ts_fastmem) tsFastTick(T * n);
+        else VIDEO::Draw(T * n, false);
+    } while (0);
+    s_elmInDt = T; s_elmInPc = pc; s_elmInB = REG_B; s_elmInT = CPU::tstates;
 }
 
 // Spectrum Next, an unrolled run of INI from the SD data port 0xEB (ED A2 x N):

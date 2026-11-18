@@ -327,7 +327,7 @@ set(ELMOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the eLeMeNt Z80 loop overlay wi
 if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
     set(ELMOVL_WIN_SIZE_EFFECTIVE 12544)
     if (PERF_TRACE)
-        set(ELMOVL_WIN_SIZE_EFFECTIVE 13056)
+        set(ELMOVL_WIN_SIZE_EFFECTIVE 13312)   # +256 2026-11-18: the 20/22 MHz stretch + ROM wait (content 12 536 without PERF)
     endif()
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})

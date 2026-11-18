@@ -27,6 +27,7 @@ extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp (host: host_stub
 void pcprof_dump();
 #endif
 #if PERF_TRACE
+extern volatile uint32_t g_elm_batch[4];   // Z80_JLS.cpp elmLdirBatch / elmInirBatch: PERF counts
 extern uint32_t g_elm_loop_n, g_elm_gen_n;   // Z80_JLS.cpp: Z80::exec_nocheck_elm entries, shared-loop instructions
 extern uint32_t g_elm_ed_hist[256], g_elm_in_hist[256];   // Z80_JLS.cpp: ED second bytes the loop handed to the shared decoders, IN r,(C) ports
 namespace Elm { extern uint32_t g_elm_kw[2]; }   // Element.cpp: key-wait skips / passes
@@ -195,7 +196,7 @@ ELM_INL int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
 // The core1 queue: core0 writes s_qw, core1 s_qr, both free-running. In PSRAM, one
 // frame of a heavy demo is ~8000 entries. Bits 31..29 kind, the rest as below.
 enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29,
-                 Q_BYTES = 5u << 29 };
+                 Q_BYTES = 5u << 29, Q_SNAP = 6u << 29 };
 static uint32_t* s_q;
 static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
 static bool s_direct;               // chunky windows are mapped: the engine stays on core0
@@ -230,6 +231,7 @@ ELM_INL void dirtyRow(uint32_t rowA) { dirtyMark(rowA); }   // the row at rowA: 
 // below the picture or in blanking (beamBelowPicture).
 static uint32_t s_pairPendPal[16];
 static volatile bool s_pairPendValid;
+static bool s_superseding;               // frameEnd is replacing an unstarted draw: no late push of its palette (s_c0Hold)
 static bool s_pairPendFull;
 static inline bool beamBelowPicture() {
     const int beam = VIDEO::displayBeamRow();
@@ -1222,7 +1224,7 @@ static void pairPalette(const uint32_t* hist, const uint32_t* rgbOf, int n) {
         // the beam below the picture (core1Pump's gate) and, a cell at a time
         // (pairRowFast), finishes well inside the beam's lead.
         if (!had) { memset(s_slotIdx, 0xFF, sizeof s_slotIdx); s_pairFull = false; s_pairPendValid = false; g_pairPushNow = false; }
-        else if (s_pairPendValid) {          // still due (nobody took it): now, before the next is staged
+        else if (s_pairPendValid && !s_superseding) {   // still due (nobody took it): now, before the next is staged (superseding: it never shows)
 #if PERF_TRACE
             s_pPushLate++;
 #endif
@@ -1670,19 +1672,30 @@ static void pairLutUpdate() {
         memset(seen, 0, 256); memset(drop, 0, 256);
         for (int c = 0; c < 16; c++) seen[std[c * 17]] = true;
         for (int p = 0; p < 256; p++) if (!seen[std[p]]) { seen[std[p]] = true; fr[nf++] = std[p]; }
-        for (int d = 240 - nf; d > 0; d--) {
-            int m = -1;
-            for (int p = 255; p > 0; p--) if (p % 17 && !drop[p] && (m < 0 || H->cnt[p] < H->cnt[m])) m = p;
-            drop[m] = true;
+        // The (240 - nf) rarest pairs go: a selection pass per dropped pair was ~61 K steps
+        // (part of frameSetup's 1.3 ms, WOWDEMO hw 2026-11-18). Sorted once instead, in the
+        // same order the passes took them: count ascending, the higher pair first on a tie.
+        {
+            uint8_t* order = (uint8_t*)H->hist;   // pairPalette copied hist away before calling here
+            int no = 0;
+            for (int p = 255; p > 0; p--) if (p % 17) order[no++] = (uint8_t)p;
+            const uint16_t* cnt = H->cnt;
+            std::stable_sort(order, order + no, [cnt](uint8_t a, uint8_t b) { return cnt[a] < cnt[b]; });
+            for (int d = 0; d < 240 - nf && d < no; d++) drop[order[d]] = true;
         }
+        // Colour distances once (16 x 16) instead of two dist() calls per pair of pairs
+        // (~32 K calls in flash per deal). Same sums, same first-best choice.
+        uint32_t* D = H->rgb;                // frameSetup's table: read by pairPalette before this
+        for (int a = 0; a < 16; a++) for (int b = a; b < 16; b++) D[a * 16 + b] = D[b * 16 + a] = dist(H->pal[a], H->pal[b]);
         int k = 0;
         for (int p = 0; p < 256; p++) {
             if (!(p % 17)) { lut[p] = std[p]; continue; }
             if (!drop[p]) { lut[p] = fr[k++]; continue; }
             uint32_t bd = ~0u; int b = 0;
+            const uint32_t* dh = D + (p >> 4) * 16; const uint32_t* dl = D + (p & 15) * 16;
             for (int q = 0; q < p; q++) {
                 if (drop[q]) continue;
-                const uint32_t dd = dist(H->pal[p >> 4], H->pal[q >> 4]) + dist(H->pal[p & 15], H->pal[q & 15]);
+                const uint32_t dd = dh[q >> 4] + dl[q & 15];
                 if (dd < bd) { bd = dd; b = q; }
             }
             lut[p] = lut[b];
@@ -2047,13 +2060,98 @@ static bool wantPairFor2() {             // HGFX 2: text or a picture (owner's r
 
 // Everything the pair draw reads, as one word: both screens (6912 B each), pidx, the LUT,
 // the layout, FLASH when the attributes carry it (HRC; HRXC is indexed). ~3.5k words.
+// HRC / HRXC pair frame: the screens as they were at the frame end, where the palette
+// was dealt from the HRXC table. core1 draws up to ~20 ms later (its gate waits for the
+// beam below the picture) and the machine has run on: WOWDEMO flips #7FFD bit 3 and fills
+// the other screen in that time, and the draw read the NEW screen through the OLD table's
+// palette - the whole picture in wrong colours for one frame (hw 2026-11-18, the owner's
+// capture: 28 such frames in 22 s; the host draws at the frame end and never showed it).
+// Butter PSRAM, 2 x 15 KB (owner 2026-11-18: no SRAM for it); without it the draw reads the
+// live screens as before. Cost: ~2 ms of core0 a frame in WOWDEMO (`memcpy` 10.5 % of the PC
+// profile with the copy in PSRAM, 11.5 % with it in SRAM: the cost is READING the screens
+// through the XIP cache) - measured per frame in [HGFX] 60f `snap`.
+enum { SNAP_BYTES = 0x3C00 };           // 512 x 192 bitmap + the 64 x 48 attributes
+static uint8_t* s_snap;
+static const uint8_t* s_drawTop;        // what renderFrame's pair draw reads (nullptr: live)
+static const uint8_t* s_drawBot;
+#if PERF_TRACE
+static uint32_t s_pSnapUs, s_pSnapMax, s_pFeUs, s_pFeMax;   // per 60 frames: the copy, Hgfx::frameEnd
+static uint32_t s_pDrnUs, s_pDrnMax, s_pDrnN, s_pSetUs, s_pSetMax;   // ...the drain before frameSetup (us, max, frames > 2 ms), frameSetup
+static bool s_pPrinted;                 // this frameEnd printed the window: kept out of the maxima
+#endif
+static void snapCopy() {                // either core: the screens as they are now
+    const uint8_t* top = keyTop ? keyTop : VIDEO::grmem;
+    memcpy(s_snap, top, SNAP_BYTES);
+    if (keyBottom) memcpy(s_snap + SNAP_BYTES, keyBottom, SNAP_BYTES);
+    s_drawBot = keyBottom ? s_snap + SNAP_BYTES : nullptr;
+    __sync_synchronize();
+    s_drawTop = s_snap;
+}
+static void pairSnap() {
+#if PERF_TRACE
+    const uint32_t t0 = time_us_32();
+#endif
+    if (!s_snap) s_snap = (uint8_t*)Buffer::palloc(2 * SNAP_BYTES, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!s_snap) { s_drawTop = nullptr; return; }
+    snapCopy();
+#if PERF_TRACE
+    const uint32_t d = time_us_32() - t0;
+    s_pSnapUs += d; if (d > s_pSnapMax) s_pSnapMax = d;
+#endif
+}
+// The copy on core1 (2026-11-18, wowperf7: 1.35 ms of core0 every frame): right after the
+// frame end's drain core1 is idle, so it takes Q_SNAP while core0 deals the palette
+// (frameSetup, ~1.3 ms); core0 waits only for what is left, at the end of frameEnd, before
+// the machine runs on and may write the screens. The queue keeps the order: the draw
+// posted after it reads the finished copy.
+static volatile uint32_t s_snapReq, s_snapDone;
+static bool s_snapWant, s_snapPosted;  // frameEnd -> frameSetup: post the copy once the screens are read
+// Superseding a draw that has not started (2026-11-18): the frame end used to drain - wait
+// for core1's last draw - before it dealt the next palette, and that draw waits for the beam
+// to leave the picture: up to 10-17 ms of core0 in some frames (the emulated 48.83 Hz drifts
+// against the display's 50, so a window of frames lands just after the beam window; hw
+// wowperf9/10: 20-24 frames of 60 > 2 ms there). A draw core1 has not begun is simply this
+// frame's draw instead: core0 re-deals its tables / palette / screens and posts nothing.
+// Dekker: core0 raises s_c0Hold and looks at s_c1Drawing, core1 the other way round.
+static volatile bool s_c0Hold, s_c1Drawing;
+#if PERF_TRACE
+static uint32_t s_pSuper;                // frames superseded in the window
+#endif
+#if PERF_TRACE
+static volatile uint32_t s_pSnapC1Us, s_pSnapC1Max;   // core1: the copy itself
+#endif
+static bool pairSnapPost() {
+    if (!s_q || !g_elm_c1_live) return false;
+    if (!s_snap) s_snap = (uint8_t*)Buffer::palloc(2 * SNAP_BYTES, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!s_snap) return false;
+    s_snapReq = s_snapReq + 1;
+    pushRaw(Q_SNAP);
+    return true;
+}
+static void pairSnapWait() {            // core0, end of frameEnd: the machine must not write the screens before
+    if (s_snapDone == s_snapReq) return;
+#if PERF_TRACE
+    const uint32_t t0 = time_us_32();
+#endif
+    const uint32_t start = time_us_32();
+    while (s_snapDone != s_snapReq) {
+        if (g_pairPushNow) pairPushPoll();
+        if (time_us_32() - start > 50000) { Debug::log("[ELM] pair snapshot on core1 stuck, copied on core0"); pairSnap(); s_snapDone = s_snapReq; break; }
+    }
+#if PERF_TRACE
+    const uint32_t d = time_us_32() - t0;
+    s_pSnapUs += d; if (d > s_pSnapMax) s_pSnapMax = d;
+#endif
+}
+// The whole screen the draw reads (SNAP_BYTES): it hashed 6912 bytes, the ZX size, and a
+// change below row 108 or in the attributes alone was skipped as "nothing changed".
 ELM_HOT static uint32_t pairSig(const uint8_t* scr, const uint8_t* scr2, bool idx, const uint8_t* lut, int x0, int y0) {
     uint32_t h = 0x811C9DC5u ^ (uint32_t)x0 ^ (uint32_t)y0 << 8 ^ (uint32_t)keyColour << 16 ^ (idx ? 1u << 24 : 0) ^ (uint32_t)(uintptr_t)lut;
     if (!idx && VIDEO::flashing) h ^= 1u << 25;
     h ^= (uint32_t)(uintptr_t)scr ^ (uint32_t)(uintptr_t)scr2 << 4;
     const uint32_t* w = (const uint32_t*)scr;
-    for (int i = 0; i < 6912 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u;
-    if (scr2) { w = (const uint32_t*)scr2; for (int i = 0; i < 6912 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u; }
+    for (int i = 0; i < SNAP_BYTES / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u;
+    if (scr2) { w = (const uint32_t*)scr2; for (int i = 0; i < SNAP_BYTES / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u; }
     w = (const uint32_t*)s_hot->pidx;
     for (int i = 0; i < 64 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u;
     if (lut == s_hot->lut) { w = (const uint32_t*)lut; for (int i = 0; i < 256 / 4; i++) h = (h ^ w[i]) * 0x9E3779B1u; }
@@ -2099,7 +2197,9 @@ static void renderFrame() {
             // fades it with the palette alone (hw 2026-11-16: `pidx 0 pal 0 ... draw x60`, the
             // NeoGS at 14 of 20 MHz underneath). At most PAIR_CLEAN frames in a row, as the HGFX
             // modes' s_cleanRun: whatever paints over the FB (OSD, notify) is gone within 10.
-            const uint32_t sig = pairSig(zx0, keyBottom, idx, lut, x0, y0);
+            const uint8_t* top = s_drawTop ? s_drawTop : zx0;            // the frame end's screens (pairSnap)
+            const uint8_t* bot = s_drawTop ? s_drawBot : keyBottom;
+            const uint32_t sig = pairSig(top, bot, idx, lut, x0, y0);
             static uint32_t s_sig; static uint8_t s_clean;
             enum { PAIR_CLEAN = 9 };
 #if HOST_BUILD
@@ -2116,7 +2216,7 @@ static void renderFrame() {
             }
             s_sig = sig; s_clean = 0; s_pairStale = false;
             if (idx && s_cnt2) memset(s_cnt2, 0, 8192);   // the census of THIS draw (pairLutUpdate)
-            for (int y = 0; y < HEIGHT; y++) pairRowFast(zx0, keyBottom, y, idx, lut, y0 + y, x0);
+            for (int y = 0; y < HEIGHT; y++) pairRowFast(top, bot, y, idx, lut, y0 + y, x0);
         }
         return;
     }
@@ -2291,6 +2391,7 @@ static void frameSetup() {
                 for (int i = 0; i < 3072; i++) { hs[at[i] & 15]++; hs[16 | (at[i] >> 4)]++; }
             }
             if (keyBottom) hist[keyColour & 31] = 0;   // the key is never seen
+            if (s_snapWant) { s_snapWant = false; s_snapPosted = pairSnapPost(); }   // the screens are read: core1 copies now
         } else {
             n = mode == 4 ? 256 : mode == 5 ? 16 : 4;
             for (int i = 0; i < n; i++) { rgb[i] = tableRgb(s_col + i * 3); hist[i] = (uint32_t)(n - i); }
@@ -2336,7 +2437,21 @@ static void frameSetup() {
     }
 }
 
+static void frameEndBody();
 void frameEnd() {
+#if PERF_TRACE
+    const uint32_t t0 = time_us_32();
+    frameEndBody();
+    pairSnapWait();
+    const uint32_t d = time_us_32() - t0;
+    s_pFeUs += d; if (d > s_pFeMax && !s_pPrinted) s_pFeMax = d;
+    s_pPrinted = false;
+#else
+    frameEndBody();
+    pairSnapWait();
+#endif
+}
+static void frameEndBody() {
     if (s_direct && !s_directWant && s_directHold && !--s_directHold) s_direct = false;
     const bool want = (mode >= 1 || keyBottom || radastan) && ensure();
     if (want != s_live) {
@@ -2366,8 +2481,44 @@ void frameEnd() {
     if (mode == 1 && !giga && gigaAuto && hrcFlicker()) giga = gigaAuto;
     if (s_palDirty || !s_palValid) s_fbDirty = true;
     const bool was = s_pair;
-    if (s_pair || mode == 4 || hrcGiga()) drain();   // the pair tables are rewritten under the frame; the HRC mix shares scratch
+#if PERF_TRACE
+    uint32_t tp = time_us_32();
+#endif
+    bool supersede = false;
+    if (was && (mode == 1 || mode == 2) && s_q && g_elm_c1_live && s_drawDone != s_drawPosted &&
+        s_qw == s_drawQw && s_drawDone + 1 == s_drawPosted) {
+        s_c0Hold = true;
+        __sync_synchronize();
+        if (!s_c1Drawing && !s_pairGo) supersede = true;
+        else s_c0Hold = false;
+    }
+    if (!supersede && (s_pair || mode == 4 || hrcGiga())) drain();   // the pair tables are rewritten under the frame; the HRC mix shares scratch
+#if PERF_TRACE
+    { const uint32_t t = time_us_32(), d = t - tp; tp = t; s_pDrnUs += d; if (d > s_pDrnMax) s_pDrnMax = d; if (d > 2000) s_pDrnN++; }
+#endif
+    // core1 copies while core0 deals the palette; posted by frameSetup itself right after
+    // the HRXC histogram (3 KB of the screen read from PSRAM: beside the copy it doubled,
+    // frameSetup 1.3 -> 2.1 ms, hw 2026-11-18 22:49), here for HRC (no histogram).
+    s_snapWant = was && (mode == 1 || mode == 2) && !supersede;   // superseding: the queue's head is the draw - copy here
+    s_snapPosted = false;
+    s_superseding = supersede;
     frameSetup();
+    s_superseding = false;
+    if (s_snapWant) { s_snapWant = false; s_snapPosted = pairSnapPost(); }
+    const bool snapPosted = s_snapPosted;
+#if PERF_TRACE
+    { const uint32_t d = time_us_32() - tp; s_pSetUs += d; if (d > s_pSetMax) s_pSetMax = d; }
+#endif
+    if (s_pair && (mode == 1 || mode == 2)) { if (!snapPosted) pairSnap(); }   // core1 idle (the drain above) or held off: the screens of THIS frame end
+    else s_drawTop = nullptr;
+    if (supersede) {
+        s_pairStale = true;              // the queued draw is now this frame's: draw it whatever its signature
+        __sync_synchronize();
+        s_c0Hold = false;
+#if PERF_TRACE
+        s_pSuper++;
+#endif
+    }
     // The pair frame's border is a slot of the picture's palette, and a new palette deals
     // the slots again: the border stayed on its old slot in whatever colour came there
     // (HRXCIMGS: blue, green, beige for BORDER 0; owner 2026-11-14).
@@ -2419,6 +2570,7 @@ void frameEnd() {
     }
     // core1 still on the last frame: the machine waits for it. Dropping the frame instead
     // let core0 run ten frames ahead and showed one in ten (HGFXAGON: 5 of 60, in jerks).
+    if (supersede) goto posted;          // the queued draw is this frame's (see s_c0Hold)
     if (s_drawDone != s_drawPosted) {
         const uint32_t t0 = time_us_32();
 #if PERF_TRACE
@@ -2436,6 +2588,7 @@ void frameEnd() {
     s_drawAt = s_qw;
     pushRaw(Q_DRAW);
     s_drawQw = s_qw;
+posted:
 #if PERF_TRACE
     static uint32_t n;
     if (++n == 60) {
@@ -2461,6 +2614,13 @@ void frameEnd() {
                    s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
                    s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1]);
+        Debug::log("[HGFX] c0/fr: superseded %u | frameEnd %uus (max %u) | drain %uus (max %u, %u frames > 2 ms) | frameSetup %uus (max %u) | pair snapshot wait %uus (max %u), core1 copy %uus (max %u)",
+                   s_pSuper, s_pFeUs / 60, s_pFeMax, s_pDrnUs / 60, s_pDrnMax, s_pDrnN, s_pSetUs / 60, s_pSetMax, s_pSnapUs / 60, s_pSnapMax,
+                   s_pSnapC1Us / 60, s_pSnapC1Max);
+        s_pSnapC1Us = 0; s_pSnapC1Max = 0;
+        s_pFeUs = s_pFeMax = s_pSnapUs = s_pSnapMax = 0; s_pSuper = 0;
+        s_pDrnUs = s_pDrnMax = s_pDrnN = s_pSetUs = s_pSetMax = 0;
+        s_pPrinted = true;
         s_pDrMin = ~0u; s_pDrMax = 0;
         ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0;
         {   // the ED mix a frame: which block / 16-bit ops would pay to paste into the loop
@@ -2483,9 +2643,11 @@ void frameEnd() {
                     ::g_elm_in_hist[best] = 0;
                 }
                 Debug::log("[HGFX] ed/fr: %u |%s", (unsigned)(tot / 60), line);
-                Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus)",
+                Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus) | batch ldir %u/%uB inir %u/%uB",
                            Elm::g_elm_io_cnt[0] / 60, Elm::g_elm_io_cnt[1] / 60, Elm::g_elm_io_cnt[2] / 60, Elm::g_elm_io_us[0] / 60,
-                           Elm::g_elm_io_cnt[3] / 60, Elm::g_elm_io_cnt[4] / 60, Elm::g_elm_io_us[1] / 60, Elm::g_elm_io_us[2] / 60);
+                           Elm::g_elm_io_cnt[3] / 60, Elm::g_elm_io_cnt[4] / 60, Elm::g_elm_io_us[1] / 60, Elm::g_elm_io_us[2] / 60,
+                           g_elm_batch[0] / 60, g_elm_batch[1] / 60, g_elm_batch[2] / 60, g_elm_batch[3] / 60);
+                for (int i = 0; i < 4; i++) g_elm_batch[i] = 0;
                 Debug::log("[HGFX] fd/fr: src fill %u uram %u chunky %u page %u (bytewise %u) | pieces by dst kind %u %u %u %u %u %u %u %u | per-byte why %u %u %u %u %u %u %u",
                            Elm::g_elm_fd_src[0] / 60, Elm::g_elm_fd_src[1] / 60, Elm::g_elm_fd_src[2] / 60, Elm::g_elm_fd_src[3] / 60, Elm::g_elm_fd_src[4] / 60,
                            Elm::g_elm_fd_kind[0] / 60, Elm::g_elm_fd_kind[1] / 60, Elm::g_elm_fd_kind[2] / 60, Elm::g_elm_fd_kind[3] / 60,
@@ -2498,7 +2660,7 @@ void frameEnd() {
                 for (int i = 0; i < 256; i++) { ::g_elm_ed_hist[i] = 0; ::g_elm_in_hist[i] = 0; }
             }
         }
-        if (s_pCellTop | s_pCellBot | s_pCellMix) {
+        if (s_pCellTop | s_pCellBot | s_pCellMix | s_pPushPoll | s_pPushLate | s_pPushCap) {   // the push counters on their own too (HRXC: WOWDEMO)
             Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u | lut free %u lost %u (%u px)",
                        s_pCellTop / 60, s_pCellBot / 60, s_pCellMix / 60, s_pPushPoll, s_pPushLate, s_pPushCap, s_pPushBeamMin, s_pPushBeamMax, VIDEO::screenTopRows(),
                        s_pRowPump / 60, s_pRowSkip / 60, s_pLutFree, s_pLutLost, s_pLutLostPx);
@@ -2561,6 +2723,7 @@ ELM_HOT void core1Pump() {
         // queue waits, not the core; a display without a beam position passes at once.
         if ((e & (7u << 29)) == Q_DRAW) {
             static uint32_t s_waitT;
+            if (s_c0Hold) break;         // core0 is re-dealing this draw (frameEnd): come back
             const int top = VIDEO::screenTopRows(), beam = VIDEO::displayBeamRow();
             const uint32_t now32 = time_us_32();
             // A staged pair palette: the draw must start with the beam BELOW the picture
@@ -2588,6 +2751,9 @@ ELM_HOT void core1Pump() {
                 if (now32 - s_waitT < 25000) break;
             }
             s_waitT = 0;
+            s_c1Drawing = true;          // Dekker with frameEnd's s_c0Hold
+            __sync_synchronize();
+            if (s_c0Hold) { s_c1Drawing = false; break; }
         }
         switch (e & (7u << 29)) {
         case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24), 0xFFFF); break;
@@ -2631,6 +2797,18 @@ ELM_HOT void core1Pump() {
             s_qr = s_qr + words;
             break;
         }
+        case Q_SNAP: {                       // the pair frame's screens (pairSnapPost)
+#if PERF_TRACE
+            const uint32_t s0 = time_us_32();
+#endif
+            snapCopy();
+#if PERF_TRACE
+            { const uint32_t d = time_us_32() - s0; s_pSnapC1Us = s_pSnapC1Us + d; if (d > s_pSnapC1Max) s_pSnapC1Max = d; }
+#endif
+            __sync_synchronize();
+            s_snapDone = s_snapDone + 1;
+            break;
+        }
         case Q_RUN:  {                       // two words: the second is the read offset
             s_qr = s_qr + 1;
             execRun((uint16_t)e, (e >> 16) & 0x1FFF, (uint16_t)s_q[s_qr & (Q_N - 1)]);
@@ -2646,6 +2824,8 @@ ELM_HOT void core1Pump() {
             s_pDraws = s_pDraws + 1;
 #endif
             s_drawDone = s_drawDone + 1;
+            __sync_synchronize();
+            s_c1Drawing = false;
             break;
         }
         }

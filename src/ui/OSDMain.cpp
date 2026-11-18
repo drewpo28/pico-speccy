@@ -2314,6 +2314,7 @@ void OSD::bootTrdos() {
 // persist and announce it the same way.
 void OSD::setTurbo(uint8_t m) {
     m &= 3;
+    if (Config::arch == A_ELM) { Elm::setSpeed(m == 3 ? 5 : m); return; }   // its own eight clocks (Element.h)
     ESPectrum::multUser = m;
     ESPectrum::multiplicator = m;
     CPU::updateStatesInFrame();
@@ -2321,7 +2322,6 @@ void OSD::setTurbo(uint8_t m) {
     // guest's next write to it takes the clock back (TsConf::applyZclk).
     Config::turbo = ESPectrum::multUser;
     Config::save();
-    if (Config::arch == A_ELM) Elm::syncTurbo(m);
     static const char* const mhz[4] =
         { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
     // See the VK_F11 handler in ESPectrum.cpp: routed through
@@ -2911,7 +2911,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // multUser alone), Pentagon-1024 EFF7 D4 and Profi #028B pull it
             // down — so stepping the user's pick restarted the cycle at 3.5 MHz
             // instead of continuing from what the machine is actually running.
-            setTurbo((ESPectrum::multiplicator + 1) & 3);
+            if (Config::arch == A_ELM) Elm::setSpeed((uint8_t)(Elm::speed() + 1));   // 3.5 .. 30 (Element.h)
+            else setTurbo((ESPectrum::multiplicator + 1) & 3);
         } else
         if (hkIdx == Config::HK_DEBUG) {
             osdDebug();

@@ -537,6 +537,9 @@ private:
     static void nextLdirBatch(int d);   // Spectrum Next: LDIR/LDDR repeats as one copy (.nxovl)
     static void nextInirBatch();        // Spectrum Next: INIR from the SD port 0xEB (.nxovl)
     static void zcInirBatch();          // Z-Controller: INIR from the SD data port #57 (flash)
+    static void elmLdirGate(int d);     // eLeMeNt ZX: every LDIR/LDDR repeat - the cost measure (.elmovl, RAM)
+    static void elmLdirBatch(int d, uint32_t T);   // ...and the batch when it measured one (flash)
+    static void elmInirBatch();         // eLeMeNt ZX: INIR from the DivSD port #EB, measured cost (flash)
     static void nextIniRunBatch();      // Spectrum Next: an unrolled ED A2 run from port 0xEB (flash)
     static void nextOtirBatch();        // Spectrum Next: OTIR into the zxnDMA ports 0x6B / 0x0B (.nxovl)
     static void nextSdPollBatch();      // NextZXOS ROM 2: bounded SD-response polling

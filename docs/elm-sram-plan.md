@@ -71,7 +71,7 @@ in SRAM is still out of reach without 4.
   `A_ELM` via `Buffer::palloc`, SRAM elsewhere). `captureAttrAfterTransfer` still calls nothing
   (no `bl`), RAM +4 B. NaPICu (DMA port 11) on the eLeMeNt draws its 8x1 letters on the bench.
 - Static RAM +18 B. Expected hw: heap at COMPLETE 6.8 -> ~27.6 KB. Test ELF
-  `debug/DVp2w-elm-tail-1.1.3` (build 19:53:59). Read from the owner's log: the tail line,
+  `debug/DVp2w-elm-tail-1.1.3` (build 19:53:59; superseded by `debug/DVp2w-elm-clk-1.1.3`, build 20:22:28, which also has the e_zxi_030 clocks). Read from the owner's log: the tail line,
   `setup: COMPLETE, freeHeap=`, HGFXAGON `HGFX buffer 0 in SRAM (the arena): 5 of 6 blocks + 1 from the heap`
   (sramPromote now takes the blocks past the arena from the heap when free >= 8 KB + SRAM_KEEP;
   `s_sramOwn` marks them for sramOff; bench-run with PICOSPECCY_ELM_ARENA=48896).

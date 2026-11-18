@@ -220,10 +220,22 @@ volatile int16_t* pcm_end_callback(volatile size_t* size) {
     return NULL;
 }
 
-static int16_t buff_L[640] = { 0 };
-static int16_t buff_R[640] = { 0 };
-static volatile size_t m_off = 0; // in 16-bit words
-static volatile size_t m_size = 0; // 16-bit values prepared (available)
+// The ZX samples: a ring two frames deep (2026-11-18, owner's choice). It used to be ONE
+// frame, rewritten from the top by every frame: a frame that ended late left the timer
+// nothing to play for its whole overrun and the ZX sample froze ("hold") - WOWDEMO at full
+// average speed still froze 1 600-1 900 samples every 60 frames (24 late frames of 5-7 ms),
+// heard as a trembling SAA. Now every write appends one frame and the timer plays one frame
+// behind: a frame up to a frame late costs nothing. +20 ms of latency, +2.5 KB of SRAM.
+// Counters run free (index = counter % AU_RING); both sides are core0 (the alarm IRQ and
+// the main loop), so the writer's index updates are taken with the IRQ off.
+enum { AU_RING = 1280 };                 // two frames of the longest machine (640)
+static int16_t buff_L[AU_RING] = { 0 };
+static int16_t buff_R[AU_RING] = { 0 };
+static volatile uint32_t m_wr = 0;       // samples written
+static volatile uint32_t m_rd = 0;       // samples played
+static volatile bool m_have = false;     // something was written since the reset: hold, not silence
+static int16_t m_lastL = 0, m_lastR = 0; // the last sample played (the hold level)
+static bool m_prime = true;              // the next write puts one frame of lead in front of it
 
 esp_err_t __not_in_flash_func(pwm_audio_write)(
     uint8_t *bufL,
@@ -232,15 +244,30 @@ esp_err_t __not_in_flash_func(pwm_audio_write)(
     size_t* bytes_written,
     uint32_t wait_ms
 ) {
+    if (len > AU_RING / 2) len = AU_RING / 2;
     uint32_t vol8 = (uint32_t)(vol + Config::audio_boost) << 3;
-    for (size_t i = 0; i < len; ++i) {
+    uint32_t w = m_wr;
+    // The lead: after a reset, or when the timer ran dry (a frame more than a frame late, a
+    // pause), one frame at the current level goes in first, so the timer is a frame behind.
+    const bool prime = m_prime || w == m_rd;
+    m_prime = false;
+    const uint32_t pad = prime && len > 1 ? (uint32_t)len : 0;
+    {   // room for pad + len: the oldest unplayed samples go if the writer ran ahead
+        const uint32_t st = save_and_disable_interrupts();
+        const uint32_t fill = w - m_rd, need = fill + pad + (uint32_t)len;
+        if (need > AU_RING) m_rd = m_rd + (need - AU_RING);
+        restore_interrupts(st);
+    }
+    for (uint32_t i = 0; i < pad; ++i, ++w) { buff_L[w % AU_RING] = m_lastL; buff_R[w % AU_RING] = m_lastR; }
+    for (size_t i = 0; i < len; ++i, ++w) {
         int32_t vL = (int32_t)bufL[i] * (int32_t)vol8;
         int32_t vR = (int32_t)bufR[i] * (int32_t)vol8;
-        buff_L[i] = vL > 32767 ? 32767 : (int16_t)vL;
-        buff_R[i] = vR > 32767 ? 32767 : (int16_t)vR;
+        buff_L[w % AU_RING] = vL > 32767 ? 32767 : (int16_t)vL;
+        buff_R[w % AU_RING] = vR > 32767 ? 32767 : (int16_t)vR;
     }
-    m_off = 0;
-    m_size = len;
+    __dmb();
+    m_wr = w;
+    m_have = true;
     if (bytes_written) *bytes_written = len;
     return ESP_OK;
 }
@@ -490,7 +517,7 @@ void pcm_player_detach() {
     pcm_player_ring = nullptr;
     __dmb();
     // The emulator's frame buffer is stale by now; hold nothing from it.
-    m_off = m_size;
+    m_rd = m_wr;
 }
 
 volatile int16_t* volatile pcm_card_ring = nullptr;
@@ -572,14 +599,16 @@ static void __not_in_flash_func(pcm_call_inner)() {
     // now; the live GS path stays continuous through a late frame
     // (hw-confirmed same day: GMX + GS at 7 MHz plays clean, neg frames and all).
     int32_t zL, zR;
-    if (m_off < m_size) {
-        zL = buff_L[m_off];
-        zR = buff_R[m_off];
-        ++m_off;
-    } else if (m_size > 0) {
+    const uint32_t rd = m_rd;
+    if (rd != m_wr) {
+        zL = buff_L[rd % AU_RING];
+        zR = buff_R[rd % AU_RING];
+        m_rd = rd + 1;
+        m_lastL = (int16_t)zL; m_lastR = (int16_t)zR;
+    } else if (m_have) {
         g_pcm_hold_ct++;
-        zL = buff_L[m_size - 1];
-        zR = buff_R[m_size - 1];
+        zL = m_lastL;
+        zR = m_lastR;
     } else {
         zL = 0;
         zR = 0;
@@ -755,8 +784,10 @@ void pcm_cleanup(void) {
 /// size - bytes
 void pcm_setup(int hz) {
     // Flush output buffer so the audio timer outputs silence until new data arrives
-    m_size = 0;
-    m_off = 0;
+    m_wr = m_rd = 0;
+    m_have = false;
+    m_lastL = m_lastR = 0;
+    m_prime = true;
     s_dc_L = 0;
     s_dc_R = 0;
     if (Config::audio_driver == 4) {

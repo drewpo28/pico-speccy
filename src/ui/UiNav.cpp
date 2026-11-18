@@ -30,6 +30,7 @@
 #include "app/ESPectrum.h"
 #include "speccy/video/Video.h"
 #include "app/Config.h"
+#include "speccy/machines/Element/Element.h"   // the eLeMeNt's CPU speed rows (fast menu)
 #include "fs/FileUtils.h"
 #include "drivers/input/fabutils.h"
 #include "app/Debug.h"
@@ -973,14 +974,16 @@ void runFastMenu() {
         sel = uiFastPick("Fast menu", items, on, FAST_COUNT, from);
         if (sel != FAST_CPU) break;
         static const char* const mhz[4] = { "3.5 MHz", "7 MHz", "14 MHz", "28 MHz" };
-        const int cur = ESPectrum::multiplicator & 3;
-        const char* rows[4];
-        char now[16];
-        for (int i = 0; i < 4; i++) rows[i] = mhz[i];
-        snprintf(now, sizeof(now), "%s  *", mhz[cur]);   // the clock it runs at now
+        const bool elm = Config::arch == A_ELM;      // the eLeMeNt's eight SetUp clocks (Element.h)
+        const int n = elm ? 8 : 4;
+        const int cur = elm ? Elm::speed() : (ESPectrum::multiplicator & 3);
+        const char* rows[8];
+        char now[32];
+        for (int i = 0; i < n; i++) rows[i] = elm ? Elm::speedName((uint8_t)i) : mhz[i];
+        snprintf(now, sizeof(now), "%s  *", rows[cur]);   // the clock it runs at now
         rows[cur] = now;
-        const int m = uiFastPick("CPU speed", rows, nullptr, 4, cur);
-        if (m >= 0) { gfxEnd(); OSD::setTurbo((uint8_t)m); return; }
+        const int m = uiFastPick("CPU speed", rows, nullptr, n, cur);
+        if (m >= 0) { gfxEnd(); if (elm) Elm::setSpeed((uint8_t)m); else OSD::setTurbo((uint8_t)m); return; }
         // Esc in CPU speed goes back to the fast menu, on its CPU row. Same width
         // and taller, so the fast menu's box covers the CPU one completely.
         from = FAST_CPU;

@@ -648,7 +648,7 @@ void CPU::reset() {
     if (Z80Ops::isElm) {
         Config::betadisk = false;
         Elm::reset();
-    } else Hgfx::arenaFree();   // the eLeMeNt's HGFX SRAM arena, if a switch left it (flash, a null test)
+    } else Elm::leave();   // what a switch left of the eLeMeNt: the HGFX SRAM arena, the split / ROM wait gate, the clock stretch (flash)
 
     // Interface 2 cartridge: esxDOS off the bus while it is in (its automap entry
     // points are the cartridge's own vectors), back once it is out.

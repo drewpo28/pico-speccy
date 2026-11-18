@@ -701,3 +701,18 @@ renders through the vendored libxmp on the host — the same loader as the firmw
 The .mid (GM.DLS, rendered on core0) and the IT test module play too (owner, same day).
 Not itemised: FPS/IDL with libxmp on core1 (unmeasured), P/F keys, Q/Space back to the
 browser, F11 mid-track.
+
+## The ZX audio buffer is a two-frame ring (2026-11-18, owner's choice; NOT hw-tested, uncommitted)
+
+`pwm_audio.cpp`: `buff_L/R` were ONE frame (640 samples), rewritten from the top by every
+`pwm_audio_write`; a frame that ended late left the 31250 Hz timer nothing to play for its overrun
+and the ZX sample was held (`[PERF] aud: hold`). WOWDEMO (eLeMeNt) at full AVERAGE speed
+(realFPS 48.85, the v_sync flag catches a late frame up) still held 1 600-1 900 samples per 60 frames
+(24 late frames of 5-7 ms): the owner's "SAA дрожит" with a positive IDL. Now a ring of 1280 samples
+(counters `m_wr` / `m_rd`, index % 1280): a write appends, the timer plays one frame behind - the
+first write after `pcm_setup`, or after the timer ran dry, puts one frame of the hold level in front.
+A writer that runs ahead drops the oldest unplayed samples (IRQ off: both sides are core0). Cost:
++20 ms of latency on every machine, +2.5 KB .bss (+~290 B of RAM code); no calls from the ISR or
+the writer (the modulo is a multiply). The host has its own audio path (host_audio.cpp): hw only.
+Test ELFs `debug/DVp2w-elm-wowfix7-1.1.3` / `wowperf10` (PERF). Read: `aud hold` near 0 while
+`[SD2] neg` stays where it was; listen for any machine's audio lag (+20 ms).

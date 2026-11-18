@@ -987,6 +987,94 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   that differ from the previous one - before, two in a row per picture (20-90 % of the pixels, then back); after,
   one per picture, 0 doubles over 161 frames. It does not change which colours a settled picture has.
 
+- **WOWDEMO on hw 2026-11-18 (owner's capture `~/2026-11-18 20-31-21.mp4`, 22 s, 720x576@50 HDMI = every output
+  frame; build `clk`): 18 pictures a second (readme ~24 = one every 2 frames), OSD `FPS 33-36 / FND 32-39`, `IDL`
+  negative = core0 over the 28 MHz frame. Flicker = 28 single-frame A-B-A flashes in 1103 frames: the same picture
+  for one frame in another palette (light "negative" colours, the whole picture), then back. Suspect, NOT proven:
+  the staged HRXC pair palette pushed LATE (`pairPalette` -> `pairPushPoll` from frameSetup when core1 never took it:
+  pixels of the old draw shown through the new slots for a frame) - core1's HRXC draw (18-20 ms) + the beam gate
+  against a 28 ms core0 frame. Meter: `[HGFX] pair cells/fr ... push at draw N late M cap K` and `[HGFX] 60f ... draw
+  / skip` on `debug/DVp2w-elm-wowperf-1.1.3` (PERF+HIST, build 20:35:43); count the A-B-A frames in a capture the same
+  way (frame-diff script in the session scratchpad: unique frames, then B far from A with C near A).
+  **PERF log (`...20.43.12.313`, wowperf 20:42:23, 28 MHz):** cpu 26-28 ms, realFPS 33-35, `z80 loop 2/fr gen
+  6-9 K/fr`, `ed/fr B0 (LDIR) ~7 700`. PC profile (tools/pcprof_sym.py, 21 windows): core0 WAITING for core1 ~21 %
+  (`Hgfx::drainWait` 10.1 [F], `timer_time_us_64` 4.3, `screenTopRows` 1.8, `pairPushPoll` 1.1, beam reads) =
+  ~5.8 ms; esxDOS file reads in the shared loop below #4000 ~53 % (`exec_nocheck` 9.8, `poke8_cold` 8.3 - every
+  write goes cold on the eLeMeNt's `g_atm_ro & 0x20` window gate, `fetchOpcode` 7.0, `decodeED` 4.8, `ldx` 3.3,
+  INIR flags 2.0, `Ports::input` 2.9, `spiRead` 1.5); the demo's own code in the eLeMeNt loop 13.6 %.
+  **Cause of both the flicker and the wait (code reading, confirmed by nothing else yet):** the staged pair palette is
+  pushed by core0 only from a line tick (none in a full HGFX picture: paper_hold, `ts_line_t` = never), the idle
+  pacing loop (none below 50 FPS) and `drain()`. So core1 sat at its draw gate until its 30 ms cap whenever core0's
+  frame ran > 30 ms (max 37-41 ms) and drew the new pixels under the OLD palette (the flash; the next frameSetup then
+  pushed it "late"), and otherwise the draw waited for the next frame end, where `drain()` made core0 wait for the
+  beam + the 5.4 ms draw. **Fix (2026-11-18, host-run, NOT hw-tested; `debug/DVp2w-elm-wowfix-1.1.3` 20:48:03,
+  PERF `debug/DVp2w-elm-wowperf2-1.1.3` 20:48:26):** both eLeMeNt loops look at `Hgfx::g_pairPushNow` every 4 K T
+  (the eLeMeNt loop's `nx_lim` capped to +4096, the shared loop's `g_elm_fastrd` branch with a T stamp) and push.
+  `[HGFX] pair cells/fr ... push at draw N late M cap K` now prints for HRXC too. Expect: late / cap 0, no A-B-A,
+  `drainWait` gone from PROF (~-5 ms core0). Next lever for 50: an eLeMeNt LDIR / INIR batch for the esxDOS reads
+  (the Next has `nextLdirBatch` / `nextInirBatch` in `.nxovl`) and the cold write gate.
+  **hw 2026-11-18 20:55 (wowperf2, log `...20.55.55.029`): WRONG diagnosis, owner: "вообще мимо, картинка мерцает".**
+  `push at draw 60 late 0 cap 0 beam 240..287 (top 48)`: every push in time, below the picture; cpu 25-29 ms, realFPS
+  33-37 as before. The poll stays (harmless, keeps the 30 ms cap from ever firing) but fixed nothing.
+  **Second diagnosis (code reading): the draw read the LIVE screens.** `renderFrame`'s pair branch ran `pairRowFast` on
+  `keyTop ? keyTop : VIDEO::grmem` on core1, up to ~20 ms after the frame end whose HRXC table dealt the palette; WOWDEMO
+  flips #7FFD bit 3 and fills the other screen in that time, so the new screen was drawn through the old table's
+  palette. The host draws at the frame end (no window), hence never seen there. Now `pairSnap()` copies the screens
+  (0x3C00 each, butter PSRAM) right after the frame end's drain + frameSetup and the draw reads the copy. Also
+  `pairSig` hashed 6912 bytes of a 0x3C00 screen: changes below row 108 / in the attributes alone were skipped as
+  "unchanged" - it hashes the whole screen now. Host WOWDEMO as before. Test ELFs `debug/DVp2w-elm-wowfix2-1.1.3`
+  / `wowperf3` (PERF). **hw-confirmed 2026-11-18 (owner: "мерцание пофикшено")**, uncommitted. The FPS is untouched
+  by this: the esxDOS reads are the lever.
+- **eLeMeNt LDIR / LDDR / INIR #EB batches (2026-11-18, host-tested, NOT hw-tested; `debug/DVp2w-elm-wowfix3-1.1.3`
+  21:51:58, PERF `wowperf4` 21:52:20).** `Z80::elmLdirBatch` / `elmInirBatch` (Z80_JLS.cpp, flash), called from
+  decodeED's LDIR / LDDR / INIR on the eLeMeNt's gate `g_elm_fastrd` (0 on every other machine): every repeat but the
+  last as one copy / one `mmc_read_bulk` run, zcInirBatch's shape - the cost of a repeat is MEASURED (the T distance
+  between two consecutive entries of the same instruction, equal twice), so the ROM wait, the 20/22 MHz stretch and
+  contention come along. Plain slots only (`g_z80_rd_fast` / `g_z80_wr_fast`, slots 2-7, plus the divMMC RAM at
+  #2000 as a destination), within the slot, the slice and one raster line. Bench: an LDT tape (fill #8000, 100 x LDIR
+  8000 B to #A000, sum) gives sum 30816 and 31 frames on 05 and 06, with and without (`PICOSPECCY_ELM_NOBATCH=1`) -
+  same data, same timing; WOWDEMO and PF2026 (sound) as before, INIR batches during the esxDOS loads. RAM: decodeED
+  +76 B, two veneers, .bss +39 B. Read on hw: `[HGFX] io/fr ... batch ldir N/xB inir N/xB`, PROF without
+  `ldx` / `poke8_cold` / `decodeED` at the top. WOWDEMO's LDIRs may be short (bench: ~12 B a batch): the first three
+  repeats of each LDIR still run per byte.
+  **hw 2026-11-18 21:55 (wowperf4): cpu 18-21 ms (was 26-28), realFPS 45-47.** `batch ldir ~390/fr of ~6 B, inir ~40/fr
+  of ~85 B`; B0 still 5 500 repeats a frame (short LDIRs: ~10 B). PROF: `memcpy` [F] 10.5 % = the PSRAM->PSRAM pair
+  snapshot (~2 ms), and core1's draw 8 ms (was 5.4) reading it from PSRAM. Round 2 (host-run, NOT hw-tested;
+  `wowfix4` / `wowperf5`): the snapshot in SRAM from the heap while the pair frame is up (`pairSnapFree` at the first
+  non-pair frame end; PSRAM when the heap has < need + 12 KB, retried every 5 s), and an LDIR in RAM at a turbo clock
+  with no stretch batches after ONE measured repeat of 21 T. LDT tape 30816 / 31 frames as before.
+  **hw 22:11 (wowperf5, 98 PROF windows): cpu avg 16-22 ms but max 23-30 every window; `[SD2] neg` = 20-45 of 60
+  frames over the 20.48 ms target, worst idle -6..-11 ms; realFPS 42-48.** `memcpy` 11.5 % with the snapshot in SRAM too
+  -> the cost is reading the screens (XIP misses 0.40 -> 0.75 M/s since the snapshot), so the SRAM copy is reverted
+  (owner: no SRAM for it). In the PROF, `ESPectrum::loop` 5898/5900, `NgsSd::service/cardPresent`, `send_to_595`,
+  the timer at `hardware_alarm_claim_unused`+8 are the v_sync IDLE loop, not load. Pacing: v_sync is a sticky flag the
+  VGA8Bit ISR sets when 20.48 ms have accumulated and CLEARS on the other ticks, so one late frame is made up, a run of
+  them is lost. Diagnostic ELF `debug/DVp2w-elm-wowperf6-1.1.3` (22:19:04): PERF + NEG2_TRACE ([NEG2] now for the
+  eLeMeNt as well: the worst frame by phase), `[HGFX] c0/fr: frameEnd N us (max) | pair snapshot N us (max)`.
+  **hw 22:29 (wowperf7): frameEnd avg 3-4.4 ms (max 12-20) = drain avg 0.3-1.4 (max 9-17, only 2-11 frames of 60
+  > 2 ms) + frameSetup 1.2-1.5 (max 2.4) + snapshot 1.34 (max 1.5); `[NEG2]` worst el 26-27 ms with ef 12-20; still
+  16-35 frames of 60 over 20.48.** So the steady ~3 ms is the target, the drain spikes a second one. Round (host-run,
+  NOT hw-tested; `wowfix5` 22:39:15 / PERF `wowperf8` 22:39:40): the snapshot copy moved to core1 (`Q_SNAP`, posted
+  right after the drain, core0 deals the palette meanwhile and waits for the rest at the end of frameEnd:
+  `pairSnapWait`, 50 ms cap -> copy on core0); `pairLutUpdate`'s re-deal = one stable sort (count asc, the higher
+  pair first on a tie: the old selection order) + a 16 x 16 distance table instead of ~61 K selection steps and ~32 K
+  `dist()` calls - host self-check against the old code: 650 WOWDEMO deals, 0 mismatches (removed). `.dmaovl` +40 B.
+  **hw 22:49 (wowperf8):** snapshot wait 0, but frameSetup 1.3 -> 2.0 ms beside core1's copy. **hw 23:03 (wowperf9: the
+  histogram before the post, the LDIR measure in `.elmovl` as `Z80::elmLdirGate`, the flash batch only on a match):
+  realFPS 48.02-48.85 (full on average), frameEnd 2.4-6 ms avg, snapshot wait 0.17 ms, core1 copy 1.6-1.7 ms; still
+  24-25 frames of 60 late by 5-7 ms and `aud hold` 1 600-1 900 per 60 frames - the owner's "SAA дрожит" while IDL is
+  positive: the ZX audio buffer is exactly ONE frame (pwm_audio.c), so every late frame freezes the ZX sample for its
+  overrun even though the pacing catches up. `pairLutUpdate` rose 0.8 -> 4.4 % with the copy running beside it: its
+  hot lines are SRAM loops, so it is core0's flash code being evicted from the shared 16 KB XIP cache by core1's
+  30 KB of PSRAM traffic (grmem is the cached alias 0x1101C000, not the uncached one).
+  **hw 23:10 (wowperf10, the two-frame ZX audio ring, sound.md): `aud hold` 0-214 (0 whenever realFPS >= 48.8), late
+  frames unchanged (24-30 of 60).** Next round (host-run, NOT hw-tested; `wowfix8` 23:19:00 / PERF `wowperf11`
+  23:19:24): **a draw core1 has not started is superseded instead of drained.** frameEnd raises `s_c0Hold`, and if
+  core1 is not drawing (`s_c1Drawing`) and the staged palette is not pushed (`!s_pairGo`), it re-deals the tables /
+  palette (no late push: `s_superseding`) / screens (`pairSnap` on core0: the queue's head is the draw) for that queued
+  draw and posts nothing; core1 backs off at the gate while `s_c0Hold` is up (Dekker, full barriers). Only in pair modes
+  1/2 with nothing queued behind the draw. `[HGFX] c0/fr: superseded N | ...`. `.dmaovl` +56 B (8032 / 8192).
+
 **PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
 - The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,
   steady. core1 is not the limit (`[HGFX] c1 engine ~650 us/fr`, `draw ~13.5 ms`). XIP 99.6 % hit, 0.6 M misses/s.
@@ -1487,6 +1575,37 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   shared prefix decoders on the all-slots gate `g_z80_rd_all`): 76 -> 41 ARM instructions per Z80 instruction on the
   `game` mix (the Next loop: 37.5), bit-exact against the TS loop; hw PF2026 28 MHz 26.3 -> 23.9 ms, 36 -> 38.7 FPS. Everything about it, the bench table, the dead ends and what to read in
   the hw log (`[HGFX] 60f ... z80 loop N/fr gen M/fr`, `[ELM] mem:`), the FastDMA figures and the SRAM shape (the `.elmovl` window on the ZX pages 5/7 SRAM, the early arena, 5-of-6 row blocks) are in `z80-core.md` "eLeMeNt loop". hw-confirmed DVp2w 2026-11-18 (`z80n`): PF2026 ~40 FPS, HGFXAGON a steady 50; committed.
+
+- **SRAM for HGFX: the pages57 tail + `DmaAttrBuf` split (2026-11-18, host-tested, NOT hw-tested, uncommitted;
+  `debug/DVp2w-elm-clk-1.1.3`, build 20:22:28).** hw boot ledger (`logs/...16.10.09.403`): 6.8 KB of heap after boot,
+  so HRXC's `s_cnt2` (8 KB) could not be allocated and HGFXAGON's sixth row block stayed in PSRAM. `.elmovl` takes the
+  head of the 32 KB `pages57`, the FB's last donor 15 rows (5 400 B at 360 wide); the remaining 14.8 KB belonged to
+  nobody. `VIDEO::fbDonorSpare` + `Elm::tailAlloc` (ElmTail.h) now put `Hot`, `Regs`, `ElmSdma::State`,
+  `ElmSid::State` (13 884 B) there; `Z80DMA`'s attribute shadow bytes (6 912 B) go to butter PSRAM on the eLeMeNt
+  (the flags the renderer tests every line stay SRAM); `sramPromote` takes the blocks past the arena from the heap
+  (`+ N from the heap`). Expected heap after boot ~27 KB. Ledger, ranking and the rest in `docs/elm-sram-plan.md`.
+  Bench knob `PICOSPECCY_ELM_TAIL=12544` lays the hw strip out on the host.
+- **e_zxi_030 03 / 04 (20 / 22 MHz) and the OverClock ROM wait (05 / 07) (2026-11-18, host-tested, NOT hw-tested,
+  uncommitted, same ELF).** Owner: support 00-03 exactly, ROM wait for the overclock modes. Everything at or above 03 runs
+  on the 28 MHz frame (multiplicator 3); 03/04 charge every run T 28/20 or 28/22 (`elmStretch`, `.elmovl`: at the
+  eLeMeNt loop's line checks - `nx_lim` capped to +1 K T while stretching - and exits, and per instruction in the shared
+  loop's `g_elm_fastrd` branch; a gap > 64 T is a HALT / frame change and is not stretched; what would pass the frame
+  end is carried as `g_elm_stretchDebt`, never a catch-up of a frame). 05/07: +1 T per M1 below #4000 (the same branch)
+  and per read below #4000 (`g_elm_split` bits 0-1 -> `splitRead`, which charges `Draw(1)` and reads as the funnel's
+  tail; `isSplit` = the chunky half only). 07 runs at 28 MHz, not 30 (deviation). Without the fastmem level 1 gate
+  (Timex hi-res, GigaScreen, a breakpoint) the clock is a plain 28. `Elm::leave` (CPU::reset of another machine)
+  clears the gates. PF2026 and WOWDEMO write 03 then 05, i.e. they ask for 28 MHz: their speed is the cost of 28.
+  Bench (BASIC FOR 300 in ROM / a 34 M T RAM loop, frames): 02 22/120, 03 15/84, 04 14/76, 05 13/60, 06 11/60,
+  07 13/60 - the RAM loop is 60 x 28/f exactly, the ROM wait costs ROM code only. Cost: `exec_nocheck` +60 B RAM,
+  `.elmovl` content 12 536 of 12 544 (PERF AUTO 13 056 -> 13 312), `.bss` +20 B; no new flash call from the loops.
+  **hw 2026-11-18 20:26 (`clk`, DVp2w, log `...20.26.58.388`): the SRAM half confirmed** - `[ELM] pages57 tail:
+  14824 B`, `CPU reset` takes 0 B of heap (was 13 912), `Z80DMA::reset` 368 B (was 7 280), `setup: COMPLETE` 39 944 B
+  free (that boot also had TSFM / SAA off in the FRAM: ~7 KB of it). The clocks themselves not measured on hw yet.
+- **Turbo controls on the eLeMeNt = e_zxi_030 (2026-11-18, host-tested, NOT hw-tested; `debug/DVp2w-elm-clk2-1.1.3`,
+  build 20:29:02).** Alt+F2 steps e_030 0 -> 7 -> 0, the fast menu's CPU speed (Alt+F7) lists the eight SetUp clocks
+  (digit = e_030), F11 in the Spectrum menu steps them too; `Elm::setSpeed` writes the register + FRAM and keeps
+  `Config::turbo` = the multiplicator. They used to set the multiplicator directly (28 -> e_030 05 afterwards), which
+  left the stretch / ROM wait of the previous clock in place. `Elm::syncTurbo` is gone.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

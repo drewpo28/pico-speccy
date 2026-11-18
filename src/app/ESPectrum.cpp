@@ -3295,6 +3295,7 @@ void ESPectrum::processKeyboard() {
           // From the LIVE clock, not the user's pick — see the HK_TURBO handler
           // in OSDMain.cpp: a guest-set clock (TS-Conf ZCLK, EFF7 D4, #028B)
           // is what the user sees and what the cycle must continue from.
+          if (Config::arch == A_ELM) { Elm::setSpeed((uint8_t)((Elm::speed() + 1) & 7)); return; }   // its eight clocks
           ESPectrum::multUser = (ESPectrum::multiplicator + 1) % 3;
           ESPectrum::multiplicator = ESPectrum::multUser;
           CPU::updateStatesInFrame();
@@ -5688,7 +5689,7 @@ void ESPectrum::loop() {
     // breakdown of where its time went.  Counter deltas are robust to the
     // per-frame resets a PERF_TRACE build performs (cur < prev → external
     // reset → the current value IS the delta).
-    if (Z80Ops::isProfi) {
+    if (Z80Ops::isProfi || Z80Ops::isElm) {   // eLeMeNt too (WOWDEMO's 26-31 ms frames, 2026-11-18)
       extern volatile uint32_t cpu_frame_us, fdd_step_us, endframe_us;
       extern volatile uint32_t g_frame_swap_us, g_frame_swap_idle_us, g_frame_accb;
       extern volatile uint32_t g_aud_write_us;
