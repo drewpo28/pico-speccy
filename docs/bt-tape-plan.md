@@ -1,0 +1,106 @@
+# BT tape recorder — the board as an A2DP sink (plan, 2026-11-18)
+
+Idea (owner, 2026-11-18): on the W/WS boards, a phone pairs with the board as a
+Bluetooth speaker and plays a tape's AUDIO — a tap2wav/tzx2wav file, a cassette rip
+(MP3/WAV), a player app, a video of a loading screen. The board decodes the stream
+and feeds the sign of the signal to EAR, exactly like a tape recorder on the EAR
+socket. No app, any phone, real time.
+
+Not in scope: sending the FILE over BT (OBEX / BLE GATT / Web Bluetooth). Rejected
+by the owner: Wi-Fi FTP and web launch already do that on the same boards.
+
+Status: host-tested only (tools/sbc_tape_test.cpp). **Nothing NOT hw-tested below
+is a promise.**
+
+## Host test (2026-11-18, NOT hw-tested)
+
+`tools/sbc_tape_test.cpp`: TAP-timed pulse train -> 44.1 kHz square wave rendered
+by exact area -> bluedroid SBC encoder (Android's) -> bluedroid SBC decoder (BTstack's,
+what the board would run) -> Schmitt trigger at +-0.15 A, edge interpolated to the
+zero crossing -> T-states, compared pulse by pulse with the source; same path
+without SBC as the baseline. Header + 6912 random bytes, speeds 1x-4x (4x = 214 T
+of margin between a 0 and a 1), levels 0 dBFS to -30 dB, bitpool 19-53, joint
+stereo, 16 blocks / 8 subbands / loudness.
+
+Worst over 1x/2x/3x/4x (0 = every block loads):
+
+| bitpool | 0 dBFS | 0.9 | 0.8 and below | worst half-pulse error |
+|---|---|---|---|---|
+| PCM (no BT) | 0 | 0 | 0 | 13 T |
+| 19 | fail | fail | 0 | 83 T |
+| 27-31 | fail | 0 | 0 | 40-43 T |
+| 35 | fail at 4x | 0 | 0 | 30 T |
+| **41-53** | **0** | **0** | **0** | **17-22 T** |
+
+- **SBC does not hurt the timing**: 15-30 T of edge error with interpolation (13 T
+  without SBC), 60-100 T if edges are taken at whole samples. Both are far inside
+  the 855 T (1x) / 214 T (4x) decision margin.
+- **The one failure is near full scale at a low bitpool**: an int16 wrap inside the
+  codec (the decoder's output clip does not catch it) shows as +-FS chatter in the
+  3-4 samples just before a real edge, i.e. extra edges, i.e. a failed block. It
+  matters because tap2wav output IS 0 dBFS, and Android with absolute volume sends
+  the stream unattenuated (the volume goes to the sink over AVRCP).
+- **Cure: the sink advertises bitpool 41..53** in its SBC capabilities; the source
+  must pick from the sink's range. Phones already choose 53 at 44.1 kHz JS, so the
+  floor costs nothing. A debounce of short pulses on the board was tried and only
+  rescues 1x, so the bitpool floor is the fix, not the debounce.
+- Codec start-up: the synthesis filter rings from zero to the first level (2 false
+  edges in the first ~2 ms). Ignore edges until the level has settled after a
+  (re)start of the stream.
+
+Not covered by the test: Apple's SBC encoder (only bluedroid here), cassette rips
+with phase distortion / DC drift (same problem as the GPIO real-sound input, not
+SBC's), packet loss and jitter on a real link.
+
+## What exists to build on
+
+- `src/net/BtHost.cpp`: BTstack on the CYW43439, A2DP **source** (headphones),
+  classic + LE HID host, discovery, remembered devices, link keys in the flash bank.
+  `s_sbcCaps` is the source's capability block (bitpool 2..53).
+- `Tape::Read()` (`src/speccy/devices/tape/Tape.cpp`): two existing "sound in"
+  sources already set `tapeEarBit` from audio:
+  - `LOAD_WAV_PIO` + `Config::real_player`: `pcm_data_in()` -> `LoadWavStream`,
+    a GPIO sampled at 125 kHz by a repeating timer into per-frame bit buffers;
+  - `TAPE_FTYPE_MP3`: the sign of decoded PCM samples indexed by T-state.
+  The BT source is the same shape as the MP3 path, fed from a ring instead of a file.
+
+## Stages
+
+1. **A2DP sink endpoint** (BtHost): SBC sink SEP with caps 44.1/48 kHz, any mode,
+   **bitpool 41..53**; SDP sink record; class of device "audio/loudspeaker";
+   discoverable + connectable while the UI page is open (today the board is only
+   ever the initiator); SSP "just works" pairing; remember the phone like the
+   other added devices. Sink and source are **mutually exclusive** (one AVDTP
+   stream endpoint in the pools, one radio): starting the recorder drops the
+   headphones and vice versa. Log good/bad frames and bitpool chosen.
+   Check: phone sees "pico-speccy", pairs, streams; log shows frames, bitpool >= 41.
+2. **Decode + edge extraction on core0** (`btstack_sbc_decoder_bluedroid`, mono:
+   take L, or (L+R)/2): Schmitt trigger +-hysteresis relative to a running peak,
+   edge time interpolated, settle rule after (re)start. Output: edge timestamps in
+   **audio-sample time** (not PCM) into a lock-free ring — a few hundred bytes for
+   a second of pilot instead of 88 KB of PCM. Measure: decode cost per 5 s (like
+   the source's "enc ms/5s" log), `.bss` added, flash added (`nm -S`), and where
+   the code lands (decoder is per-packet on core0, not an ISR: flash is fine).
+3. **Clock bridge into `Tape::Read()`**: a third source next to `real_player` /
+   MP3: map sample time to T-states with a jitter buffer (start playing after
+   ~250 ms buffered; BT delivers in bursts). Phone and emulator clocks drift
+   ~100 ppm: irrelevant for loading, but the buffer must neither run dry (the
+   level would freeze mid-pulse) nor grow without bound — slip whole silence
+   periods (pauses), never inside a pulse train. Turbo / fast load are impossible
+   by construction: real time only; the tape counter shows "BT".
+4. **UI**: Storage > Tape > "BT tape (A2DP)": on/off, "waiting for phone" / phone
+   name / streaming / level meter (peak, so the user sees clipping), and the
+   mutual-exclusion notice with BT headphones. `Config` key, default off.
+5. **Hardware rounds (DVp2w)**: tap2wav at 0 dBFS from Android and iPhone (iOS's
+   encoder is not bluedroid: re-check the bitpool it picks); a turbo loader
+   (Speedlock), a cassette rip MP3; 504 MHz clock (the pairing freeze story in
+   network.md); HDMI `HDMIAU` dur/gap unchanged while streaming.
+
+## Costs / risks to measure, not guess
+
+- Flash: SBC decoder ~10-15 KB of code. 4 MB images sit near the GM.DLS floor
+  (`memory-sram-flash.md`): behind a 16 MB-only flag if it does not fit.
+- RAM: decoder state ~2 KB + frame buffer + edge ring; BTstack pools unchanged if
+  sink replaces source (MAX_NR_AVDTP_STREAM_ENDPOINTS stays 1? the sink SEP must
+  be registered alongside the source SEP, so probably 2: measure).
+- core0 time while streaming, at 252/378/504 MHz.
