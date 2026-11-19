@@ -1944,6 +1944,39 @@ ELM_ROW static void hamLine(const uint8_t* p, int n, int y, uint8_t* slots) {
     }
 }
 
+// hamLine's palette path straight into the framebuffer, four pixels a word in
+// outDirect's byte order, in the eLeMeNt's RAM window. The row cost 54 us (210 ns,
+// ~100 cycles a pixel) from flash on hw 2026-11-19 with everything it reads in SRAM:
+// the XIP cache is shared with the frame's PSRAM traffic. n: a multiple of 4.
+ELM_OVL_CODE static void hamRowFast(const uint8_t* p, int n, int y, uint32_t* d) {
+    static const int8_t bay[16] = { -8, 0, -6, 2, 4, -4, 6, -2, -5, 3, -7, 1, 7, -1, 5, -3 };
+    const int8_t* row = bay + (y & 3) * 4;
+    int t[4];
+    for (int k = 0; k < 4; k++) t[k] = row[k] * HAM_DITHER / 8;
+    uint8_t* lut = s_ham->lut;
+    const uint32_t* col = s_hot->colRgb;
+    uint32_t c = 0;
+    for (int x = 0; x < n; x += 4) {
+        uint32_t s4[4];
+        for (int k = 0; k < 4; k++) {
+            const uint32_t b = p[x + k], v = (b & 0x3F) << 2;
+            switch (b >> 6) {
+            case 0:  c = col[b & 0x3F];                   break;
+            case 1:  c = (c & 0xFFFF03) | v;              break;
+            case 2:  c = (c & 0x03FFFF) | (v << 16);      break;
+            default: c = (c & 0xFF03FF) | (v << 8);       break;
+            }
+            const int tt = t[k];
+            const uint32_t bin = (sat8((int)(c >> 16) + tt) >> 4) << 8 | (sat8((int)((c >> 8) & 255) + tt) >> 4) << 4 |
+                                 (sat8((int)(c & 255) + tt) >> 4);
+            uint32_t sl = lut[bin];
+            if (__builtin_expect(sl == 0xFF, 0)) sl = lut[bin] = hamNearest(bin);
+            s4[k] = sl;
+        }
+        *d++ = s4[2] | s4[3] << 8 | s4[0] << 16 | s4[1] << 24;
+    }
+}
+
 // The same for a row already in RGB.
 static void rgbLine(const uint32_t* c, int n, int y, uint8_t* slots) {
     if (!s_ham || !s_ham->n) { for (int x = 0; x < n; x++) slots[x] = cubeSlot(c[x], x, y); return; }
@@ -2593,7 +2626,34 @@ static void renderFrame() {
             q = H->line2;
         }
         if (feature == 1) fillLine(const_cast<uint8_t*>(q), WIDTH);
-        if (feature == 2) { hamLine(q, WIDTH, y, H->slots); outDirect(y0 + y, x0, H->slots, WIDTH); continue; }
+        if (feature == 2) {
+            const int fy = y0 + y;
+            if (s_ham && s_ham->n && !(x0 & 3)) {
+                rowPump(fy);
+                int cx[8][2];
+                if (!VIDEO::rowCarves(fy, cx)) {
+                    hamRowFast(q, WIDTH, y, (uint32_t*)(VIDEO::vga.frameBuffer[fy] + x0));
+#if HOST_BUILD
+                    {   // bench check (PICOSPECCY_ELM_CHECK): the row as hamLine + outDirect's order draw it
+                        static const bool chk = getenv("PICOSPECCY_ELM_CHECK") != nullptr;
+                        static uint32_t rows, bad;
+                        if (chk) {
+                            hamLine(q, WIDTH, y, H->slots);
+                            const uint8_t* fb = VIDEO::vga.frameBuffer[fy] + x0;
+                            bool same = true;
+                            for (int x = 0; x < WIDTH && same; x++) same = fb[x ^ 2] == H->slots[x];
+                            rows++;
+                            if (!same && bad++ < 20) Debug::log("[ELMCHK] ham row MISMATCH y=%d", y);
+                            if (!(rows & 0x3FFF)) Debug::log("[ELMCHK] ham %u rows checked, %u bad", (unsigned)rows, (unsigned)bad);
+                        }
+                    }
+#endif
+                    continue;
+                }
+            }
+            hamLine(q, WIDTH, y, H->slots); outDirect(fy, x0, H->slots, WIDTH);
+            continue;
+        }
         if (under) {
             zxLine(VIDEO::grmem, y, H->line);
             underLine(q, H->line, H->map, H->slots, WIDTH);

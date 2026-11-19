@@ -225,7 +225,23 @@ accessors:
   CYW43 lesson again (memory `cyw43-dma-hdmi-underrun`, CLAUDE.md section on it): ANY extra DMA channel on the
   engine the four high-priority HDMI feeders use starves the TMDS FIFO (~160 ns deep), wherever it writes; the
   radio was fixed by CPU FIFO copy for the same reason. **Rule: no new DMA channels while HDMI runs - SD stays
-  CPU-copied.** The remaining SD lever is the card clock (High Speed via CMD6), not overlap. `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  CPU-copied.** The remaining SD lever is the card clock (High Speed via CMD6), not overlap.
+- **HAM row in RAM (2026-11-19, hw-confirmed DVp2w 2026-11-19, uncommitted; `debug/DVp2w-elm-ham1-1.1.3`, PERF, build
+  14:27:23).** A HAM row cost ~54 us on core1 (210 ns, ~100 cycles a pixel; forest 46 rows 2.5 ms, car ~95 rows 5.2 ms)
+  with everything it reads in SRAM (source row in the arena, `Hot` in the pages57 tail, the LUT on the heap, the FB):
+  the suspect is the code - `hamLine` inlined into `renderFrame` (flash, 3 KB) beside `outDirect`, through the XIP
+  cache the frame's PSRAM traffic shares. `hamRowFast` (`.elmovl`, 276 B): the palette path of hamLine writing the
+  framebuffer four pixels a word in outDirect's order, no `slots` pass; the row's pumps and carve test stay in
+  flash once per row; a carved row / odd x0 / the cube path keep hamLine + outDirect. Host
+  `PICOSPECCY_ELM_CHECK`: 327 680 PF2026 rows against hamLine + outDirect's order, 0 bad. `.elmovl` content
+  13 112 (PERF 13 584): AUTO 13 056 -> 13 312 (PERF 13 312 -> 13 824); the non-PERF pages57 tail 14 312 -> 14 056
+  (tables 13 884); in PERF builds the tail is short and one table goes to the heap (`tailAlloc` -> tryMalloc).
+  Read: `split/fr ... rows N` against forest 2.5 / car 5.2 ms.
+  **hw (log `...14.33.40.144`):** rows forest 2.5 -> 1.6-2.3 ms, car 5.2 -> 3.5-4.6 ms (-25 %, not the multiple a
+  pure fetch problem would give: ~40 us a row = ~80 cycles a pixel remain); car `wait` 2.2-3.4 -> 1.5-2.8 ms, car
+  realFPS avg 47.7 -> 48.2 (46.2-49.4), forest ~48.6 of the 48.8 ceiling; `hdmiGapMax` 35, no underruns. What is
+  left per row is not known: hamRowFast's own arithmetic, or SRAM waits behind core0 and the high-priority HDMI
+  DMA; it needs a core1 PC / cycle profile, not another guess. `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
   (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
   inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
   offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half

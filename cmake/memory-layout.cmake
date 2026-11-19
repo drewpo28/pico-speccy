@@ -325,9 +325,9 @@ endif()
 # eLeMeNt's heap (the HGFX arena) does not get. Content measured 2026-11-17.
 set(ELMOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the eLeMeNt Z80 loop overlay window, or AUTO (rp2350-memmap.ld)")
 if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
-    set(ELMOVL_WIN_SIZE_EFFECTIVE 13056)   # +512 2026-11-19: chunkyWriteRows, the FastDMA blit (content 12 832; PERF 13 248)
+    set(ELMOVL_WIN_SIZE_EFFECTIVE 13312)   # +256 2026-11-19: hamRowFast, the HAM row in RAM (content 13 112; was 13 056 for chunkyWriteRows)
     if (PERF_TRACE)
-        set(ELMOVL_WIN_SIZE_EFFECTIVE 13312)   # +256 2026-11-18: the 20/22 MHz stretch + ROM wait (content 12 536 without PERF)
+        set(ELMOVL_WIN_SIZE_EFFECTIVE 13824)   # +512 2026-11-19: hamRowFast + the split/fr timers (content 13 584); the pages57 tail is then short of the tables, one goes to the heap
     endif()
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})
