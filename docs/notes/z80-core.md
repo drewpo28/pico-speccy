@@ -199,7 +199,33 @@ accessors:
   short reads), and core0 spun in the guest's token poll: car cpu 19 -> 22 ms, realFPS 47-48.9 -> 42.5-44, the
   forest 0.5-1 ms worse too; `wait` 3 -> 1 ms was the only gain. **PF2026 needs its read-ahead through the draw:
   the SD time is the stream's real cost, not speculation.** What could still help is the card itself (SPI clock)
-  or overlapping the transfer with the draw (DMA), not deferring it. `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  or overlapping the transfer with the draw (DMA), not deferring it.
+- **SD block data by DMA between the draw rows: TRIED AND REVERTED (2026-11-19, hw DVp2w;
+  `debug/DVp2w-elm-sddma1-1.1.3`, PERF, build stamp 13:48:54).** The SD time in the draw is ~94 % block data
+  (`ph .../27/260`: token wait 27 ms vs data 260 ms per 60 frames), 163 us a block at 25.2 MHz, all of it core1
+  in the PIO FIFO loop. sdcard.c `sd_async_pump_step()` (SDCARD_PIO only, two DMA channels claimed on first use,
+  else the old path): CMD17/18 sent, the token polled in <= 8 us bursts per call, the block's 512 bytes (minus
+  what the token burst already held) handed to two byte DMA channels (a constant 0xFF into the TX FIFO, the RX
+  FIFO into the buffer), the next call takes the CRC, publishes the block (`g_sd_as_done`, abort / render-behind
+  cut rules unchanged) and starts the next. Only the eLeMeNt's row / gate pumps step (`sdPumpC1`);
+  `sd_async_pump()` finishes a stepped read in flight the blocking way, and render_core now calls it for state
+  2 too. `g_sd_as_c1_us` counts core1's own time only (not the rows between). Read: `split/fr ... sd` in the
+  draw (expect << 3 ms), `sd dma N blk`, `[SD] ... wait` (core0 waits on a burst), `fb` 0, picture / audio
+  sane, other machines' SD (Next, ZC) unchanged by construction. The SPI clock stays at 25.2 MHz = SD Default
+  Speed max; High Speed (CMD6, 50 MHz, PIO /3 = 42 MHz at 504) is a separate card-dependent step.
+  **hw sddma1 (log `...14.07.28.696`): picture gone after the demo started**, `hdmiGapMax` 35 -> 81-137 us; SD
+  counters normal (`fb 0`, `wait 0`), only 2-7 blocks a frame went by DMA (`sd in draw` 36-114 us), FPS 47.7-48.8.
+  Diagnosis (not proven): the RX DMA wrote into the PSRAM read-ahead buffer, each write waiting on the QMI, and the
+  DMA engine held the HDMI's TMDS channels behind it - the CYW43 lesson (cyw43-dma-hdmi-underrun). **sddma2
+  (`debug/DVp2w-elm-sddma2-1.1.3`, build 14:11:47, NOT hw-tested):** the DMA lands in a 512-byte SRAM bounce
+  (`s_bounce`, +512 B .bss), the CPU copies it into the buffer after the CRC. Rule: no DMA into the XIP/PSRAM
+  window while HDMI runs.
+  **hw sddma2 (log `...14.17.46.732`): still no picture, reverted.** `hdmiGapMax` back to 34-52 us, but `hdmi: TMDS
+  FIFO underrun in 5-12 of 50 frames` every second (none in diag2 / sd1 logs), `fastperi cont` ~1 M/s. It is the
+  CYW43 lesson again (memory `cyw43-dma-hdmi-underrun`, CLAUDE.md section on it): ANY extra DMA channel on the
+  engine the four high-priority HDMI feeders use starves the TMDS FIFO (~160 ns deep), wherever it writes; the
+  radio was fixed by CPU FIFO copy for the same reason. **Rule: no new DMA channels while HDMI runs - SD stays
+  CPU-copied.** The remaining SD lever is the card clock (High Speed via CMD6), not overlap. `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
   (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
   inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
   offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half
