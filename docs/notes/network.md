@@ -523,3 +523,17 @@ ESPectrum/Bluepad32). Test build `debug/DVp2w-btpad-1.1.3`.
   Log lines `switch: ...` show the handshake and the first changes.
 - The classic path never reset `s_repLog`, so the "report N B" log lines were spent on
   the first connection of the session; now reset per descriptor.
+
+## Bluetooth (BtHost): A2DP sink for "tape from a phone" (2026-11-19, NOT hw-tested)
+
+Plan, host test and stage-1 details: `docs/bt-tape-plan.md`. What matters to anyone
+touching BtHost's A2DP code:
+- Source (headphones) and sink (tape) SEPs are both registered;
+  `MAX_NR_AVDTP_STREAM_ENDPOINTS` = 2, `MAX_NR_AVDTP_CONNECTIONS` = 1 (exclusive).
+- BTstack reports an incoming AVDTP link to BOTH role handlers and the source role
+  runs its own SEP discovery on it: `a2dpHandler` returns early while tape mode
+  listens and the headphones' cid is gone (`s_tapeOn && s_cid == 0`). Only the
+  codec-configuration event says which role a link is for.
+- While not listening, `sinkHandler` disconnects a phone that configures our sink.
+- CoD is 0x240414 (loudspeaker) + discoverable only while listening; 0x200408 and
+  not discoverable otherwise.

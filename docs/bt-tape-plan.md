@@ -9,8 +9,8 @@ socket. No app, any phone, real time.
 Not in scope: sending the FILE over BT (OBEX / BLE GATT / Web Bluetooth). Rejected
 by the owner: Wi-Fi FTP and web launch already do that on the same boards.
 
-Status: host-tested only (tools/sbc_tape_test.cpp). **Nothing NOT hw-tested below
-is a promise.**
+Status: stage 1 built (DVp2w test image `debug/DVp2w-bttape1-1.1.3`, 2026-11-19),
+**NOT hw-tested**; the SBC question is host-tested (tools/sbc_tape_test.cpp).
 
 ## Host test (2026-11-18, NOT hw-tested)
 
@@ -98,9 +98,43 @@ SBC's), packet loss and jitter on a real link.
 
 ## Costs / risks to measure, not guess
 
-- Flash: SBC decoder ~10-15 KB of code. 4 MB images sit near the GM.DLS floor
-  (`memory-sram-flash.md`): behind a 16 MB-only flag if it does not fit.
-- RAM: decoder state ~2 KB + frame buffer + edge ring; BTstack pools unchanged if
-  sink replaces source (MAX_NR_AVDTP_STREAM_ENDPOINTS stays 1? the sink SEP must
-  be registered alongside the source SEP, so probably 2: measure).
+- Flash: not a constraint. Every W/WS board is a 16 MB image (`cmake/board.cmake`
+  forces FLASH_16MB with PICOSPECCY_WIFI), and only those have the radio.
+- RAM: stage 1 measured below; stage 2 adds the decoder state (~2 KB, allocated
+  only while streaming, like the source's `Stream`) + frame buffer + edge ring.
 - core0 time while streaming, at 252/378/504 MHz.
+
+## Stage 1 — done in code (2026-11-19, NOT hw-tested)
+
+- `BtHost`: SBC sink SEP (44.1/48 kHz, every mode, bitpool 41..53) + a
+  config validator that refuses a max bitpool below 41 (logged); SDP sink record
+  (Speaker); `tapeListen(on)` = drop the headphones (marker kept, `audioResume()`
+  on stop), CoD 0x240414 (loudspeaker) + discoverable while listening, back to
+  0x200408 and not discoverable after; `audioConnect()` stops listening. The
+  phone's name by remote name request; the SSP numeric-comparison code is logged
+  ("confirm NNNNNN on the phone"). Media: RTP sequence gaps (lost packets), SBC
+  frame count, sync word, and the bitpool the phone's encoder REALLY uses (the
+  config is only a range) — logged every 5 s from `pump()`, with a warning when
+  the frames run below 41.
+- UI: Bluetooth > Tape from phone — a log page; the board listens while it is
+  open, Esc stops. The emulator does not run meanwhile: fine for a link test,
+  stage 3/4 make listening a background mode.
+- **BTstack dual role (read in a2dp.c, SDK 2.3.1):** an incoming AVDTP link is
+  reported to BOTH the source and the sink handler
+  (`A2DP_SUBEVENT_SIGNALING_CONNECTION_ESTABLISHED`), and the source role also
+  starts its own SEP discovery on it after a short wait. So while listening the
+  source handler ignores everything once the headphones' link is gone
+  (`s_tapeOn && s_cid == 0`); only the codec configuration tells the roles
+  apart (it goes to the role whose SEP was configured). While NOT listening, a
+  phone that configures our sink is disconnected.
+- `MAX_NR_AVDTP_STREAM_ENDPOINTS` 1 -> 2; `MAX_NR_AVDTP_CONNECTIONS` stays 1,
+  which is what makes sink and source exclusive at the stack level too.
+- Cost (DVp2w 16 MB, MinSizeRel, `nm -S` diff): RAM +577 B, all static BT state
+  (BTstack's second stream endpoint 324 B, the SDP record 150 B, the rest ours);
+  no RAM-resident code changed (0x2xxxxxxx text identical); flash +2.3 KB text
+  +1.1 KB rodata.
+- **What the hw round must show:** the phone lists "Pico-Speccy" as a speaker
+  and pairs; the log shows "phone picked SBC ... bitpool A..B" and, while a WAV
+  plays, ~"N pkt M sbc/5s ... bitpool 41..53, lost 0"; Esc then brings back the
+  headphones; with the page closed, playing from the phone is refused. Android
+  and an iPhone if possible (which bitpool does iOS really use?).

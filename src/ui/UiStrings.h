@@ -517,6 +517,7 @@
 #define TXT_BLUETOOTH       "Bluetooth"
 #define TXT_BT_AUDIO        "Audio"
 #define TXT_BT_INPUT        "Input"
+#define TXT_BT_TAPE         "Tape from phone"
 #define TXT_NET_TZ          "Time zone"
 #define TXT_NET_NIC_SUB     "ZiFi NIC"
 #define TXT_NET_TRANSPORT   "Transport"

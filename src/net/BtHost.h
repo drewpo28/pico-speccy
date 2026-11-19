@@ -98,6 +98,29 @@ const InputInfo* inputInfo();
 struct AudioInfo { int fs, bitpool, blocks, subbands; bool joint; };
 bool audioInfo(AudioInfo& a);
 
+// ── Tape from a phone (A2DP SINK) ─────────────────────────────────────────────
+// docs/bt-tape-plan.md. The board shows up as a Bluetooth speaker ("Pico-Speccy");
+// a phone pairs and plays a tape's audio into it. Stage 1: the link and its
+// statistics only — the audio does not reach EAR yet.
+// Sink and source are exclusive: listening drops the headphones (their "audio on"
+// marker stays, so they come back when listening stops), and audioConnect() stops
+// listening. While NOT listening a phone that tries to play to us is disconnected.
+// The sink advertises bitpool BT_TAPE_MIN_BITPOOL..53: below 41 a 0 dBFS tape
+// signal breaks up in the codec (tools/sbc_tape_test.cpp).
+static const int BT_TAPE_MIN_BITPOOL = 41;
+enum TapeState : uint8_t { T_OFF, T_LISTEN, T_CONNECTED, T_STREAMING };
+bool tapeListen(bool on);     // false when the radio did not come up
+TapeState tapeState();
+const char* tapeName();       // the phone connected / last connected
+struct TapeInfo {
+    int      fs;              // negotiated SBC configuration
+    uint8_t  bpMin, bpMax;
+    uint8_t  blocks, subbands, mode;   // mode: 0 mono, 1 dual, 2 stereo, 3 joint
+    uint8_t  frameBpMin, frameBpMax;   // bitpool actually seen in the frames (last 5 s)
+    uint32_t pkts, frames, lost, bad;  // totals since the stream started
+};
+bool tapeInfo(TapeInfo& t);   // false = no stream configured
+
 // The most recently connected input device (false = none added). Every added one
 // reconnects by itself — classic when it pages us (keypress), LE as soon as it
 // advertises — one input device at a time.

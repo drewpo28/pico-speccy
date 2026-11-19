@@ -513,8 +513,15 @@ bool streamStart() {
     return true;
 }
 
+bool s_tapeOn = false;   // listening for a phone (tape mode): the A2DP sink owns incoming links
+
 void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
     if (type != HCI_EVENT_PACKET || hci_event_packet_get_type(p) != HCI_EVENT_A2DP_META) return;
+    // Tape mode: BTstack reports an incoming AVDTP link to BOTH roles, and the
+    // source role even runs its own SEP discovery on it. The headphones were
+    // dropped when listening began (s_cid is 0 once their release arrived), so
+    // anything the source role says now is about the phone: not ours.
+    if (s_tapeOn && s_cid == 0) return;
     switch (hci_event_a2dp_meta_get_subevent_code(p)) {
         case A2DP_SUBEVENT_SIGNALING_CONNECTION_ESTABLISHED: {
             const uint8_t status = a2dp_subevent_signaling_connection_established_get_status(p);
@@ -615,6 +622,190 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 break;
             }
             if (s_audio != A_FAILED) s_audio = A_IDLE;
+            break;
+        default:
+            break;
+    }
+}
+
+// ── Tape from a phone: A2DP sink ─────────────────────────────────────────────
+// docs/bt-tape-plan.md, stage 1: the phone connects, configures our SBC sink and
+// streams; we count what arrives. Decoding and EAR come in stages 2-3.
+// Any rate / mode / blocks / subbands / allocation; bitpool 41..53 (see BtHost.h).
+uint8_t s_sinkCaps[] = {
+    (AVDTP_SBC_44100 << 4) | (AVDTP_SBC_48000 << 4) |
+        AVDTP_SBC_MONO | AVDTP_SBC_DUAL_CHANNEL | AVDTP_SBC_STEREO | AVDTP_SBC_JOINT_STEREO,
+    0xFF,
+    (uint8_t)BT_TAPE_MIN_BITPOOL, 53,
+};
+uint8_t s_sinkConfig[4];
+uint8_t s_sdpSink[150];
+// The local CoD while listening: Rendering + Audio services, Audio/Video major,
+// Loudspeaker minor — what phones list as a speaker. Restored afterwards.
+constexpr uint32_t COD_SPEAKER = 0x240414;
+constexpr uint32_t COD_DEFAULT = 0x200408;
+
+TapeState  s_tape = T_OFF;
+uint16_t   s_tcid = 0;          // the phone's A2DP connection (sink role)
+uint8_t    s_tseid = 0;         // our sink stream endpoint
+bd_addr_t  s_tAddr;
+char       s_tName[32] = "";
+TapeInfo   s_ti;                // negotiated config + counters
+bool       s_tiValid = false;
+uint16_t   s_tSeq = 0;          // last RTP sequence number
+bool       s_tSeqValid = false;
+uint32_t   s_tStatT = 0;
+uint32_t   s_tPkts5 = 0, s_tFrames5 = 0, s_tLost5 = 0, s_tBytes5 = 0;
+
+void tapeNameFor(const bd_addr_t a) {
+    s_tName[0] = 0;
+    for (int i = 0; i < s_ndev; i++)
+        if (memcmp(s_dev[i].addr, a, 6) == 0 && s_dev[i].name[0]) {
+            snprintf(s_tName, sizeof(s_tName), "%s", s_dev[i].name);
+            return;
+        }
+    snprintf(s_tName, sizeof(s_tName), "%s", bd_addr_to_str(a));
+    gap_remote_name_request(a, 0, 0);   // HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE fills it in
+}
+
+// Refuse a configuration whose bitpool range leaves our floor: the phone must
+// then pick another (it may only choose inside our capabilities anyway; this is
+// the belt to those braces, and the reason shows in the log).
+uint8_t sinkValidate(const avdtp_stream_endpoint_t*, const uint8_t* ev, uint16_t) {
+    if (hci_event_packet_get_type(ev) != HCI_EVENT_AVDTP_META ||
+        hci_event_avdtp_meta_get_subevent_code(ev) != AVDTP_SUBEVENT_SIGNALING_MEDIA_CODEC_SBC_CONFIGURATION)
+        return ERROR_CODE_SUCCESS;
+    const uint8_t mx = avdtp_subevent_signaling_media_codec_sbc_configuration_get_max_bitpool_value(ev);
+    if (mx < BT_TAPE_MIN_BITPOOL) {
+        blog("tape: phone offered max bitpool %u < %d - refused", (unsigned)mx, BT_TAPE_MIN_BITPOOL);
+        return CODEC_SPECIFIC_ERROR_CODE_NOT_SUPPORTED_MAXIMUM_BITPOOL_VALUE;
+    }
+    return ERROR_CODE_SUCCESS;
+}
+
+void tapeStatsReset() {
+    s_ti.pkts = s_ti.frames = s_ti.lost = s_ti.bad = 0;
+    s_ti.frameBpMin = 0xFF; s_ti.frameBpMax = 0;
+    s_tSeqValid = false;
+    s_tPkts5 = s_tFrames5 = s_tLost5 = s_tBytes5 = 0;
+    s_tStatT = nowMs();
+}
+
+// Media packets: RTP header (12 B + 4 per CSRC), the SBC media payload header
+// (low 4 bits = frame count), then the frames. Stage 1 reads the first frame's
+// header only: sync word and the bitpool the phone's encoder really uses (it may
+// run anywhere inside the negotiated range).
+void sinkMedia(uint8_t seid, uint8_t* p, uint16_t n) {
+    if (!s_tapeOn || s_tape != T_STREAMING || seid != s_tseid) return;
+    if (n < 13) { s_ti.bad++; return; }
+    const int hdr = 12 + 4 * (p[0] & 0x0F);
+    const uint16_t seq = big_endian_read_16(p, 2);
+    if (s_tSeqValid) {
+        const uint16_t gap = (uint16_t)(seq - s_tSeq - 1);
+        if (gap && gap < 1000) { s_ti.lost += gap; s_tLost5 += gap; }
+    }
+    s_tSeq = seq; s_tSeqValid = true;
+    s_ti.pkts++; s_tPkts5++;
+    if (n < hdr + 1 + 4) { s_ti.bad++; return; }
+    const uint8_t nf = p[hdr] & 0x0F;
+    const uint8_t* f = p + hdr + 1;
+    s_ti.frames += nf; s_tFrames5 += nf;
+    s_tBytes5 += n - hdr - 1;
+    if (f[0] != 0x9C) { s_ti.bad++; return; }
+    const uint8_t bp = f[2];
+    if (bp < s_ti.frameBpMin) s_ti.frameBpMin = bp;
+    if (bp > s_ti.frameBpMax) s_ti.frameBpMax = bp;
+}
+
+// Every 5 s while streaming (from pump()): what arrived, for the log and the pane.
+void tapeStatsTick() {
+    if (s_tape != T_STREAMING) return;
+    const uint32_t now = nowMs();
+    if (now - s_tStatT < 5000) return;
+    blog("tape: %u pkt %u sbc/5s (%u kbit/s), bitpool %u..%u, lost %u, bad %u",
+         (unsigned)s_tPkts5, (unsigned)s_tFrames5, (unsigned)(s_tBytes5 * 8 / 5000),
+         s_ti.frameBpMin == 0xFF ? 0u : (unsigned)s_ti.frameBpMin, (unsigned)s_ti.frameBpMax,
+         (unsigned)s_tLost5, (unsigned)s_ti.bad);
+    if (s_ti.frameBpMin != 0xFF && s_ti.frameBpMin < BT_TAPE_MIN_BITPOOL)
+        blog("tape: WARNING the phone encodes below bitpool %d - a loud tape may not load", BT_TAPE_MIN_BITPOOL);
+    s_tPkts5 = s_tFrames5 = s_tLost5 = s_tBytes5 = 0;
+    s_ti.frameBpMin = 0xFF; s_ti.frameBpMax = 0;
+    s_tStatT = now;
+}
+
+void sinkHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
+    if (type != HCI_EVENT_PACKET || hci_event_packet_get_type(p) != HCI_EVENT_A2DP_META) return;
+    switch (hci_event_a2dp_meta_get_subevent_code(p)) {
+        case A2DP_SUBEVENT_SIGNALING_CONNECTION_ESTABLISHED: {
+            // Reported for EVERY A2DP link (both roles hear it): a speaker paging
+            // us for the headphone role arrives here too. Only tape mode claims it.
+            if (!s_tapeOn || s_tcid) break;
+            if (a2dp_subevent_signaling_connection_established_get_status(p) != ERROR_CODE_SUCCESS) break;
+            s_tcid = a2dp_subevent_signaling_connection_established_get_a2dp_cid(p);
+            a2dp_subevent_signaling_connection_established_get_bd_addr(p, s_tAddr);
+            tapeNameFor(s_tAddr);
+            s_tape = T_CONNECTED;
+            blog("tape: %s connected", s_tName);
+            break;
+        }
+        case A2DP_SUBEVENT_SIGNALING_MEDIA_CODEC_SBC_CONFIGURATION: {
+            // Only the sink role sees this: a source (a phone) configured our sink.
+            const uint16_t cid = a2dp_subevent_signaling_media_codec_sbc_configuration_get_a2dp_cid(p);
+            if (!s_tapeOn) {
+                blog("tape: a phone tried to play to us (tape mode is off) - disconnecting");
+                a2dp_sink_disconnect(cid);
+                break;
+            }
+            s_ti.fs       = a2dp_subevent_signaling_media_codec_sbc_configuration_get_sampling_frequency(p);
+            s_ti.bpMin    = a2dp_subevent_signaling_media_codec_sbc_configuration_get_min_bitpool_value(p);
+            s_ti.bpMax    = a2dp_subevent_signaling_media_codec_sbc_configuration_get_max_bitpool_value(p);
+            s_ti.blocks   = a2dp_subevent_signaling_media_codec_sbc_configuration_get_block_length(p);
+            s_ti.subbands = a2dp_subevent_signaling_media_codec_sbc_configuration_get_subbands(p);
+            switch ((avdtp_channel_mode_t)a2dp_subevent_signaling_media_codec_sbc_configuration_get_channel_mode(p)) {
+                case AVDTP_CHANNEL_MODE_MONO:         s_ti.mode = 0; break;
+                case AVDTP_CHANNEL_MODE_DUAL_CHANNEL: s_ti.mode = 1; break;
+                case AVDTP_CHANNEL_MODE_STEREO:       s_ti.mode = 2; break;
+                default:                              s_ti.mode = 3; break;
+            }
+            s_tiValid = true;
+            blog("tape: phone picked SBC %u Hz, %u blocks, %u subbands, bitpool %u..%u",
+                 (unsigned)s_ti.fs, (unsigned)s_ti.blocks, (unsigned)s_ti.subbands,
+                 (unsigned)s_ti.bpMin, (unsigned)s_ti.bpMax);
+            break;
+        }
+        case A2DP_SUBEVENT_STREAM_ESTABLISHED:
+            if (a2dp_subevent_stream_established_get_a2dp_cid(p) != s_tcid) break;
+            if (a2dp_subevent_stream_established_get_status(p) != ERROR_CODE_SUCCESS) {
+                blog("tape: stream failed, status 0x%02x", a2dp_subevent_stream_established_get_status(p));
+                break;
+            }
+            s_tseid = a2dp_subevent_stream_established_get_local_seid(p);
+            blog("tape: stream open - press Play on the phone");
+            break;
+        case A2DP_SUBEVENT_STREAM_STARTED:
+            if (a2dp_subevent_stream_started_get_a2dp_cid(p) != s_tcid) break;
+            tapeStatsReset();
+            s_tape = T_STREAMING;
+            blog("tape: %s is playing", s_tName);
+            break;
+        case A2DP_SUBEVENT_STREAM_SUSPENDED:
+            if (a2dp_subevent_stream_suspended_get_a2dp_cid(p) != s_tcid) break;
+            if (s_tape == T_STREAMING) s_tape = T_CONNECTED;
+            blog("tape: paused (%u packets, %u frames, %u lost)",
+                 (unsigned)s_ti.pkts, (unsigned)s_ti.frames, (unsigned)s_ti.lost);
+            break;
+        case A2DP_SUBEVENT_STREAM_RELEASED:
+            if (a2dp_subevent_stream_released_get_a2dp_cid(p) != s_tcid) break;
+            if (s_tape == T_STREAMING) s_tape = T_CONNECTED;
+            s_tiValid = false;
+            break;
+        case A2DP_SUBEVENT_SIGNALING_CONNECTION_RELEASED:
+            if (a2dp_subevent_signaling_connection_released_get_a2dp_cid(p) != s_tcid) break;
+            blog("tape: %s disconnected", s_tName);
+            s_tcid = 0;
+            s_tseid = 0;
+            s_tiValid = false;
+            s_tape = s_tapeOn ? T_LISTEN : T_OFF;
             break;
         default:
             break;
@@ -1274,6 +1465,20 @@ void servicesInit() {
     a2dp_source_create_sdp_record(s_sdpA2dp, sdp_create_service_record_handle(),
                                   AVDTP_SOURCE_FEATURE_MASK_PLAYER, NULL, NULL);
     sdp_register_service(s_sdpA2dp);
+    // Tape from a phone: the A2DP sink. Registered always (one SDP record, one
+    // stream endpoint); sinkHandler refuses a phone while tape mode is off.
+    a2dp_sink_init();
+    a2dp_sink_register_packet_handler(&sinkHandler);
+    a2dp_sink_register_media_handler(&sinkMedia);
+    a2dp_sink_register_media_config_validator(&sinkValidate);
+    avdtp_stream_endpoint_t* sep = a2dp_sink_create_stream_endpoint(
+        AVDTP_AUDIO, AVDTP_CODEC_SBC, s_sinkCaps, sizeof(s_sinkCaps), s_sinkConfig, sizeof(s_sinkConfig));
+    if (sep) s_tseid = avdtp_local_seid(sep);
+    else blog("no A2DP sink endpoint (MAX_NR_AVDTP_STREAM_ENDPOINTS)");
+    memset(s_sdpSink, 0, sizeof(s_sdpSink));
+    a2dp_sink_create_sdp_record(s_sdpSink, sdp_create_service_record_handle(),
+                                AVDTP_SINK_FEATURE_MASK_SPEAKER, NULL, NULL);
+    sdp_register_service(s_sdpSink);
     // Input: classic HID host + BLE HID-over-GATT host.
     hid_host_init(s_hidDescStore, sizeof(s_hidDescStore));
     hid_host_register_packet_handler(&hidHandler);
@@ -1374,7 +1579,21 @@ void packetHandler(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
             break;
         case HCI_EVENT_USER_CONFIRMATION_REQUEST: // SSP "Just Works"
             hci_event_user_confirmation_request_get_bd_addr(packet, a);
+            // A phone pairing for tape mode shows a 6-digit code and asks its user
+            // to confirm it (numeric comparison, we are DisplayOnly): show ours.
+            if (s_tapeOn)
+                blog("pairing: confirm %06u on the phone",
+                     (unsigned)hci_event_user_confirmation_request_get_numeric_value(packet));
             gap_ssp_confirmation_response(a);
+            break;
+        case HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE:   // tapeNameFor() asked for the phone's name
+            hci_event_remote_name_request_complete_get_bd_addr(packet, a);
+            if (s_tcid && bd_addr_cmp(a, s_tAddr) == 0 &&
+                hci_event_remote_name_request_complete_get_status(packet) == ERROR_CODE_SUCCESS) {
+                snprintf(s_tName, sizeof(s_tName), "%s",
+                         hci_event_remote_name_request_complete_get_remote_name(packet));
+                blog("tape: the phone is %s", s_tName);
+            }
             break;
         case GAP_EVENT_INQUIRY_RESULT:  if (s_busy) onInquiryResult(packet); break;
         case GAP_EVENT_INQUIRY_COMPLETE:
@@ -1622,6 +1841,7 @@ const char* audioName() { return s_audioName; }
 bool audioConnect(const uint8_t addr[6], const char* name) {
     if (!ensureUp()) return false;
     if (s_busy) finish("stopped");
+    if (s_tapeOn) tapeListen(false);   // the headphones win: one A2DP link at a time
     const bool switching = s_cid != 0;
     if (switching) audioDrop();
     memcpy(s_audioAddr, addr, 6);
@@ -1723,11 +1943,51 @@ void forget(const uint8_t addr[6]) {
     blog("forgot %s", bd_addr_to_str(a));
 }
 
+// ── Tape from a phone ────────────────────────────────────────────────────────
+bool tapeListen(bool on) {
+    if (on == s_tapeOn) return true;
+    if (on) {
+        if (!ensureUp()) return false;
+        if (s_busy) finish("stopped");
+        // One A2DP link at a time (MAX_NR_AVDTP_CONNECTIONS): drop the headphones,
+        // keeping their "audio on" marker so tapeListen(false) brings them back.
+        if (s_cid || s_audio != A_IDLE) { blog("tape: headphones off while listening"); audioDrop(); }
+        s_tapeOn = true;
+        s_tape = T_LISTEN;
+        gap_set_class_of_device(COD_SPEAKER);
+        gap_discoverable_control(1);
+        gap_connectable_control(1);
+        blog("tape: listening - pair \"Pico-Speccy\" in the phone's Bluetooth settings");
+        return true;
+    }
+    s_tapeOn = false;
+    if (s_tcid) a2dp_sink_disconnect(s_tcid);   // the release event clears s_tcid
+    s_tape = T_OFF;
+    s_tiValid = false;
+    if (s_state == S_UP) {
+        gap_discoverable_control(0);
+        gap_set_class_of_device(COD_DEFAULT);
+    }
+    blog("tape: stopped listening");
+    audioResume();                                // the headphones that were playing
+    return true;
+}
+
+TapeState tapeState() { return s_tape; }
+const char* tapeName() { return s_tName; }
+
+bool tapeInfo(TapeInfo& t) {
+    if (!s_tiValid || !s_tcid) return false;
+    t = s_ti;
+    return true;
+}
+
 bool streaming() { return s_audio == A_STREAMING; }
 
 // Called once per frame (netBackgroundTick) and from the frame-pacing waits: the
 // stream needs a send opportunity every few ms, more than one radio poll a frame.
 void pump() {
+    tapeStatsTick();
     if (s_audio != A_STREAMING) return;
     static uint32_t last = 0;
     const uint32_t now = time_us_32();
