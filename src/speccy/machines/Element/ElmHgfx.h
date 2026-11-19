@@ -48,6 +48,7 @@ void    writeVram(uint16_t off, uint8_t v, bool wasRead = true, uint16_t src = 0
 void    writeVramRun(uint16_t off, const uint8_t* p, uint32_t n);   // plain bytes in a row (FastDMA)
 void    copyRun(uint16_t off, uint16_t src, uint32_t n);   // n COPY writes in a row, each read at src + i
 void    writeReg(uint8_t reg, uint8_t v);
+void    writeRegFast(uint8_t reg, uint8_t v);   // writeReg minus CMD's side effects, in .elmovl (the eLeMeNt loop's store only)
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F
 uint8_t reg(uint8_t r);

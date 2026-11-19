@@ -321,13 +321,14 @@ endif()
 # eLeMeNt Z80 loop window (.elmovl): Z80::exec_nocheck_elm + its four fallbacks
 # (Z80_JLS.cpp, tools/gen_next_dispatch.py's elm flavour) + the FastDMA run and
 # the chunky run writer (Element.cpp fdmaRun, ElmHgfx.cpp chunkyWriteRun, 2026-11-18).
-# Sized for its content like .dmaovl; it sits inside the Next region, so every byte here is one the
-# eLeMeNt's heap (the HGFX arena) does not get. Content measured 2026-11-17.
+# Sized for its content like .dmaovl. It aliases ZX pages 5/7 (rp2350-memmap.ld), not the Next
+# region: every byte here comes out of the pages57 tail (Elm::tailAlloc), and a table that no
+# longer fits there goes to the heap AFTER the early HGFX arena claim - the arena keeps its size.
 set(ELMOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the eLeMeNt Z80 loop overlay window, or AUTO (rp2350-memmap.ld)")
 if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
-    set(ELMOVL_WIN_SIZE_EFFECTIVE 13312)   # +256 2026-11-19: hamRowFast, the HAM row in RAM (content 13 112; was 13 056 for chunkyWriteRows)
+    set(ELMOVL_WIN_SIZE_EFFECTIVE 16384)   # 2026-11-19: CB + DD/FD (IX/IY) in the loop (+2 424), the LCU slot's stores and reads (+440), the HGFX register store and the plain-page store (+344) in the slow accessors: content 16 328 (56 B left); was 13 112
     if (PERF_TRACE)
-        set(ELMOVL_WIN_SIZE_EFFECTIVE 13824)   # +512 2026-11-19: hamRowFast + the split/fr timers (content 13 584); the pages57 tail is then short of the tables, one goes to the heap
+        set(ELMOVL_WIN_SIZE_EFFECTIVE 17152)   # 2026-11-19 (content 17 128): + the PERF counters and the DD/FD histograms; the pages57 tail is short of the tables, they go to the heap
     endif()
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})

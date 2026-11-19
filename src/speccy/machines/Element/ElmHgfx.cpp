@@ -30,6 +30,18 @@ void pcprof_dump();
 extern volatile uint32_t g_elm_batch[4];   // Z80_JLS.cpp elmLdirBatch / elmInirBatch: PERF counts
 extern uint32_t g_elm_loop_n, g_elm_gen_n;   // Z80_JLS.cpp: Z80::exec_nocheck_elm entries, shared-loop instructions
 extern uint32_t g_elm_ed_hist[256], g_elm_in_hist[256];   // Z80_JLS.cpp: ED second bytes the loop handed to the shared decoders, IN r,(C) ports
+extern uint32_t g_elm_dd_hist[512], g_elm_ddcb_hist[256], g_elm_slow_hist[256];   // Z80_JLS.cpp: DD/FD second bytes (FD +256), DDCB op bytes, nx_slow first bytes
+// " xx:n" for the k biggest of h[0..n), counts a frame; clears what it printed. FD entries print as 1xx.
+static int histTop(char* line, int pos, int cap, uint32_t* h, int n, int k) {
+    for (int j = 0; j < k && pos < cap - 14; j++) {
+        int best = -1; uint32_t bv = 0;
+        for (int i = 0; i < n; i++) if (h[i] > bv) { bv = h[i]; best = i; }
+        if (best < 0) break;
+        pos += snprintf(line + pos, cap - pos, best > 255 ? " F%02X:%u" : " %02X:%u", best & 255, (unsigned)(bv / 60));
+        h[best] = 0;
+    }
+    return pos;
+}
 namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2]; }
 extern volatile uint32_t g_c1_loop_us[3];   // main.cpp render_core (PERF_TRACE): core1 us in sd_async_pump / GS::pump / Hgfx::core1Pump
 #if HOST_BUILD && PERF_TRACE
@@ -974,6 +986,17 @@ void writeReg(uint8_t r, uint8_t v) {
         s_e[r] = v;
         if (r == REG_CMD) execCmd(v);
     }
+}
+
+// writeReg for a register without side effects, in RAM: the eLeMeNt loop's store to the
+// register page (Z80_JLS.cpp elmPoke8Slow; PLANETOS ~1 880 a frame of OX / OY / INDEX).
+// The caller keeps CMD (busy time, execCmd) and VP / MODE / OY (remap, the read hook) out.
+ELM_OVL_CODE void writeRegFast(uint8_t r, uint8_t v) {
+    if (r >= REG_COUNT) return;
+    s_fbDirty = true;
+    s_r[r] = v;
+    if (queued()) { runFlush(); pushRaw(Q_REG | (uint32_t)r << 8 | v); }   // push() spelled out: GCC kept push in flash (a veneer from here, planet8)
+    else s_e[r] = v;
 }
 
 // Direct mode outlives the window by DIRECT_HOLD frames. PF2026 maps its chunky window
@@ -2989,6 +3012,19 @@ posted:
                     ::g_elm_in_hist[best] = 0;
                 }
                 Debug::log("[HGFX] ed/fr: %u |%s", (unsigned)(tot / 60), line);
+                {   // DD / FD: which prefixed ops would pay to paste into the eLeMeNt loop (FD shown as Fxx)
+                    uint32_t dd = 0, fd = 0, cb = 0, sl = 0;
+                    for (int i = 0; i < 256; i++) { dd += ::g_elm_dd_hist[i]; fd += ::g_elm_dd_hist[256 + i]; cb += ::g_elm_ddcb_hist[i]; sl += ::g_elm_slow_hist[i]; }
+                    char l2[240]; int p = 0;
+                    p = histTop(l2, p, sizeof(l2), ::g_elm_dd_hist, 512, 16);
+                    p += snprintf(l2 + p, sizeof(l2) - p, " | cb:");
+                    p = histTop(l2, p, sizeof(l2), ::g_elm_ddcb_hist, 256, 4);
+                    p += snprintf(l2 + p, sizeof(l2) - p, " | slow %u:", (unsigned)(sl / 60));
+                    histTop(l2, p, sizeof(l2), ::g_elm_slow_hist, 256, 5);
+                    Debug::log("[HGFX] dd/fr: DD %u FD %u DDCB %u |%s", (unsigned)(dd / 60), (unsigned)(fd / 60), (unsigned)(cb / 60), l2);
+                    for (int i = 0; i < 512; i++) ::g_elm_dd_hist[i] = 0;
+                    for (int i = 0; i < 256; i++) { ::g_elm_ddcb_hist[i] = 0; ::g_elm_slow_hist[i] = 0; }
+                }
                 Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus, blits %u) | batch ldir %u/%uB inir %u/%uB",
                            Elm::g_elm_io_cnt[0] / 60, Elm::g_elm_io_cnt[1] / 60, Elm::g_elm_io_cnt[2] / 60, Elm::g_elm_io_us[0] / 60,
                            Elm::g_elm_io_cnt[3] / 60, Elm::g_elm_io_cnt[4] / 60, Elm::g_elm_io_us[1] / 60, Elm::g_elm_io_us[2] / 60,

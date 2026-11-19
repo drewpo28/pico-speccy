@@ -231,6 +231,14 @@ elm = []
 for line in out:
     if line.startswith('case 0xED:'):
         line = 'case 0xED: goto nx_slow;'
+    # CB and DD / FD: hand-written bodies after the switch in Z80_JLS.cpp (nx_cb, nx_xy:
+    # PLANETOS's IY maths, 2026-11-19); what they do not take goes on to nx_slow.
+    elif line.startswith('case 0xCB:'):
+        line = 'case 0xCB: goto nx_cb;'
+    elif line.startswith('case 0xDD:'):
+        line = 'case 0xDD: nx_xyp = &regIX; goto nx_xy;'
+    elif line.startswith('case 0xFD:'):
+        line = 'case 0xFD: nx_xyp = &regIY; goto nx_xy;'
     line = re.sub(r'NextMemory::(addressOnBus|addressOnBusIR|peek8|peek16|poke8|poke16)_nx\(', r'ElmMemory::\1_elm(', line)
     line = line.replace('nxPush(', 'elmPush(').replace('nxPop()', 'elmPop()').replace('nxIdleNote()', 'nxCheckTrdos()')
     line = line.replace('g_next_fastrd', 'g_elm_fastrd')

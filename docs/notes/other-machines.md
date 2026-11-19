@@ -1114,6 +1114,95 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   COW: most windows save 0 blocks (the capture ends before core0 writes), but some windows save 26-36 in one
   capture, and the 24 limit then puts on the full-copy backoff (5-27 frames of 60). FPS holds through it.
 
+**PLANETOS at 35.6 FPS on hw (2026-11-19, DVp2w, log `...14.38.42.214`, PC profile `debug/DVp2w-elm-planet1-1.1.3`, log `...14.44.55.800`).**
+- 28 MHz, HALT at T 528 667 of 573 440, `cpu=27.1 ms`, every frame ~8.5 ms late; core1 (engine 11.9 + draw 5 ms),
+  frameEnd (0.1 ms), batches (0) and interrupts are fine. XIP 1.39 M misses/s (PF2026 0.6 M). `[NEG2] post=27.7` is the
+  CPU time misfiled (`cpu` there is a delta of a counter PERF resets every frame) - read `[PERF] cpu=`.
+- core0 PROF (267 windows): eLeMeNt loop 27 %; **DD/FD prefixes through the shared decoder ~30 %** (`peek8` 11.6,
+  `fetchOpcode` 8.6, `decodeDDFDLD8` / `decodeOpcodefd` / `decodeDDFD` / dd / DDFDCB / cb ~10, `nextOpcodeSlow` 1.9:
+  elm_dispatch.inc sends 0xDD / 0xFD to `nx_slow`, whose decoder uses the generic accessors); **LCU ~12 %**
+  (`memWriteCold` 5.4 + `ElmLcu::divide` 3.9 + `write` 1.8 + `reset` 0.6, all flash, libgcc 64-bit divide on every byte
+  written to A..M); `GS::getLiveLR` 3.2.
+- The PERF_HIST build overflows `.elmovl` at AUTO: `build-all/PICO_DV_W-elmperf` has `ELMOVL_WIN_SIZE=16384` (diagnostic only).
+- **LCU fix (NOT hw-tested; `debug/DVp2w-elm-planet2-1.1.3` 14:55, same PROF config):** `divide` takes SDIV when M fits
+  32 bits (20 M random M/D cases vs the 64-bit path: 0 differences; tools/elm_lcu_test 29/29), `write` / `recalc` /
+  `divide` always_inline into `memWriteCold` (one flash call per byte instead of four). RAM sections unchanged.
+  **hw 2026-11-19 15:03 (planet2, log `...15.03.44.622`): no real change.** cpu 27.8 ms (planet1 28.0), realFPS 34.6;
+  the LCU share fell 12.8 -> 10.8 %. Line profile of `memWriteCold`: ~43 % of its samples on the entry lines
+  (divMMC test, `s_r->win[]`), the rest spread over the PSRAM block's loads and stores: the cost is LATENCY (cold
+  flash code with XIP at 1.4 M misses/s, the 8K LCU block in PSRAM), not the divide. The chain per byte is
+  elmPoke8Slow / decoder -> `Z80Ops::poke8` -> `poke8_cold` -> `Elm::memWrite` (.dmaovl) -> `memWriteCold` (flash).
+  A RAM short-circuit would have to sit in `Elm::memWrite` (both paths pass it; `.dmaovl` must not grow) and call
+  `.elmovl` code only when that window is loaded (no window without the butter budget). Not done: ~2 ms at best.
+  Next lever: DD/FD in the eLeMeNt loop (~30 %, costs `.elmovl` RAM = the pages-5/7 tail).
+- **DD/FD mix (planet3, PERF `[HGFX] dd/fr`, log `...15.11.01.703`):** a frame sends 20 514 instructions to nx_slow:
+  FD 13 270 (7E 4 021, 77 1 608, 19 1 206, 86 1 206, 4E / 56 / 5E / 72 / 73 804 each, FD CB 804 = all `BIT 1,(IY+d)`,
+  96 402), plain CB 4 032, ED 3 090, DD 120. All IY, nothing exotic.
+- **CB + DD/FD in the loop (2026-11-19, NOT hw-tested; `debug/DVp2w-elm-planet4-1.1.3` 15:24:41, PERF + PROF):**
+  generator: elm flavour `case 0xCB: goto nx_cb`, `0xDD` / `0xFD`: `nx_xyp = &regIX/&regIY; goto nx_xy`; bodies by
+  hand after the switch in Z80_JLS.cpp. Taken: every CB; ADD XY,rr, LD XY,nn, INC / DEC XY, PUSH / POP XY, INC / DEC /
+  LD n (XY+d), LD r,(XY+d), LD (XY+d),r, ALU A,(XY+d), every DD/FD CB (one shared CB tail, `nx_cbop`). The rest
+  (IXh/IXl, EX (SP),XY, JP (XY), LD SP,XY, LD (nn),XY, prefix chains, a prefix at #FFFF) goes to nx_slow with nothing
+  consumed. Size: first draft +3.5 KB (GCC -O2 pasted the rotate switch twice and seven accessor copies), compact
+  version +2 424 B: `exec_nocheck_elm` 10 164 -> 12 588 B, `.elmovl` 13 112 -> 15 536 (AUTO 15 616; PERF 16 272 in
+  16 384). The pages57 tail shrinks by that; the tables that no longer fit go to the heap at Elm::reset, AFTER the
+  early HGFX arena claim (arena unchanged, heap after boot ~-2.3 KB). z80bench `elm` mode vs HEAD: fuzz 3 seeds x
+  500 k pairs identical hashes + memcrc; `mix game` identical, -1.8 % ARM insns; a PLANETOS-like IY loop (planet.com
+  in the session scratchpad) identical state, **-31 % ARM insns**.
+  **hw 2026-11-19 15:27 (planet4, log `...15.27.35.754`): cpu 28.0 -> 21.4 ms, realFPS 34.6 -> 44.3**, `dd/fr` FD 0 /
+  CB 0 (slow: ED 3 090 only), aud hold 1 500 -> 195. Arena still 50 176 B; heap after boot 16.5 KB (largest 9.3 KB);
+  pages57 tail 10 984 B in the PERF build. PROF: loop 55 %, the store chain to the LCU ~23 % (`memWriteCold` 15.6, almost
+  all line 1194 + its entry; `poke8_cold` 4.2, `poke8` 1.4, `memWrite` 0.9, `elmPoke8Slow` 0.8), `Hgfx::push` 3.8.
+- **LCU store in `elmPoke8Slow` (NOT hw-tested; `debug/DVp2w-elm-planet5-1.1.3` 15:34:27, PERF + PROF):** every
+  store of the loop to a masked slot passes there; a WK_LCU page (`Elm::wrKind`, W_LCU = WK_LCU static_assert) at
+  #4000+ with `Elm::lcuRegs` set, no line tick in its 3 T and no COW capture -> `ElmLcu::write` in RAM, T + 3, as
+  poke8_cold did. +284 B `.elmovl` (15 824 in a 15 872 window; PERF 16 560 / 16 640). Fuzz 3 x 500 k and the IY loop
+  identical to base; elm_lcu_test 29/29.
+  **hw 15:35 (planet5, log `...15.35.26.720`): no change (cpu 21.6 ms) - the branch never fired.** Host counters
+  (build-all/host, PLANETOS as a TAP from BAS+COD, isolated root in the scratchpad): PLANETOS maps the LCU at **#0000**
+  (slot 0, stores to #0004...), 99.9998 % of its LCU stores come through `elmPoke8Slow`, and the `address >= 0x4000`
+  condition refused every one. Below #4000 the shared path differs only by the divMMC page (`memWrite` /
+  `memWriteCold`: `a < 0x4000 && divmmc_mapped` -> not the LCU), so the bound is now exactly that. Host after the fix:
+  `memWriteCold` reached < 2^18 times in 90 s (was ~5 M), the demo draws as before. `debug/DVp2w-elm-planet6-1.1.3`
+  (15:47:20, PERF + PROF, NOT hw-tested); `.elmovl` 15 832 / 15 872, PERF 16 568 / 16 640.
+  **hw 16:18 (planet6, log `...16.18.32.210`): cpu 21.6 -> 20.7 ms, realFPS 44 -> 45.6**, aud hold ~60. `memWriteCold`
+  15 -> 1.2 %, but `elmPoke8Slow` 7.7 % (the LCU block in PSRAM: ~515 samples on the write, ~280 on the gate). The
+  reads were next: `MemESP::readbyte` 4 % + `Elm::splitRead` 2.5 % (flash) = the results read back from slot 0.
+  PLANETOS's own code: `LD (0000),HL` / `LD (0004),DE` in, `LD A,(0011)` / `LD HL,(0011)` out (M bits 8.., a
+  fixed-point product).
+- **LCU reads + word stores in the slow accessors (2026-11-19, NOT hw-tested; `debug/DVp2w-elm-planet7-1.1.3`
+  16:29:16, PERF + PROF):** `elmPeek8Slow` / `elmPeek16Slow` read the LCU slot below #4000 directly (+3 T a byte, +1 in
+  a ROM wait slot = splitRead's Draw(1); a word = peek16_generic's Draw(6) + both halves), declining on divMMC, a
+  chunky split (`Elm::g_elm_chunkSplit`, new), a read breakpoint, the COPY latch, NeoGS ZX-DMA, `g_ts_fastrd > 1`, a
+  line tick within 8 T or a `Draw` other than TsDraw / Blank. `elmPoke16Slow` takes each byte through the same store
+  gate (`elmLcuStore`, one copy of ElmLcu::write). Host: 1 048 186 of 1 048 186 LCU reads taken (split 03 = OverClock
+  ROM wait, Draw = Blank), picture as before; fuzz 3 x 500 k identical. `.elmovl` 15 976 / 16 128 (PERF 16 712 / 16 896).
+  **hw 16:23 (planet7, log `...16.23.03.337`): cpu 20.7 -> 20.3 ms, realFPS 45.6 -> 46.4**, aud hold ~130; readbyte /
+  splitRead gone. PROF now: loop 65.6 % (the Z80 itself), `elmLcuStore` 5.6 % (the 64-byte block in PSRAM), the HGFX
+  register / colour stores (~1 880 queue entries a frame) through poke8 -> poke8_cold -> Elm::memWrite -> memWriteCold
+  (W_REG / W_COL) -> Hgfx::writeReg / writeColour -> Hgfx::push, all but the first two in flash, ~12 %;
+  `Elm::portIn` 3.6 % (IN A,(C) on #2F, 904 a frame, through decodeED). Session total: 28.0 -> 20.3 ms, 34.6 -> 46.4 FPS.
+- **HGFX register store in RAM (2026-11-19, NOT hw-tested; `debug/DVp2w-elm-planet8-1.1.3` 16:44:06, PERF + PROF).**
+  Host census (PICOSPECCY_ELMLOG, 40 s): OY 78 k, INDEX 60 k, OX 60 k, MASK 1.5 k, CMD / VP 300. `elmPoke8Slow` /
+  `elmPoke16Slow` take a W_REG page (WK_REG = W_REG static_assert) at #4000+ outside an ATM ROM window, no line tick,
+  no COW: `Hgfx::writeRegFast` (ElmHgfx.cpp, `.elmovl`: writeReg minus CMD - `s_fbDirty`, `s_r`, push Q_REG or `s_e`)
+  plus the plain store under the window (memWriteCold returned false there). CMD, MODE, and VP / OY / OY+1 while an HGFX
+  Area slot is mapped (`Elm::g_elm_hgfxSlots`, new mirror: remap) stay generic. Host: the [HREG] lines left are CMD
+  (~1.5 a frame) and a few others; PLANETOS, HGFXAGON, HGFXCUBE, TETRIS draw right; fuzz 3 x 500 k identical.
+  Cost +176 B: `.elmovl` 16 160 / 16 384 (PERF 16 896 / 17 152); `.dmaovl` unchanged (8 032).
+  **hw 16:58 (planet8, log `...16.58.03.607`): cpu 20.3 -> 19.8 ms, realFPS 46.4 -> 47.4-47.9**, aud hold ~50. Not all of
+  it: `Hgfx::push [F]` 3.3 % - GCC kept `static inline push` out of line in flash and writeRegFast tail-called it through
+  a veneer (objdump: `b.w ___ZN4HgfxL4pushEm_veneer`); `poke8_cold` 3 % = plain RAM pages in the slots the loop masks
+  for one window page. **planet9 (17:16:50, NOT hw-tested):** writeRegFast spells out `runFlush(); pushRaw()` (ELM_INL,
+  no veneer left), and `elmPlainWrOk` / `elmPlainStore` take a wrKind-0 page at #4000+ outside an ATM ROM window
+  (poke8_cold's own path for it: +3 T, dirty mark, store). Host: PLANETOS / HGFXAGON / HGFXCUBE / TETRIS draw right;
+  fuzz identical. `.elmovl` 16 328 / 16 384 (56 B left), PERF 17 128 / 17 152.
+  **hw 17:18 (planet9, log `...17.18.38.311`): cpu 19.8 -> 19.4 ms, realFPS 48.1-48.4** (pacing cap 48.8), aud hold
+  ~16, `[NEG2]` 19-35 of 60 frames still late (max 25.7-26.9 ms: heavy frames). Heap after boot 14.6 KB (largest 7.4
+  KB; was 20.7 / 13.5 before the session: the tables pushed out of the pages57 tail). PROF: loop 71 %, `elmLcuStore`
+  5.8 % (the block in PSRAM), `Elm::portIn` 4.8 % (#2F), `writeRegFast` 2.9 % (the PSRAM queue). **Session total:
+  28.0 -> 19.4 ms, 34.6 -> 48.3 FPS.** Left if wanted: the LCU block / an SRAM shadow (~1 ms), #2F IN in RAM (~1 ms).
+
 **PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
 - The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,
   steady. core1 is not the limit (`[HGFX] c1 engine ~650 us/fr`, `draw ~13.5 ms`). XIP 99.6 % hit, 0.6 M misses/s.

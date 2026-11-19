@@ -16,10 +16,25 @@ static inline void     put32(uint8_t* r, int o, uint32_t v) { memcpy(r + o, &v, 
 static inline int64_t  get64(const uint8_t* r, int o) { uint64_t v; memcpy(&v, r + o, 8); return (int64_t)v; }
 static inline void     put64(uint8_t* r, int o, uint64_t v) { memcpy(r + o, &v, 8); }
 
-static inline void divide(uint8_t* r) {
+#define ELM_LCU_INLINE inline __attribute__((always_inline))
+
+// Every guest byte written to A..M runs this (PLANETOS: ~12 % of core0 at 28 MHz in
+// four flash calls and libgcc's 64-bit divide, hw PC profile 2026-11-19). M in 32 bits
+// (the usual 16-bit maths) takes the core's SDIV instead; same truncation, same results.
+static ELM_LCU_INLINE void divide(uint8_t* r) {
     const int64_t m = get64(r, M);
-    const int64_t d = get32(r, D);
+    const int32_t d32 = get32(r, D);
     int32_t q, rem;
+    if (__builtin_expect(m == (int64_t)(int32_t)m && d32 != 0 && !(m == INT32_MIN && d32 == -1), 1)) {
+        q = (int32_t)m / d32;
+        rem = (int32_t)m - q * d32;
+        put32(r, Q, (uint32_t)q);
+        put32(r, R, (uint32_t)rem);
+        put32(r, CPLZ, ~(uint32_t)q);
+        put32(r, CPLZ + 4, ~(uint32_t)rem);
+        return;
+    }
+    const int64_t d = d32;
     if (d == 0) {
         // Documented for M >= 0; the negative case mirrors the overflow rule.
         q = rem = m >= 0 ? INT32_MAX : INT32_MIN;
@@ -35,7 +50,7 @@ static inline void divide(uint8_t* r) {
     put32(r, CPLZ + 4, ~(uint32_t)rem);
 }
 
-static inline void recalc(uint8_t* r, bool fromMembers) {
+static ELM_LCU_INLINE void recalc(uint8_t* r, bool fromMembers) {
     if (fromMembers) {
         const int64_t m = (int64_t)((uint64_t)(int64_t)get32(r, A) * (uint64_t)(int64_t)get32(r, B)
                                     + (uint64_t)(int64_t)get32(r, C));
@@ -52,7 +67,7 @@ static inline void reset(uint8_t* r) {
 }
 
 // A guest write: every write to the block starts the calculation.
-static inline void write(uint8_t* r, uint8_t off, uint8_t v) {
+static ELM_LCU_INLINE void write(uint8_t* r, uint8_t off, uint8_t v) {
     if (off >= SIZE) return;
     if (off < Q) {                       // members and M
         r[off] = v;

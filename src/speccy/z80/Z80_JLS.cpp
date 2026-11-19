@@ -40,6 +40,7 @@
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Element/ElmHgfx.h"   // Hgfx::g_pairPushNow / pairPushPoll: the eLeMeNt loops poll it
+#include "speccy/machines/Element/ElmLcu.h"    // elmPoke8Slow: the LCU store in RAM
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
 #include "fs/FileUtils.h"
@@ -1855,22 +1856,116 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
 // instructions per Z80 instruction on the `game` mix, the Next switch 37.5. Below
 // 0x4000 (ROM, divSD, URAM zone 0) the shared loop fetches; the ED prefix, the
 // ports and the traps go to it as well (nx_slow). The idle hook is Next-only.
+extern volatile uint8_t g_ngs_zxdma;   // GS.h: the NeoGS ZX-DMA window (gsDmaPeek8)
 namespace ElmMemory {
+// The LCU slot in RAM (PLANETOS maps it at #0000: `LD (0000),HL` / `LD (0004),DE` in,
+// `LD A,(0011)` / `LD HL,(0011)` out). The generic chain for a store was poke8 ->
+// poke8_cold -> Elm::memWrite -> memWriteCold (flash) -> ElmLcu::write, ~23 % of core0
+// at 28 MHz once DD/FD ran in the loop (hw PC profile 2026-11-19, planet4); a read went
+// peek8_generic -> gsDmaPeek8 -> Elm::splitRead -> MemESP::readbyte (both flash).
+// Same result and T: a store +3, a read +3 and +1 in a ROM wait slot (splitRead's
+// Draw(1)), a word as two bytes (peek16_generic: Draw(6), lsb then msb). Not across a line
+// tick, not under the divMMC page, the COW capture, a chunky split, a read breakpoint, the
+// HGFX COPY latch or the NeoGS ZX-DMA window; Draw is the plain T counter there.
+static inline bool elmLcuWrOk(uint32_t t, uint32_t a) {
+    return !(a < 0x4000 && MemESP::divmmc_mapped) && Elm::wrKind && Elm::wrKind[a >> 8] == Elm::WK_LCU
+        && Elm::lcuRegs && t + 3 < VIDEO::ts_line_t && !Hgfx::g_cowOn;
+}
+// The HGFX register page (W_REG): Elm::memWriteCold's case in RAM - Hgfx::writeReg, and
+// the byte lands in RAM under the window too (memWriteCold returns false, poke8_cold's
+// tsPoke8Store; at #4000+ outside an ATM ROM window that is the plain store). CMD
+// (busy time, execCmd), MODE (the read hook) and VP / OY / OY+1 with an HGFX Area slot
+// mapped (remap) keep the generic chain. PLANETOS: ~1 880 a frame (OX, OY, INDEX).
+static inline bool elmRegWrOk(uint32_t t, uint32_t a) {
+    if (a < 0x4000 || !Elm::wrKind || Elm::wrKind[a >> 8] != Elm::WK_REG) return false;
+    if (((g_atm_ro >> (a >> 14)) & 1) || t + 3 >= VIDEO::ts_line_t || Hgfx::g_cowOn) return false;
+    const uint8_t r = (uint8_t)a;
+    if (r == Hgfx::REG_CMD || r == Hgfx::REG_MODE) return false;
+    if (Elm::g_elm_hgfxSlots && (r == Hgfx::REG_VP || r == Hgfx::REG_OY || r == Hgfx::REG_OY + 1)) return false;
+    return true;
+}
+// A plain page (wrKind 0) in a slot the loop sends here because another page of the
+// slot is a window: poke8_cold's store for it (no memWrite for kind 0) - +3 T, the ATM
+// ROM window gate, the dirty mark and the byte. PLANETOS: its register page's slot.
+static inline bool elmPlainWrOk(uint32_t t, uint32_t a) {
+    return a >= 0x4000 && Elm::wrKind && Elm::wrKind[a >> 8] == 0 && !((g_atm_ro >> (a >> 14)) & 1)
+        && t + 3 < VIDEO::ts_line_t;
+}
+static inline void elmPlainStore(uint32_t a, uint32_t v) {
+    const uint32_t slot = a >> 13;
+    *mem_desc_t::bank_dirty[slot] = true;
+    MemESP::ramCurrent[slot][a & 0x1FFF] = (uint8_t)v;
+}
+ELM_OVL_CODE __attribute__((noinline)) void elmRegStore(uint32_t a, uint32_t v) {
+    Hgfx::writeRegFast((uint8_t)a, (uint8_t)v);
+    const uint32_t slot = a >> 13;
+    *mem_desc_t::bank_dirty[slot] = true;
+    MemESP::ramCurrent[slot][a & 0x1FFF] = (uint8_t)v;
+}
+ELM_OVL_CODE __attribute__((noinline)) void elmLcuStore(uint32_t a, uint32_t v) {
+    const uint32_t off = a & 0x1FFF;
+    if (off < ElmLcu::SIZE) ElmLcu::write(Elm::lcuRegs, (uint8_t)off, (uint8_t)v);
+}
+// -1: not an LCU read this path may take; else the extra wait T.
+static inline int elmLcuRdWait(uint32_t t, uint32_t a) {
+    if (a >= 0x4000 || MemESP::divmmc_mapped || !Elm::wrKind || Elm::wrKind[a >> 8] != Elm::WK_LCU) return -1;
+    const uint32_t slot = a >> 13;
+    if (g_ts_fastrd > 1 || Config::numMemReadBP || Elm::g_elm_vram_rd || g_ngs_zxdma
+        || ((Elm::g_elm_chunkSplit >> slot) & 1) || t + 8 >= VIDEO::ts_line_t
+        || (VIDEO::Draw != &VIDEO::TsDraw && VIDEO::Draw != &VIDEO::Blank)) return -1;
+    return (Elm::g_elm_split >> slot) & 1;
+}
 ELM_OVL_CODE __attribute__((noinline)) uint32_t elmPeek8Slow(uint32_t t, uint32_t address) {
+    const int w = elmLcuRdWait(t, address);
+    if (w >= 0) {
+        CPU::tstates = t + 3 + (uint32_t)w;
+        return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
+    }
     CPU::tstates = t;
     return Z80Ops::peek8((uint16_t)address);
 }
 ELM_OVL_CODE __attribute__((noinline)) uint32_t elmPeek16Slow(uint32_t t, uint32_t address) {
+    const uint16_t a1 = (uint16_t)(address + 1);
+    if ((address >> 13) == (uint32_t)(a1 >> 13)) {
+        const int w = elmLcuRdWait(t, address);
+        if (w >= 0 && Elm::wrKind[a1 >> 8] == Elm::WK_LCU) {
+            CPU::tstates = t + 6 + 2u * (uint32_t)w;
+            const uint8_t* p = MemESP::ramCurrent[address >> 13];
+            return (uint32_t)p[address & 0x1FFF] | (uint32_t)p[a1 & 0x1FFF] << 8;
+        }
+    }
     CPU::tstates = t;
     return Z80Ops::peek16((uint16_t)address);
 }
 ELM_OVL_CODE __attribute__((noinline)) void elmPoke8Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+    if (elmLcuWrOk(t, address)) {
+        CPU::tstates = t + 3;
+        elmLcuStore(address, value);
+        return;
+    }
+    if (elmRegWrOk(t, address)) {
+        CPU::tstates = t + 3;
+        elmRegStore(address, value);
+        return;
+    }
+    if (elmPlainWrOk(t, address)) {
+        CPU::tstates = t + 3;
+        elmPlainStore(address, value);
+        return;
+    }
     CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
     Z80Ops::poke8((uint16_t)address, (uint8_t)value);
 }
 ELM_OVL_CODE __attribute__((noinline)) void elmPoke16Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
     CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
-    for (int i = 1; i >= 0; i--) Z80Ops::poke8((uint16_t)(address + i), (uint8_t)(value >> (8 * i)));
+    for (int i = 1; i >= 0; i--) {   // high byte first, as before
+        const uint16_t a = (uint16_t)(address + i);
+        const uint8_t v = (uint8_t)(value >> (8 * i));
+        if (elmLcuWrOk(CPU::tstates, a)) { CPU::tstates += 3; elmLcuStore(a, v); }
+        else if (elmRegWrOk(CPU::tstates, a)) { CPU::tstates += 3; elmRegStore(a, v); }
+        else if (elmPlainWrOk(CPU::tstates, a)) { CPU::tstates += 3; elmPlainStore(a, v); }
+        else Z80Ops::poke8(a, v);
+    }
 }
 }
 #define elmPush(w) do { const uint16_t nx_pw_ = (uint16_t)(w); REG_SP -= 2; ElmMemory::poke16_elm(nx_t, nx_pc, REG_SP, nx_pw_); } while (0)
@@ -1880,6 +1975,9 @@ ELM_OVL_CODE __attribute__((noinline)) void elmPoke16Slow(uint32_t t, uint32_t p
 #if PERF_TRACE
 uint32_t g_elm_loop_n, g_elm_gen_n;   // ElmHgfx.cpp prints and clears them: loop entries, shared-loop iterations
 uint32_t g_elm_ed_hist[256];          // second byte of every ED the loop sent to the shared handlers
+uint32_t g_elm_dd_hist[512];          // second byte of every DD (0..255) / FD (256..511) the loop sent there
+uint32_t g_elm_ddcb_hist[256];        // the op byte of DD CB d op / FD CB d op
+uint32_t g_elm_slow_hist[256];        // every first byte that took nx_slow
 uint32_t g_elm_in_hist[256];          // the C of every IN r,(C) among them
 #endif
 #define elmFetchM1() do { nx_op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; nx_r++; nx_pc++; } while (0)
@@ -1940,14 +2038,148 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
 #if PERF_TRACE && PERF_HIST
         z80_op_hist[nx_op]++;
 #endif
-        uint8_t nx_v; uint8_t* nx_p; bool nx_cc;
+        uint8_t nx_v; uint8_t* nx_p; bool nx_cc; RegisterPair* nx_xyp;
+        uint8_t nx_cbo, nx_cb53; uint16_t nx_cba; uint8_t* nx_cbcp;   // nx_cbop's operands (CB / DD CB / FD CB)
         switch (nx_op) {
 #include "elm_dispatch.inc"
+        // CB and the hot DD / FD set in the loop (PLANETOS, hw 2026-11-19: 13 270 FD + 4 032
+        // CB a frame through dcOpcode[] and the generic accessors = ~30 % of core0 at 28 MHz).
+        // Same order of T-states, R, WZ and flags as decodeOpcodecb / decodeCB and decodeDDFD /
+        // decodeDDFDLD8 / decodeDDFDALU8 / decodeDDFDCB; the second M1 is a plain load like
+        // elmFetchM1 (>= 0x4000 here). Longest body after the first M1: SET b,(IY+d), 19 T
+        // (NX_WIN 20). Anything else - and a prefix byte at #FFFF - goes on to nx_slow
+        // untouched (nothing consumed yet).
+        nx_cb: {
+            if (__builtin_expect(nx_pc < 0x4000, 0)) goto nx_slow;
+            nx_t += 4;
+            nx_cbo = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
+            nx_r++; nx_pc++;
+            nx_p = reg8[nx_cbo & 7];                  // null = (HL)
+            nx_cbcp = nullptr;
+            nx_cba = REG_HL;
+            nx_cb53 = REG_W;
+            nx_v = nx_p ? *nx_p : ElmMemory::peek8_elm(nx_t, nx_cba);
+            goto nx_cbop;
+        }
+        nx_xy: {
+            if (__builtin_expect(nx_pc < 0x4000, 0)) goto nx_slow;
+            const uint8_t op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
+            RegisterPair& xy = *nx_xyp;
+            switch (op) {
+                case 0x09: case 0x19: case 0x29: case 0x39:   // ADD XY,rr
+                    nx_t += 4 + 7; nx_r++; nx_pc++;
+                    add16(xy, op == 0x09 ? REG_BC : op == 0x19 ? REG_DE : op == 0x29 ? xy.word : REG_SP);
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                case 0x21:                                    // LD XY,nn
+                    nx_t += 4; nx_r++; nx_pc++;
+                    xy.word = ElmMemory::peek16_elm(nx_t, nx_pc);
+                    nx_pc += 2;
+                    goto nx_xydone;
+                case 0x23: case 0x2B:                         // INC / DEC XY
+                    nx_t += 4 + 2; nx_r++; nx_pc++;
+                    xy.word += op == 0x23 ? 1 : 0xFFFF;
+                    goto nx_xydone;
+                case 0x34: case 0x35: case 0x36:
+                case 0x46: case 0x4E: case 0x56: case 0x5E: case 0x66: case 0x6E: case 0x7E:
+                case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x77:
+                case 0x86: case 0x8E: case 0x96: case 0x9E: case 0xA6: case 0xAE: case 0xB6: case 0xBE:
+                case 0xCB:
+                    break;
+                default: goto nx_slow;
+            }
+            // (XY+d): M1, d, WZ = XY + d.
+            nx_t += 4; nx_r++; nx_pc++;
+            const uint16_t a = (uint16_t)(xy.word + (int8_t)ElmMemory::peek8_elm(nx_t, nx_pc));
+            REG_WZ = a;
+            nx_pc++;
+            if (op == 0x36) {                             // LD (XY+d),n
+                const uint8_t v = ElmMemory::peek8_elm(nx_t, nx_pc);
+                nx_t += 2; nx_pc++;
+                ElmMemory::poke8_elm(nx_t, nx_pc, a, v);
+                goto nx_xydone;
+            }
+            if (op == 0xCB) {                             // DD CB d op / FD CB d op
+                nx_cbo = ElmMemory::peek8_elm(nx_t, nx_pc);   // not an M1: no R
+                nx_t += 2; nx_pc++;
+                nx_p = nullptr;
+                nx_cbcp = reg8[nx_cbo & 7];               // the undocumented copy (real H / L), null for 6
+                nx_cba = a;
+                nx_cb53 = (uint8_t)(a >> 8);
+                nx_v = ElmMemory::peek8_elm(nx_t, a);
+                goto nx_cbop;
+            }
+            nx_t += 5;
+            if ((op & 0xF8) == 0x70) {                    // LD (XY+d),r
+                ElmMemory::poke8_elm(nx_t, nx_pc, a, *reg8[op & 7]);
+                goto nx_xydone;
+            }
+            nx_v = ElmMemory::peek8_elm(nx_t, a);
+            if (op < 0x40) {                              // INC / DEC (XY+d)
+                nx_t += 1;
+                if (op == 0x34) inc8(nx_v); else dec8(nx_v);
+                nx_qs = nx_r;
+                ElmMemory::poke8_elm(nx_t, nx_pc, a, nx_v);
+                goto nx_xydone;
+            }
+            if (op < 0x80) { *reg8[(op >> 3) & 7] = nx_v; goto nx_xydone; }   // LD r,(XY+d)
+            switch ((op >> 3) & 7) {                      // ALU A,(XY+d)
+                case 0: goto nx_alu0;
+                case 1: goto nx_alu1;
+                case 2: goto nx_alu2;
+                case 3: goto nx_alu3;
+                case 4: goto nx_alu4;
+                case 5: goto nx_alu5;
+                case 6: goto nx_alu6;
+                default: goto nx_alu7;
+            }
+        }
+        // The CB operation for both: nx_cbo = op, nx_v = operand, nx_p = register (null =
+        // memory at nx_cba), nx_cbcp = DDCB's register copy, nx_cb53 = BIT (mem)'s 5/3 source.
+        nx_cbop: {
+            const uint8_t n = (nx_cbo >> 3) & 7, mask = (uint8_t)(1u << n);
+            switch (nx_cbo >> 6) {
+                case 0:
+                    switch (n) {
+                        case 0: rlc(nx_v); break;
+                        case 1: rrc(nx_v); break;
+                        case 2: rl(nx_v);  break;
+                        case 3: rr(nx_v);  break;
+                        case 4: sla(nx_v); break;
+                        case 5: sra(nx_v); break;
+                        case 6: sll(nx_v); break;
+                        default: srl(nx_v); break;
+                    }
+                    nx_qs = nx_r;
+                    break;
+                case 1:
+                    bitTest(mask, nx_v);
+                    if (!nx_p) { sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (nx_cb53 & FLAG_53_MASK); nx_t += 1; }
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                case 2: nx_v &= (uint8_t)~mask; break;
+                default: nx_v |= mask; break;
+            }
+            if (nx_p) *nx_p = nx_v;
+            else {
+                nx_t += 1;
+                ElmMemory::poke8_elm(nx_t, nx_pc, nx_cba, nx_v);
+                if (nx_cbcp) *nx_cbcp = nx_v;
+            }
+        }
+        nx_xydone:
+            break;
         }
         continue;
     nx_slow:
 #if PERF_TRACE
         if (nx_op == 0xED) { const uint8_t e2 = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; g_elm_ed_hist[e2]++; if ((e2 & 0xC7) == 0x40) { extern uint8_t elmGIdxNow(); g_elm_in_hist[REG_C == 0x3B ? (REG_B == 0x7D ? elmGIdxNow() : REG_B) : REG_C]++; } }   // C: the port; #xx3B: B, and for #7D3B (the g file) the register index
+        g_elm_slow_hist[nx_op]++;
+        if ((nx_op | 0x20) == 0xFD) {   // DD / FD: the second byte (FD at +256), DD CB d op / FD CB d op: op
+            const uint8_t e2 = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
+            g_elm_dd_hist[(nx_op == 0xFD ? 256 : 0) + e2]++;
+            if (e2 == 0xCB) { const uint16_t a4 = (uint16_t)(nx_pc + 2); g_elm_ddcb_hist[MemESP::ramCurrent[a4 >> 13][a4 & 0x1fff]]++; }
+        }
 #endif
         // LDIR / LDDR in the eLeMeNt's RAM code (WOWDEMO: ~350 a frame of ~10 bytes, each
         // entering decodeED + ldx + the generic accessors per repeat until the measured batch

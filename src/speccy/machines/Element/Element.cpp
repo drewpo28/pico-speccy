@@ -130,6 +130,7 @@ static Zone s_z[4];
 static uint8_t s_zone;
 static uint8_t s_active;              // Zones currently over the legacy mapping
 static uint8_t s_wpSlots, s_lcuSlots, s_hgfxSlots, s_flashSlots, s_framSlots; // 8K slot masks
+volatile uint8_t g_elm_hgfxSlots;     // s_hgfxSlots for the eLeMeNt loop's HGFX register store (OY moves a chunky slot: remap)
 static bool s_flashOpen;              // zone 0 shows the flash (layout 6)
 // The SetUp: a long reset on the board maps block 7 of the ROM Area at #0000; its stub
 // copies the code to #C000 and the first OUT of the relocated code (#7FFD, then
@@ -172,6 +173,7 @@ static void framCount(uint16_t off) {
 uint16_t slotPage[8];                 // HGFX Area: its 8K step in the Zone
 volatile uint8_t g_elm_split;         // chunky windows across the SRAM half's edge + the ROM wait slots (Element.h)
 static uint8_t s_chunkSplit;          // the chunky half of it (remap)
+volatile uint8_t g_elm_chunkSplit;    // s_chunkSplit for the eLeMeNt loop's LCU read (Z80_JLS.cpp elmLcuRd)
 static uint8_t s_romWaitSlots;        // the ROM wait half (cpuSpeed)
 uint8_t  g_elm_romWait;
 uint32_t g_elm_stretchK, g_elm_stretchFrac, g_elm_stretchDebt, g_elm_shT;
@@ -210,8 +212,9 @@ const uint8_t* vramHi = &s_vramHi0;
 // terms: the store also lands in the memory under a device window.
 enum { W_NONE, W_VRAM, W_REG, W_COL, W_PROTECT, W_LCU, W_CHUNKY, W_FDMA, W_LCU2, W_SDMA, W_HRXC, W_FLASH, W_FRAM, W_COW };
 static_assert(W_COW == WK_COW, "Element.h WK_COW");   // memWriteCold: no case - the store lands (false)
-static_assert(W_CHUNKY == WK_CHUNKY && W_VRAM == WK_VRAM, "Element.h WK_*");
+static_assert(W_CHUNKY == WK_CHUNKY && W_VRAM == WK_VRAM && W_LCU == WK_LCU && W_REG == WK_REG, "Element.h WK_*");
 static uint8_t* s_lcu;                // 8K, the registers at its start (reads are plain)
+uint8_t* lcuRegs;                     // s_lcu for the eLeMeNt loop's LCU write (Z80_JLS.cpp elmPoke8Slow); never freed
 
 static void readHookUpdate();
 // Everything windowsRebuild reads. remap runs on every URAM page / zone write and on the
@@ -934,6 +937,7 @@ static uint8_t* lcuBlock() {
     if (!s_lcu) {
         s_lcu = (uint8_t*)Buffer::palloc(0x2000, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (s_lcu) { memset(s_lcu, 0, 0x2000); ElmLcu::reset(s_lcu); }
+        lcuRegs = s_lcu;
     }
     return s_lcu;
 }
@@ -1057,9 +1061,11 @@ void remap() {
     s_wpSlots = wp;
     s_lcuSlots = lcu;
     s_hgfxSlots = hg;
+    g_elm_hgfxSlots = hg;
     s_flashSlots = fl;
     s_framSlots = fr;
     s_chunkSplit = split;
+    g_elm_chunkSplit = split;
     g_elm_split = split | s_romWaitSlots;
     if (Hgfx::g_cowOn) Hgfx::cowMark();  // the pair frame's captured screen in its new slots (the rebuild wiped the marks)
     elmMasksUpdate();
@@ -1612,6 +1618,7 @@ void reset() {
     s_zone = 0;
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
+    g_elm_hgfxSlots = 0;
     s_gamaPage = 0;
     s_p4k1FFD = s_p4kDFFD = s_p4kFDFD = s_p4k7FFD = 0;
     if (s_flashOpen) { s_flashOpen = false; ElmFlash::windowClosed(); }
@@ -1874,6 +1881,7 @@ static void cpuSpeed(uint8_t sel, bool quiet) {
 void leave() {
     Hgfx::arenaFree();
     g_elm_split = s_chunkSplit = s_romWaitSlots = 0;
+    g_elm_chunkSplit = 0;
     g_elm_romWait = 0;
     g_elm_stretchK = g_elm_stretchFrac = g_elm_stretchDebt = 0;
 }

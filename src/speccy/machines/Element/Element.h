@@ -62,7 +62,9 @@ void cpuFlags();
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM)
-enum { WK_VRAM = 1, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
+enum { WK_VRAM = 1, WK_REG = 2, WK_LCU = 5, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / register / LCU / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
+extern volatile uint8_t g_elm_hgfxSlots;      // the chunky (HGFX Area) 8K slots
+extern uint8_t* lcuRegs;                      // the LCU block (8K, registers at its start) once mapped
 void masksRefresh();                          // the eLeMeNt loop's slot masks again after a wrKind change (Hgfx's COW)
 extern const uint8_t* vramHi;                 // g_zxi_021: the VRAM window's high address byte
 extern uint16_t slotPage[8];                  // chunky window: its 8K step per slot
@@ -74,6 +76,7 @@ extern volatile uint8_t g_elm_vram_rd;        // non-zero while memRead is wante
 // Since 2026-11-18 the same gate also carries the ROM area (slots 0-1) under the OverClock ROM
 // wait below: splitRead charges the wait T and reads the slot as the funnel would.
 extern volatile uint8_t g_elm_split;
+extern volatile uint8_t g_elm_chunkSplit;      // the chunky-window half of g_elm_split (the rest: the ROM wait slots)
 uint8_t splitRead(uint16_t address);
 // e_zxi_030, the clocks that are not a power of two of 3.5 MHz (2026-11-18). All run on the
 // 28 MHz frame (multiplicator 3: the beam, the AY and the master counter stay in real time):
