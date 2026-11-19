@@ -977,3 +977,22 @@ never repeat. Host: `PICOSPECCY_KEYS="frame:Key:N"` holds a key N frames.
 The delay is a setting: Interface > Key repeat delay (`Config::kbd_rep_delay`, nvs
 `kbd_rep_delay` 0..3 = 250/500/750/1000 ms, default 1), `SET_KBD_REP_DELAY` appended
 last; read at each press, so a change applies to the next hold. Host-checked the row.
+
+## F8 stats bar: pico-amiga style, 8-aligned geometry (2026-11-19, hw-confirmed 2026-11-19 DVp2w on `debug/DVp2w-f8bar-1.1.3`: owner "всё хорошо показывает")
+
+- **Bug (owner, hw 2026-11-19, Profi in 720x576):** frozen border stripes at both ends
+  of the F8 box. The border renderers carve whole `brdcol_step` columns (8 px), the
+  box sat at x=188 with 144 px of text, so the carve was 184..336 and nobody painted
+  184..187 / 332..335. 320-wide layouts (x=168) happened to be aligned.
+- Now `VIDEO::OSD_BAR_W = 152`, `OSD_BAR_H = 20` (Video.h) are the one size every
+  carve uses (Video.cpp renderers, NextVideo `nxCarve`, DS80 paths, LED panel,
+  volume box, PAUSED badge, `clearStats`), and `osdGeomRecalc` puts the bar at
+  x 200 / 160 (8-aligned), y = bottom - 22. drawStats/drawVolumeBox paint the WHOLE
+  rect. Rule: anything drawn in the bar must cover OSD_BAR_W x OSD_BAR_H.
+- Look after pico-amiga's Win+F8 band (src/pico/ui/UiStats.cpp there): menu panel
+  colour, 1-px frame, line 1 C_WHITE, line 2 C_TEXT. The frame colour carries the
+  speed state the old background did (multiplicator 0..3 = 3.5/7/14/28 MHz: C_SEP,
+  C_SEL_BG, C_ACCENT, C_ICON_Y; max speed C_ICON_C). DS80 keeps classic colours.
+  LED panel untouched except its height (owner's choice).
+- RAM: no RAM code size change (immediates only). Host-checked in 640x480 and
+  720x576 (screenshots), then on hw.
