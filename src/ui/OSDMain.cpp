@@ -7526,6 +7526,7 @@ void OSD::EmulatorInfo() {
 
 extern "C" int hid_app_format_devices_info(char* buf, int bufsz);
 extern "C" int xinput_app_format_devices_info(char* buf, int bufsz);
+extern "C" int usb_enum_format_info(char* buf, int bufsz);
 
 // Snapshot for the new UI's live page (Help > HID devices).
 const char* hidInfoText() {
@@ -7534,8 +7535,11 @@ const char* hidInfoText() {
     char* const buf = osdInfoBuf();
     if (!buf) return "";
     buf[0] = '\0';
-    int xpos = xinput_app_format_devices_info(buf, OSD_INFO_BUF_SZ);
+    int epos = usb_enum_format_info(buf, OSD_INFO_BUF_SZ);   // enumeration state first
+    if (epos < 0) epos = 0;
+    int xpos = xinput_app_format_devices_info(buf + epos, OSD_INFO_BUF_SZ - epos);
     if (xpos < 0) xpos = 0;
+    xpos += epos;
     buf[xpos] = '\0';
     int hpos = hid_app_format_devices_info(buf + xpos, OSD_INFO_BUF_SZ - xpos);
     if (hpos < 0) hpos = 0;

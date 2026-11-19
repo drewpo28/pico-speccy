@@ -244,6 +244,60 @@ typedef struct {
 static uint32_t _usbh_active_mask = 0;   // bit N = rhport N initialised
 static usbh_data_t _usbh_data;
 
+// PICO-SPEC PATCH: enumeration watchdog + retry behind a hub (2026-11-19).
+// A 2.4G pad dongle behind a passive hub hung the enumeration at address 0: every
+// later attach (a keyboard in the next port) was deferred forever and the hub was
+// no longer polled. Upstream has no control-transfer timeout, a TU_ASSERT inside
+// process_enumeration() returns without enum_full_complete(), and a failed
+// enumeration behind a hub is never retried (the port's connection-change bit is
+// already cleared, so the hub never reports the device again).
+//  - watchdog: no enumeration step for ENUM_STALL_MS (and no scheduled delay) ->
+//    abort the in-flight control transfer and fail the enumeration;
+//  - a failed enumeration behind a hub frees what it addressed and re-runs from the
+//    port reset ENUM_HUB_RETRY_MAX times with a growing pause;
+//  - _enum_diag feeds tuh_enum_diag_get() for the HID devices page.
+enum {
+  ENUM_STALL_MS      = 1500,
+  ENUM_HUB_RETRY_MAX = 3,
+};
+static const uint16_t _enum_retry_delay_ms[ENUM_HUB_RETRY_MAX] = { 100, 300, 600 };
+
+// Requests at the new address may STALL behind a hub for a while after SET_ADDRESS
+// (hw 2026-11-19: a 2.4G pad dongle on a passive hub). Re-send after these pauses.
+static const uint16_t _enum_desc_retry_ms[] = { 20, 50, 100, 200, 300, 500, 800 };
+static struct {
+  tusb_control_request_t setup;
+  uint8_t*  buffer;
+  uintptr_t user_data;
+  uint8_t   daddr;
+} _enum_reask;
+
+static struct {
+  uint32_t last_ms;
+  uint32_t fail_ms;     // when the last enumeration failed (retry budget per port)
+  uint8_t  fail_hub;    // ...and where
+  uint8_t  fail_port;
+  uint8_t  desc_retry;  // device-descriptor re-asks spent on this address
+  uint16_t desc_fallback; // device descriptors that never came (VID/PID zeroed)
+  uint16_t attach;      // attach / detach events seen (all buses)
+  uint16_t detach;
+  uint8_t  state;
+  uint8_t  last_fail_state;
+  uint8_t  last_fail_result;
+  uint8_t  retry;
+  uint8_t  unplugged;   // the failure was the device leaving: no retry
+  uint8_t  completing;  // re-entrancy guard for enum_full_complete()
+  uint16_t fails;
+  uint16_t retried;
+  uint16_t watchdog;
+} _enum_diag;
+
+TU_ATTR_ALWAYS_INLINE static inline void enum_mark(uint8_t state) {
+  _enum_diag.last_ms = tusb_time_millis_api();
+  _enum_diag.state   = state;
+}
+static void enum_watchdog_check(void);
+
 typedef struct {
   TUH_EPBUF_TYPE_DEF(tusb_control_request_t, request);
   TUH_EPBUF_DEF(ctrl, CFG_TUH_ENUMERATION_BUFSIZE);
@@ -457,6 +511,26 @@ bool tuh_connected(uint8_t daddr) {
     TU_VERIFY(dev != NULL);
     return dev->connected;
   }
+}
+
+void tuh_enum_diag_get(tuh_enum_diag_t* d) {
+  const bool busy = (_usbh_data.enumerating_daddr != TUSB_INDEX_INVALID_8);
+  d->busy             = busy;
+  d->daddr            = busy ? _usbh_data.enumerating_daddr : 0;
+  d->hub_addr         = _usbh_data.dev0_bus.hub_addr;
+  d->hub_port         = _usbh_data.dev0_bus.hub_port;
+  d->state            = _enum_diag.state;
+  d->last_fail_state  = _enum_diag.last_fail_state;
+  d->last_fail_result = _enum_diag.last_fail_result;
+  d->retry            = _enum_diag.retry;
+  d->fails            = _enum_diag.fails;
+  d->retried          = _enum_diag.retried;
+  d->watchdog         = _enum_diag.watchdog;
+  d->desc_retry       = _enum_diag.desc_retry;
+  d->desc_fallback    = _enum_diag.desc_fallback;
+  d->attach           = _enum_diag.attach;
+  d->detach           = _enum_diag.detach;
+  d->idle_ms          = tusb_time_millis_api() - _enum_diag.last_ms;
 }
 
 bool tuh_vid_pid_get(uint8_t dev_addr, uint16_t *vid, uint16_t *pid) {
@@ -728,6 +802,8 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
   }
 #endif
 
+  enum_watchdog_check(); // PICO-SPEC PATCH: a hung enumeration must not wedge the bus
+
   // Loop until there are no more events in the queue or CFG_TUH_TASK_EVENTS_PER_RUN is reached
   for (unsigned epr = 0;; epr++) {
   #if CFG_TUH_TASK_EVENTS_PER_RUN > 0
@@ -799,6 +875,7 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
         if (_usbh_data.enumerating_daddr == TUSB_INDEX_INVALID_8) {
           // New device attached and we are ready
           TU_LOG_USBH("[%u:] USBH Device Attach\r\n", event.rhport);
+          _enum_diag.attach++; // PICO-SPEC PATCH: does a device re-connect by itself?
           _usbh_data.enumerating_daddr = 0; // enumerate new device with address 0
           enum_new_device(&event);
         }
@@ -812,6 +889,7 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
 
       case HCD_EVENT_DEVICE_REMOVE:
         TU_LOG_USBH("[%u:%u:%u] USBH Device Removed\r\n", event.rhport, event.connection.hub_addr, event.connection.hub_port);
+        _enum_diag.detach++; // PICO-SPEC PATCH
         process_remove_event(&event);
         break;
 
@@ -1753,6 +1831,7 @@ enum {
 // process async delay in enumeration
 static void enum_delay_async(uintptr_t state) {
   tuh_bus_info_t *dev0_bus = &_usbh_data.dev0_bus;
+  enum_mark((uint8_t)(0x80u | state));
   switch (state) {
     case ENUM_AFTER_DEBOUNCING_DELAY:
   #if CFG_TUH_HUB
@@ -1848,18 +1927,99 @@ static void enum_new_device(hcd_event_t *event) {
   dev0_bus->rhport         = event->rhport;
   dev0_bus->hub_addr       = event->connection.hub_addr;
   dev0_bus->hub_port       = event->connection.hub_port;
+  // PICO-SPEC PATCH: fresh attach, fresh retry budget -- unless this very port failed
+  // in the last 10 s: a device that reconnects itself after each port reset must not
+  // loop here forever and starve the other ports.
+  if (!(dev0_bus->hub_addr != 0 && dev0_bus->hub_addr == _enum_diag.fail_hub &&
+        dev0_bus->hub_port == _enum_diag.fail_port &&
+        (uint32_t)(tusb_time_millis_api() - _enum_diag.fail_ms) < 10000u)) {
+    _enum_diag.retry = 0;
+  }
+  _enum_diag.unplugged     = 0;
+  enum_mark(ENUM_IDLE);
   usbh_defer_func_ms_async(ENUM_DEBOUNCING_DELAY_MS, enum_delay_async, ENUM_AFTER_DEBOUNCING_DELAY);
+}
+
+// PICO-SPEC PATCH: re-send the enumeration request that STALLed (see process_enumeration)
+static void enum_reask_async(uintptr_t param) {
+  (void) param;
+  if (_usbh_data.enumerating_daddr != _enum_reask.daddr) {
+    return; // the device went away meanwhile
+  }
+  enum_mark(_enum_diag.state);
+  tuh_xfer_t xfer = {
+    .daddr       = _enum_reask.daddr,
+    .ep_addr     = 0,
+    .setup       = &_enum_reask.setup,
+    .buffer      = _enum_reask.buffer,
+    .complete_cb = process_enumeration,
+    .user_data   = _enum_reask.user_data
+  };
+  if (!tuh_control_xfer(&xfer)) {
+    enum_full_complete(false);
+  }
 }
 
 // process device enumeration
 static void process_enumeration(tuh_xfer_t *xfer) {
-  if (XFER_RESULT_FAILED == xfer->result) {
+  const uintptr_t state    = xfer->user_data;
+  enum_mark((uint8_t) state); // PICO-SPEC PATCH: watchdog progress + diagnostics
+
+  // PICO-SPEC PATCH: upstream only fails on FAILED; a STALLED / TIMEOUT answer to a
+  // hub-port or address-0 / descriptor request went on with a stale _usbh_epbuf.ctrl
+  // (an old device's descriptor). The string requests stay tolerant as upstream
+  // (plenty of devices stall them).
+  const bool string_step = (state >= ENUM_GET_STRING_LANGUAGE_ID && state <= ENUM_GET_9BYTE_CONFIG_DESC);
+
+  // The full device descriptor at the new address STALLed (the hub dongle above):
+  // re-ask after a pause; if it never comes, go on like upstream did, but with what
+  // the address-0 read proved (first 8 bytes) and the rest ZEROED -- upstream kept a
+  // stale tail of _usbh_epbuf.ctrl, i.e. a previous device's descriptor bytes as
+  // VID/PID/string indexes ("8119:8329" was the dongle's own HID report descriptor).
+  //
+  // Round 2 showed it is not only that request: the 9-byte configuration read STALLs
+  // too, and the step that fails moves from plug to plug -- the dongle answers STALL
+  // for a while after SET_ADDRESS. So every early request at the new address that
+  // STALLs (device descriptor, both configuration reads, SET_CONFIGURATION) is
+  // re-sent unchanged after a pause, ~2 s in all per address.
+  const bool reask_step = (state == ENUM_GET_STRING_LANGUAGE_ID_LEN || state == ENUM_GET_FULL_CONFIG_DESC ||
+                           state == ENUM_SET_CONFIG || state == ENUM_CONFIG_DRIVER);
+  if (reask_step && XFER_RESULT_STALLED == xfer->result) {
+    _enum_diag.last_fail_state  = (uint8_t) state;
+    _enum_diag.last_fail_result = (uint8_t) xfer->result;
+    if (_enum_diag.desc_retry < TU_ARRAY_SIZE(_enum_desc_retry_ms)) {
+      const uint16_t ms = _enum_desc_retry_ms[_enum_diag.desc_retry++];
+      _enum_reask.setup     = *xfer->setup;
+      _enum_reask.buffer    = xfer->buffer;
+      _enum_reask.daddr     = xfer->daddr;
+      _enum_reask.user_data = state;
+      usbh_defer_func_ms_async(ms, enum_reask_async, 0);
+      return;
+    }
+    if (state != ENUM_GET_STRING_LANGUAGE_ID_LEN) {
+      enum_full_complete(false); // out of re-asks: fail, the port retry starts over
+      return;
+    }
+    _enum_diag.desc_fallback++;
+    usbh_device_t *fdev = get_device(xfer->daddr);
+    tusb_desc_device_t *fdesc = (tusb_desc_device_t *) _usbh_epbuf.ctrl;
+    TU_VERIFY(fdev != NULL, );
+    fdesc->bLength            = sizeof(tusb_desc_device_t);
+    fdesc->bDescriptorType    = TUSB_DESC_DEVICE;
+    fdesc->bMaxPacketSize0    = fdev->desc_device.bMaxPacketSize0;
+    memset(_usbh_epbuf.ctrl + 8, 0, sizeof(tusb_desc_device_t) - 8);
+    fdesc->bNumConfigurations = 1;
+    // fall through as a success: the switch below saves it and goes on
+  } else
+  if (XFER_RESULT_FAILED == xfer->result ||
+      (XFER_RESULT_SUCCESS != xfer->result && !string_step)) {
+    _enum_diag.last_fail_state  = (uint8_t) state;
+    _enum_diag.last_fail_result = (uint8_t) xfer->result;
     enum_full_complete(false); // failed to enum
     return;
   }
 
   const uint8_t   daddr    = xfer->daddr;
-  const uintptr_t state    = xfer->user_data;
   usbh_device_t  *dev      = get_device(daddr);
   tuh_bus_info_t *dev0_bus = &_usbh_data.dev0_bus;
   if (daddr > 0) {
@@ -1876,6 +2036,7 @@ static void process_enumeration(tuh_xfer_t *xfer) {
 
       if (0 == port_status.status.connection) {
         TU_LOG_USBH("Device unplugged from hub while debouncing\r\n");
+        _enum_diag.unplugged = 1; // PICO-SPEC PATCH: nothing to retry
         is_enum_failed = true;
       } else {
         TU_ASSERT(hub_port_reset(dev0_bus->hub_addr, dev0_bus->hub_port, process_enumeration,
@@ -1914,6 +2075,7 @@ static void process_enumeration(tuh_xfer_t *xfer) {
 
       if (0 == port_status.status.connection) {
         TU_LOG_USBH("Device unplugged from hub (not addressed yet)\r\n");
+        _enum_diag.unplugged = 1; // PICO-SPEC PATCH: nothing to retry
         is_enum_failed = true;
         break;
       }
@@ -1955,6 +2117,7 @@ static void process_enumeration(tuh_xfer_t *xfer) {
       TU_ASSERT(new_dev, );
       new_dev->addressed           = 1;
       _usbh_data.enumerating_daddr = new_addr;
+      _enum_diag.desc_retry        = 0; // PICO-SPEC PATCH: new address, new re-ask budget
 
       usbh_device_close(dev0_bus->rhport, 0); // close dev0
       usbh_defer_func_ms_async(ENUM_SET_ADDRESS_RECOVERY_DELAY_MS, enum_delay_async, ENUM_AFTER_SET_ADDRESS_RECOVERY_DELAY);
@@ -2121,6 +2284,8 @@ static void process_enumeration(tuh_xfer_t *xfer) {
   }
 
   if (is_enum_failed) {
+    _enum_diag.last_fail_state  = (uint8_t) state; // PICO-SPEC PATCH
+    _enum_diag.last_fail_result = 0xFE;            // checked and refused, not a bus error
     enum_full_complete(false);
   }
 }
@@ -2212,6 +2377,13 @@ static bool enum_parse_configuration_desc(uint8_t dev_addr, tusb_desc_configurat
 }
 
 void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
+  // PICO-SPEC PATCH: a class driver finishing late for a device the watchdog already
+  // failed and freed must not complete (and mount) whatever is enumerating now.
+  if (dev_addr != _usbh_data.enumerating_daddr) {
+    return;
+  }
+  enum_mark((uint8_t)(0x40u | (itf_num & 0x3Fu)));
+
   usbh_device_t* dev = get_device(dev_addr);
 
   for(itf_num++; itf_num < CFG_TUH_INTERFACE_MAX; itf_num++) {
@@ -2241,18 +2413,82 @@ void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
 }
 
 static void enum_full_complete(bool success) {
-  (void)success;
   TU_LOG_USBH("Enumeration complete: success = %u\r\n", success);
+
+  // PICO-SPEC PATCH: remove_device_tree() below can fail an in-flight transfer whose
+  // callback lands here again.
+  if (_enum_diag.completing) {
+    return;
+  }
 
   _usbh_data.enumerating_daddr = TUSB_INDEX_INVALID_8; // mark enumeration as complete
   _usbh_data.call_after.func = NULL;
 
+  if (success) {
+    return;
+  }
+  _enum_diag.fails++;
+  _enum_diag.fail_ms   = tusb_time_millis_api();
+  _enum_diag.fail_hub  = _usbh_data.dev0_bus.hub_addr;
+  _enum_diag.fail_port = _usbh_data.dev0_bus.hub_port;
+
   #if CFG_TUH_HUB
-  // Hub status is already requested in case of successful enumeration
-  if (!success && _usbh_data.dev0_bus.hub_addr != 0) {
-    hub_edpt_status_xfer(_usbh_data.dev0_bus.hub_addr);
+  const tuh_bus_info_t bus = _usbh_data.dev0_bus;
+  if (bus.hub_addr != 0) {
+    // PICO-SPEC PATCH: free what the failed attempt addressed / opened on this port
+    // (upstream left it "connected" until the device was unplugged), then retry from
+    // the port reset: the hub never reports this connection again by itself.
+    _enum_diag.completing = 1;
+    remove_device_tree(bus.rhport, bus.hub_addr, bus.hub_port);
+    _enum_diag.completing = 0;
+
+    const usbh_device_t* hub = get_device(bus.hub_addr);
+    if (!_enum_diag.unplugged && _enum_diag.retry < ENUM_HUB_RETRY_MAX && hub != NULL && hub->connected) {
+      const uint16_t delay_ms = _enum_retry_delay_ms[_enum_diag.retry++];
+      _enum_diag.retried++;
+      TU_LOG_USBH("[%u:%u:%u] enumeration failed, retry %u in %u ms\r\n", bus.rhport, bus.hub_addr,
+                  bus.hub_port, _enum_diag.retry, delay_ms);
+      _usbh_data.dev0_bus          = bus;
+      _usbh_data.enumerating_daddr = 0; // keep the slot: other attaches stay deferred
+      enum_mark(ENUM_IDLE);
+      usbh_defer_func_ms_async(delay_ms, enum_delay_async, ENUM_AFTER_DEBOUNCING_DELAY);
+      return;
+    }
+
+    // Hub status is already requested in case of successful enumeration
+    hub_edpt_status_xfer(bus.hub_addr);
   }
   #endif
+}
+
+// PICO-SPEC PATCH: enumeration watchdog, run on every tuh_task(). Nothing scheduled and
+// no enumeration step for ENUM_STALL_MS = it is hung (a control transfer NAKed forever,
+// or a TU_ASSERT returned out of process_enumeration). First fire aborts the in-flight
+// control transfer (its callback then fails the enumeration the normal way); a second
+// fire with nothing in flight fails the enumeration directly.
+static void enum_watchdog_check(void) {
+  if (_usbh_data.enumerating_daddr == TUSB_INDEX_INVALID_8 || _usbh_data.call_after.func != NULL) {
+    return;
+  }
+  if ((uint32_t)(tusb_time_millis_api() - _enum_diag.last_ms) < ENUM_STALL_MS) {
+    return;
+  }
+
+  _enum_diag.watchdog++;
+  _enum_diag.last_fail_state  = _enum_diag.state;
+  _enum_diag.last_fail_result = 0xFD; // watchdog
+  enum_mark(_enum_diag.state);        // re-arm: one action per stall period
+
+  usbh_ctrl_xfer_info_t* ctrl_info = &_usbh_data.ctrl_xfer_info;
+  if (ctrl_info->stage != CONTROL_STAGE_IDLE) {
+    const uint8_t xdaddr = ctrl_info->daddr;
+    TU_LOG_USBH("[%u] enumeration stalled: abort control xfer\r\n", xdaddr);
+    hcd_edpt_abort_xfer(usbh_get_rhport(xdaddr), xdaddr, 0x00);
+    control_xfer_complete(xdaddr, XFER_RESULT_FAILED);
+  } else {
+    TU_LOG_USBH("enumeration stalled: fail it\r\n");
+    enum_full_complete(false);
+  }
 }
 
 #endif

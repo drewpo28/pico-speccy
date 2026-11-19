@@ -76,7 +76,9 @@
 // Custom defined application function
 #ifdef CFG_TUSB_DEBUG_BREAKPOINT
   extern void CFG_TUSB_DEBUG_BREAKPOINT(void);
-  #define TU_BREAKPOINT() CFG_TUSB_DEBUG_BREAKPOINT()
+  // PICO-SPEC PATCH: the empty asm after the call forbids a tail call, so the hook's
+  // return address is the failing TU_ASSERT itself (shown on the HID devices page).
+  #define TU_BREAKPOINT() do { CFG_TUSB_DEBUG_BREAKPOINT(); __asm volatile ("" ::: "memory"); } while (0)
 
 // Halt CPU (breakpoint) when hitting error, only apply for Cortex M3, M4, M7, M33. M55
 #elif defined(__ARM_ARCH_7M__) || defined (__ARM_ARCH_7EM__) || defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__) || \

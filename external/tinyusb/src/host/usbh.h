@@ -216,6 +216,28 @@ bool tuh_rhport_reset_bus(uint8_t rhport, bool active);
 // Get VID/PID of device
 bool tuh_vid_pid_get(uint8_t daddr, uint16_t* vid, uint16_t* pid);
 
+// PICO-SPEC PATCH: enumeration diagnostics for the HID devices page (one photo
+// from a user must say where an enumeration behind a hub stopped).
+typedef struct {
+  uint8_t  busy;          // an enumeration is in progress
+  uint8_t  daddr;         // enumerating_daddr (0 = still at address 0)
+  uint8_t  hub_addr;      // bus of the device being / last enumerated
+  uint8_t  hub_port;
+  uint8_t  state;         // last step: ENUM_* (process) or 0x80|ENUM_AFTER_* (delay)
+  uint8_t  last_fail_state;
+  uint8_t  last_fail_result; // xfer_result_t of the failing step (0xFF = no xfer)
+  uint8_t  retry;         // retries spent on the current hub port
+  uint16_t fails;         // failed enumerations
+  uint16_t retried;       // retries started
+  uint16_t watchdog;      // stalled enumerations aborted by the watchdog
+  uint8_t  desc_retry;    // device-descriptor re-asks on the current address
+  uint16_t desc_fallback; // device descriptors that never came (VID:PID shown 0000:0000)
+  uint16_t attach;        // attach / detach events seen
+  uint16_t detach;
+  uint32_t idle_ms;       // ms since the last enumeration step
+} tuh_enum_diag_t;
+void tuh_enum_diag_get(tuh_enum_diag_t* d);
+
 // Get local (cached) device descriptor once device is enumerated
 bool tuh_descriptor_get_device_local(uint8_t daddr, tusb_desc_device_t* desc_device);
 

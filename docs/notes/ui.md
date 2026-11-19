@@ -977,3 +977,60 @@ never repeat. Host: `PICOSPECCY_KEYS="frame:Key:N"` holds a key N frames.
 The delay is a setting: Interface > Key repeat delay (`Config::kbd_rep_delay`, nvs
 `kbd_rep_delay` 0..3 = 250/500/750/1000 ms, default 1), `SET_KBD_REP_DELAY` appended
 last; read at each press, so a change applies to the next hold. Host-checked the row.
+
+## USB hub: a hung enumeration no longer wedges the bus (2026-11-19, NOT hw-tested)
+
+User report (m1p2, passive USB-C 3.0 hub, 2.4G pad dongle 8119:8329): plugged into
+the hub the dongle is not seen; while it sits there a keyboard in the next port is
+not seen either; after it once enumerates it keeps working on every replug. Direct
+(OTG adapter) always works, with another VID:PID — the dongle picks and remembers a
+host mode, so the first try behind the hub is in the mode that hangs.
+TinyUSB (vendored usbh.c / hub.c, `PICO-SPEC PATCH`) had three holes:
+- no control-transfer timeout, and `TU_ASSERT`s inside `process_enumeration()` return
+  without `enum_full_complete()`: `enumerating_daddr` stays 0, every later attach is
+  deferred and the hub is not polled. Now `enum_watchdog_check()` (every `tuh_task`):
+  no step for `ENUM_STALL_MS` 1500 and no scheduled delay -> abort the in-flight
+  control xfer (its callback fails the enumeration); nothing in flight -> fail it.
+  STALLED/TIMEOUT now fail the hub-port / address / descriptor steps too (upstream
+  went on with a stale `_usbh_epbuf.ctrl`); string steps stay tolerant.
+- a failed enumeration behind a hub was never retried (connection-change already
+  cleared). Now `enum_full_complete(false)` frees what it addressed
+  (`remove_device_tree` on that port) and re-runs from the port reset 3 times
+  (100/300/600 ms) unless the device left. `usbh_driver_set_config_complete` ignores a
+  daddr that is no longer the one enumerating (late class driver after a watchdog).
+- `bPwrOn2PwrGood` was read and never waited: the hub is polled only 2*bPwrOn2PwrGood
+  +100 ms after the last PORT_POWER (`config_port_power_good`).
+Diagnostics: Help > HID devices starts with `USB enum:` (busy/idle, daddr, hub:port,
+step, ms idle, fail/wd/retry counts, last failed step + result FE=check FD=watchdog,
+TU_ASSERT count + return address of the last one: symbolize with addr2line against
+the test ELF). `TU_BREAKPOINT` got an empty asm after the hook call so it is never a
+tail call and the address is the assert itself.
+Round 1 (`debug/m1p2-hubenum-1.1.3-*`) made it WORSE and its photo named the cause:
+`last fail st=09 res=02` = the full 18-byte device descriptor at the NEW address
+STALLs behind the hub (the 8-byte read at address 0 is fine), on every attempt.
+Upstream ignored that STALL and copied a stale `_usbh_epbuf.ctrl` tail as the
+descriptor: "VID:PID 8119:8329" is `19 81 29 83` from the dongle's own Consumer
+Control report descriptor, so "another VID/PID behind the hub" and "works after the
+keyboard" were both leftovers of the previous enumeration in that buffer.
+Round 2 (`debug/m1p2-hubenum2-1.1.3-*`): that STALL is re-asked after 10/50/100 ms
+(`ENUM_AFTER_SET_ADDRESS_RECOVERY_DELAY`, no port reset); if it never comes the
+enumeration goes on with the 8 proven bytes and the rest ZEROED (VID:PID 0000:0000,
+no strings, 1 configuration), counted as `fallback=`. The hub-port retry budget is
+not refreshed when the same port re-attaches within 10 s. Why the dongle STALLs only
+behind the hub: unknown.
+Round 2 photo (16 MB ELF): `re-ask=3 fallback=3`, then `last fail st=12 res=02` = the
+9-byte configuration read STALLs as well; `wd=2`, one TU_ASSERT in ENUM_SET_CONFIG
+(addr2line on the 16 MB ELF: usbh.c ENUM_SET_CONFIG). The failing step changes from
+plug to plug: the dongle answers STALL for a while after SET_ADDRESS.
+Round 3 (`debug/m1p2-hubenum3-1.1.3-*`): every early request at the new address that
+STALLs (device descriptor, both configuration reads, SET_CONFIGURATION) is re-sent
+unchanged (`enum_reask_async`) after 20/50/100/200/300/500/800 ms (~2 s per address);
+device-descriptor fallback only after that. `att=/det=` count attach/detach events, to
+see if the dongle reconnects by itself. Keyboard hot-plug next to a failed dongle: not
+yet re-checked on v2/v3.
+Round 3 hw (client, m1p2, 16 MB) 2026-11-19: WORKS -- the dongle is found after a
+reboot and on hot-plug, both pads + consumer ctrl report. Photo: `fail=0 wd=0
+retry=0/0 fallback=1 att=3`, `last fail st=09 res=02`: behind the hub the device
+descriptor STALLs on all 7 re-asks (never comes, VID:PID shows 0000:0000), but after
+those ~2 s the configuration reads and SET_CONFIGURATION pass. Still owed: keyboard
+hot-plug next to the dongle, several cold boots.

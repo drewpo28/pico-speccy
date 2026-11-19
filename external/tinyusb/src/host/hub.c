@@ -343,6 +343,22 @@ static void config_set_port_power (tuh_xfer_t* xfer) {
   hub_port_set_feature(daddr, hub_port, HUB_FEATURE_PORT_POWER, config_port_power_complete, 0);
 }
 
+// PICO-SPEC PATCH: start polling the hub only once port power is good. Upstream read
+// bPwrOn2PwrGood and never waited, so devices plugged in before the hub came up were
+// enumerated while still powering up (all ports switched on at once from a passive
+// hub). +100 ms on top for slow starters (2.4G pad dongles).
+static void config_port_power_good(uintptr_t daddr) {
+  if (!tuh_connected((uint8_t) daddr)) {
+    return; // the hub left while we waited
+  }
+  hub_interface_t* p_hub = get_hub_itf((uint8_t) daddr);
+  if (!hub_edpt_status_xfer((uint8_t) daddr)) {
+    TU_MESS_FAILED();
+    TU_BREAKPOINT();
+  }
+  usbh_driver_set_config_complete((uint8_t) daddr, p_hub->itf_num);
+}
+
 static void config_port_power_complete (tuh_xfer_t* xfer) {
   TU_ASSERT(XFER_RESULT_SUCCESS == xfer->result, );
 
@@ -352,11 +368,10 @@ static void config_port_power_complete (tuh_xfer_t* xfer) {
   if (xfer->setup->wIndex == p_hub->bNbrPorts) {
     // All ports are power -> queue notification status endpoint and
     // complete the SET CONFIGURATION
-    if (!hub_edpt_status_xfer(daddr)) {
-      TU_MESS_FAILED();
-      TU_BREAKPOINT();
+    const uint32_t power_good_ms = 2u * p_hub->bPwrOn2PwrGood_2ms + 100u;
+    if (!usbh_defer_func_ms_async(power_good_ms, config_port_power_good, daddr)) {
+      config_port_power_good(daddr);
     }
-    usbh_driver_set_config_complete(daddr, p_hub->itf_num);
   } else {
     // power next port
     uint8_t const hub_port = (uint8_t) (xfer->setup->wIndex + 1);
