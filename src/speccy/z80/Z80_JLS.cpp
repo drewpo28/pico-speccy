@@ -5133,10 +5133,26 @@ static uint16_t s_elmInPc;
 static uint8_t  s_elmInB;
 static uint32_t s_elmInT, s_elmInDt;
 volatile uint32_t g_elm_batch[4];   // PERF: LDIR batches / bytes, INIR batches / bytes
-static inline __attribute__((always_inline)) uint8_t* elmBatchDst(uint16_t a) {
+// A destination slot the loop masks may still be plain where the run lands: the mask is
+// per 8K, the windows per 256 bytes. HRXC (Hgfx mode 2) puts its colour table at #7C00 /
+// #FC00, which masked all of slots 3 and 7 - WOWDEMO's screen LDIRs: 89 % of the batch
+// calls declined there (host, 2026-11-19), per repeat, from the flash. The pages the run
+// [a, a + n * d) touches must all be plain (Elm::wrKind 0: a COW-captured page is W_COW)
+// and the slot not a split chunky window.
+static inline __attribute__((always_inline)) bool elmRunPlain(uint16_t a, uint32_t n, int d) {
+    const uint8_t ds = a >> 13;
+    if ((Elm::g_elm_split >> ds) & 1) return false;
+    const uint8_t* const k = Elm::wrKind;
+    if (!k) return false;
+    const uint16_t last = (uint16_t)(a + (int)(n - 1) * d);
+    uint32_t lo = (d > 0 ? a : last) >> 8, hi = (d > 0 ? last : a) >> 8;
+    for (; lo <= hi; lo++) if (k[lo]) return false;
+    return true;
+}
+static inline __attribute__((always_inline)) uint8_t* elmBatchDst(uint16_t a, uint32_t n, int d) {
     const uint8_t ds = a >> 13;
     if (ds >= 2) {
-        if (!((g_z80_wr_fast >> ds) & 1)) return nullptr;
+        if (!((g_z80_wr_fast >> ds) & 1) && !elmRunPlain(a, n, d)) return nullptr;
         uint8_t* dp = MemESP::ramCurrent[ds];
         if ((uintptr_t)dp < 0x11000000u) return nullptr;              // ROM / accessor bank
         if (!g_ts_fastmem && VIDEO::grmem && dp >= VIDEO::grmem && dp < VIDEO::grmem + 0x4000) return nullptr;   // beam-raced screen
@@ -5199,7 +5215,7 @@ Z80_COLD void Z80::elmLdirBatch(int d, uint32_t T) {
         if (ss < 2 || !((g_z80_rd_fast >> ss) & 1)) break;
         const uint8_t* sp = MemESP::ramCurrent[ss];
         if (!sp) break;
-        uint8_t* dp = elmBatchDst(de);
+        uint8_t* dp = elmBatchDst(de, n, d);
         if (!dp) break;
         uint32_t so = hl & 0x1FFF, dof = de & 0x1FFF;
         for (uint32_t i = 0; i < n; i++) { dp[dof] = sp[so]; so += d; dof += d; }   // overlap: byte order as the CPU's
@@ -5226,7 +5242,7 @@ Z80_COLD void Z80::elmInirBatch() {
         const uint32_t dstLeft = 0x2000u - (hl & 0x1FFF);
         if (n > dstLeft) n = dstLeft;
         if (n < 2) break;
-        uint8_t* dp = elmBatchDst(hl);
+        uint8_t* dp = elmBatchDst(hl, n, 1);
         if (!dp) break;
         uint32_t o = hl & 0x1FFF;
         for (uint32_t i = 0; i < n; ) {           // data bytes in runs, the protocol bytes one by one

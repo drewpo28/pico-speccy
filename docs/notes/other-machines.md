@@ -1096,6 +1096,23 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   Next (host-tested, NOT hw-tested; `wowfix10` / PERF `wowperf13`): `ED B0` / `ED B8` met in the eLeMeNt loop's
   `nx_slow` batch every repeat but the last at once (`elmLdirBatch(d, 21)`: a repeat there is always 21 T), the core
   runs the last; LDT tape 30816 / 31 with and without batches, WOWDEMO / PF2026 as before.
+  **hw 2026-11-19 09:47 (wowperf13, 70 min of WOWDEMO, 3 460 windows, log `...09.47.35.322`): no change.** Medians
+  vs wowperf12: realFPS 47.9 / 48.1, cpu 17.1 / 16.2 ms, `batch ldir` 389 / 385 a frame, B0 per repeat 4 505 / 4 827.
+  **Why (host counters, 2026-11-19):** 89 % of the batch calls declined at `elmBatchDst`, and every one of them
+  was a whole extra flash call per repeat. The destinations were slots 3 and 7 (`#6000`, `#E000`): `wr_fast` 0x74.
+  HRXC (`Hgfx::mode == 2`) puts its W_HRXC table at `#7C00` / `#FC00`, and `elmMasksUpdate` masks the whole 8K
+  slot for one window page, so every screen LDIR ran per byte. **Fix (host-tested, NOT hw-tested;
+  `debug/DVp2w-elm-wowfix11-1.1.3` 11:20:51 / PERF `wowperf14` 11:20:54):** `elmRunPlain` - a masked destination
+  slot is fine when every 256-byte page the run touches has `Elm::wrKind` 0 (COW-captured pages are W_COW, so
+  they still go per byte) and the slot is not split chunky. LDIR and INIR use it. Host WOWDEMO, same 95 s: calls
+  20 M -> 3.4 M, batches 1.37 M -> 2.33 M. The rest of the declines are mostly sources in slots 0-1 (`rd` 0xFC).
+  LDT 30816 / 31 with and without batches; WOWDEMO / PF2026 pictures as before. Read on hw: `batch ldir` /fr up,
+  B0 per repeat down, cpu ms.
+  **hw 2026-11-19 11:28 (wowperf14, 48 windows, log `...11.28.29.460`): full speed.** Medians vs wowperf13: cpu
+  17.1 -> 11.6 ms (max 21-23), realFPS 47.9 -> 48.6 (p10 48.05, i.e. the 20.48 ms pacing target), `[SD2] neg` 11 ->
+  1, `aud hold` 45 -> 0, `batch ldir` 389 -> 747 /fr (6.7 KB), B0 per repeat 4 505 -> 985, core1 draw 8.0 -> 5.7 ms.
+  COW: most windows save 0 blocks (the capture ends before core0 writes), but some windows save 26-36 in one
+  capture, and the 24 limit then puts on the full-copy backoff (5-27 frames of 60). FPS holds through it.
 
 **PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
 - The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,
