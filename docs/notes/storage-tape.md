@@ -1334,3 +1334,17 @@ esxDOS itself; in the .pss reboot keys because DivMMC RAM belongs to one release
   yet; `.divideo` wants
   unfragmented .dvo files and streams hard; `.trkplay` is the AY. The rest (.df,
   .mount, .umount, .fm, .vi, .editor, .sview, .dbasic, .fontedit, .touch) is software.
+- **Third-party /SYS files must be relocated for 0.9.0** (hw-confirmed 2026-11-19, owner: BRWSCFG save + Shift+N work; fixed
+  copies in ~/Downloads/zx/esxdos090-fixes/): 0.9.0 loads NMI.SYS at $2000 (0.8.9:
+  $2F00) and RTC.SYS at $2F00 (0.8.9: $2700), bank 0; ESXDOS.SYS 0.9.0 code lives at
+  $30xx-$3A2D of bank 0. Symptoms: an old 256 B DS1307 RTC.SYS (I2C on #103B/#113B,
+  absolute $27xx calls) crashes on the first directory-date write, i.e. on F_CLOSE of a
+  written file: BRWSCFG "saves and never returns to BASIC" (hw), host = machine reset;
+  relocating its 33 operands +$0800 fixes it. The ZX-UNO browser 1.02 NMI.SYS ported by
+  replacing high bytes 2F/30 -> 20/21 missed (a) its 512 B save buffer at $3200 (now
+  esxDOS code; moved to $2300) and (b) the Shift+N NMI.ORG loader at $2F00/$2FC0 (->
+  $2000/$20C0): Shift+N restarted the machine instead of starting the stock browser.
+  Entry convention unchanged (HL -> context, +$1B = 2 on 128K, +$1E = #7FFD).
+  The browser's /SYS/NMI.ORG must ALSO be 0.9.0's own nmi.sys: an old 0.8.x NMI.ORG
+  (3539 B, `CALL $2F35`, 136 calls into $2F00-$3Cxx) loaded at $2000 resets the
+  machine on Shift+N (host-confirmed; this was the owner's hw failure after the fix).
