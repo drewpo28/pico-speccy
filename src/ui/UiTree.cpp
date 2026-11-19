@@ -1226,7 +1226,7 @@ static bool p_esxRow() {
     if (!p_hasSD()) return false;
     if (a == A_NEXT) return true;
     return !devOwnBus() && !devProfi() && !p_plus3On() &&
-           a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
+           a != A_TSCONF && a != A_ATM;
 }
 static bool p_mb02Row() {
     const ArchIdx a = devArch();
@@ -1259,8 +1259,11 @@ static bool p_esxImages() {
     return Stage::get(SET_ESXDOS) != 0;
 }
 // esxDOS ROM release. 0.8.9 is in .psramroms: with that range traded to the GM.DLS
-// bank only 0.9.0 exists, and the row would offer nothing.
-static bool p_esxVerRow() { return FlashRoms::romsUsable(); }
+// bank only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
+// 0.9.0 has a TC2068 build (DivMMC::romSync).
+static bool p_esxVerRow() {
+    return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
+}
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 

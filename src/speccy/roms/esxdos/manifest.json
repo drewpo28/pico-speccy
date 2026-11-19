@@ -36,8 +36,20 @@
       }
     }
   ],
-  "unpacked": [
-    "esxdos090_tc2068_divmmc",
-    "esxdos090_tc2068_divide"
+  "tc2068": [
+    {
+      "sym": "gb_overlay_esxdos090_tc2068_divmmc",
+      "len": 1502,
+      "runs": 57,
+      "diff_bytes": 1148,
+      "md5": "3dfe08e064b1ef27b310741288761b63"
+    },
+    {
+      "sym": "gb_overlay_esxdos090_tc2068_divide",
+      "len": 1576,
+      "runs": 65,
+      "diff_bytes": 1174,
+      "md5": "e6a0f2be7a566af3330e6b1382e487d3"
+    }
   ]
 }

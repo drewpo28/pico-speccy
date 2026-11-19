@@ -8,4 +8,6 @@
 extern "C" {
 extern const unsigned char gb_rom_esxdos090[];
 extern const unsigned char gb_overlay_esxdos090_divide[];
+extern const unsigned char gb_overlay_esxdos090_tc2068_divmmc[];
+extern const unsigned char gb_overlay_esxdos090_tc2068_divide[];
 }

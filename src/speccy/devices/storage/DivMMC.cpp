@@ -457,34 +457,9 @@ void DivMMC::init() {
     }
     clearAllBanks();
 
-    // The ROM: each esxDOS release ships its DivMMC build raw in flash (served by
-    // XIP as before) and its DivIDE build as a run-list overlay over it, flattened
-    // here into rom_flat — the automap reads page0_lo as a plain pointer, so the
-    // overlay must never reach the Z80 read path. 0.8.9 sits in .psramroms: on a
-    // board that traded that range to the GM.DLS bank it is gone, 0.9.0 serves.
     const char* mode_name = divide_mode ? "DivIDE" : divsd_mode ? "DivSD" : "DivMMC";
-    bool v089 = Config::esxdos_ver == 1;
-    if (v089 && !FlashRoms::romsUsable()) {
-        Debug::log("%s: esxDOS 0.8.9 is not in flash on this board (GM.DLS took it), using 0.9.0", mode_name);
-        v089 = false;
-    }
-    const uint8_t* base = v089 ? gb_rom_esxdos089 : gb_rom_esxdos090;
-    if (!divide_mode) {
-        esxdos_rom = (uint8_t*)base;
-    } else {
-        if (!rom_flat) rom_flat = (uint8_t*)Buffer::palloc(DIVMMC_ROM_SIZE, Buffer::NEED_POINTER);
-        if (!rom_flat) {
-            Debug::log("DivIDE: no 8 KB for the ROM page, esxDOS off");
-            enabled = false;
-            Config::esxdos = 0;
-            return;
-        }
-        rom_overlay_flatten(v089 ? gb_overlay_esxdos089_divide : gb_overlay_esxdos090_divide,
-                            base, rom_flat);
-        esxdos_rom = rom_flat;
-    }
-    rom_loaded = true;
-    Debug::log("%s: esxDOS %s ROM", mode_name, v089 ? "0.8.9" : "0.9.0");
+    s_romKey = 0;                       // pick afresh: the mode may have changed
+    if (!romSync()) return;             // (it turned esxDOS off and said why)
     Debug::log("%s ROM verify: %02X %02X %02X %02X %02X %02X %02X @ %p",
         mode_name, esxdos_rom[0], esxdos_rom[1], esxdos_rom[2], esxdos_rom[3],
         esxdos_rom[4], esxdos_rom[5], esxdos_rom[6], esxdos_rom);
@@ -698,6 +673,57 @@ void DivMMC::nextRetn() {
         automap = false;
         if (!conmem) applyMapping();
     }
+}
+
+// The ROM the automap pages in. Each esxDOS release ships its DivMMC build raw in
+// flash (served by XIP) and its other builds as run-list overlays over it: the
+// DivIDE build, and for 0.9.0 Hugo Pinto's TC2068 builds (the TC2068's HOME ROM is
+// not Sinclair-derived, so it needs its own esxDOS). An overlaid ROM is flattened
+// into rom_flat — the automap reads page0_lo as a plain pointer, so a run list
+// must never reach the Z80 read path. 0.8.9 sits in .psramroms (gone on a board
+// that traded that range to the GM.DLS bank) and has no TC2068 build: 0.9.0 then.
+// Called by init() and by ESPectrum::reset(), so a machine switch between a
+// Spectrum and the TC2068 takes the right build; a no-op while nothing changed.
+uint8_t DivMMC::s_romKey = 0;
+bool DivMMC::romSync() {
+    if (!enabled) return true;
+    if (Config::arch == A_NEXT && MemESP::nextDivRomBase) return true;   // init() binds enNxtmmc
+    const bool tc = Config::isTc2068();
+    bool v089 = Config::esxdos_ver == 1 && !tc;
+    if (v089 && !FlashRoms::romsUsable()) v089 = false;
+    const uint8_t key = (uint8_t)(1 | (v089 << 1) | (tc << 2) | (divide_mode << 3));
+    if (key == s_romKey && rom_loaded) return true;
+
+    const uint8_t* base = v089 ? gb_rom_esxdos089 : gb_rom_esxdos090;
+    const uint8_t* ov = tc ? (divide_mode ? gb_overlay_esxdos090_tc2068_divide
+                                          : gb_overlay_esxdos090_tc2068_divmmc)
+                     : divide_mode ? (v089 ? gb_overlay_esxdos089_divide
+                                           : gb_overlay_esxdos090_divide)
+                                   : nullptr;
+    if (!ov) {
+        esxdos_rom = (uint8_t*)base;
+    } else {
+        if (!rom_flat) rom_flat = (uint8_t*)Buffer::palloc(DIVMMC_ROM_SIZE, Buffer::NEED_POINTER);
+        if (!rom_flat) {
+            Debug::log("esxDOS: no 8 KB for the ROM page, esxDOS off");
+            enabled = false;
+            rom_loaded = false;
+            Config::esxdos = 0;
+            automap = conmem = false;
+            applyMapping();
+            return false;
+        }
+        rom_overlay_flatten(ov, base, rom_flat);
+        esxdos_rom = rom_flat;
+    }
+    if (Config::esxdos_ver == 1 && !v089)
+        Debug::log("esxDOS: 0.8.9 is %s, using 0.9.0", tc ? "not built for the TC2068" : "not in flash on this board");
+    rom_loaded = true;
+    s_romKey = key;
+    Debug::log("esxDOS: %s%s %s ROM", v089 ? "0.8.9" : "0.9.0", tc ? " TC2068" : "",
+               divide_mode ? "DivIDE" : "DivMMC");
+    if (automap || conmem) applyMapping();   // page0_lo may point at the old one
+    return true;
 }
 
 void DivMMC::reset() {

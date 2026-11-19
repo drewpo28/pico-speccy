@@ -428,9 +428,10 @@ checked against the ROMs on 2026-09-12, before touching anything):
   window is picked up at the next instruction boundary by itself. **Do not call
   `Z80::checkINT()` from the port handler** — it takes the interrupt immediately,
   i.e. in the middle of the OUT.
-- **esxDOS/DivMMC is forced OFF** (three places, the Beta-on-+3 pattern): its automap
-  entry points are Sinclair-ROM addresses, which on this HOME ROM are unrelated code.
-  Timex video is forced ON and the SAA1099 OFF for both Timex romsets, as before.
+- **esxDOS runs on the TC2068 since 0.9.0** (2026-11-19, see the esxDOS section below;
+  it used to be forced OFF in three places because its automap entry points are
+  Sinclair-ROM addresses). Timex video is forced ON and the SAA1099 OFF for both Timex
+  romsets, as before.
 - **The tape FlashLoad traps had to be excluded, and this is the "ROM-keyed path"
   warning coming true.** They fire on bare PC values 0x56B/0x56D/0x57D; the TC2068's
   HOME ROM shares **5 of the 170 bytes at 0x0556-0x05FF** with the Sinclair one
@@ -617,3 +618,42 @@ three layers: `CPU::reset` backstop (`isByte || isProfi` auto-off, silent),
 `resolveConstraints` in UiStage ("Timex is not available on Profi" note when
 staged with a Profi arch). The port handlers themselves are unchanged — the
 config can no longer be true while Profi runs.
+
+## esxDOS on the TC2068 (2026-11-19, hw-confirmed DVp2w on `debug/DVp2w-esxtc-1.1.3`: owner "работает", not itemised)
+
+esxDOS 0.9.0 ships Hugo Pinto's TC2068 builds (`esxdos-0.9.0-tc2068-{divmmc,divide}.bin`,
+the card also needs `/SYS/TC2068.KO`, which the ROM loads after ESXDOS.SYS). Packed as
+overlays over the 0.9.0 DivMMC base (1502 / 1576 B, `rom_pack.py esxdos`) and flattened
+into `DivMMC::rom_flat` by `DivMMC::romSync()`, which init() and `ESPectrum::reset()`
+call, so a machine switch Spectrum <-> TC2068 takes the right build. 0.8.9 has no
+TC2068 build: the ROM-version row hides there and romSync uses 0.9.0.
+
+The three rules the emulation needed (no reference documents the TC2068 interface;
+derived from Hugo's ROM + ZEsarUX's diviface, which wraps the machine's memory):
+- **A paged-in divMMC sits over the SCLD map at 0x0000-0x3FFF.** `gsDmaPeek8/Poke8`
+  (CPU.cpp) tested the Timex window first; it now yields while `divmmc_mapped`.
+- **With esxDOS on, the fetch still has to see the SCLD window.** Both DivMMC fetch
+  branches (`Z80Ops::fetchOpcode` and `exec_nocheck`) went straight to `romPeek`
+  while unmapped, i.e. EX-ROM code would have run as HOME ROM bytes.
+- **Entry points fire on HOME ROM fetches only** (`DivMMC::preOpcFetch`): the HOME
+  boot copies a stub to 0x6000 and enters the EX-ROM, whose own code at 0x0008 then
+  automapped esxDOS (Hugo's RST 8 handler has no EX-ROM test) and the machine
+  restarted, so a DOCK cartridge never started. On the real bus the interface sees
+  the HOME ROM select; we skip the trap when the PC's slot is windowed by the SCLD.
+  The gate is `Timex::hsr` bit 0 (the 0x0000-0x0562 entries) / bit 1 (0x3Dxx): one
+  byte, 0 on every other machine. **SRAM cost, measured (`nm -S`, DVp2w): +325 B in
+  RAM functions** (fetchOpcode +104, nextOpcodeSlow +108, exec_nocheck +60, the
+  timexPeek8/Poke8 helpers +100, peek/poke generics -56). Two rejected shapes: an
+  inline `g_timex_mmu && Timex::rd[] && !conmem` at the top of preOpcFetch (+929 B
+  total with the accessor checks inlined) and noinline RAM helpers called from the
+  fetch paths (the call forced register saves: also ~+900 B).
+- The EX-ROM tape trap (`tcTrap`, Z80_JLS.cpp) is also off while divMMC is mapped.
+
+Flash: z0p2 PIOUSB 4 MB, hard-floor margin 12 KB -> 8 KB. Test ELF
+`debug/DVp2w-esxtc-1.1.3`.
+
+Host checks: esxDOS TC2068 boot screen (ESXDOS.SYS/NMI.SYS/BETADISK.SYS [OK]), `.ls`,
+NMI browser (Alt+F10), `.tapein h.tap` + LOAD "" runs a BASIC program, DOCK Pro
+Pinball autostarts with esxDOS on. Not checked: DivIDE build, AROS carts, EX-ROM
+extended BASIC commands with esxDOS, real-tape LOAD with esxDOS on.
+

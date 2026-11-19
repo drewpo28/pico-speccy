@@ -1090,11 +1090,6 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_TIMEX, 1, rep,
                                  is68 ? "Timex SCLD is part of the TC2068"
                                       : "Timex SCLD is part of the TC2048");
-            // The TC2068 also owns the whole 64 KB map through the SCLD and boots a
-            // ROM that is not Sinclair-derived, so the DivMMC automap traps fire on
-            // unrelated code — see the CPU::reset backstop.
-            if (is68 && staged(SET_ESXDOS))
-                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the TC2068");
         }
 
         // SAA1099 and Timex are mutually exclusive, in both directions

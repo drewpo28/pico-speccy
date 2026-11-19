@@ -78,7 +78,7 @@ static const MachFx* machineFx(ArchIdx a, RomsetIdx r) {
     static const MachFx kP3div  = { { "IDE: DivIDE" },
                                     { "Betadisk, Timex, MB-02+", "esxDOS, Z-Controller" } };
     static const MachFx kTc2048 = { { "Timex Gfx mode" }, { "SAA1099" } };
-    static const MachFx kTc2068 = { { "Timex Gfx mode" }, { "SAA1099, esxDOS" } };
+    static const MachFx kTc2068 = { { "Timex Gfx mode" }, { "SAA1099" } };
     static const MachFx kByte48 = { { nullptr }, { "Betadisk, Timex, MB-02+" } };
     static const MachFx kByte   = { { nullptr }, { "Timex, MB-02+" } };
 

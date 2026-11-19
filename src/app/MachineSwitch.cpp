@@ -245,13 +245,8 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                 Config::timex_video = true;
                 OSD::osdCenteredMsg("Timex SCLD enabled", LEVEL_WARN, 1500);
             }
-            // The TC2068's SCLD owns the whole 64 KB map in 8 KB slots and its HOME
-            // ROM is not Sinclair-derived, so the DivMMC's automap entry points land
-            // on unrelated code — see the CPU::reset backstop.
-            if (isTc2068Romset(romset) && Config::esxdos) {
-                Config::esxdos = 0;
-                OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 1500);
-            }
+            // esxDOS stays: the TC2068 runs Hugo Pinto's build of the 0.9.0 ROM
+            // (DivMMC::romSync), and a paged-in divMMC sits over the SCLD map.
         }
         // TR-DOS is mandatory on Pentagon / Profi / Scorpion / TS-Conf (Beta-128 on board)
         if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM) && !Config::betadisk) {
