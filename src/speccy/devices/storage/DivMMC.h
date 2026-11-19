@@ -12,6 +12,10 @@
 #define DIVMMC_BANK_SIZE 0x2000   // 8KB per bank
 #define DIVMMC_NUM_BANKS 16       // 16 banks = 128KB RAM
 #define DIVMMC_CACHE_SLOTS 3      // swap mode: number of cached bank buffers
+// What DivMMC takes of butter PSRAM right above the ZX pages: the 16 banks plus one
+// 8 KB page for a ROM DivMMC::init assembles from a base + overlay (the DivIDE builds
+// of esxDOS). Buffer::pageBudget / initPools, GS and the stats bar all count this.
+#define DIVMMC_BUTTER_BYTES (DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE + DIVMMC_ROM_SIZE)
 
 // DivMMC automap trap addresses (M1 cycle entry points)
 #define DIVMMC_TRAP_0000 0x0000
@@ -66,7 +70,11 @@ public:
     static bool next_nmi_hold;
     static void nextRetn();       // Next: RETN unmaps (divmmc i_retn_seen)
 
-    static uint8_t *esxdos_rom;   // 8KB ESXDOS ROM (dynamically allocated)
+    static uint8_t *esxdos_rom;   // 8KB ROM the automap pages in: flash, or rom_flat
+    // The 8 KB page an overlaid ROM (base + RomOverlay.h run list) is flattened into:
+    // butter PSRAM above the banks, else heap (Buffer::palloc). Kept for the session
+    // once allocated, as the bank cache is (re-allocation after toggles fragments).
+    static uint8_t *rom_flat;
     static uint8_t* bank_ptr[DIVMMC_NUM_BANKS]; // direct pointer per bank (null = swapped out)
 
     static bool use_psram;            // true = all banks in butter PSRAM (direct pointers)

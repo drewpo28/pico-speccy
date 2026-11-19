@@ -394,7 +394,10 @@ const char* romsetName(int32_t composite);
     X(SET_PIMUSICA,       AC_REBOOT, 0,                     get_pimusica,   put_pimusica,  nullptr,        -1) \
     /* Interface > Key repeat delay (Config::kbd_rep_delay, 0..3 = 250..1000 ms).  */ \
     /* repeat_handler reads it on each key press, so nothing to push.             */ \
-    X(SET_KBD_REP_DELAY,  AC_LIVE,   0,                     get_kbdRepDelay, put_kbdRepDelay, hook_uiLook,  -1)
+    X(SET_KBD_REP_DELAY,  AC_LIVE,   0,                     get_kbdRepDelay, put_kbdRepDelay, hook_uiLook,  -1) \
+    /* Devices > esxDOS > ROM (Config::esxdos_ver, 0 = 0.9.0, 1 = 0.8.9). Reboot-class */ \
+    /* like esxDOS itself: DivMMC::init picks and assembles the ROM at boot.          */ \
+    X(SET_ESXDOS_VER,     AC_REBOOT, 0,                     get_esxdosVer,  put_esxdosVer, nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

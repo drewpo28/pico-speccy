@@ -6806,7 +6806,7 @@ void OSD::MemoryInfo() {
         const size_t bsz   = butter_psram_size();
         const size_t emu   = (size_t)butter_pages * MEM_PG_SZ;
         const size_t roms  = Atm::romPsramBytes() + MemESP::overlayFlatBytes();
-        const size_t divm  = DivMMC::use_psram ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
+        const size_t divm  = DivMMC::use_psram ? (size_t)DIVMMC_BUTTER_BYTES : 0;
         const size_t gs    = Config::gs_enabled ? GS::configuredRamBytes() : 0;
         const size_t midi  = MidiSynth::bankPsramBytes();   // butter here (SPI only without butter)
         const size_t gig   = VIDEO::gigascreenArmed() ? VIDEO::gigascreenPrevFBBytes() : 0;

@@ -193,6 +193,7 @@
 #define TXT_MB02_SNDLED     "Sound and LED"
 #define TXT_ESX_INTERFACE   "Interface"
 #define TXT_HW_ESX_IMAGES   "Disks hd0 / hd1"
+#define TXT_HW_ESX_ROM      "ROM version"
 #define TXT_ZC_CARD         "SD card / image"
 #define TXT_HW_ESXDOS       "esxDOS"
 #define TXT_HW_ZC           "Z-Controller"

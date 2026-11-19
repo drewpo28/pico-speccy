@@ -554,6 +554,10 @@ public:
     static string if2CartPath;
     static bool driveWP[4];   // TR-DOS per-slot write protect (Drive A..D)
     static uint8_t esxdos;   // 0=OFF 1=DivMMC 2=DivIDE 3=DivSD
+    // esxDOS ROM release: 0 = 0.9.0, 1 = 0.8.9. The two do not share a card: 0.9.0
+    // boots only from a /SYS of its own version. 0.8.9 lives in .psramroms, so
+    // DivMMC::init falls back to 0.9.0 when !FlashRoms::romsUsable().
+    static uint8_t esxdos_ver;
     // Unified hd0/hd1 image slots — [0]=hd0, [1]=hd1.
     // DivMMC uses hd0 only; DivIDE uses both.
     static string esxdos_hdf_image[2];

@@ -27,6 +27,8 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "hardware/timer.h"
 #include "fs/FileUtils.h"
 #include "speccy/core/roms.h"
+#include "speccy/core/RomOverlay.h"
+#include "app/FlashRoms.h"
 #include "speccy/z80/z80.h"
 #include "app/Buffer.h"
 extern "C" {
@@ -126,6 +128,7 @@ bool DivMMC::conmem = false;
 bool DivMMC::mapram = false;
 uint8_t DivMMC::bank = 0;
 uint8_t *DivMMC::esxdos_rom = nullptr;
+uint8_t *DivMMC::rom_flat = nullptr;
 bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
@@ -408,7 +411,7 @@ void DivMMC::init() {
     }
 
     // Allocate DivMMC bank RAM: prefer butter PSRAM, fallback to swap
-    size_t divmmc_total = DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+    size_t divmmc_total = DIVMMC_BUTTER_BYTES;   // the banks + the assembled-ROM page
     size_t butter_used = (size_t)butter_pages * MEM_PG_SZ;
     size_t butter_free = butter_psram_size() > butter_used ? butter_psram_size() - butter_used : 0;
 
@@ -417,6 +420,7 @@ void DivMMC::init() {
         uint8_t* base = PSRAM_DATA + butter_used;
         for (int i = 0; i < DIVMMC_NUM_BANKS; i++)
             bank_ptr[i] = base + i * DIVMMC_BANK_SIZE;
+        rom_flat = base + DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
         Debug::log("DivMMC: %d banks in butter PSRAM @ %p", DIVMMC_NUM_BANKS, base);
     } else {
         use_psram = false;
@@ -453,16 +457,34 @@ void DivMMC::init() {
     }
     clearAllBanks();
 
-    // Point ROM directly to flash (no heap allocation needed)
-    const char* mode_name;
-    if (Config::esxdos == 2) {
-        esxdos_rom = (uint8_t *)gb_rom_esxide;
-        mode_name = "DivIDE";
+    // The ROM: each esxDOS release ships its DivMMC build raw in flash (served by
+    // XIP as before) and its DivIDE build as a run-list overlay over it, flattened
+    // here into rom_flat — the automap reads page0_lo as a plain pointer, so the
+    // overlay must never reach the Z80 read path. 0.8.9 sits in .psramroms: on a
+    // board that traded that range to the GM.DLS bank it is gone, 0.9.0 serves.
+    const char* mode_name = divide_mode ? "DivIDE" : divsd_mode ? "DivSD" : "DivMMC";
+    bool v089 = Config::esxdos_ver == 1;
+    if (v089 && !FlashRoms::romsUsable()) {
+        Debug::log("%s: esxDOS 0.8.9 is not in flash on this board (GM.DLS took it), using 0.9.0", mode_name);
+        v089 = false;
+    }
+    const uint8_t* base = v089 ? gb_rom_esxdos089 : gb_rom_esxdos090;
+    if (!divide_mode) {
+        esxdos_rom = (uint8_t*)base;
     } else {
-        esxdos_rom = (uint8_t *)gb_rom_esxdos;
-        mode_name = divsd_mode ? "DivSD" : "DivMMC";
+        if (!rom_flat) rom_flat = (uint8_t*)Buffer::palloc(DIVMMC_ROM_SIZE, Buffer::NEED_POINTER);
+        if (!rom_flat) {
+            Debug::log("DivIDE: no 8 KB for the ROM page, esxDOS off");
+            enabled = false;
+            Config::esxdos = 0;
+            return;
+        }
+        rom_overlay_flatten(v089 ? gb_overlay_esxdos089_divide : gb_overlay_esxdos090_divide,
+                            base, rom_flat);
+        esxdos_rom = rom_flat;
     }
     rom_loaded = true;
+    Debug::log("%s: esxDOS %s ROM", mode_name, v089 ? "0.8.9" : "0.9.0");
     Debug::log("%s ROM verify: %02X %02X %02X %02X %02X %02X %02X @ %p",
         mode_name, esxdos_rom[0], esxdos_rom[1], esxdos_rom[2], esxdos_rom[3],
         esxdos_rom[4], esxdos_rom[5], esxdos_rom[6], esxdos_rom);
