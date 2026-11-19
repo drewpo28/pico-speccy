@@ -127,6 +127,7 @@ bool waitReady(uint32_t) { return false; }
 extern "C" {
 int hid_app_format_devices_info(char* buf, int sz) { if (sz > 0) buf[0] = 0; return 0; }
 int xinput_app_format_devices_info(char* buf, int sz) { if (sz > 0) buf[0] = 0; return 0; }
+int usb_enum_format_info(char* buf, int sz) { if (sz > 0) buf[0] = 0; return 0; }
 void usb_kbd_resync_stats(unsigned* inst, unsigned* flags, unsigned* fixes,
                           unsigned* unproven, unsigned* stale, unsigned* demoted) {
     *inst = *flags = *fixes = *unproven = *stale = *demoted = 0;

@@ -7,11 +7,16 @@
 #include "fatfs/ff.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/core/MemESP.h"
+#include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd: TC2068 traps fire on HOME ROM only
 
 #define DIVMMC_ROM_SIZE  0x2000   // 8KB ESXDOS ROM
 #define DIVMMC_BANK_SIZE 0x2000   // 8KB per bank
 #define DIVMMC_NUM_BANKS 16       // 16 banks = 128KB RAM
 #define DIVMMC_CACHE_SLOTS 3      // swap mode: number of cached bank buffers
+// What DivMMC takes of butter PSRAM right above the ZX pages: the 16 banks plus one
+// 8 KB page for a ROM DivMMC::init assembles from a base + overlay (the DivIDE builds
+// of esxDOS). Buffer::pageBudget / initPools, GS and the stats bar all count this.
+#define DIVMMC_BUTTER_BYTES (DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE + DIVMMC_ROM_SIZE)
 
 // DivMMC automap trap addresses (M1 cycle entry points)
 #define DIVMMC_TRAP_0000 0x0000
@@ -66,7 +71,15 @@ public:
     static bool next_nmi_hold;
     static void nextRetn();       // Next: RETN unmaps (divmmc i_retn_seen)
 
-    static uint8_t *esxdos_rom;   // 8KB ESXDOS ROM (dynamically allocated)
+    static uint8_t *esxdos_rom;   // 8KB ROM the automap pages in: flash, or rom_flat
+    // The 8 KB page an overlaid ROM (base + RomOverlay.h run list) is flattened into:
+    // butter PSRAM above the banks, else heap (Buffer::palloc). Kept for the session
+    // once allocated, as the bank cache is (re-allocation after toggles fragments).
+    static uint8_t *rom_flat;
+    // Bind esxdos_rom for the machine and mode (see DivMMC.cpp); false = no room
+    // for the flattened page, esxDOS turned off.
+    static bool romSync();
+    static uint8_t s_romKey;      // what esxdos_rom holds now (0 = nothing yet)
     static uint8_t* bank_ptr[DIVMMC_NUM_BANKS]; // direct pointer per bank (null = swapped out)
 
     static bool use_psram;            // true = all banks in butter PSRAM (direct pointers)
@@ -452,12 +465,17 @@ __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
         } else if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
             pc == DIVMMC_TRAP_0038 || pc == DIVMMC_TRAP_0066 ||
             pc == DIVMMC_TRAP_04C6 || pc == DIVMMC_TRAP_0562) {
-            pend_after |= 1;
+            // TC2068: the interface sees the HOME ROM select, so a fetch the SCLD
+            // serves from the EX-ROM or a DOCK chunk is not an entry point (Hugo
+            // Pinto's ROM has no EX-ROM test at 0x0008: the EX-ROM's own RST 8 at
+            // boot hijacked esxDOS and a DOCK cartridge never started). HSR bit n =
+            // slot n windowed; it stays 0 on every other machine.
+            if (!(Timex::hsr & 1)) pend_after |= 1;
         }
     }
 
     // 0x3D00-0x3DFF: instant map BEFORE fetch
-    if (pc >= 0x3D00 && pc <= 0x3DFF) {
+    if (pc >= 0x3D00 && pc <= 0x3DFF && !(Timex::hsr & 2)) {
         if (!automap) {
             automap = true;
             if (!conmem) applyMapping();

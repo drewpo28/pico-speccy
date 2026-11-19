@@ -1226,7 +1226,7 @@ static bool p_esxRow() {
     if (!p_hasSD()) return false;
     if (a == A_NEXT) return true;
     return !devOwnBus() && !devProfi() && !p_plus3On() &&
-           a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
+           a != A_TSCONF && a != A_ATM;
 }
 static bool p_mb02Row() {
     const ArchIdx a = devArch();
@@ -1257,6 +1257,12 @@ static bool p_rtcRow() {
 // card, a partition, a window). Greyed only while esxDOS is off.
 static bool p_esxImages() {
     return Stage::get(SET_ESXDOS) != 0;
+}
+// esxDOS ROM release. 0.8.9 is in .psramroms: with that range traded to the GM.DLS
+// bank only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
+// 0.9.0 has a TC2068 build (DivMMC::romSync).
+static bool p_esxVerRow() {
+    return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
@@ -1320,6 +1326,13 @@ static const Option opt_esxdos[] = {
     { "DivIDE", 2 },
     { "DivSD",  3 },
 };
+// esxDOS ROM: the value IS Config::esxdos_ver. 0.9.0 boots only from a /SYS of its
+// own version (and 0.8.9 not from 0.9.0's), so the row is what lets a card that has
+// not been updated yet keep working.
+static const Option opt_esx_ver[] = {
+    { "0.9.0", 0 },
+    { "0.8.9 (old /SYS)", 1, "0.8.9" },
+};
 
 // Values ARE Config::mouse_swap. Auto: the first button the user presses this session
 // becomes LEFT (kept until F12 — a machine reset does not forget it).
@@ -1368,6 +1381,7 @@ static const Node kDiskP3[] = {
 };
 static const Node kEsx[] = {
     NM_RADIO   (TXT_IFACE_MODE,    SET_ESXDOS, opt_esxdos, nullptr),
+    NM_RADIO_EN(TXT_HW_ESX_ROM,    SET_ESXDOS_VER, opt_esx_ver, p_esxVerRow, p_esxImages),
     NM_DYN_EN  (TXT_HW_ESX_IMAGES, slots_buildEsx, slots_keyEsx, nullptr, p_esxImages),
 };
 static const Node kMb02[] = {

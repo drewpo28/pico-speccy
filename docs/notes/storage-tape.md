@@ -1293,3 +1293,58 @@ Plan, host tests and the per-stage record: `docs/bt-tape-plan.md`. For anyone in
 - The timing logic is `src/speccy/devices/tape/BtTapeEdges.h` (EdgeExtractor +
   EdgePlayer), dependency-free and run by tools/sbc_tape_test.cpp: change it there
   first.
+
+## esxDOS 0.9.0 ROM, 0.8.9 kept beside it (2026-11-19, hw-confirmed DVp2w on `debug/DVp2w-esx090-1.1.3`: owner "работает", not itemised)
+
+esxDOS 0.9.0 (Papaya Dezign, 18.11.2026) replaced the built-in 0.8.9. **The ROM and
+the card's /SYS must be the same release**: 0.9.0's BIOS loads ESXDOS.SYS only from a
+drive whose copy matches its version. Host bench, both directions measured:
+0.9.0 ROM + 0.8.9 /SYS = `Loading ESXDOS.SYS... [ERROR]`, stops; 0.8.9 ROM + 0.9.0
+/SYS = loads ESXDOS.SYS [OK], then hangs. Hence Devices > esxDOS > **ROM version**
+(`Config::esxdos_ver`, nvs `esxdos_ver`, 0 = 0.9.0, 1 = 0.8.9; reboot-class like
+esxDOS itself; in the .pss reboot keys because DivMMC RAM belongs to one release).
+
+- **Storage** (`tools/rom_pack.py esxdos`, sources in `roms/esxdos/src/*.bin`, md5
+  pinned): per release the DivMMC build raw + the DivIDE build as a RomOverlay run list
+  over it (0.9.0: 873 B, 0.8.9: 939 B). 0.8.9 -> 0.9.0 does NOT overlay (8779 B, more
+  than the ROM: the code moved), so each release has its own raw base. 0.9.0 is in
+  ordinary flash (`esxdos_roms.c`); 0.8.9 in `.psramroms` (`esxdos089_roms.c`, both
+  EXCLUDE_FILE lists + KEEP in rp2350-memmap.ld): off the 4 MB GM.DLS hard floor,
+  offered only while `FlashRoms::romsUsable()` (the menu row hides, DivMMC::init falls
+  back to 0.9.0 with a log line). z0p2 PIOUSB 4 MB: `__psramrom_start` 0x10267000 ->
+  0x10265000, i.e. 4 KB -> 12 KB to the hard floor (the DivIDE overlay saved ~7 KB).
+- **The overlay never reaches the Z80 read path**: the automap reads `page0_lo` as a
+  raw pointer, so DivMMC::init flattens base + overlay into `DivMMC::rom_flat` (8 KB)
+  and points `esxdos_rom` there; the DivMMC/DivSD builds still run straight from flash.
+  `rom_flat` = butter PSRAM right above the 16 banks: `DIVMMC_BUTTER_BYTES` (banks +
+  8 KB) is the footprint Buffer::pageBudget / initPools, GS, the stats bar and
+  Subsystem all count — DivMMC::init runs BEFORE Buffer::initPools at boot, so a
+  palloc there could only take heap. Without butter: `Buffer::palloc` (heap), kept for
+  the session; none = DivIDE off with "DivIDE: no 8 KB for the ROM page".
+- Host checks (2026-11-19): DivSD 0.9.0 boots from a 0.9.0 /SYS (RTC.SYS [ERROR] is
+  normal, the release ships none) and `.ls` runs from /SYS/BIN with LFN names; 0.8.9
+  boots from the owner's old /SYS; DivIDE banners read v0.9.0-DivIDE / v0.8.9-DivIDE
+  (flatten correct). SRAM: +5 B .bss (esxdos_ver, rom_flat).
+- **TC2068**: the release has TC2068 DivMMC/DivIDE builds (in `src/`, md5 pinned,
+  NOT packed: overlays over 0.9.0 measure 1502 / 1482 B). Enabling esxDOS on the
+  TC2068 (forced off, timex.md) is a separate task.
+- New commands that touch emulated hardware: `.sercp` defaults to the 128K AY serial
+  port (`interface=AY` in /SYS/CONFIG/SERCP.CFG; EL = eLeMeNt/MB03+) — we only decode
+  AY R14 bit 2 as MIDI TX (AySound.cpp), there is no RX/host link, so it cannot work
+  yet; `.divideo` wants
+  unfragmented .dvo files and streams hard; `.trkplay` is the AY. The rest (.df,
+  .mount, .umount, .fm, .vi, .editor, .sview, .dbasic, .fontedit, .touch) is software.
+- **Third-party /SYS files must be relocated for 0.9.0** (hw-confirmed 2026-11-19, owner: BRWSCFG save + Shift+N work; fixed
+  copies in ~/Downloads/zx/esxdos090-fixes/): 0.9.0 loads NMI.SYS at $2000 (0.8.9:
+  $2F00) and RTC.SYS at $2F00 (0.8.9: $2700), bank 0; ESXDOS.SYS 0.9.0 code lives at
+  $30xx-$3A2D of bank 0. Symptoms: an old 256 B DS1307 RTC.SYS (I2C on #103B/#113B,
+  absolute $27xx calls) crashes on the first directory-date write, i.e. on F_CLOSE of a
+  written file: BRWSCFG "saves and never returns to BASIC" (hw), host = machine reset;
+  relocating its 33 operands +$0800 fixes it. The ZX-UNO browser 1.02 NMI.SYS ported by
+  replacing high bytes 2F/30 -> 20/21 missed (a) its 512 B save buffer at $3200 (now
+  esxDOS code; moved to $2300) and (b) the Shift+N NMI.ORG loader at $2F00/$2FC0 (->
+  $2000/$20C0): Shift+N restarted the machine instead of starting the stock browser.
+  Entry convention unchanged (HL -> context, +$1B = 2 on 128K, +$1E = #7FFD).
+  The browser's /SYS/NMI.ORG must ALSO be 0.9.0's own nmi.sys: an old 0.8.x NMI.ORG
+  (3539 B, `CALL $2F35`, 136 calls into $2F00-$3Cxx) loaded at $2000 resets the
+  machine on Shift+N (host-confirmed; this was the owner's hw failure after the fix).

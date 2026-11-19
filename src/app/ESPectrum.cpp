@@ -2258,6 +2258,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   PerfFdc::reset();
 #endif
   Rzx::onReset();   // a reset ends an RZX playback (not the one its own snapshot load does)
+  // esxDOS: the TC2068 runs its own build of the ROM; a machine switch ends here.
+  DivMMC::romSync();
   // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
   // physical on real hardware, so keys held THROUGH a reset stay pressed —
   // the Byte's built-in ROM test is entered exactly that way (Ы+В+А = S+D+F

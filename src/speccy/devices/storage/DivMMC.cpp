@@ -27,6 +27,8 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "hardware/timer.h"
 #include "fs/FileUtils.h"
 #include "speccy/core/roms.h"
+#include "speccy/core/RomOverlay.h"
+#include "app/FlashRoms.h"
 #include "speccy/z80/z80.h"
 #include "app/Buffer.h"
 extern "C" {
@@ -126,6 +128,7 @@ bool DivMMC::conmem = false;
 bool DivMMC::mapram = false;
 uint8_t DivMMC::bank = 0;
 uint8_t *DivMMC::esxdos_rom = nullptr;
+uint8_t *DivMMC::rom_flat = nullptr;
 bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
@@ -408,7 +411,7 @@ void DivMMC::init() {
     }
 
     // Allocate DivMMC bank RAM: prefer butter PSRAM, fallback to swap
-    size_t divmmc_total = DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+    size_t divmmc_total = DIVMMC_BUTTER_BYTES;   // the banks + the assembled-ROM page
     size_t butter_used = (size_t)butter_pages * MEM_PG_SZ;
     size_t butter_free = butter_psram_size() > butter_used ? butter_psram_size() - butter_used : 0;
 
@@ -417,6 +420,7 @@ void DivMMC::init() {
         uint8_t* base = PSRAM_DATA + butter_used;
         for (int i = 0; i < DIVMMC_NUM_BANKS; i++)
             bank_ptr[i] = base + i * DIVMMC_BANK_SIZE;
+        rom_flat = base + DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
         Debug::log("DivMMC: %d banks in butter PSRAM @ %p", DIVMMC_NUM_BANKS, base);
     } else {
         use_psram = false;
@@ -453,16 +457,9 @@ void DivMMC::init() {
     }
     clearAllBanks();
 
-    // Point ROM directly to flash (no heap allocation needed)
-    const char* mode_name;
-    if (Config::esxdos == 2) {
-        esxdos_rom = (uint8_t *)gb_rom_esxide;
-        mode_name = "DivIDE";
-    } else {
-        esxdos_rom = (uint8_t *)gb_rom_esxdos;
-        mode_name = divsd_mode ? "DivSD" : "DivMMC";
-    }
-    rom_loaded = true;
+    const char* mode_name = divide_mode ? "DivIDE" : divsd_mode ? "DivSD" : "DivMMC";
+    s_romKey = 0;                       // pick afresh: the mode may have changed
+    if (!romSync()) return;             // (it turned esxDOS off and said why)
     Debug::log("%s ROM verify: %02X %02X %02X %02X %02X %02X %02X @ %p",
         mode_name, esxdos_rom[0], esxdos_rom[1], esxdos_rom[2], esxdos_rom[3],
         esxdos_rom[4], esxdos_rom[5], esxdos_rom[6], esxdos_rom);
@@ -676,6 +673,57 @@ void DivMMC::nextRetn() {
         automap = false;
         if (!conmem) applyMapping();
     }
+}
+
+// The ROM the automap pages in. Each esxDOS release ships its DivMMC build raw in
+// flash (served by XIP) and its other builds as run-list overlays over it: the
+// DivIDE build, and for 0.9.0 Hugo Pinto's TC2068 builds (the TC2068's HOME ROM is
+// not Sinclair-derived, so it needs its own esxDOS). An overlaid ROM is flattened
+// into rom_flat — the automap reads page0_lo as a plain pointer, so a run list
+// must never reach the Z80 read path. 0.8.9 sits in .psramroms (gone on a board
+// that traded that range to the GM.DLS bank) and has no TC2068 build: 0.9.0 then.
+// Called by init() and by ESPectrum::reset(), so a machine switch between a
+// Spectrum and the TC2068 takes the right build; a no-op while nothing changed.
+uint8_t DivMMC::s_romKey = 0;
+bool DivMMC::romSync() {
+    if (!enabled) return true;
+    if (Config::arch == A_NEXT && MemESP::nextDivRomBase) return true;   // init() binds enNxtmmc
+    const bool tc = Config::isTc2068();
+    bool v089 = Config::esxdos_ver == 1 && !tc;
+    if (v089 && !FlashRoms::romsUsable()) v089 = false;
+    const uint8_t key = (uint8_t)(1 | (v089 << 1) | (tc << 2) | (divide_mode << 3));
+    if (key == s_romKey && rom_loaded) return true;
+
+    const uint8_t* base = v089 ? gb_rom_esxdos089 : gb_rom_esxdos090;
+    const uint8_t* ov = tc ? (divide_mode ? gb_overlay_esxdos090_tc2068_divide
+                                          : gb_overlay_esxdos090_tc2068_divmmc)
+                     : divide_mode ? (v089 ? gb_overlay_esxdos089_divide
+                                           : gb_overlay_esxdos090_divide)
+                                   : nullptr;
+    if (!ov) {
+        esxdos_rom = (uint8_t*)base;
+    } else {
+        if (!rom_flat) rom_flat = (uint8_t*)Buffer::palloc(DIVMMC_ROM_SIZE, Buffer::NEED_POINTER);
+        if (!rom_flat) {
+            Debug::log("esxDOS: no 8 KB for the ROM page, esxDOS off");
+            enabled = false;
+            rom_loaded = false;
+            Config::esxdos = 0;
+            automap = conmem = false;
+            applyMapping();
+            return false;
+        }
+        rom_overlay_flatten(ov, base, rom_flat);
+        esxdos_rom = rom_flat;
+    }
+    if (Config::esxdos_ver == 1 && !v089)
+        Debug::log("esxDOS: 0.8.9 is %s, using 0.9.0", tc ? "not built for the TC2068" : "not in flash on this board");
+    rom_loaded = true;
+    s_romKey = key;
+    Debug::log("esxDOS: %s%s %s ROM", v089 ? "0.8.9" : "0.9.0", tc ? " TC2068" : "",
+               divide_mode ? "DivIDE" : "DivMMC");
+    if (automap || conmem) applyMapping();   // page0_lo may point at the old one
+    return true;
 }
 
 void DivMMC::reset() {

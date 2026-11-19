@@ -1893,6 +1893,8 @@ IRAM_ATTR void Z80::exec_nocheck() {
             pg = REG_PCh >> 5; // re-read in case 0x3Dxx instant map changed it
             if (pg <= 1 && MemESP::divmmc_mapped) {
                 opCode = (pg == 0) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
+            } else if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[REG_PC >> 13]) {
+                opCode = Timex::fetch8(REG_PC);   // TC2068 + esxDOS (Z80Ops::fetchOpcode twin)
             } else {
                 opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC);
             }
@@ -2538,7 +2540,8 @@ void Z80::decodeOpcode76()
     // 0x0111 can never trigger it — and that gate is what makes a bare PC value
     // safe on a machine whose page 0 is not one fixed ROM.
     const bool tcTrap = __builtin_expect(g_timex_mmu != 0, 0) &&
-                        Timex::exromSel && Timex::rd[0] && REG_PC == 0x0111;
+                        Timex::exromSel && Timex::rd[0] && REG_PC == 0x0111 &&
+                        !MemESP::divmmc_mapped;   // esxDOS code there, not the EX-ROM
 #if TIMEX_PORT_TRACE
     // The trap is a bare PC value, so the FIRST question is whether the ROM reaches
     // it at all and with what paged — not whether the trap body is right. Log every

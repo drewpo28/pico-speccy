@@ -196,6 +196,7 @@ NM_INT_ACCESS (kbdRepDelay, kbd_rep_delay)
 NM_INT_ACCESS (joyType,   joystick)
 NM_BOOL_ACCESS(tabFire,   TABasfire1)
 NM_INT_ACCESS (esxdos,    esxdos)
+NM_INT_ACCESS (esxdosVer, esxdos_ver)
 NM_INT_ACCESS (ideScheme, ide_scheme)
 NM_INT_ACCESS (mb02,      mb02)
 NM_BOOL_ACCESS(zc,        zcontroller)
@@ -1089,11 +1090,6 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_TIMEX, 1, rep,
                                  is68 ? "Timex SCLD is part of the TC2068"
                                       : "Timex SCLD is part of the TC2048");
-            // The TC2068 also owns the whole 64 KB map through the SCLD and boots a
-            // ROM that is not Sinclair-derived, so the DivMMC automap traps fire on
-            // unrelated code — see the CPU::reset backstop.
-            if (is68 && staged(SET_ESXDOS))
-                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the TC2068");
         }
 
         // SAA1099 and Timex are mutually exclusive, in both directions
