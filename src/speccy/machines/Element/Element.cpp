@@ -548,6 +548,112 @@ void keyWaitSkip() {
 #endif
 }
 
+// PF2026 waits for its sound in a tight loop at 28 MHz, ~1 900 passes a frame of IN A,(C)
+// on g_zxi_04A = channel 0's SoundDMA position, high byte (hw 2026-11-18, `[HGFX] ed/fr`):
+//   loop: LD A,(nn) / LD H,A / IN A,(C) / LD L,A / XOR H / RLA / JR NC,+8 /
+//         (LD A,H / ADD A,#40 / LD H,A / LD A,L / ADD A,#40 / LD L,A) / LD A,L / CP H / JR C,loop
+// The position moves once per output sample, so the passes between two samples read the
+// same byte. Once two passes in a row took the same time (the same branch, the same
+// target in H), the read moves guest time on by whole passes to the first one that sees
+// the loop end or the other branch (ElmSdma::posScan, renderTo's arithmetic), within the
+// frame: what the real loop would have read at that pass, keyWaitSkip's shape. Called
+// from the 0x4A read itself, PC = past the IN.
+static const uint8_t s_psPre[6] = { 0x3A, 0, 0, 0x67, 0xED, 0x78 };   // bytes 1-2 (nn) any
+static const uint8_t s_psPost[17] = { 0x6F, 0xAC, 0x17, 0x30, 0x08, 0x7C, 0xC6, 0x40, 0x67,
+                                      0x7D, 0xC6, 0x40, 0x6F, 0x7D, 0xBC, 0x38, 0xE9 };
+static uint16_t s_psPc;
+static const uint8_t* s_psPg;
+static bool s_psOk;
+static uint32_t s_psT, s_psR, s_psD;
+static uint8_t s_psH;
+#if PERF_TRACE
+uint32_t g_elm_ps[2];   // poll skips, passes skipped
+#endif
+struct PsCtx { uint8_t h; bool br; };
+static bool psStop(uint8_t hi, const void* p) {      // this pass leaves the loop or takes the other branch
+    const PsCtx& c = *(const PsCtx*)p;
+    const bool br = (hi ^ c.h) & 0x80;
+    if (br != c.br) return true;
+    uint8_t l = hi, h = c.h;
+    if (br) { l = (uint8_t)(l + 0x40); h = (uint8_t)(h + 0x40); }
+    return l >= h;
+}
+static bool sdmaPollSkip() {
+    if (Config::numPcBP || Rzx::mode || Z80::isNMI()) return false;
+    const uint16_t pc = Z80::getRegPC();
+    const uint8_t* pg = MemESP::ramCurrent[pc >> 13];
+    if (pc != s_psPc || pg != s_psPg) {
+        s_psPc = pc; s_psPg = pg; s_psD = 0;
+        s_psOk = pc >= 0x4006 && pc < 0xFFE0;
+        for (int i = 0; i < 6 && s_psOk; i++)
+            if (i != 1 && i != 2) s_psOk = MemESP::readbyte((uint16_t)(pc - 6 + i)) == s_psPre[i];
+        for (int i = 0; i < 17 && s_psOk; i++) s_psOk = MemESP::readbyte((uint16_t)(pc + i)) == s_psPost[i];
+    }
+    if (!s_psOk) return false;
+    const uint8_t h = (uint8_t)(Z80::getRegHL() >> 8);   // the target, loaded before the IN
+    const uint32_t t = CPU::tstates, r = Z80::getFetchCounter();
+    const uint32_t g = (uint32_t)(CPU::global_tstates + t);
+    const uint32_t d = g - s_psT, dR = r - s_psR;
+    const bool same = d == s_psD && h == s_psH;
+    s_psT = g; s_psR = r; s_psD = d; s_psH = h;
+    const uint8_t hi = ElmSdma::posHigh();
+#if HOST_BUILD
+    // Bench check (PICOSPECCY_PSCHK): predict, do not skip. Every read of this loop is
+    // tested: none before the predicted pass may see the change, that pass must.
+    static int chk = -1;
+    static uint32_t predG, nPred, nOk, nBad;
+    static PsCtx predC;
+    static bool havePred;
+    if (chk < 0) chk = getenv("PICOSPECCY_PSCHK") ? 1 : 0;
+    if (chk && havePred) {
+        const bool flip = psStop(hi, &predC);
+        if ((int32_t)(g - predG) >= 0 || flip) {
+            havePred = false;
+            if (g == predG && flip) nOk++;
+            else { nBad++; if (nBad < 20) Debug::log("[PSCHK] miss: at %u predicted %u flip %d hi %02X h %02X", g, predG, flip, hi, h); }
+            if (((nOk + nBad) & 255) == 0) Debug::log("[PSCHK] %u predicted, %u checked, %u ok, %u bad", nPred, nOk + nBad, nOk, nBad);
+        }
+    }
+#endif
+    if (!same || d < 40 || d > 400) return false;
+    const PsCtx c = { h, ((hi ^ h) & 0x80) != 0 };
+    if (psStop(hi, &c)) return false;                    // this pass leaves on its own
+    if ((int32_t)t < CPU::IntEnd) return false;
+    uint32_t lim = CPU::statesInFrame - (uint32_t)CPU::IntEnd;
+    if (CPU::stFrame && CPU::stFrame < lim) lim = CPU::stFrame;
+    if (lim <= t + d) return false;
+    const uint32_t per = (uint32_t)ESPectrum::audioCOVOXDivider << ESPectrum::multiplicator;   // T a sample
+    const int n0 = ElmSdma::rendered();
+    if (!per || n0 != audioPos()) return false;          // renderTo clamped: not the arithmetic below
+    const int j = ElmSdma::posScan((int)((lim - t) / per) + 2, psStop, &c);
+    // The first pass at or after the T where sample n0 + j is rendered reads the change;
+    // every pass before it reads a sample before that one (audioPos is a floor).
+    uint32_t k;
+    if (j) { const uint32_t to = (uint32_t)(n0 + j) * per; k = to > t ? (to - t + d - 1) / d : 0; }
+    else k = (lim - t) / d;
+    const bool reached = j && t + k * d <= lim;          // the change is inside the frame
+    if (!reached) k = (lim - t) / d;
+    if (!k) return false;
+#if HOST_BUILD
+    if (chk) {
+        if (!havePred && reached) { havePred = true; predG = g + k * d; predC = c; nPred++; }
+        return false;
+    }
+#endif
+    const uint32_t end = t + k * d;
+    while (CPU::tstates < end) {
+        uint32_t n = end - CPU::tstates;
+        if (VIDEO::tStatesPerLine && n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+        VIDEO::Draw(n, false);
+    }
+    Z80::incRegR(k * dR);
+    s_psT = (uint32_t)(CPU::global_tstates + CPU::tstates); s_psR = Z80::getFetchCounter();
+#if PERF_TRACE
+    g_elm_ps[0]++; g_elm_ps[1] += k;
+#endif
+    return true;
+}
+
 void masksRefresh() { elmMasksUpdate(); }
 static void fdWrite(uint32_t a, bool uram, uint8_t v) {
     if (uram) { uint8_t* p = uramByte(a); if (p) { if (Hgfx::g_cowOn) Hgfx::cowGuard(p, 1); *p = v; } return; }
@@ -1582,7 +1688,7 @@ static uint8_t gRead(uint8_t r) {
     }
     case 0x02F: return Hgfx::status();
     case 0x032: return ZxEvoAvr::scanPop();
-    case 0x04A: sdCatch(); return ElmSdma::posHigh();
+    case 0x04A: sdCatch(); if (sdmaPollSkip()) sdCatch(); return ElmSdma::posHigh();
     case 0x011: return (uint8_t)freePages();
     case 0x012: return (uint8_t)(freePages() >> 8);
     default:

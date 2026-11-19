@@ -182,6 +182,31 @@ void frameEnd(int samples) {
 }
 
 uint8_t posHigh() { return s ? (uint8_t)(s->ch[0].pos >> 8) : 0; }
+int rendered() { return s ? s->n : 0; }
+
+// renderCh's position arithmetic for channel 0 on copies (wrap() without the writes).
+int posScan(int max, bool (*stop)(uint8_t hi, const void* ctx), const void* ctx) {
+    if (!s || !s->ch[0].on) return 0;
+    const Ch& h = s->ch[0];
+    const uint8_t* rg = s->reg;
+    const uint8_t par = rg[0];
+    const uint32_t bytes = (par & (P_16BIT | P_STEREO)) ? 2 : 1;
+    uint32_t pos = h.pos, end = h.end, frac = h.frac;
+    for (int i = 1; i <= max; i++) {
+        if (pos >= end) {
+            if (!(par & P_LOOP)) return 0;
+            const uint32_t loop = reg24(rg, 6) & ADDR_MASK;
+            if (par & P_LATE) end = loop + reg24(rg, 9);
+            if (loop >= end) return 0;
+            pos = loop;
+        }
+        frac += h.step;
+        pos += (frac >> 16) * bytes;
+        frac &= 0xFFFF;
+        if (stop((uint8_t)(pos >> 8), ctx)) return i;
+    }
+    return 0;
+}
 
 bool active() {
     if (!s) return false;

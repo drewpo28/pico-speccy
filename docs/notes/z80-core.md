@@ -145,7 +145,23 @@ accessors:
   `chunkyWriteRows` 2.0 ms of it (0.85 us a 8-byte row = the PSRAM stores into buffer 1; the code is gone from
   the figure), cpu 23.0 -> 20.5-21.4 ms, realFPS 40 -> 44.3-46.1; core1 draw 4.2-5.8 ms, wait 0.3-1.3 ms; tail
   14 056 B (PERF window), heap 24.9 KB at COMPLETE. What is left of FastDMA: 2.0 ms of stores, ~1.4 ms per-run
-  (decode + the per-run `VIDEO::Draw` time charge). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  (decode + the per-run `VIDEO::Draw` time charge).
+- **SoundDMA poll skip (2026-11-19, hw-confirmed DVp2w 2026-11-19 on `debug/DVp2w-elm-ps1-1.1.3`, PERF,
+  build 12:26:54).** PF2026's wait at #61C3..#61D8 (`LD A,(#6180) / LD H,A / IN A,(C)` on #7D3B with g = #4A,
+  then the half-circle compare: 73 T a pass, 98 on the other branch; a second read at #6197 enters it).
+  `Elm::sdmaPollSkip`, called from the 0x4A read: byte signature around the PC (any `nn`), two passes in a row with
+  the same delta and H, then `ElmSdma::posScan` runs channel 0's position (renderCh's frac / step / wrap on
+  copies) to the first sample where the loop leaves or takes the other branch; guest time moves by whole passes
+  to the first pass at or after that sample (`audioPos` is a floor, so every skipped pass read an earlier
+  sample), capped at `statesInFrame - IntEnd` / `stFrame` like `keyWaitSkip`, R by passes x M1s. Host: 896 T a
+  sample at 28 MHz = ~12 passes per sample; `PICOSPECCY_PSCHK=1` (predict, do not skip, test every read):
+  1 272 of 1 280 exact, 8 within one pass (-66..+32 T: something shifts the loop's phase a few T now and then,
+  not chased). PERF: `[HGFX] 60f ... ps a/b` = skips / passes a frame.
+  hw (log `...12.55.48.146`): 1 200-2 260 passes a frame skipped; the forest part cpu 20.9 -> 16.6-18.6 ms,
+  realFPS 47-49.4; IDL now swings (-5k..+8k: the waiting frames are cheap, the decode frames are not). The car
+  part stays 43-46 FPS: core1 draws 87-102 rows (7.4-10.7 ms, forest 45 rows / ~5 ms) beside ~5 ms of SD
+  read-ahead, core0 waits 2.7-3.7 ms a frame for it, and `fdma run` is 5.1 ms there (forest 3.4) with the
+  same 591 blits / 2.05 ms rows - the extra 1.7 ms not explained yet (27 VRAM COPY pieces against 19). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
   (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
   inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
   offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half

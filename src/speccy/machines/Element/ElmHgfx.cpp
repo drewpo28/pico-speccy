@@ -30,7 +30,7 @@ void pcprof_dump();
 extern volatile uint32_t g_elm_batch[4];   // Z80_JLS.cpp elmLdirBatch / elmInirBatch: PERF counts
 extern uint32_t g_elm_loop_n, g_elm_gen_n;   // Z80_JLS.cpp: Z80::exec_nocheck_elm entries, shared-loop instructions
 extern uint32_t g_elm_ed_hist[256], g_elm_in_hist[256];   // Z80_JLS.cpp: ED second bytes the loop handed to the shared decoders, IN r,(C) ports
-namespace Elm { extern uint32_t g_elm_kw[2]; }   // Element.cpp: key-wait skips / passes
+namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2]; }   // Element.cpp: key-wait skips / passes, SoundDMA poll skips / passes
 namespace Elm { extern uint32_t g_elm_io_cnt[6], g_elm_io_us[3], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8]; }   // Element.cpp: DMA / FastDMA bytes and core0 us a window
 #endif
 
@@ -2839,12 +2839,12 @@ posted:
         }
         // z80 loop = entries of Z80::exec_nocheck_elm a frame (0 = the generic loop ran: fastmem
         // level 0, a COPY window at #4000+, a breakpoint); kw = key-wait skips / passes skipped.
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u | dr=%u..%u | z80 loop %u/fr gen %u/fr kw %u/%u",
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u | dr=%u..%u | z80 loop %u/fr gen %u/fr kw %u/%u ps %u/%u",
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
                    s_pDraws > s_pSkips ? s_pDrawUs / (s_pDraws - s_pSkips) : 0, s_pDraws - s_pSkips, s_pSkips,
                    s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
-                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1]);
+                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1], Elm::g_elm_ps[0] / 60, Elm::g_elm_ps[1] / 60);
         Debug::log("[HGFX] c0/fr: superseded %u | frameEnd %uus (max %u) | drain %uus (max %u, %u frames > 2 ms) | frameSetup %uus (max %u) | pair snapshot wait %uus (max %u), core1 copy %uus (max %u)",
                    s_pSuper, s_pFeUs / 60, s_pFeMax, s_pDrnUs / 60, s_pDrnMax, s_pDrnN, s_pSetUs / 60, s_pSetMax, s_pSnapUs / 60, s_pSnapMax,
                    s_pSnapC1Us / 60, s_pSnapC1Max);
@@ -2856,7 +2856,7 @@ posted:
         s_pDrnUs = s_pDrnMax = s_pDrnN = s_pSetUs = s_pSetMax = 0;
         s_pPrinted = true;
         s_pDrMin = ~0u; s_pDrMax = 0;
-        ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0;
+        ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0; Elm::g_elm_ps[0] = Elm::g_elm_ps[1] = 0;
         {   // the ED mix a frame: which block / 16-bit ops would pay to paste into the loop
             uint32_t tot = 0; for (int i = 0; i < 256; i++) tot += ::g_elm_ed_hist[i];
             if (tot) {

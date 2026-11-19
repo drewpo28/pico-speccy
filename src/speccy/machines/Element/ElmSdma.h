@@ -22,6 +22,11 @@ void write(uint8_t off, uint8_t v);        // off 0..REG_BYTES-1
 void renderTo(int sample);                 // catch up inside the frame
 void frameEnd(int samples);                // the rest of the frame
 uint8_t posHigh();                         // g_zxi_04A
+// Channel 0's position as renderTo would move it, without rendering: the number of
+// samples past the rendered ones after which stop(posHigh, ctx) first holds, 0 = not
+// within max (the channel off or stopped: the position stays).
+int posScan(int max, bool (*stop)(uint8_t hi, const void* ctx), const void* ctx);
+int rendered();                            // samples rendered this frame
 bool active();                             // something was audible this frame
 // Unipolar around a ramped +128, as the mixer wants it; nullptr = nothing to mix.
 const int16_t* mixL();
