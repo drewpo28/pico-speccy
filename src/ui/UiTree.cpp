@@ -2074,7 +2074,7 @@ static const Option opt_bt_hints[] = {
 static const Node kBluetooth[] = {
     NM_DYNH(TXT_BT_AUDIO, bt_buildAudio, bt_keyAudio, opt_bt_hints, nullptr),
     NM_DYNH(TXT_BT_INPUT, bt_buildInput, bt_keyInput, opt_bt_hints, nullptr),
-    NM_ACTION(TXT_BT_TAPE, act_btTape, nullptr),
+    NM_ACTIONV(TXT_BT_TAPE, act_btTape, vl_btTape, nullptr),
 };
 #endif
 

@@ -104,6 +104,7 @@ void bt_buildInput(DynRows& r);
 void bt_keyAudio(int32_t tag, uint8_t key);
 void bt_keyInput(int32_t tag, uint8_t key);
 void act_btTape();              // Bluetooth > Tape from phone (A2DP sink)
+const char* vl_btTape();        // its row: off / listening / <phone> / playing
 #endif
 #if ZIFI_NET_CLIENT
 void act_ftpServer();

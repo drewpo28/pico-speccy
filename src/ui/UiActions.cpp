@@ -2785,30 +2785,48 @@ void bt_buildInput(DynRows& r)              { btBuild(r, true); }
 void bt_keyAudio(int32_t tag, uint8_t key)  { btKey(false, tag, key); }
 void bt_keyInput(int32_t tag, uint8_t key)  { btKey(true, tag, key); }
 
-// Bluetooth > Tape from phone (docs/bt-tape-plan.md, stages 1-2): the board listens as
-// a Bluetooth speaker while this page is open; the log shows the pairing, the SBC
-// configuration the phone picks and, every 5 s, what arrives. Esc stops listening
-// (and brings back the headphones that were playing, if any).
+// Bluetooth > Tape from phone (docs/bt-tape-plan.md): the board is a Bluetooth
+// speaker for a phone that plays a tape's sound; while it plays, the deck loads it
+// live (Tape_BT.cpp). Entering the page starts listening and shows the log (pairing,
+// the SBC setup, every 5 s what arrives). Esc goes back and KEEPS listening — type
+// LOAD "" and press Play on the phone; F8 stops listening (and brings back the
+// headphones that were playing, if any).
+const char* vl_btTape() {
+    switch (BtHost::tapeState()) {
+        case BtHost::T_LISTEN:    return "listening";
+        case BtHost::T_CONNECTED: return BtHost::tapeName();
+        case BtHost::T_STREAMING: return "playing";
+        default:                  return "off";
+    }
+}
+
 void act_btTape() {
     gfxResumePalette();
     wlogBegin(TXT_BT_TAPE);
     BtHost::setLog(btLogCb);
+    const bool was = BtHost::tapeState() != BtHost::T_OFF;
     if (!BtHost::tapeListen(true)) { btDone(); return; }
-    wlogAdd("On the phone: Bluetooth settings, pair \"Pico-Speccy\",", C_TEXT_DIM);
-    wlogAdd("then play a tape's sound (WAV / MP3) to it.", C_TEXT_DIM);
-    wlogAdd("Test: nothing loads yet; every 5 s the log counts", C_TEXT_DIM);
-    wlogAdd("the pulses heard (pilot / bit0 / bit1, in T-states).", C_TEXT_DIM);
-    paneFooter("Esc Stop");
+    if (!was) {
+        wlogAdd("On the phone: Bluetooth settings, pair \"Pico-Speccy\".", C_TEXT_DIM);
+        wlogAdd("Then Esc, type LOAD \"\" and play the tape's sound", C_TEXT_DIM);
+        wlogAdd("(WAV / MP3) on the phone. It loads in real time.", C_TEXT_DIM);
+    } else {
+        wlogAdd(BtHost::tapeState() == BtHost::T_LISTEN ? "Listening, no phone connected."
+                                                        : BtHost::tapeName(), C_TEXT_DIM);
+    }
+    paneFooter("Esc Back (keeps listening)   F8 Stop");
     auto kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem k;
+    bool stop = false;
     for (;;) {
         uiIdle(2);
-        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
-            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1))
-            break;
+        if (!(kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down)) continue;
+        if (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1) break;
+        if (k.vk == fabgl::VK_F8) { stop = true; break; }
     }
-    BtHost::tapeListen(false);
-    btDone();
+    if (stop) BtHost::tapeListen(false);
+    BtHost::setLog(nullptr);
+    wlogEnd();
 }
 
 // Audio > Driver > Bluetooth: play through the most recent added device, or add one.

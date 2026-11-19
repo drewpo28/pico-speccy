@@ -682,6 +682,12 @@ bool      s_edgeAttached = false;    // a consumer takes the edges; else the his
 // half-pulse lengths in T-states — the hw check that a tape arrives clean.
 uint32_t  s_tDecUs5 = 0, s_tEdges5 = 0, s_tDecErr = 0;
 uint32_t  s_lastEdge = 0; bool s_lastEdgeValid = false;
+// RTP timestamps: A2DP counts them in samples, so a lost packet's hole can be
+// skipped over (EdgeExtractor::skip) and the edges after it keep their times.
+// Used only once a loss-free pair of packets has shown that the clock really is
+// in samples (some sources count frames).
+uint32_t  s_tsNext = 0, s_tsPrev = 0, s_tsPrevN = 0, s_tSkipped = 0;
+bool      s_tsValid = false, s_tsSamples = false;
 enum { H_SHORT, H_SYNC, H_BIT0, H_MID, H_BIT1, H_PILOT, H_LONG, H_N };
 uint32_t  s_hist[H_N];
 uint16_t  s_hMin[H_N], s_hMax[H_N];
@@ -735,6 +741,8 @@ void decStart() {
     s_dec->ex.reset();
     s_edgeW = s_edgeR = s_edgeDrops = 0;
     s_lastEdgeValid = false;
+    s_tsValid = s_tsSamples = false;
+    s_tSkipped = 0;
     histReset();
 }
 
@@ -801,6 +809,12 @@ void sinkMedia(uint8_t seid, uint8_t* p, uint16_t n) {
     // Stage 2: decode every frame, channel 0 sample by sample into the extractor.
     TapeDec* d = s_dec;
     if (!d) return;
+    const uint32_t ts = big_endian_read_32(p, 4);
+    if (s_tsValid && s_tsSamples) {
+        const int32_t hole = (int32_t)(ts - s_tsNext);
+        if (hole > 0 && hole < s_ti.fs) { d->ex.skip((uint32_t)hole); s_tSkipped += (uint32_t)hole; }
+    }
+    uint32_t got = 0;
     const uint32_t t0 = time_us_32();
     const OI_BYTE* fp = f;
     OI_UINT32 left = n - hdr - 1;
@@ -820,8 +834,11 @@ void sinkMedia(uint8_t seid, uint8_t* p, uint16_t n) {
             uint32_t e;
             if (d->ex.push(d->pcm[2 * i], &e)) edgeOut(e);
         }
+        got += (uint32_t)ns;
     }
     s_tDecUs5 += time_us_32() - t0;
+    if (s_tsValid && !s_tsSamples && s_tsPrevN && ts - s_tsPrev == s_tsPrevN) s_tsSamples = true;
+    s_tsPrev = ts; s_tsPrevN = got; s_tsNext = ts + got; s_tsValid = true;
 }
 
 // Every 5 s while streaming (from pump()): what arrived, for the log and the pane.
@@ -836,9 +853,10 @@ void tapeStatsTick() {
     if (s_ti.frameBpMin != 0xFF && s_ti.frameBpMin < BT_TAPE_MIN_BITPOOL)
         blog("tape: WARNING the phone encodes below bitpool %d - a loud tape may not load", BT_TAPE_MIN_BITPOOL);
     if (s_dec) {
-        blog("tape: decode %u ms/5s, %u edges, peak %u%%, dec err %u, ring drops %u",
+        blog("tape: decode %u ms/5s, %u edges, peak %u%%, dec err %u, ring drops %u, skipped %u smp%s",
              (unsigned)(s_tDecUs5 / 1000), (unsigned)s_tEdges5,
-             (unsigned)(s_dec->ex.peakLevel() * 100 / 32768), (unsigned)s_tDecErr, (unsigned)s_edgeDrops);
+             (unsigned)(s_dec->ex.peakLevel() * 100 / 32768), (unsigned)s_tDecErr, (unsigned)s_edgeDrops,
+             (unsigned)s_tSkipped, s_tsSamples ? "" : " (rtp clock not in samples?)");
         if (!s_edgeAttached) {
             // Half pulses in T: ROM timings are sync 667/735, bit0 855, bit1 1710,
             // pilot 2168. A clean standard-speed tape shows only those bins.
@@ -2130,12 +2148,20 @@ uint32_t tapeSampleClockQ8() { return s_dec ? s_dec->ex.samples() << 8 : 0; }
 int tapeSampleRate() { return s_ti.fs; }
 uint32_t tapeEdgeDrops() { return s_edgeDrops; }
 
-bool streaming() { return s_audio == A_STREAMING; }
+bool streaming() { return s_audio == A_STREAMING || s_tape == T_STREAMING; }
 
 // Called once per frame (netBackgroundTick) and from the frame-pacing waits: the
 // stream needs a send opportunity every few ms, more than one radio poll a frame.
 void pump() {
     tapeStatsTick();
+    if (s_tape == T_STREAMING) {
+        // A phone is playing a tape: its packets wait in the radio until polled,
+        // and once a frame (netBackgroundTick) is bursty enough to eat into the
+        // live deck's 250 ms. The frame-pacing waits call this every ~2 ms too.
+        static uint32_t lastT = 0;
+        const uint32_t now = time_us_32();
+        if (now - lastT >= 2000) { lastT = now; WifiNet::poll(); }
+    }
     if (s_audio != A_STREAMING) return;
     static uint32_t last = 0;
     const uint32_t now = time_us_32();

@@ -9,9 +9,9 @@ socket. No app, any phone, real time.
 Not in scope: sending the FILE over BT (OBEX / BLE GATT / Web Bluetooth). Rejected
 by the owner: Wi-Fi FTP and web launch already do that on the same boards.
 
-Status: stages 1-2 built (DVp2w test images `debug/DVp2w-bttape1-1.1.3`,
-`debug/DVp2w-bttape2-1.1.3`, 2026-11-19), **NOT hw-tested**; the SBC question and
-the firmware's edge extractor are host-tested (tools/sbc_tape_test.cpp).
+Status: stages 1-3 built (DVp2w test images `debug/DVp2w-bttape{1,2,3}-1.1.3`,
+2026-11-19), **NOT hw-tested**; the SBC question, the firmware's edge extractor
+and its live player are host-tested (tools/sbc_tape_test.cpp).
 
 ## Host test (2026-11-18, NOT hw-tested)
 
@@ -176,3 +176,46 @@ SBC's), packet loss and jitter on a real link.
   `long`. Peak % shows the phone's volume: 100 % is fine at bitpool >= 41.
 - Not handled yet (stage 3): a lost RTP packet leaves a hole in the sample clock
   (the following edges arrive early by its duration) — counted as `lost`.
+
+## Stage 3 — done in code (2026-11-19, NOT hw-tested)
+
+- **`bttape::EdgePlayer`** (BtTapeEdges.h, host-tested): a position in sample time
+  (Q24) advancing with the tape T-states at fs / 3.5 MHz, 250 ms behind the decoder;
+  `level(nowT, pop)` passes every edge whose time has come. Once a frame the rate
+  is trimmed by 50 % of the fill error per second, at most +-4 %; in a gap (no edge
+  for 50 ms behind and ahead) the position jumps to the target, never cutting a
+  pulse (it stays 50 ms after the last edge and 20 ms before the next known one).
+  A fill beyond +-2 s (the menu was open) starts over.
+- **Bug the host test found**: a BACKWARD recenter with the next edge already known
+  is undone by the next frame's advance and redone, for ever once the stream ends —
+  the last edge never played. Backward jumps now need no edge ahead.
+- **Live link test** (tools/sbc_tape_test.cpp): packets of 1024 samples, phone
+  clock and emulator clock apart by 0 / 0.1 / 2 / 2 / 3 %, arrival jitter 0-60 ms
+  plus a 150 ms radio stall every ~3 s, EAR polled every 60 T. 0 lost bits and 0
+  lost edges at 1x-4x in every case; 0 underflows up to 2 %; the 3 % case has one,
+  in a pause. The 20 %/s trim gain of the first cut was too weak for 3 %.
+- **RTP holes**: BtHost reads the RTP timestamp; once two loss-free packets show it
+  counts samples (some sources count frames), a hole is skipped in the extractor's
+  clock (`EdgeExtractor::skip`) so the edges after a lost packet keep their times.
+  The lost audio itself is gone: a block that loses a packet fails, like a dropout.
+- **Deck** (`src/speccy/devices/tape/Tape_BT.cpp`): `Tape::BT_Frame()` from
+  `netBackgroundTick` starts the live deck when the sink streams (a file tape in
+  the deck is ejected; type stays EMPTY like the real-sound input so PSS, the zip
+  and file code never take it for a file tape; name "BT <phone>"), re-arms LOADING
+  each frame, runs the trim, logs fill / trim / edges / underflows every 5 s, and
+  stops when the stream does. `Tape::Read()` (flash, as it already was) starts
+  with `if (btLive)` -> `BT_Level(tapeClock())`. SAM / Enterprise get the same
+  3.5 MHz scaling as every tape through `tapeClock()`.
+- **Radio polling**: while the phone streams, `BtHost::pump()` polls the radio
+  every 2 ms and `streaming()` is true, so the frame-pacing waits keep pumping it
+  (once a frame alone is bursty against a 250 ms buffer).
+- **UI**: Bluetooth > Tape from phone shows off / listening / phone / playing; Enter
+  starts listening and opens the log; Esc goes back and KEEPS listening; F8 stops.
+- Cost: static RAM +~130 B over stage 2 (the player); Tape::Read +12 B; nothing
+  RAM-resident changed.
+- Open: EAR polarity (high = positive sample) is untested against a
+  polarity-sensitive loader (storage-tape.md: Wizball); a turbo / fast clock
+  (Pentagon 7 MHz) plays the tape against T-states like the file tapes do.
+- **What the hw round must show**: Bluetooth > Tape from phone, pair, Esc,
+  LOAD "", Play on the phone: the game loads. UART log: `BT tape: fill ~250 ms,
+  trim small, underflows 0`, `ring drops 0`; the 5 s `tape:` lines as in stage 2.

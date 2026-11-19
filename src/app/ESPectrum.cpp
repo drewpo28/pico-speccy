@@ -4353,6 +4353,7 @@ void ESPectrum::netBackgroundTick() {
 #if PICOSPECCY_WIFI
     BtHost::pump();    // A2DP stream: encode what core1 produced, send it (no-op when idle)
     BtHost::bootTick(); // a remembered keyboard/mouse/pad: bring Bluetooth up after boot
+    Tape::BT_Frame();   // tape from a phone: start / stop the live deck, trim its clock
 #endif
 
     // A WiFi dialog on screen owns the radio (its scan/connect cancelled the FSM

@@ -1279,3 +1279,17 @@ prefix is replaced by the label (`SdVolumes::displayPath`).
 - `Config::sd2_part` (NVS) remembered; `SdVolumes::restore()` after `Config::load()` and
   on every remount; `storageLost()` / remounts drop `SD2:` first.
 - `ff_raw_write_notify` already covers SD2: (same pdrv). Host: `--sd2 DIR`.
+
+## Tape from a phone over Bluetooth: the live deck (2026-11-19, NOT hw-tested)
+
+Plan, host tests and the per-stage record: `docs/bt-tape-plan.md`. For anyone in Tape.cpp:
+- `Tape::btLive` (W boards only) is a third live source next to the real-sound input
+  and the MP3 path: `Tape::Read()` hands EAR to `Tape::BT_Level()` (Tape_BT.cpp) before
+  anything else. The type stays `TAPE_FTYPE_EMPTY` on purpose — PSS, ZipExtract and
+  OSDFile read "type != EMPTY" as "a file tape is mounted".
+- `Tape_BT.cpp` re-arms `TAPE_LOADING` every frame while the phone streams (a reset or
+  Stop does not stop a cassette in a running recorder) and ejects a file tape when the
+  phone starts. No fast load, wear or block list: real time only.
+- The timing logic is `src/speccy/devices/tape/BtTapeEdges.h` (EdgeExtractor +
+  EdgePlayer), dependency-free and run by tools/sbc_tape_test.cpp: change it there
+  first.

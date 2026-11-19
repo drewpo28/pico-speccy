@@ -224,6 +224,81 @@ static Result compare(const Train& t, const std::vector<double>& e, double s) {
 
 static const double SPEEDS[] = {1.0, 0.5, 0.33, 0.25};   // 1x 2x 3x 4x
 
+// ── The live link: EdgeExtractor + EdgePlayer as BtHost / Tape_BT run them ──────
+// Packets of 1024 samples (8 SBC frames) leave the phone on ITS clock (fs * (1 +
+// phoneDrift)) and arrive late by 0..jitterMs, in order, with a 150 ms stall every
+// ~3 s (the radio busy). The emulator's T clock runs at 3.5 MHz * (1 + emuDrift)
+// of wall time, ends a frame every 20 ms (EdgePlayer::frame) and polls EAR every
+// 60 T like LD-EDGE (EdgePlayer::level). Out: the edges the loader sees, in T.
+struct LinkCfg { double phoneDrift, emuDrift; int jitterMs; };
+struct LinkStats { uint32_t underflows, recenters; int32_t trimMin, trimMax; };
+
+static std::vector<double> edgesLive(const std::vector<float>& y, const LinkCfg& L, LinkStats& st) {
+    const int P = 1024;
+    srand(4321);
+    // Producer side: run the extractor packet by packet; note each packet's
+    // arrival time (wall seconds) and the edges + sample clock it brings.
+    struct Pkt { double arrive; uint32_t prodQ8; std::vector<uint32_t> edges; };
+    std::vector<Pkt> pk;
+    bttape::EdgeExtractor ex; ex.reset();
+    double lastArrive = 0;
+    for (size_t i = 0; i + P <= y.size(); i += P) {
+        Pkt k;
+        for (int j = 0; j < P; j++) {
+            float f = y[i + j] * 32768.0f;
+            int16_t v = (int16_t)std::max(-32768.0f, std::min(32767.0f, f));
+            uint32_t e;
+            if (ex.push(v, &e)) k.edges.push_back(e);
+        }
+        k.prodQ8 = ex.samples() << 8;
+        const double sent = double(i + P) / (RATE * (1 + L.phoneDrift));
+        double a = sent + (L.jitterMs ? (rand() % (L.jitterMs + 1)) / 1000.0 : 0);
+        if (L.jitterMs && (i / P) % 130 == 129) a += 0.150;          // a radio stall
+        if (a < lastArrive) a = lastArrive;                          // in order
+        lastArrive = a;
+        k.arrive = a;
+        pk.push_back(std::move(k));
+    }
+    // Consumer side.
+    std::vector<uint32_t> ring; size_t rr = 0;
+    auto pop = [&](uint32_t& e) -> bool { if (rr >= ring.size()) return false; e = ring[rr++]; return true; };
+    bttape::EdgePlayer pl;
+    std::vector<double> out;
+    size_t next = 0;
+    uint32_t prodQ8 = 0;
+    bool started = false;
+    uint8_t lvl = 0; bool haveLvl = false;
+    const double tPerWall = 3500000.0 * (1 + L.emuDrift);
+    st = {0, 0, 0, 0};
+    const double end = lastArrive + 1.0;
+    for (double wall = 0; wall < end; wall += 0.020) {                 // frames
+        while (next < pk.size() && pk[next].arrive <= wall) {
+            for (uint32_t e : pk[next].edges) ring.push_back(e);
+            prodQ8 = pk[next].prodQ8; next++;
+        }
+        // Underflows count while the phone still sends: running dry after its
+        // last packet is the end of the tape, not a fault.
+        if (next < pk.size()) st.underflows = pl.underflows;
+        const uint64_t T0 = (uint64_t)(wall * tPerWall);
+        if (!started) {
+            if (!prodQ8) continue;
+            pl.start(RATE, T0, prodQ8); started = true;
+        }
+        pl.frame(T0, prodQ8, pop);
+        st.trimMin = std::min(st.trimMin, pl.trimPpm()); st.trimMax = std::max(st.trimMax, pl.trimPpm());
+        const uint64_t T1 = (uint64_t)((wall + 0.020) * tPerWall);
+        for (uint64_t T = T0; T < T1; T += 60) {
+            uint8_t l = pl.level(T, pop);
+            if (!haveLvl) { lvl = l; haveLvl = true; continue; }
+            if (l != lvl) { lvl = l; out.push_back((double)T / (1 + L.emuDrift)); }  // machine T
+        }
+    }
+    st.recenters = pl.recenters;
+    if (g_dbg) fprintf(stderr, "live: ring %zu popped %zu played %u fill %d ms, out %zu\n",
+                       ring.size(), rr, pl.played, pl.fillMs(), out.size());
+    return out;
+}
+
 static void detail() {
     SbcCfg cfgs[] = {
         {"PCM (no BT)", -1, 0},
@@ -310,6 +385,35 @@ int main(int argc, char** argv) {
         printf(" | %5d\n", fwHalf[bi]);
     }
 
+    // The live link (EdgePlayer) at bitpool 53, 0 dBFS.
+    printf("\nlive link (BtTapeEdges.h EdgePlayer), bitpool 53, level 1.0; cell = bitErr+edgeDiff/underflows\n");
+    const LinkCfg links[] = {
+        {0, 0, 0}, {0.0005, -0.0005, 60}, {0.02, 0, 60}, {0, -0.02, 60}, {-0.015, 0.015, 60},
+    };
+    int linkFails = 0;
+    printf("phone   emu  jit |");
+    for (double s : SPEEDS) printf("   %4.2fx", 1 / s);
+    printf(" | trim ppm       recenters\n");
+    for (const LinkCfg& L : links) {
+        printf("%+5.2f%% %+5.2f%% %2d |", L.phoneDrift * 100, L.emuDrift * 100, L.jitterMs);
+        int32_t tmin = 0, tmax = 0; uint32_t rec = 0;
+        for (size_t si = 0; si < trains.size(); si++) {
+            SbcCfg c = {"", SBC_JOINT_STEREO, 53};
+            LinkStats st;
+            // pcms[0] = level 1.0
+            std::vector<double> e = edgesLive(through(pcms[0][si], c), L, st);
+            Result r = compare(trains[si], e, SPEEDS[si]);
+            printf(" %5ld/%u", r.bitErrors + labs(r.edgeDiff), st.underflows);
+            // No lost bit or edge anywhere; no underflow up to a 2 % clock gap
+            // (the 3 % row is the stress case: an underflow there may land in a
+            // pause, which costs nothing).
+            const bool stress = fabs(L.phoneDrift - L.emuDrift) > 0.021;
+            if (r.bitErrors || r.edgeDiff || (st.underflows && !stress)) linkFails++;
+            tmin = std::min(tmin, st.trimMin); tmax = std::max(tmax, st.trimMax); rec += st.recenters;
+        }
+        printf(" | %+6d..%+6d %4u\n", tmin, tmax, rec);
+    }
+
     // Expectations (what docs/bt-tape-plan.md relies on).
     int fails = 0;
     for (int bi = 0; bi < NB; bi++) {
@@ -328,6 +432,7 @@ int main(int argc, char** argv) {
             if (fwBits[bi][ai]) { printf("FAIL: firmware receiver, bp%d level %.2f must load\n", bps[bi], amps[ai]); fails++; }
         if (fwHalf[bi] > 60) { printf("FAIL: firmware receiver bp%d half-pulse error %d T\n", bps[bi], fwHalf[bi]); fails++; }
     }
+    if (linkFails) { printf("FAIL: live link, %d case(s) lost bits, edges or underflowed\n", linkFails); fails += linkFails; }
     // The known failure must still show up, or the harness is not looking.
     if (worstBits[1][0] == 0) { printf("FAIL: bp19 at 0 dBFS loaded — harness blind?\n"); fails++; }
     printf(fails ? "%d FAILED\n" : "OK\n", fails);
