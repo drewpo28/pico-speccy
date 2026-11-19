@@ -2785,6 +2785,191 @@ void bt_buildInput(DynRows& r)              { btBuild(r, true); }
 void bt_keyAudio(int32_t tag, uint8_t key)  { btKey(false, tag, key); }
 void bt_keyInput(int32_t tag, uint8_t key)  { btKey(true, tag, key); }
 
+// ── Bluetooth > Tape in ────────────────────────────────────────────────────────
+// (docs/bt-tape-plan.md) The board as a Bluetooth speaker for a phone that plays a
+// tape's sound; while it plays, the deck loads it live (Tape_BT.cpp). Same shape as
+// Audio out / Input: the phones that played before, then "Pair new...". Enter on a
+// phone listens and calls it; on the connected one, disconnects. "Pair new" makes
+// the board visible until Esc. While listening with no phone, a "Stop listening"
+// row heads the list. Listening goes on in the background: Esc, LOAD "", Play.
+static const int32_t BT_TAG_STOP = 101;
+static BtHost::Known s_btTape[BtHost::KNOWN_MAX];
+static int s_btTapeN = 0;
+
+static const char* btTapeStateStr(const uint8_t* addr) {
+    if (!BtHost::tapeConnectedTo(addr)) return nullptr;
+    return BtHost::tapeState() == BtHost::T_STREAMING ? "playing" : "connected";
+}
+
+// The row of the Tape menu and the BT list's status: off / listening / phone / playing.
+const char* vl_btTape() {
+    switch (BtHost::tapeState()) {
+        case BtHost::T_LISTEN:    return BtHost::tapeConnecting() ? "calling" : "listening";
+        case BtHost::T_CONNECTED: return BtHost::tapeName();
+        case BtHost::T_STREAMING: return "playing";
+        default:                  return "off";
+    }
+}
+
+static uint8_t btTapeInfo(int32_t tag, int line, char* label, char* value) {
+    const int L = NM_DYN_LABEL_LEN, V = NM_DYN_VALUE_LEN;
+    if (tag == BT_TAG_ADD || tag == BT_TAG_STOP) {
+        static const char* const kAdd[] = {
+            "Pair a phone", "The board shows up as the", "speaker \"Pico-Speccy\". Pair it,",
+            "then LOAD \"\" and play the", "tape's WAV / MP3 on the phone.", "", SYM_ENTER " Pair",
+        };
+        static const char* const kStop[] = {
+            "Listening", "A paired phone can play to", "\"Pico-Speccy\" now.", "",
+            SYM_ENTER " Stop listening",
+        };
+        static const uint8_t kStA[] = { DYN_INFO_HEAD, DYN_INFO_HINT, DYN_INFO_HINT, DYN_INFO_HINT,
+                                        DYN_INFO_HINT, DYN_INFO_BLANK, DYN_INFO_HINT };
+        static const uint8_t kStS[] = { DYN_INFO_HEAD, DYN_INFO_HINT, DYN_INFO_HINT, DYN_INFO_BLANK,
+                                        DYN_INFO_HINT };
+        const bool add = tag == BT_TAG_ADD;
+        if (line < 0 || line >= (add ? (int)sizeof(kStA) : (int)sizeof(kStS))) return DYN_INFO_END;
+        snprintf(label, L, "%s", add ? kAdd[line] : kStop[line]);
+        return add ? kStA[line] : kStS[line];
+    }
+    if (tag < 0 || tag >= s_btTapeN) return DYN_INFO_END;
+    const BtHost::Known& d = s_btTape[tag];
+    const bool conn = BtHost::tapeConnectedTo(d.addr);
+    BtHost::TapeInfo ti;
+    const bool cfg = conn && BtHost::tapeInfo(ti);
+    int n = 0;
+    auto field = [&](const char* l, const char* v) -> bool {
+        if (n++ != line) return false;
+        snprintf(label, L, "%s", l); snprintf(value, V, "%s", v); return true;
+    };
+    char b[24];
+    if (n++ == line) { snprintf(label, L, "%s", d.name[0] ? d.name : "(no name)"); return DYN_INFO_HEAD; }
+    btAddrStr(d.addr, b, sizeof(b));
+    if (field("MAC", b)) return DYN_INFO_FIELD;
+    if (field("Type", "Phone (A2DP in)")) return DYN_INFO_FIELD;
+    const char* st = conn ? btTapeStateStr(d.addr) : "not connected";
+    if (field("State", st)) return DYN_INFO_FIELD;
+    if (cfg) {
+        snprintf(b, sizeof(b), "SBC %d.%d kHz", ti.fs / 1000, (ti.fs % 1000) / 100);
+        if (field("Codec", b)) return DYN_INFO_FIELD;
+        snprintf(b, sizeof(b), "%u..%u", (unsigned)ti.bpMin, (unsigned)ti.bpMax);
+        if (field("Bitpool", b)) return DYN_INFO_FIELD;
+        if (BtHost::tapeState() == BtHost::T_STREAMING) {
+            snprintf(b, sizeof(b), "%u%%", (unsigned)ti.peakPct);
+            if (field("Level", b)) return DYN_INFO_FIELD;
+            snprintf(b, sizeof(b), "%u", (unsigned)Tape::BT_Blocks());
+            if (field("Blocks", b)) return DYN_INFO_FIELD;
+            snprintf(b, sizeof(b), "%u", (unsigned)ti.lost);
+            if (field("Lost pkts", b)) return DYN_INFO_FIELD;
+        }
+    }
+    if (n++ == line) return DYN_INFO_BLANK;
+    if (n++ == line) { snprintf(label, L, "%s", conn ? SYM_ENTER " Disconnect" : SYM_ENTER " Connect"); return DYN_INFO_HINT; }
+    if (n++ == line) { snprintf(label, L, "F8  Forget"); return DYN_INFO_HINT; }
+    return DYN_INFO_END;
+}
+
+void bt_buildTape(DynRows& r) {
+    s_btTapeN = BtHost::tapeKnown(s_btTape, BtHost::KNOWN_MAX);
+    r.info = btTapeInfo;
+    if (BtHost::tapeState() == BtHost::T_LISTEN)
+        r.add("Stop listening", vl_btTape(), BT_TAG_STOP, false);
+    for (int i = 0; i < s_btTapeN; i++) {
+        char a[20];
+        btAddrStr(s_btTape[i].addr, a, sizeof(a));
+        r.add(s_btTape[i].name[0] ? s_btTape[i].name : a, btTapeStateStr(s_btTape[i].addr), i, false);
+    }
+    r.add("Pair new...", nullptr, BT_TAG_ADD, false);
+}
+
+// The pairing page: visible as "Pico-Speccy" until a phone connects or Esc.
+static void btTapePair() {
+    gfxResumePalette();
+    wlogBegin(TXT_BT_TAPE);
+    BtHost::setLog(btLogCb);
+    if (!BtHost::tapeListen(true)) { btDone(); return; }
+    BtHost::tapePairing(true);
+    wlogAdd("On the phone: Bluetooth settings, pair \"Pico-Speccy\".", C_TEXT_DIM);
+    wlogAdd("Then type LOAD \"\" and play the tape's WAV / MP3", C_TEXT_DIM);
+    wlogAdd("on the phone. It loads in real time.", C_TEXT_DIM);
+    paneFooter("Esc Back");
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    fabgl::VirtualKeyItem k;
+    bool announced = false;
+    for (;;) {
+        uiIdle(2);
+        if (!announced && BtHost::tapeState() >= BtHost::T_CONNECTED) {
+            announced = true;
+            BtHost::tapePairing(false);
+            wlogAdd("Paired. Esc, LOAD \"\" and press Play on the phone.", C_ACCENT);
+        }
+        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
+            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1))
+            break;
+    }
+    BtHost::tapePairing(false);
+    btDone();
+}
+
+// Listen and call a phone that paired before; wait (Esc cancels) for it to answer.
+static void btTapeUse(const BtHost::Known& kn) {
+    gfxResumePalette();
+    wlogBegin(TXT_BT_TAPE);
+    BtHost::setLog(btLogCb);
+    if (!BtHost::tapeConnect(kn.addr, kn.name)) { btDone(); return; }
+    paneFooter("Esc Back");
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    fabgl::VirtualKeyItem k;
+    const uint64_t t0 = time_us_64();
+    while (BtHost::tapeConnecting() && BtHost::tapeState() == BtHost::T_LISTEN) {
+        uiIdle(2);
+        if (time_us_64() - t0 > 20000000ull) break;
+        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
+            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1))
+            break;
+    }
+    if (BtHost::tapeState() >= BtHost::T_CONNECTED)
+        wlogAdd("Connected. Esc, LOAD \"\" and press Play on the phone.", C_ACCENT);
+    else
+        wlogAdd("Listening: play from the phone to \"Pico-Speccy\".", C_TEXT_DIM);
+    btDone();
+}
+
+void bt_keyTape(int32_t tag, uint8_t key) {
+    if (tag == BT_TAG_ADD) { if (key == 0) btTapePair(); return; }
+    if (tag == BT_TAG_STOP) { if (key == 0) BtHost::tapeListen(false); return; }
+    BtHost::Known l[BtHost::KNOWN_MAX];
+    const int n = BtHost::tapeKnown(l, BtHost::KNOWN_MAX);
+    if (tag < 0 || tag >= n) return;
+    if (key == 0) {
+        if (BtHost::tapeConnectedTo(l[tag].addr)) {
+            char q[72];
+            snprintf(q, sizeof(q), "%s\nDisconnect and stop listening?", l[tag].name);
+            if (uiConfirm(q, TXT_BT_TAPE)) BtHost::tapeListen(false);
+            return;
+        }
+        btTapeUse(l[tag]);
+        return;
+    }
+    if (key == 8) {
+        char q[72];
+        snprintf(q, sizeof(q), "Forget %s?", l[tag].name);
+        if (uiConfirm(q, TXT_BT_TAPE)) BtHost::forget(l[tag].addr);
+    }
+}
+
+// Storage > Tape > Bluetooth: off -> the most recent phone (or pairing when there is
+// none); on -> stop listening.
+void act_tapeBt() {
+    if (BtHost::tapeState() != BtHost::T_OFF) {
+        gfxResumePalette();
+        if (uiConfirm("Stop the Bluetooth tape?", TXT_TAPE_BT)) BtHost::tapeListen(false);
+        return;
+    }
+    BtHost::Known kn;
+    if (BtHost::tapeKnown(&kn, 1) == 1) btTapeUse(kn);
+    else btTapePair();
+}
+
 // Audio > Driver > Bluetooth: play through the most recent added device, or add one.
 void act_btAudio() {
     BtHost::Known kn;

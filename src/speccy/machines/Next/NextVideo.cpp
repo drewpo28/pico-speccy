@@ -2811,7 +2811,7 @@ extern "C" IRAM_ATTR void next_render_core1_pump(void) { NEXTVID::c1Pump(); }
 // 4-pixel specks on glyph edges of a STATIC picture, one fb row at a time,
 // drifting slowly with the frame/display phase (capture 2026-09-25).
 // The copy also skips the OSD box: the F8 stats / F9-F10 volume box, 144x16 at
-// VIDEO::osd_bar_x/osd_bar_y (168/188 x 220/268 in the border; on the paper in
+// VIDEO::osd_bar_x/osd_bar_y (160/200 x 218/266 in the border; on the paper in
 // the big HDMI modes, osdGeomRecalc), which ESPectrum::loop repaints only after
 // EndFrame — tsRenderLine's and Update_Border_DS80's rectangle. The box is
 // word-aligned (osd_bar_x and 144 are multiples of 4), so it is a range of whole words.
@@ -2936,9 +2936,9 @@ static inline __attribute__((always_inline)) void nxCarve(int row, int words, in
         if (l1 > words) l1 = words;
     }
     const int cy0 = VIDEO::osd_bar_y;   // osdGeomRecalc: the border, or the paper in big modes
-    if ((LS->osd & 0x07) != 0 && row >= cy0 && row < cy0 + 16) {
+    if ((LS->osd & 0x07) != 0 && row >= cy0 && row < cy0 + VIDEO::OSD_BAR_H) {
         k0 = VIDEO::osd_bar_x >> 2;
-        k1 = k0 + 144 / 4;
+        k1 = k0 + VIDEO::OSD_BAR_W / 4;
     } else if (row >= ts_notice_y0 && row < ts_notice_y1) {
         k0 = ts_notice_x0 >> 2;
         k1 = (ts_notice_x1 + 3) >> 2;

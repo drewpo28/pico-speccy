@@ -378,7 +378,7 @@ void drawGlyph(Id i, int xpix, int ypix, uint8_t fg, uint8_t bg) {
 }
 
 // "Solid background": the indicators on their own panel at the left edge of the
-// F8 stats box's 16 rows, in that box's colours; with F8 on the panel runs up to
+// F8 stats box's rows (OSD_BAR_H), in that box's colours; with F8 on the panel runs up to
 // the box and the two read as one status bar. Every renderer carves the range
 // (Video.cpp osdBarRange) — which is the point: in DS80 640x480 / TS-Conf
 // 320x240 / Hide border these rows are CONTENT, repainted every frame, and in
@@ -387,7 +387,7 @@ void drawGlyph(Id i, int xpix, int ypix, uint8_t fg, uint8_t bg) {
 static void drawPanel() {
     const int xres = (int)VIDEO::vga.xres, yres = (int)VIDEO::vga.yres;
     const int y0 = VIDEO::osd_bar_y;
-    if (!VIDEO::vga.frameBuffer || yres < y0 + 16) { VIDEO::setLedBar(0); VIDEO::setLedCarve(0, 0, 0, -1); return; }
+    if (!VIDEO::vga.frameBuffer || yres < y0 + VIDEO::OSD_BAR_H) { VIDEO::setLedBar(0); VIDEO::setLedCarve(0, 0, 0, -1); return; }
     const int sx = VIDEO::osd_bar_x;                // where the stats box starts
     const int lx = VIDEO::osd_led_x;                // where the panel starts
 
@@ -398,7 +398,7 @@ static void drawPanel() {
     if (n > maxn) n = maxn;
     const int w = (n * CELL_W + 8 + 7) & ~7;        // 4 px margin each side, 8-aligned
     VIDEO::setLedBar(w);                            // moves the carve + asks for a repaint on change
-    VIDEO::setLedCarve(lx, y0, lx + w, y0 + 16);    // the Next whole-line renderer's carve
+    VIDEO::setLedCarve(lx, y0, lx + w, y0 + VIDEO::OSD_BAR_H);    // the Next whole-line renderer's carve
     VIDEO::setLedStrip(-1);
 
     // nm::available() runs the menu layout pass — decide once per geometry.
@@ -442,14 +442,14 @@ static void drawPanel() {
 
     // With the stats box up the carve runs to it, so the stretch between is ours.
     const int px1 = VIDEO::osdBoxCarved() ? sx : lx + w;
-    for (int row = 0; row < 16; row++) {
+    for (int row = 0; row < VIDEO::OSD_BAR_H; row++) {
         uint8_t* line = (uint8_t*)VIDEO::vga.frameBuffer[y0 + row];
         if (line && px1 > lx) memset(line + lx, bg, (size_t)(px1 - lx));
     }
     int slot = 0;
     for (uint8_t i = 0; i < COUNT && slot < n; i++) {
         if (!isVisible((Id)i)) continue;
-        drawSprite((Id)i, lx + 4 + slot * CELL_W, y0 + 4, col[actState((Id)i)]);
+        drawSprite((Id)i, lx + 4 + slot * CELL_W, y0 + (VIDEO::OSD_BAR_H - 8) / 2, col[actState((Id)i)]);
         slot++;
     }
 }

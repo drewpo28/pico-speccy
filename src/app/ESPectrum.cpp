@@ -4353,6 +4353,7 @@ void ESPectrum::netBackgroundTick() {
 #if PICOSPECCY_WIFI
     BtHost::pump();    // A2DP stream: encode what core1 produced, send it (no-op when idle)
     BtHost::bootTick(); // a remembered keyboard/mouse/pad: bring Bluetooth up after boot
+    Tape::BT_Frame();   // tape from a phone: start / stop the live deck, trim its clock
 #endif
 
     // A WiFi dialog on screen owns the radio (its scan/connect cancelled the FSM
@@ -5352,6 +5353,15 @@ void ESPectrum::loop() {
         }
       }
       if ((VIDEO::OSD & 0x04) == 0 && !CPU::paused) {
+#if PICOSPECCY_WIFI
+        if (VIDEO::OSD == 1 && Tape::btLive) {   // tape from a phone: no file, no blocks list
+          Tape::BT_Stats(OSD::stats_lin1, sizeof(OSD::stats_lin1), OSD::stats_lin2,
+                         sizeof(OSD::stats_lin2), ESPectrum::TapeNameScroller);
+          if ((++ESPectrum::TapeNameScroller + 12) > Tape::tapeFileName.length())
+            ESPectrum::TapeNameScroller = 0;
+          OSD::drawStats();
+        } else
+#endif
         if (VIDEO::OSD == 1 && Tape::tapeStatus == TAPE_LOADING) {
           snprintf(
               OSD::stats_lin1, sizeof(OSD::stats_lin1), " %-12s %04d/%04d ",

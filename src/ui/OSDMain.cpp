@@ -1435,50 +1435,65 @@ void OSD::drawOSD(bool bottom_info) {
     osdHome();
 }
 
+// The bar's panel in the pico-amiga style (its Win+F8 band): the menu's panel
+// colour, a 1-px frame, the text one pixel in from it. The FRAME carries the
+// speed state the old box painted its whole background with (the same colours):
+// the separator colour at 3.5 MHz, the selection colour at 7, green at 14 (an
+// ordinary clock on TS-Conf, so not an error colour), yellow at 28, cyan at max
+// speed. The whole OSD_BAR_W x OSD_BAR_H rect is painted — it is exactly what the
+// renderers carve.
+static nm::UiColor statsFrameColour() {
+    if (ESPectrum::maxSpeed) return nm::C_ICON_C;
+    switch (ESPectrum::multiplicator) {       // 0 = 3.5 MHz, 1 = 7, 2 = 14, 3 = 28
+        case 1:  return nm::C_SEL_BG;
+        case 2:  return nm::C_ACCENT;
+        case 3:  return nm::C_ICON_Y;
+        default: return nm::C_SEP;
+    }
+}
+
+static void barPanel(int x, int y, nm::UiColor frameCol) {
+    const int W = VIDEO::OSD_BAR_W, H = VIDEO::OSD_BAR_H;
+    const uint8_t f = nm::uiPaletteSlot(frameCol);
+    VIDEO::vga.fillRect(x, y, W, H, nm::uiPaletteSlot(nm::C_PANEL));
+    VIDEO::vga.fillRect(x, y, W, 1, f);
+    VIDEO::vga.fillRect(x, y + H - 1, W, 1, f);
+    VIDEO::vga.fillRect(x, y, 1, H, f);
+    VIDEO::vga.fillRect(x + W - 1, y, 1, H, f);
+}
+
 void OSD::drawStats() {
 
     // VIDEO::osd_bar_*: the border band, or the bottom of the paper in a big mode
     // that hides the border (the renderer stages those rows around the box).
-    const unsigned short x = (unsigned short)VIDEO::osd_bar_x;
-    const unsigned short y = (unsigned short)VIDEO::osd_bar_y;
+    const int x = VIDEO::osd_bar_x;
+    const int y = VIDEO::osd_bar_y;
+    // The 24-char lines (with their own blank first/last column) inside the frame.
+    const int tx = x + (VIDEO::OSD_BAR_W - 24 * 6) / 2, ty = y + (VIDEO::OSD_BAR_H - 16) / 2;
 
-    // New-skin stats: same geometry and 6x8 face, the UI palette's colours. The
-    // background still encodes the speed state (turbo steps / max speed). DS80
-    // keeps the classic colours — the UI block would recolour the guest screen.
+    // DS80 keeps the classic colours — the UI block would recolour the guest
+    // screen — but paints the whole rect too.
     if (nm::available() && !profi_ds80_active) {
         nm::gfxComputeSurface();
         nm::gfxInstallPalette();          // applyPalette may have rewritten our block
         const int base = nm::uiPaletteBase();
-        // 14 MHz is an ordinary clock on TS-Conf (TS-BIOS, .spg headers and games
-        // all ask for it), so it must not be painted in the colour every other
-        // panel uses for an error: green. C_ACCENT is a green in all three
-        // themes. The ink is paired with the background rather than always
-        // C_TEXT — in the Slate theme that is near-white, which on the green and
-        // on the yellow leaves under 2:1 contrast; the ZX theme's C_TEXT is
-        // already black, so nothing changes there.
-        nm::UiColor bg;
-        if (ESPectrum::maxSpeed)                bg = nm::C_ICON_C;
-        else switch (ESPectrum::multiplicator) {
-            case 1:  bg = nm::C_SEL_BG;  break;
-            case 2:  bg = nm::C_ACCENT;  break;
-            case 3:  bg = nm::C_ICON_Y;  break;
-            default: bg = nm::C_FOOT_BG; break;
-        }
-        const nm::UiColor ink = (bg == nm::C_ACCENT || bg == nm::C_ICON_Y)
-                                    ? nm::C_BG : nm::C_TEXT;
-        VIDEO::vga.setTextColor((uint8_t)(base + ink), (uint8_t)(base + bg));
+        barPanel(x, y, statsFrameColour());
         VIDEO::vga.setFont(Font6x8);
-        VIDEO::vga.setCursor(x, y);
+        VIDEO::vga.setTextColor((uint8_t)(base + nm::C_WHITE), (uint8_t)(base + nm::C_PANEL));
+        VIDEO::vga.setCursor(tx, ty);
         VIDEO::vga.print(stats_lin1);
-        VIDEO::vga.setCursor(x, y + 8);
+        VIDEO::vga.setTextColor((uint8_t)(base + nm::C_TEXT), (uint8_t)(base + nm::C_PANEL));
+        VIDEO::vga.setCursor(tx, ty + 8);
         VIDEO::vga.print(stats_lin2);
         return;
     }
-    VIDEO::vga.setTextColor(zxColor(7, 0), zxColor( ESPectrum::maxSpeed ? 5 : ESPectrum::multiplicator + 1, 0));
+    const uint8_t paper = zxColor(ESPectrum::maxSpeed ? 5 : ESPectrum::multiplicator + 1, 0);
+    VIDEO::vga.fillRect(x, y, VIDEO::OSD_BAR_W, VIDEO::OSD_BAR_H, paper);
+    VIDEO::vga.setTextColor(zxColor(7, 0), paper);
     VIDEO::vga.setFont(Font6x8);
-    VIDEO::vga.setCursor(x,y);
+    VIDEO::vga.setCursor(tx, ty);
     VIDEO::vga.print(stats_lin1);
-    VIDEO::vga.setCursor(x,y+8);
+    VIDEO::vga.setCursor(tx, ty + 8);
     VIDEO::vga.print(stats_lin2);
 }
 
@@ -1488,33 +1503,28 @@ void OSD::clearStats() {
     // once the box's rows are no longer carved.
     if (VIDEO::osd_in_paper) return;
 
+    // The bar's rect (osdGeomRecalc), in each layout's framebuffer units.
+    const int x0 = VIDEO::osd_bar_x, x1 = x0 + VIDEO::OSD_BAR_W;
+    const int y0 = VIDEO::osd_bar_y, y1 = y0 + VIDEO::OSD_BAR_H;
     uint16_t brd16 = (uint16_t)VIDEO::brd;
 
-    if (VIDEO::isFullBorder288()) {
-        // full border 360x288: stats at x=188, y=268, 144x16px, uint16_t framebuffer
-        for (int line = 268; line < 284; line++) {
+    if (VIDEO::isFullBorder288() || VIDEO::isFullBorder240()) {
+        for (int line = y0; line < y1; line++) {
             uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
-            for (int col = 188; col < 332; col++)
-                ptr[col ^ 1] = brd16;
-        }
-    } else if (VIDEO::isFullBorder240()) {
-        // half border 360x240: stats at x=188, y=220, 144x16px, uint16_t framebuffer
-        for (int line = 220; line < 236; line++) {
-            uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
-            for (int col = 188; col < 332; col++)
+            for (int col = x0; col < x1; col++)
                 ptr[col ^ 1] = brd16;
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
-        for (int line = 220; line < 236; line++) {
+        for (int line = y0; line < y1; line++) {
             uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
-            for (int col = 84; col < 156; col++)
+            for (int col = x0 / 2; col < x1 / 2; col++)
                 ptr[col ^ 1] = brd16;
         }
     } else {
         uint32_t brdColor = VIDEO::brd;
-        for (int line = 220; line < 236; line++) {
+        for (int line = y0; line < y1; line++) {
             uint32_t *ptr = (uint32_t *)(VIDEO::vga.frameBuffer[line]);
-            for (int col = 21; col < 39; col++) {
+            for (int col = x0 / 8; col < x1 / 8; col++) {
                 ptr[col * 2] = brdColor;
                 ptr[col * 2 + 1] = brdColor;
             }
@@ -1894,8 +1904,8 @@ static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
 
 void OSD::drawVolumeBox() {
 
-    const unsigned short x = (unsigned short)VIDEO::osd_bar_x;
-    const unsigned short y = (unsigned short)(VIDEO::osd_bar_y + 4);
+    const unsigned short x = (unsigned short)(VIDEO::osd_bar_x + (VIDEO::OSD_BAR_W - 24 * 6) / 2);
+    const unsigned short y = (unsigned short)(VIDEO::osd_bar_y + (VIDEO::OSD_BAR_H - 8) / 2);
     // New-skin styling of the same border band — the palette trick uiPausedBadge
     // uses: UI colours live at 224..239, so the running game keeps its own 16.
     // DS80 stays classic: installing the UI palette would steal the guest's
@@ -1908,7 +1918,7 @@ void OSD::drawVolumeBox() {
         nm::gfxComputeSurface();
         nm::gfxInstallPalette();
         const int base = nm::uiPaletteBase();
-        VIDEO::vga.fillRect(x, y - 4, 24 * 6, 16, nm::uiPaletteSlot(nm::C_PANEL));
+        barPanel(VIDEO::osd_bar_x, VIDEO::osd_bar_y, nm::C_SEP);
         VIDEO::vga.setTextColor((uint8_t)(base + nm::C_TEXT_DIM),
                                 (uint8_t)(base + nm::C_PANEL));
         VIDEO::vga.setFont(Font6x8);
@@ -1922,7 +1932,7 @@ void OSD::drawVolumeBox() {
         }
         return;
     }
-    VIDEO::vga.fillRect(x, y - 4, 24 * 6, 16, zxColor(1, 0));
+    VIDEO::vga.fillRect(VIDEO::osd_bar_x, VIDEO::osd_bar_y, VIDEO::OSD_BAR_W, VIDEO::OSD_BAR_H, zxColor(1, 0));
     VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(x + 4, y + 1);

@@ -235,6 +235,17 @@ public:
     static void fastSkip(uint32_t t) { tapeStart -= t; }   // ... the deck moves t T on
     static void Stop(bool quiet = false);   // quiet: a guest remote pause, no toast
     static void Read();
+    static uint64_t clockNow();             // the tape clock (3.5 MHz T-states) for Tape_*.cpp
+#if PICOSPECCY_WIFI
+    // Tape from a phone over Bluetooth (Tape_BT.cpp, docs/bt-tape-plan.md): while a
+    // phone streams to the BtHost sink, the deck plays its edges live — the type
+    // stays EMPTY like the real-sound input, so nothing takes it for a file tape.
+    static bool btLive;
+    static void BT_Frame();                 // once a frame (netBackgroundTick)
+    static uint8_t BT_Level(uint64_t nowT); // the EAR level now (Read)
+    static void BT_Stats(char* l1, int c1, char* l2, int c2, unsigned scroll);   // F8 lines
+    static uint32_t BT_Blocks();            // blocks heard since the phone started
+#endif
     static bool FlashLoad();
     // Block-level file access for a machine whose ROM loader has its own register
     // conventions and therefore its own trap (SAM Coupe: Sam::tapeTrap). Keeps the

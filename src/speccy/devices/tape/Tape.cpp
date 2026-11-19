@@ -1667,7 +1667,12 @@ bool Tape::snapLoad(const uint8_t* in, uint32_t n) {
     return true;
 }
 
+uint64_t Tape::clockNow() { return tapeClock(); }
+
 IRAM_ATTR void Tape::Read() {
+#if PICOSPECCY_WIFI
+    if (btLive) { tapeEarBit = BT_Level(tapeClock()); return; }   // Tape_BT.cpp
+#endif
 #if LOAD_WAV_PIO
     if ( tapeFileType == TAPE_FTYPE_EMPTY && Config::real_player ) {
         tapeEarBit = pcm_data_in();

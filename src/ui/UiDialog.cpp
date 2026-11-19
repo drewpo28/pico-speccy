@@ -291,9 +291,9 @@ void uiPausedBadge() {
     const int base = uiPaletteBase();
     const char* txt = " PAUSED ";
     const int w = (int)strlen(txt) * OSD_FONT_W;
-    int x = VIDEO::osd_bar_x, y = VIDEO::osd_bar_y;
-    // Right-aligned to the same 144-px band the stats occupy, first line.
-    x += (144 - w) / 2;
+    int x = VIDEO::osd_bar_x, y = VIDEO::osd_bar_y + (VIDEO::OSD_BAR_H - 8) / 2;
+    // Centred in the band the stats occupy.
+    x += (VIDEO::OSD_BAR_W - w) / 2;
     VIDEO::vga.setTextColor((uint8_t)(base + C_WHITE), (uint8_t)(base + C_SEL_BG));
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(x, y);
