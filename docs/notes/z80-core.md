@@ -184,7 +184,22 @@ accessors:
   44-46 -> 46.9-48.9; forest `vram` 0.75 -> 0.48, cpu 15.7-18.3 ms, realFPS 47.2-49.6; `gs 0` in the draw. **The
   ceiling is 48.8, not 50**: the Pentagon frame (71 680 T at 3.5 MHz = 48.83 Hz), an idle BASIC reads the same.
   What is left in the car: core0 waits 2.2-3.4 ms for core1, whose draw is 7.8-10.9 ms (rows 4.9-6.8 + SD
-  2.7-4.2 inside the draw). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  2.7-4.2 inside the draw).
+- **SD read-ahead out of the draw: TRIED AND REVERTED (2026-11-19, hw DVp2w; `debug/DVp2w-elm-sd1-1.1.3`, PERF,
+  build 13:33:33).** `sd_async_render_behind()` (sdcard.c: no read-ahead started, a burst cut after its demanded
+  blocks) was the Next's alone; now main.cpp defines it as `next_sd_render_behind() || Hgfx::sdRenderBehind()`,
+  the eLeMeNt's = a picture posted or being drawn (`s_drawPosted != s_drawDone`). A sector the guest waits for
+  still goes between rows (`need = 1`, c17TryPost replaces a deferred read-ahead), one block at a time during the
+  draw; full windows after it. Read: `split/fr ... sd` inside the draw, `wait=`, `[SD2] yield N` (bursts cut for
+  the renderer), `[SD] ... fb` (3 ms fallbacks on core0 - must stay 0). Device-agnostic: the Next's rule is
+  unchanged (same function, renamed).
+  **hw (log `...13.39.41.680`): worse, reverted.** The demo's sectors were no longer ready ahead: `c17 ok 619`
+  (read while the guest polled for the token) against `hit 257` (diag2: roughly the reverse), 317 card operations
+  per 60 frames instead of ~40, one sector each, `cut/yield` ~300. SD inside the draw did not drop (3-4 ms, now
+  short reads), and core0 spun in the guest's token poll: car cpu 19 -> 22 ms, realFPS 47-48.9 -> 42.5-44, the
+  forest 0.5-1 ms worse too; `wait` 3 -> 1 ms was the only gain. **PF2026 needs its read-ahead through the draw:
+  the SD time is the stream's real cost, not speculation.** What could still help is the card itself (SPI clock)
+  or overlapping the transfer with the draw (DMA), not deferring it. `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
   (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
   inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
   offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half
