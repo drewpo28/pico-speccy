@@ -586,7 +586,60 @@ ELM_OVL_CODE static void fdmaRun(int set, bool wide24) {   // .elmovl: 2 400 pie
     // URAM and URAM -> the HGFX 7 chunky window, which the per-byte dispatcher below
     // (uramPtr, busWrite, memWrite, chunkyWrite for every byte) ran at 15-20 FPS.
     const bool plain = !sfl && !dfl && !down;
-    for (uint32_t i = 0; plain && i < len; ) {
+    // The blit: a plain page -> the chunky window, rows of dbatch bytes (each inside one
+    // 256-byte page), the source one run inside one page. PF2026: ~600 a frame, par 03
+    // len #20 db 8 ds #F8 (an 8x4 block), source the URAM stream paged into the Z80 space.
+    // Decided once, the rows' window offsets taken up front, then one chunkyWriteRows;
+    // anything else (or one row that does not qualify) takes the piece loop below.
+    bool blit = false;
+    if (plain && !fill && !suram && !duram && dbatch < 0x100 && len <= 0x100 && len % dbatch == 0 &&
+        sbatch >= len && len / dbatch <= 32) {
+        const uint32_t sa = s & amask;
+        const uint8_t sslot = (sa >> 13) & 7;
+        const uint8_t* sp = nullptr;
+        if ((sa & 0xFF) + len <= 0x100 && !((s_hgfxSlots >> sslot) & 1) && s_r->win[(sa >> 8) & 0xFF] != W_VRAM &&
+            !(sa < 0x4000 && MemESP::divmmc_mapped))
+            sp = rdPtr((uint16_t)sa);
+        if (sp) {
+            const uint32_t nr = len / dbatch;
+            uint32_t offs[32];
+            uint32_t dd = d;
+            bool ok = true;
+            for (uint32_t k = 0; k < nr && ok; k++, dd += dbatch + dskip) {
+                const uint32_t da = dd & amask;
+                ok = (da & 0xFF) + dbatch <= 0x100 && s_r->win[(da >> 8) & 0xFF] == W_CHUNKY &&
+                     !(da < 0x4000 && MemESP::divmmc_mapped);
+                offs[k] = slotPage[(da >> 13) & 7] * 0x2000u + (da & 0x1FFF);
+            }
+            if (ok) {
+#if PERF_TRACE
+                const uint32_t tw_ = time_us_32();
+#endif
+                Hgfx::chunkyWriteRows(offs, sp, dbatch, nr);
+#if HOST_BUILD
+                {
+                    static int chk = -1;
+                    static uint32_t blits, bad;
+                    if (chk < 0) chk = getenv("PICOSPECCY_ELM_BLITCHK") ? 1 : 0;
+                    if (chk) {
+                        bad += Hgfx::chunkyRowsCheck(offs, sp, dbatch, nr);
+                        if ((++blits & 0xFFFF) == 0) Debug::log("[BLITCHK] %u blits, %u bad bytes", blits, bad);
+                    }
+                }
+#endif
+#if PERF_TRACE
+                g_elm_io_us[2] += time_us_32() - tw_;
+                g_elm_io_cnt[3] += len; g_elm_io_cnt[5]++;
+                g_elm_fd_src[3] += nr; g_elm_fd_kind[W_CHUNKY] += nr;
+#endif
+                s += len;
+                if (sbatch == len) s += sskip;
+                d = dd;
+                blit = true;
+            }
+        }
+    }
+    for (uint32_t i = 0; plain && !blit && i < len; ) {
         const uint32_t sa = s & amask, da = d & amask;
         uint8_t buf[256];
         uint32_t c = len - i;

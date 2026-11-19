@@ -63,6 +63,10 @@ void    arenaFree();            // another machine: give it back
 bool    chunkyStale();          // chunkyRead sent buffer 1 back to PSRAM: Elm::remap maps every slot again
 void    chunkyWrite(uint32_t off, uint8_t v);
 void    chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n);   // n chunkyWrite calls in a row
+void    chunkyWriteRows(const uint32_t* offs, const uint8_t* p, uint32_t len, uint32_t n);   // the FastDMA blit: n rows of len at offs[]
+#if HOST_BUILD
+uint32_t chunkyRowsCheck(const uint32_t* offs, const uint8_t* p, uint32_t len, uint32_t n);   // bench: mismatches of a blit
+#endif
 void    drain();              // core0: wait until core1 has run everything queued
 extern volatile bool g_pairPushNow;   // core1: the staged pair palette is due now (its draw started)
 // The pair frame's screens captured copy-on-write (ElmHgfx.cpp, 2026-11-18): while g_cowOn the

@@ -1026,7 +1026,9 @@ ELM_HOT void chunkyWrite(uint32_t off, uint8_t v) {
     dirtyMark(a);                         // s_use: the runs count, a byte store is not worth the RAM bytes
 }
 
-ELM_OVL_CODE void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {   // .elmovl: the FastDMA's 8-byte pieces (PF2026)
+// Flash again since chunkyWriteRows (2026-11-19): PF2026's blits go there; this takes the
+// other runs and a blit row across the wrap / the SRAM half's edge.
+void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {
     if (!s_buf) return;
     s_fbDirty = true;
     const uint8_t m = s_r[REG_MASK];
@@ -1048,6 +1050,62 @@ ELM_OVL_CODE void chunkyWriteRun(uint32_t off, const uint8_t* p, uint32_t n) {  
         p += c; n -= c; o = (o + c) & (BUF_SIZE - 1);
     }
 }
+
+// The FastDMA blit (Elm::fdmaRun): n rows of len bytes (len <= 256), row r at the window
+// offset offs[r], the source rows back to back. PF2026 sends ~600 8x4 blocks a frame; the
+// piece loop + chunkyWriteRun paid their setup per 8-byte row, ~2.1 us a row on 2 400 rows
+// (hw 2026-11-18). Here the mask, OffsetY, the buffer and the SRAM half are taken once,
+// an 8-byte row is two word copies (no flash memcpy call), the dirty mark is the row's
+// units. A row across the buffer's wrap or an SRAM-half edge goes to chunkyWriteRun.
+ELM_OVL_CODE void chunkyWriteRows(const uint32_t* offs, const uint8_t* p, uint32_t len, uint32_t n) {
+    if (!s_buf || !n) return;
+    s_fbDirty = true;
+    const uint8_t m = s_r[REG_MASK];
+    const bool skip0 = s_r[REG_VP] & 0x10;
+    const bool whole = m == 0xFF && !skip0;
+    const uint32_t oy = (uint32_t)(uint16_t)s16(REG_OY) * s_stride;
+    const uint32_t base = dstOff();
+    uint8_t* const h1 = s_h1;
+    const uint32_t h1b = s_h1Base, h1n = s_h1Size;
+    uint32_t done = 0;
+    for (uint32_t r = 0; r < n; r++, p += len) {
+        const uint32_t o = (offs[r] + oy) & (BUF_SIZE - 1);
+        const uint32_t a = base + o;
+        uint8_t* d;
+        if (o + len > BUF_SIZE) d = nullptr;
+        else if (!h1) d = s_buf + a;
+        else if (a - h1b < h1n) d = a + len - h1b <= h1n ? h1 + (a - h1b) : nullptr;
+        else d = (a < h1b && a + len > h1b) ? nullptr : s_buf + a;
+        if (!d) { chunkyWriteRun(offs[r], p, len); continue; }
+        if (whole) {
+            if (len == 8) {
+                uint32_t w0, w1;
+                __builtin_memcpy(&w0, p, 4); __builtin_memcpy(&w1, p + 4, 4);
+                __builtin_memcpy(d, &w0, 4); __builtin_memcpy(d + 4, &w1, 4);
+            } else memcpy(d, p, len);
+        } else {
+            for (uint32_t i = 0; i < len; i++) { if (skip0 && !p[i]) continue; d[i] = planar(d[i], p[i], m); }
+        }
+        dirtyMark(a);
+        if (((a & 0xFF) + len) > 0x100) dirtyMark(a + len - 1);
+        done += len;
+    }
+    s_use[(s_r[REG_VP] >> 1) & 1] = s_use[(s_r[REG_VP] >> 1) & 1] + 2 * done;   // the fill and the write-back
+}
+#if HOST_BUILD
+// Bench check (PICOSPECCY_ELM_BLITCHK): every byte of a whole-mask blit where chunkyWrite's
+// per-byte formula puts it. Returns the mismatches.
+uint32_t chunkyRowsCheck(const uint32_t* offs, const uint8_t* p, uint32_t len, uint32_t n) {
+    if (!s_buf || s_r[REG_MASK] != 0xFF || (s_r[REG_VP] & 0x10)) return 0;
+    uint32_t bad = 0;
+    for (uint32_t r = 0; r < n; r++)
+        for (uint32_t k = 0; k < len; k++) {
+            const uint32_t a = dstOff() + ((offs[r] + k + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1));
+            if (*at(a) != p[r * len + k]) bad++;
+        }
+    return bad;
+}
+#endif
 
 // Hardware slots: 0..15 stay the ZX colours (the layer under index 0), the UI block
 // and the HDMI Data Island words are out, the rest takes the table's colours.
@@ -2819,9 +2877,10 @@ posted:
                     ::g_elm_in_hist[best] = 0;
                 }
                 Debug::log("[HGFX] ed/fr: %u |%s", (unsigned)(tot / 60), line);
-                Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus) | batch ldir %u/%uB inir %u/%uB",
+                Debug::log("[HGFX] io/fr: dmaCopy plain %u copy %u | dmaFromCard %u B %uus | fdma run %u byte %u B %uus (chunkyWriteRun %uus, blits %u) | batch ldir %u/%uB inir %u/%uB",
                            Elm::g_elm_io_cnt[0] / 60, Elm::g_elm_io_cnt[1] / 60, Elm::g_elm_io_cnt[2] / 60, Elm::g_elm_io_us[0] / 60,
                            Elm::g_elm_io_cnt[3] / 60, Elm::g_elm_io_cnt[4] / 60, Elm::g_elm_io_us[1] / 60, Elm::g_elm_io_us[2] / 60,
+                           Elm::g_elm_io_cnt[5] / 60,
                            g_elm_batch[0] / 60, g_elm_batch[1] / 60, g_elm_batch[2] / 60, g_elm_batch[3] / 60);
                 for (int i = 0; i < 4; i++) g_elm_batch[i] = 0;
                 Debug::log("[HGFX] fd/fr: src fill %u uram %u chunky %u page %u (bytewise %u) | pieces by dst kind %u %u %u %u %u %u %u %u | per-byte why %u %u %u %u %u %u %u",

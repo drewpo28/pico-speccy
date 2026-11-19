@@ -140,6 +140,23 @@ accessors:
   per-piece overhead, not flash. Next lever: a blit-aware loop (one setup per blit, a
   row loop with precomputed pointers) - worth ~4 ms. `z80f`: cpu 23.0-24.1 ms, 38.4-40.0
   FPS; `z80g` 23.0-23.3 ms, 39.7-40.0 FPS (arena 36.6 KB both).
+- **The blit loop (2026-11-19, hw-confirmed DVp2w 2026-11-19 on `debug/DVp2w-elm-blit1-1.1.3`, PERF_TRACE, build
+  11:59:15, log `...11.59.32.919`, `mult=3`; uncommitted).** hw: `fdma run` 5.0 -> 3.4 ms, blits 591-608 a frame,
+  `chunkyWriteRows` 2.0 ms of it (0.85 us a 8-byte row = the PSRAM stores into buffer 1; the code is gone from
+  the figure), cpu 23.0 -> 20.5-21.4 ms, realFPS 40 -> 44.3-46.1; core1 draw 4.2-5.8 ms, wait 0.3-1.3 ms; tail
+  14 056 B (PERF window), heap 24.9 KB at COMPLETE. What is left of FastDMA: 2.0 ms of stores, ~1.4 ms per-run
+  (decode + the per-run `VIDEO::Draw` time charge). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
+  inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
+  offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half
+  once, an 8-byte row = two word copies (no flash memcpy), the row's dirty units; a row across the wrap or an
+  SRAM-half edge goes to `chunkyWriteRun` (now FLASH, fallback only). One row failing the test = the old piece
+  loop for the whole run. Bench: `PICOSPECCY_ELM_BLITCHK=1` checks every blit against chunkyWrite's per-byte
+  address formula: PF2026 2.7 M blits (~540 a frame), 0 bad bytes; pictures fine. `.elmovl` content 12 832
+  (PERF 13 248): AUTO 12 544 -> 13 056, the pages57 tail 14 824 -> 14 312 B (its tables need 13 884). Read on hw:
+  `[HGFX] io/fr ... fdma run ... us (chunkyWriteRun N us, blits M)` - `blits` ~600, the whole `fdma` figure
+  against 5.0 ms; `chunkyWriteRun us` now times `chunkyWriteRows`. If it barely moves, the cost is the PSRAM
+  stores (buffer 1 is the destination, the arena holds buffer 0), not the per-piece code.
 - **hw 2026-11-18 (`z80d`, arena 40 192 B = buffer 0 rows 0..156; log 11:32):** cpu
   23.5-24.5 ms, 38.3-39.3 FPS, draw 5.0-5.7 ms - the arena changed nothing on core0.
   **The PROF dump by dump** (`z80dh` log 11:35, the per-dump variant of pcprof_sym
