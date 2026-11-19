@@ -125,6 +125,7 @@ public:
         trim = 0;
         lvl = 0; haveLevel = false; havePeek = false;
         underflows = recenters = played = 0;
+        blocks = 0; runEdges = 0;
         starving = false;
     }
 
@@ -169,6 +170,12 @@ public:
         for (;;) {
             if (!havePeek && !peek(pop)) break;
             if (next24 > pos24) break;
+            // Block counter (the F8 line): a run of BLOCK_EDGES edges after at
+            // least BLOCK_GAP_MS of silence is a new block — a pilot tone, like
+            // a real deck's counter sees it. Noise bursts shorter than that
+            // do not count.
+            if (next24 - lastEdge24 > ms24(BLOCK_GAP_MS)) runEdges = 0;
+            if (++runEdges == BLOCK_EDGES) blocks++;
             lvl = nextLvl;
             lastEdge24 = next24;
             havePeek = false;
@@ -180,6 +187,9 @@ public:
     int32_t  trimPpm() const { return trim; }
     int32_t  fillMs() const { return (int32_t)((prod24 - pos24) * 1000 / ((int64_t)fs << 24)); }
     uint32_t underflows = 0, recenters = 0, played = 0;
+    uint32_t blocks = 0;                       // pilot-led runs heard so far
+    static const int32_t  BLOCK_GAP_MS = 200;
+    static const uint32_t BLOCK_EDGES  = 256;  // the ROM locks on after 256 pilot pulses
 
 private:
     int64_t ms24(int32_t ms) const { return ((int64_t)fs * ms / 1000) << 24; }
@@ -219,6 +229,7 @@ private:
     int32_t  trim = 0;
     uint8_t  lvl = 0, nextLvl = 0;
     bool     haveLevel = false, havePeek = false, starving = false;
+    uint32_t runEdges = 0;
 };
 
 }  // namespace bttape

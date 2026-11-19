@@ -30,6 +30,7 @@ namespace {
 bttape::EdgePlayer s_pl;
 uint32_t s_statMs = 0;
 uint32_t s_lastPlayed = 0;
+uint64_t s_startT = 0;      // tape clock when the phone started: the F8 time
 
 auto popEdge = [](uint32_t& e) -> bool { return BtHost::tapeEdgePop(e); };
 
@@ -54,6 +55,7 @@ void btStart() {
     Tape::tapeFileSize = 100;
     s_statMs = nowMs();
     s_lastPlayed = 0;
+    s_startT = Tape::clockNow();
     OSD::notify(string("Tape: ") + BtHost::tapeName() + " is playing", LEVEL_INFO);
     Debug::log("BT tape: live deck on, %d Hz", BtHost::tapeSampleRate());
 }
@@ -89,6 +91,23 @@ void Tape::BT_Frame() {
         s_statMs = now;
     }
 }
+
+// The F8 tape lines while the phone plays: there is no file, so no size or
+// block list. Line 1: the phone's name (scrolled like a file name) and the block
+// counter (EdgePlayer::blocks: pilot-led runs heard). Line 2: playing time on
+// the tape clock and the signal level the decoder sees. 24 chars each.
+void Tape::BT_Stats(char* l1, int c1, char* l2, int c2, unsigned scroll) {
+    const char* nm = tapeFileName.c_str();
+    const size_t len = tapeFileName.length();
+    char name[13];
+    snprintf(name, sizeof(name), "%s", scroll < len ? nm + scroll : "");
+    snprintf(l1, c1, " %-12s %04u/---- ", name, (unsigned)s_pl.blocks);
+    const uint32_t sec = (uint32_t)((clockNow() - s_startT) / 3500000u);
+    snprintf(l2, c2, " %02u:%02u   level %3u%%     ", (unsigned)(sec / 60 % 100), (unsigned)(sec % 60),
+             (unsigned)BtHost::tapePeakPct());
+}
+
+uint32_t Tape::BT_Blocks() { return btLive ? s_pl.blocks : 0; }
 
 uint8_t Tape::BT_Level(uint64_t nowT) {
     return s_pl.level(nowT, popEdge);

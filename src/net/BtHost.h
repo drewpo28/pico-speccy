@@ -49,6 +49,7 @@ bool isHid(const Dev& d);
 // Every device that connected once is remembered (most recent first), up to
 // KNOWN_MAX per kind, in CONFIG_DIR/bt_audio.txt and bt_input.txt.
 static const int KNOWN_MAX = 8;
+enum : int { KIND_AUDIO = 0, KIND_INPUT = 1, KIND_TAPE = 2 };   // the three device lists
 struct Known {
     uint8_t addr[6];
     char    name[32];
@@ -111,6 +112,14 @@ bool audioInfo(AudioInfo& a);
 static const int BT_TAPE_MIN_BITPOOL = 41;
 enum TapeState : uint8_t { T_OFF, T_LISTEN, T_CONNECTED, T_STREAMING };
 bool tapeListen(bool on);     // false when the radio did not come up
+void tapePairing(bool on);    // discoverable (a pairing page is open) or not
+// Listen and page a phone that paired before (CONFIG_DIR/bt_tape.txt). Async: the
+// phone may also refuse and still connect to us when it plays.
+bool tapeConnect(const uint8_t addr[6], const char* name);
+bool tapeConnecting();
+bool tapeConnectedTo(const uint8_t addr[6]);
+int  tapeKnown(Known* out, int max);   // phones that played to us, most recent first
+uint8_t tapePeakPct();                 // decoded level, % of full scale (0 = no stream)
 TapeState tapeState();
 const char* tapeName();       // the phone connected / last connected
 struct TapeInfo {

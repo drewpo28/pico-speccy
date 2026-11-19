@@ -231,7 +231,7 @@ static const double SPEEDS[] = {1.0, 0.5, 0.33, 0.25};   // 1x 2x 3x 4x
 // of wall time, ends a frame every 20 ms (EdgePlayer::frame) and polls EAR every
 // 60 T like LD-EDGE (EdgePlayer::level). Out: the edges the loader sees, in T.
 struct LinkCfg { double phoneDrift, emuDrift; int jitterMs; };
-struct LinkStats { uint32_t underflows, recenters; int32_t trimMin, trimMax; };
+struct LinkStats { uint32_t underflows, recenters, blocks; int32_t trimMin, trimMax; };
 
 static std::vector<double> edgesLive(const std::vector<float>& y, const LinkCfg& L, LinkStats& st) {
     const int P = 1024;
@@ -269,7 +269,7 @@ static std::vector<double> edgesLive(const std::vector<float>& y, const LinkCfg&
     bool started = false;
     uint8_t lvl = 0; bool haveLvl = false;
     const double tPerWall = 3500000.0 * (1 + L.emuDrift);
-    st = {0, 0, 0, 0};
+    st = {0, 0, 0, 0, 0};
     const double end = lastArrive + 1.0;
     for (double wall = 0; wall < end; wall += 0.020) {                 // frames
         while (next < pk.size() && pk[next].arrive <= wall) {
@@ -294,6 +294,7 @@ static std::vector<double> edgesLive(const std::vector<float>& y, const LinkCfg&
         }
     }
     st.recenters = pl.recenters;
+    st.blocks = pl.blocks;
     if (g_dbg) fprintf(stderr, "live: ring %zu popped %zu played %u fill %d ms, out %zu\n",
                        ring.size(), rr, pl.played, pl.fillMs(), out.size());
     return out;
@@ -409,6 +410,7 @@ int main(int argc, char** argv) {
             // pause, which costs nothing).
             const bool stress = fabs(L.phoneDrift - L.emuDrift) > 0.021;
             if (r.bitErrors || r.edgeDiff || (st.underflows && !stress)) linkFails++;
+            if (st.blocks != 2) { printf(" [blocks %u, want 2]", st.blocks); linkFails++; }   // header + data
             tmin = std::min(tmin, st.trimMin); tmax = std::max(tmax, st.trimMax); rec += st.recenters;
         }
         printf(" | %+6d..%+6d %4u\n", tmin, tmax, rec);

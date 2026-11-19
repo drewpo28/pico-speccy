@@ -243,6 +243,8 @@ public:
     static bool btLive;
     static void BT_Frame();                 // once a frame (netBackgroundTick)
     static uint8_t BT_Level(uint64_t nowT); // the EAR level now (Read)
+    static void BT_Stats(char* l1, int c1, char* l2, int c2, unsigned scroll);   // F8 lines
+    static uint32_t BT_Blocks();            // blocks heard since the phone started
 #endif
     static bool FlashLoad();
     // Block-level file access for a machine whose ROM loader has its own register

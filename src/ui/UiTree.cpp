@@ -1156,6 +1156,9 @@ static const Node kTape[] = {
     NM_BOOL_EN(TXT_TAPE_REALIN " (GP" _PIN_XSTR(LOAD_WAV_PIO) ")",
                                   SET_TAPE_REALIN,  nullptr, p_wavPinFree),
 #endif
+#if PICOSPECCY_WIFI
+    NM_ACTIONV(TXT_TAPE_BT,       act_tapeBt,       vl_btTape, nullptr),
+#endif
     NM_BOOL_EN(TXT_TAPE_FASTLOAD, SET_FLASHLOAD,    nullptr, p_noTapeWear),
     NM_BOOL  (TXT_TAPE_RG,        SET_TAPE_RG,      nullptr),
     NM_BOOL  (TXT_TAPE_AUTOSTART, SET_TAPE_ASTART,  nullptr),
@@ -2074,7 +2077,7 @@ static const Option opt_bt_hints[] = {
 static const Node kBluetooth[] = {
     NM_DYNH(TXT_BT_AUDIO, bt_buildAudio, bt_keyAudio, opt_bt_hints, nullptr),
     NM_DYNH(TXT_BT_INPUT, bt_buildInput, bt_keyInput, opt_bt_hints, nullptr),
-    NM_ACTIONV(TXT_BT_TAPE, act_btTape, vl_btTape, nullptr),
+    NM_DYNH(TXT_BT_TAPE,  bt_buildTape,  bt_keyTape,  opt_bt_hints, nullptr),
 };
 #endif
 

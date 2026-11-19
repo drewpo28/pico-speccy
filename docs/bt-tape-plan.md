@@ -219,3 +219,26 @@ SBC's), packet loss and jitter on a real link.
 - **What the hw round must show**: Bluetooth > Tape from phone, pair, Esc,
   LOAD "", Play on the phone: the game loads. UART log: `BT tape: fill ~250 ms,
   trim small, underflows 0`, `ring drops 0`; the 5 s `tape:` lines as in stage 2.
+
+## Stage 4 — UI round after the first hw run (2026-11-19, hw-confirmed 2026-11-19 DVp2w on `debug/DVp2w-f8bar-1.1.3`: F8 lines, Tape menu row, Bluetooth > Tape in shown fine; the board calling a phone not itemised)
+
+hw-confirmed 2026-11-19 (owner, DVp2w, `debug/DVp2w-bttape3-1.1.3`): **a game loads
+from the phone.** Owner's remarks, and the options picked:
+- **F8 showed zeros** (the tape lines are file-based: block N/M, % of size). Now
+  `Tape::BT_Stats`: line 1 = "BT <phone>" + a block counter, line 2 = play time on
+  the tape clock + decoder level %. The counter is `EdgePlayer::blocks`: a run of
+  256 edges after >= 200 ms of silence (a pilot tone, as a deck's counter sees it);
+  the host test checks it counts exactly 2 (header + data) in every live-link case.
+- **Tape menu did not show it**: Storage > Tape > "Bluetooth (phone)" row, value
+  off / listening / calling / <phone> / playing; Enter when off calls the most
+  recent phone (or opens pairing when none), when on asks to stop.
+- **The BT page looked odd**: Bluetooth > "Tape in", shaped like Audio out / Input
+  (Audio renamed "Audio out"): the phones that played before
+  (`CONFIG_DIR/bt_tape.txt`, KIND_TAPE list), "Pair new..." and, while listening
+  without a phone, "Stop listening". Right pane: MAC, state, codec, bitpool, level,
+  blocks, lost packets. Enter on a phone = listen + **the board calls the phone**
+  (`a2dp_sink_establish_stream`; untested whether phones accept it — if not, the
+  log says to play from the phone, which still works). The board is discoverable
+  only while the "Pair new" page is open (was: the whole time it listened).
+- Cost: static RAM +~330 B (the phone list for the right pane 320 B); all new code
+  in flash.

@@ -5353,6 +5353,15 @@ void ESPectrum::loop() {
         }
       }
       if ((VIDEO::OSD & 0x04) == 0 && !CPU::paused) {
+#if PICOSPECCY_WIFI
+        if (VIDEO::OSD == 1 && Tape::btLive) {   // tape from a phone: no file, no blocks list
+          Tape::BT_Stats(OSD::stats_lin1, sizeof(OSD::stats_lin1), OSD::stats_lin2,
+                         sizeof(OSD::stats_lin2), ESPectrum::TapeNameScroller);
+          if ((++ESPectrum::TapeNameScroller + 12) > Tape::tapeFileName.length())
+            ESPectrum::TapeNameScroller = 0;
+          OSD::drawStats();
+        } else
+#endif
         if (VIDEO::OSD == 1 && Tape::tapeStatus == TAPE_LOADING) {
           snprintf(
               OSD::stats_lin1, sizeof(OSD::stats_lin1), " %-12s %04d/%04d ",
