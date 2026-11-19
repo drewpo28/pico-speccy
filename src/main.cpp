@@ -1085,6 +1085,12 @@ extern "C" void refresh_lcd(void);
 // Main RAM, not SCRATCH_X: that bank holds the HDMI line ISR and core1's stack and
 // was 20 bytes short of the odd-line-count frame fix (2026-10-09). This loop only
 // dispatches; its speed does not depend on the bank.
+#if PERF_TRACE
+volatile uint32_t g_c1_loop_us[3];   // core1 us a window in the loop's sd_async_pump / GS::pump / Hgfx::core1Pump (read by ElmHgfx)
+#define C1LOOP(i, stmt) do { const uint32_t t_ = time_us_32(); stmt; g_c1_loop_us[i] = g_c1_loop_us[i] + (time_us_32() - t_); } while (0)
+#else
+#define C1LOOP(i, stmt) stmt
+#endif
 void __not_in_flash_func(render_core)() {
     multicore_lockout_victim_init();
     { extern size_t getFreeHeap(void); Debug::log("render: graphics_init begin, freeHeap=%u", (unsigned)getFreeHeap()); }
@@ -1113,7 +1119,7 @@ void __not_in_flash_func(render_core)() {
         // runs here so core0 keeps emulating while the card works; the guest polls
         // for the data token meanwhile, as it would on a real card. One byte test
         // when nothing is posted. (NEXTVID::c1Pump pumps it too, between line batches.)
-        if (__builtin_expect(g_sd_as_state == 1, 0)) sd_async_pump();
+        if (__builtin_expect(g_sd_as_state == 1, 0)) C1LOOP(0, sd_async_pump());
         // (pcm_call() used to be called here. It has been an empty no-op since
         // audio moved into timer_callback, it lived in FLASH, and core1 spins
         // this loop thousands of times a frame right beside the TS-Conf
@@ -1136,7 +1142,7 @@ void __not_in_flash_func(render_core)() {
         // The body lives in flash, not the TS overlay, so the gate is only a
         // fast exit — no jump-into-heap hazard here.
         if (g_ft_c1_live) ft812_render_core1_pump();
-        if (g_elm_c1_live) Hgfx::core1Pump();         // eLeMeNt ZX: HGFX engine + picture (flash body)
+        if (g_elm_c1_live) C1LOOP(2, Hgfx::core1Pump());         // eLeMeNt ZX: HGFX engine + picture (flash body)
         if (g_next_c1_live) {                         // Spectrum Next scanlines (NextVideo.cpp)
 #if NEXT_TRACE
             static bool s_prof1 = false;              // the core1 PC sampler (NEXT hostpc1)
@@ -1181,7 +1187,7 @@ void __not_in_flash_func(render_core)() {
                 if (GS::idleThrottled)                 run = q == 0;
                 else if (q > 32 || g_nx_c0wait)        run = GS::hostActive();
             }
-            if (run) GS::pump();
+            if (run) C1LOOP(1, GS::pump());
         }
 #endif
         tight_loop_contents();

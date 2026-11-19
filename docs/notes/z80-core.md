@@ -161,7 +161,30 @@ accessors:
   realFPS 47-49.4; IDL now swings (-5k..+8k: the waiting frames are cheap, the decode frames are not). The car
   part stays 43-46 FPS: core1 draws 87-102 rows (7.4-10.7 ms, forest 45 rows / ~5 ms) beside ~5 ms of SD
   read-ahead, core0 waits 2.7-3.7 ms a frame for it, and `fdma run` is 5.1 ms there (forest 3.4) with the
-  same 591 blits / 2.05 ms rows - the extra 1.7 ms not explained yet (27 VRAM COPY pieces against 19). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
+  same 591 blits / 2.05 ms rows - the extra 1.7 ms not explained yet (27 VRAM COPY pieces against 19).
+- **Diagnostic `debug/DVp2w-elm-diag1-1.1.3` (2026-11-19, PERF, build 13:02:51, uncommitted):** a new line
+  `[HGFX] split/fr: fdma T = rows + vram + charge + rest | c1 pump P: draw D (rows R, sd S, gs G) | c1 loop sd
+  gs | c1 busy B` (us a frame). core0: `fdmaRun`'s chunky rows, VRAM-window pieces (copyRun / writeVramRun +
+  wrBytes), the per-run `VIDEO::Draw` time charge and the rest (decode). core1: `render_core`'s loop timed per
+  call (main.cpp `C1LOOP`: sd_async_pump / GS::pump / Hgfx::core1Pump), and inside the draw the row and gate
+  pumps (`sdPumpC1` / `gsPump`): `draw` was the HAM rows AND the per-row SD + NeoGS pumps. `.elmovl` PERF
+  content 13 304 of 13 312 (the VRAM byte counter was dropped for it).
+  **hw diag1 (log `...13.12.21.988`, forest then car):** core0 `fdma` forest 3.4 ms = rows 2.0 + vram 0.75 + charge
+  0.04 + rest 0.64; car 5.2 ms = rows 2.05 + **vram 2.4** + charge 0.04 + rest 0.66 - the car's extra 1.7 ms is the
+  COPY into the VRAM window (~3 KB a frame, 27-30 pieces). core1: draw forest 4.4 ms (rows 2.5, sd 1.2, gs 0.6), car
+  9.5-10.5 ms (rows 5.1-5.9, sd 2.0-3.6, gs 1.0-1.1); `c1 busy` 17 / 19.5 ms is NOT a load figure (the loop's
+  GS::pump / core1Pump calls are timed on every idle spin too). The cause of the vram cost: with the engine on
+  core0 (`s_direct`, chunky windows mapped) `copyRun` / `writeVramRun` went per byte through `execVram`.
+- **diag2 (2026-11-19, hw-confirmed DVp2w 2026-11-19, uncommitted; `debug/DVp2w-elm-diag2-1.1.3`, PERF, build
+  13:19:51):** direct mode `copyRun` -> one `execRun`, `writeVramRun` -> `execBytes` (the rows the queued path
+  runs on core1); `PICOSPECCY_ELM_CHECK` checks them against the per-byte path too (PF2026 to the car: 71 680
+  COPY + 35 840 byte runs, 0 bad). And the draw's row / gate pumps skip an idle-throttled NeoGS (`gsPump`:
+  `!GS::idleThrottled`; render_core's loop still feeds it). `.dmaovl` content 8 408 -> 8 416 B, window unchanged.
+  hw (log `...13.26.04.166`): car `vram` 2.4 -> 1.0 ms, `fdma` 5.2 -> 3.75 ms, cpu 20.8 -> 18.7-19.5 ms, realFPS
+  44-46 -> 46.9-48.9; forest `vram` 0.75 -> 0.48, cpu 15.7-18.3 ms, realFPS 47.2-49.6; `gs 0` in the draw. **The
+  ceiling is 48.8, not 50**: the Pentagon frame (71 680 T at 3.5 MHz = 48.83 Hz), an idle BASIC reads the same.
+  What is left in the car: core0 waits 2.2-3.4 ms for core1, whose draw is 7.8-10.9 ms (rows 4.9-6.8 + SD
+  2.7-4.2 inside the draw). `fdmaRun` takes a run whole when it is a blit: plain, source a plain page
   (`rdPtr`, not chunky / VRAM / divMMC) inside one 256-byte page, destination rows of `dbatch` < 256 bytes each
   inside one page of a W_CHUNKY window, `len % dbatch == 0`, <= 32 rows, `sbatch >= len`. The rows' window
   offsets are taken up front, then one `Hgfx::chunkyWriteRows` (.elmovl): mask / OffsetY / buffer / SRAM half

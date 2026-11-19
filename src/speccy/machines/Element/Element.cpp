@@ -77,7 +77,7 @@ void* tailAlloc(size_t n) {
 
 static uint8_t s_gIdx, s_eIdx, s_uIdx;
 #if PERF_TRACE
-extern uint32_t g_elm_io_cnt[6], g_elm_io_us[3], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];
+extern uint32_t g_elm_io_cnt[8], g_elm_io_us[5], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];
 #endif
 #if PERF_TRACE
 }
@@ -500,8 +500,8 @@ static bool s_kwOk;
 static uint32_t s_kwT, s_kwR, s_kwRegs;
 #if PERF_TRACE
 uint32_t g_elm_kw[2];   // skips, passes skipped
-uint32_t g_elm_io_cnt[6];   // bytes a window: dmaCopy plain / COPY, dmaFromCard, FastDMA run / per byte, (5) spare
-uint32_t g_elm_io_us[3];    // core0 time a window: dmaFromCard, fdmaRun (whole call), fdmaRun per-byte pieces
+uint32_t g_elm_io_cnt[8];   // bytes a window: dmaCopy plain / COPY, dmaFromCard, FastDMA run / per byte, (5) blits, (6-7) spare
+uint32_t g_elm_io_us[5];    // core0 time a window: dmaFromCard, fdmaRun (whole call), fdmaRun chunky rows + per-byte pieces, (3) VRAM-window pieces, (4) the time charge (VIDEO::Draw)
 uint32_t g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];   // fd_src: fill / URAM / chunky window / plain page (4 = per-byte read fallback)   // FastDMA pieces a window: per-byte reason (1 src divMMC, 2 overlap, 3 dst low, 4 VRAM rule, 5 split chunky src, 6 other window), destination kind
 #endif
 void keyWaitSkip() {
@@ -822,12 +822,18 @@ ELM_OVL_CODE static void fdmaRun(int set, bool wide24) {   // .elmovl: 2 400 pie
 #endif
             }
             else {
+#if PERF_TRACE
+                const uint32_t tv_ = time_us_32();
+#endif
                 const uint16_t vbase = (uint16_t)s_r->g[0x021] << 8;
                 if (kind == W_VRAM) {
                     if (g_elm_vram_rd && svram) { Hgfx::copyRun((uint16_t)(da - vbase), (uint16_t)(sa - vbase), c); s_rdArmed = false; }
                     else Hgfx::writeVramRun((uint16_t)(da - vbase), src, c);
                 }
                 wrBytes((uint16_t)da, src, c);   // under the window too
+#if PERF_TRACE
+                g_elm_io_us[3] += time_us_32() - tv_;
+#endif
             }
         } else {
 #if PERF_TRACE
@@ -864,8 +870,14 @@ ELM_OVL_CODE static void fdmaRun(int set, bool wide24) {   // .elmovl: 2 400 pie
     s_fdBusy = false;
     // The CPU is held for the transfer; the machine's time moves on in pieces, which
     // is what the raster machines want. An INT inside it waits (SaveINT).
+#if PERF_TRACE
+    const uint32_t td_ = time_us_32();
+#endif
     uint32_t t = (len >> 1) << ESPectrum::multiplicator;
     while (t) { const uint32_t n = t > 200 ? 200 : t; VIDEO::Draw(n, false); t -= n; }
+#if PERF_TRACE
+    g_elm_io_us[4] += time_us_32() - td_;
+#endif
 }
 
 static void fdmaWrite(uint8_t off, uint8_t v) {

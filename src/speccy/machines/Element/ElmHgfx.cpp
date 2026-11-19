@@ -30,8 +30,12 @@ void pcprof_dump();
 extern volatile uint32_t g_elm_batch[4];   // Z80_JLS.cpp elmLdirBatch / elmInirBatch: PERF counts
 extern uint32_t g_elm_loop_n, g_elm_gen_n;   // Z80_JLS.cpp: Z80::exec_nocheck_elm entries, shared-loop instructions
 extern uint32_t g_elm_ed_hist[256], g_elm_in_hist[256];   // Z80_JLS.cpp: ED second bytes the loop handed to the shared decoders, IN r,(C) ports
-namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2]; }   // Element.cpp: key-wait skips / passes, SoundDMA poll skips / passes
-namespace Elm { extern uint32_t g_elm_io_cnt[6], g_elm_io_us[3], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8]; }   // Element.cpp: DMA / FastDMA bytes and core0 us a window
+namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2]; }
+extern volatile uint32_t g_c1_loop_us[3];   // main.cpp render_core (PERF_TRACE): core1 us in sd_async_pump / GS::pump / Hgfx::core1Pump
+#if HOST_BUILD && PERF_TRACE
+volatile uint32_t g_c1_loop_us[3];          // the host has no render_core: stays 0
+#endif   // Element.cpp: key-wait skips / passes, SoundDMA poll skips / passes
+namespace Elm { extern uint32_t g_elm_io_cnt[8], g_elm_io_us[5], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8]; }   // Element.cpp: DMA / FastDMA bytes and core0 us a window
 #endif
 
 namespace Hgfx {
@@ -865,11 +869,43 @@ ELM_HOT void writeVram(uint16_t off, uint8_t v, bool wasRead, uint16_t src) {
     } else execVram(off, v, wasRead, src);
 }
 
+#if HOST_BUILD
+// Bench self-check (PICOSPECCY_ELM_CHECK) of the direct runs below: the run against the
+// per-byte path on the same buffer.
+template <class Fast, class Slow> static void directChk(Fast fast, Slow slow, const char* what, uint16_t off, uint32_t n) {
+    static const bool check = getenv("PICOSPECCY_ELM_CHECK") != nullptr;
+    if (!check) { fast(); return; }
+    static uint8_t* snap; static uint32_t chk, bad;
+    if (!snap) snap = (uint8_t*)malloc(0x40000);
+    const int cn = dstE(); const size_t rb = (size_t)s_stride;
+    uint8_t* after = snap + 0x20000;
+    for (int y = 0; y < s_h; y++) memcpy(snap + y * rb, rowOf(cn, y), rb);
+    fast();
+    for (int y = 0; y < s_h; y++) { memcpy(after + y * rb, rowOf(cn, y), rb); memcpy(rowOf(cn, y), snap + y * rb, rb); }
+    slow();
+    bool same = true;
+    for (int y = 0; y < s_h && same; y++) same = !memcmp(after + y * rb, rowOf(cn, y), rb);
+    chk++;
+    if (!same && bad++ < 20) Debug::log("[ELMCHK] direct %s MISMATCH off=%04X n=%u pm=%u m=%02X", what, (unsigned)off, (unsigned)n, s_e[REG_MODE], s_e[REG_MASK]);
+    if (!(chk & 0x3FF)) Debug::log("[ELMCHK] direct %u runs checked, %u bad", (unsigned)chk, (unsigned)bad);
+}
+#define ELM_DIRECT(what, off, n, fast, slow) directChk([&] { fast; }, [&] { slow; }, what, off, n)
+#else
+#define ELM_DIRECT(what, off, n, fast, slow) fast
+#endif
+
 // core0: n COPY writes in a row (Z80 DMA inside the window), the same as n writeVram
-// calls with wasRead and the mode on COPY.
+// calls with wasRead and the mode on COPY. Engine on core0 (chunky windows mapped,
+// PF2026): one execRun, a row at a time - it was execVram per byte, ~3 KB a frame of
+// the car part at 0.8 us a byte (hw 2026-11-19, `split/fr vram` 2.4 ms).
 void copyRun(uint16_t off, uint16_t src, uint32_t n) {
     s_fbDirty = true;
-    if (!queued()) { for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), 0, true, (uint16_t)(src + i)); return; }
+    if (!queued()) {
+        if (!s_buf) return;
+        ELM_DIRECT("copy", off, n, execRun(off, n, src),
+                   for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), 0, true, (uint16_t)(src + i)));
+        return;
+    }
     while (n) {
         if (!(s_runLen && s_runLen < 0x1FFF && off == (uint16_t)(s_runOff + s_runLen) && src == (uint16_t)(s_runSrc + s_runLen))) {
             runFlush();
@@ -886,7 +922,8 @@ void copyRun(uint16_t off, uint16_t src, uint32_t n) {
 void writeVramRun(uint16_t off, const uint8_t* p, uint32_t n) {
     s_fbDirty = true;
     if (queued()) for (uint32_t i = 0; i < n; i++) byteAppend((uint16_t)(off + i), p[i], false);
-    else for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), p[i], false, 0xFFFF);
+    else if (s_buf) ELM_DIRECT("bytes", off, n, execBytes(off, p, n, false),
+                               for (uint32_t i = 0; i < n; i++) execVram((uint16_t)(off + i), p[i], false, 0xFFFF));
 }
 
 // The whole-buffer commands: instant here, busy for their documented time.
@@ -1534,11 +1571,26 @@ extern "C" void sd_async_pump(void);
 // loop), and a whole frame drawn in one core1Pump call starved it for the draw's length
 // (11-18 ms: one catch-up burst a frame, "the NeoGS sounds terrible", LIMSHOWM, owner
 // 2026-11-16). A pump every row keeps it fed (rowPump below).
+#if PERF_TRACE
+// core1 time inside the pumps of the draw (rows and the palette gate): SD, NeoGS. The
+// draw figure includes them; these say how much of it is not drawing (car part of
+// PF2026: draw 10 ms on 100 rows, 2026-11-19).
+static volatile uint32_t s_pC1Sd, s_pC1Gs;
+#define C1T(acc, stmt) do { const uint32_t t_ = time_us_32(); stmt; acc = acc + (time_us_32() - t_); } while (0)
+#else
+#define C1T(acc, stmt) stmt
+#endif
+static inline void sdPumpC1() {
+    if (__builtin_expect(g_sd_as_state == 1, 0)) C1T(s_pC1Sd, sd_async_pump());
+}
+// An idle-throttled card (nobody reads it: PF2026 plays through the SoundDMA) is not
+// fed between rows: it gets render_core's loop after the draw. 1.1 ms of the car part's
+// 10 ms draw went to it (hw 2026-11-19), the time core0 then waited for core1.
 static inline void gsPump() {
-    if (GS::enabled && get_core_num() == 1) GS::pump();
+    if (GS::enabled && !GS::idleThrottled && get_core_num() == 1) C1T(s_pC1Gs, GS::pump());
 }
 static inline void gatePump() {          // core1 waiting at the palette gate: the SD and the NeoGS go on
-    if (__builtin_expect(g_sd_as_state == 1, 0)) sd_async_pump();
+    sdPumpC1();
     gsPump();
 }
 // fy: the fb row about to be drawn. A pump every 8 rows (split23) fed the card 4000 T a
@@ -1547,7 +1599,7 @@ static inline void gatePump() {          // core1 waiting at the palette gate: t
 // beam by ROW_LEAD rows: the card eats core1 time the row needs, and a draw the beam
 // catches is the sand again. Beam below the row (or blanking): it wrapped, plenty of lead.
 static inline void rowPump(int fy) {
-    if (__builtin_expect(g_sd_as_state == 1, 0) && get_core_num() == 1) sd_async_pump();
+    if (get_core_num() == 1) sdPumpC1();
     enum { ROW_LEAD = 24 };
     const int beam = VIDEO::displayBeamRow();
     if (beam < 0 || beam >= fy || fy - beam >= ROW_LEAD) {
@@ -2883,14 +2935,27 @@ posted:
                            Elm::g_elm_io_cnt[5] / 60,
                            g_elm_batch[0] / 60, g_elm_batch[1] / 60, g_elm_batch[2] / 60, g_elm_batch[3] / 60);
                 for (int i = 0; i < 4; i++) g_elm_batch[i] = 0;
+                {   // where the frame's FastDMA (core0) and core1's time go, us a frame
+                    const uint32_t fw = Elm::g_elm_io_us[1], fr = Elm::g_elm_io_us[2], fv = Elm::g_elm_io_us[3], fc = Elm::g_elm_io_us[4];
+                    const uint32_t frest = fw > fr + fv + fc ? fw - fr - fv - fc : 0;
+                    const uint32_t dsd = s_pC1Sd, dgs = s_pC1Gs, dr = s_pDrawUs;
+                    const uint32_t dpure = dr > dsd + dgs ? dr - dsd - dgs : 0;
+                    Debug::log("[HGFX] split/fr: fdma %uus = rows %u + vram %u + charge %u + rest %u | c1 pump %uus: draw %u (rows %u, sd %u, gs %u) | c1 loop sd %u gs %u | c1 busy %uus",
+                               fw / 60, fr / 60, fv / 60, fc / 60, frest / 60,
+                               ::g_c1_loop_us[2] / 60, dr / 60, dpure / 60, dsd / 60, dgs / 60,
+                               ::g_c1_loop_us[0] / 60, ::g_c1_loop_us[1] / 60,
+                               (::g_c1_loop_us[0] + ::g_c1_loop_us[1] + ::g_c1_loop_us[2]) / 60);
+                    s_pC1Sd = s_pC1Gs = 0;
+                    ::g_c1_loop_us[0] = ::g_c1_loop_us[1] = ::g_c1_loop_us[2] = 0;
+                }
                 Debug::log("[HGFX] fd/fr: src fill %u uram %u chunky %u page %u (bytewise %u) | pieces by dst kind %u %u %u %u %u %u %u %u | per-byte why %u %u %u %u %u %u %u",
                            Elm::g_elm_fd_src[0] / 60, Elm::g_elm_fd_src[1] / 60, Elm::g_elm_fd_src[2] / 60, Elm::g_elm_fd_src[3] / 60, Elm::g_elm_fd_src[4] / 60,
                            Elm::g_elm_fd_kind[0] / 60, Elm::g_elm_fd_kind[1] / 60, Elm::g_elm_fd_kind[2] / 60, Elm::g_elm_fd_kind[3] / 60,
                            Elm::g_elm_fd_kind[4] / 60, Elm::g_elm_fd_kind[5] / 60, Elm::g_elm_fd_kind[6] / 60, Elm::g_elm_fd_kind[7] / 60,
                            Elm::g_elm_fd_why[1] / 60, Elm::g_elm_fd_why[2] / 60, Elm::g_elm_fd_why[3] / 60, Elm::g_elm_fd_why[4] / 60,
                            Elm::g_elm_fd_why[5] / 60, Elm::g_elm_fd_why[6] / 60, Elm::g_elm_fd_why[7] / 60);
-                for (int i = 0; i < 6; i++) Elm::g_elm_io_cnt[i] = 0;
-                for (int i = 0; i < 3; i++) Elm::g_elm_io_us[i] = 0;
+                for (int i = 0; i < 8; i++) Elm::g_elm_io_cnt[i] = 0;
+                for (int i = 0; i < 5; i++) Elm::g_elm_io_us[i] = 0;
                 for (int i = 0; i < 8; i++) { Elm::g_elm_fd_why[i] = 0; Elm::g_elm_fd_kind[i] = 0; Elm::g_elm_fd_src[i] = 0; }
                 for (int i = 0; i < 256; i++) { ::g_elm_ed_hist[i] = 0; ::g_elm_in_hist[i] = 0; }
             }
