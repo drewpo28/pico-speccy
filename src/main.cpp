@@ -1908,7 +1908,13 @@ static bool zero2_pio_usb_host_init() {
 // CFG_TUSB_DEBUG_BREAKPOINT in tusb_config.h) — a bkpt freezes every debug
 // session on recoverable asserts (dongle re-enumeration). Count and move on.
 volatile uint32_t g_tusb_assert_count = 0;
-extern "C" void picospeccy_tusb_assert_hook(void) { g_tusb_assert_count++; }
+// Return address of the last failed TU_ASSERT (HID devices page "last=" field):
+// symbolize it against the ELF with addr2line to name the file:line.
+volatile uint32_t g_tusb_assert_last_pc = 0;
+extern "C" __attribute__((noinline)) void picospeccy_tusb_assert_hook(void) {
+    g_tusb_assert_count++;
+    g_tusb_assert_last_pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+}
 
 extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
 

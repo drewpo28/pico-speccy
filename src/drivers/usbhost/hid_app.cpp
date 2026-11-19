@@ -2260,6 +2260,36 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
 }
 
 //--------------------------------------------------------------------+
+// USB enumeration state (top of the OSD "HID devices" page): one photo must say
+// where an enumeration stopped. st/fail = ENUM_* step in usbh.c (0x80|n = the delay
+// step n, 0x40|n = class driver set_config of interface n); res = xfer_result_t
+// (FE = refused by a check, FD = watchdog); last= return address of the last failed
+// TU_ASSERT, symbolize it with addr2line against the ELF.
+//--------------------------------------------------------------------+
+extern "C" int usb_enum_format_info(char* buf, int bufsz)
+{
+  extern volatile uint32_t g_tusb_assert_count;
+  extern volatile uint32_t g_tusb_assert_last_pc;
+  tuh_enum_diag_t d;
+  tuh_enum_diag_get(&d);
+  int pos = snprintf(buf, bufsz,
+    "USB enum: %s a%u h%u:p%u st=%02X %lums\n"
+    " fail=%u wd=%u retry=%u/%u\n"
+    " re-ask=%u fallback=%u att=%u det=%u\n"
+    " last fail st=%02X res=%02X\n"
+    " asserts=%lu last=%08lX\n\n",
+    d.busy ? "BUSY" : "idle", d.daddr, d.hub_addr, d.hub_port, d.state,
+    (unsigned long)(d.idle_ms > 99999u ? 99999u : d.idle_ms),
+    d.fails, d.watchdog, d.retry, d.retried,
+    d.desc_retry, d.desc_fallback, d.attach, d.detach,
+    d.last_fail_state, d.last_fail_result,
+    (unsigned long)g_tusb_assert_count, (unsigned long)g_tusb_assert_last_pc);
+  if (pos < 0) pos = 0;
+  if (pos > bufsz - 1) pos = bufsz - 1;
+  return pos;
+}
+
+//--------------------------------------------------------------------+
 // HID devices info dump (for OSD "HID devices" dialog)
 //--------------------------------------------------------------------+
 extern "C" int hid_app_format_devices_info(char* buf, int bufsz)
