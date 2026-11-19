@@ -21,7 +21,7 @@
 //   B=$PICO_SDK_PATH/lib/btstack/3rd-party/bluedroid; O=/tmp/sbcobj; mkdir -p $O
 //   (cd $O && gcc -O2 -w -c -I$B/decoder/include $B/decoder/srce/*.c)
 //   (cd $O && gcc -O2 -w -c -I$B/encoder/include $B/encoder/srce/*.c)
-//   g++ -O2 -Wall -I$B/decoder/include -I$B/encoder/include -o /tmp/sbc_tape_test tools/sbc_tape_test.cpp $O/*.o
+//   g++ -O2 -Wall -Isrc -I$B/decoder/include -I$B/encoder/include -o /tmp/sbc_tape_test tools/sbc_tape_test.cpp $O/*.o
 //   /tmp/sbc_tape_test         (~12 s)
 //
 // Options: --detail (per-config table: max/mean half-pulse error, interpolated
@@ -39,6 +39,8 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+
+#include "speccy/devices/tape/BtTapeEdges.h"   // the firmware's receiver (BtHost)
 
 extern "C" {
 #include "oi_codec_sbc.h"
@@ -165,6 +167,25 @@ static std::vector<double> edges(const std::vector<float>& x, double hyst, bool 
     return e;
 }
 
+// The FIRMWARE receiver: src/speccy/devices/tape/BtTapeEdges.h on int16 samples
+// (what the decoder hands BtHost), its Q8 sample times turned into T-states.
+static std::vector<double> edgesFw(const std::vector<float>& x) {
+    bttape::EdgeExtractor ex; ex.reset();
+    std::vector<double> e;
+    uint32_t base = 0, last = 0; bool any = false;   // undo the 2^24-sample wrap
+    for (float v : x) {
+        float f = v * 32768.0f;
+        int16_t s = (int16_t)std::max(-32768.0f, std::min(32767.0f, f));
+        uint32_t t;
+        if (!ex.push(s, &t)) continue;
+        t &= ~1u;
+        if (any && t < last) base++;
+        last = t; any = true;
+        e.push_back(((double)base * 4294967296.0 + t) / 256.0 / RATE * TSTATES);
+    }
+    return e;
+}
+
 struct Result { long edgeDiff; int maxHalfErr; int maxBitErr; long bitErrors; double meanAbsHalf; };
 
 static Result compare(const Train& t, const std::vector<double>& e, double s) {
@@ -269,6 +290,26 @@ int main(int argc, char** argv) {
         printf(" | %5d\n", worstHalf[bi]);
     }
 
+    // The firmware receiver (BtTapeEdges.h) on the same signals.
+    printf("\nfirmware receiver (BtTapeEdges.h), same grid:\n");
+    long fwBits[NB][NA]; int fwHalf[NB];
+    for (int bi = 0; bi < NB; bi++) {
+        SbcCfg c = {"", bps[bi] ? SBC_JOINT_STEREO : -1, bps[bi]};
+        fwHalf[bi] = 0;
+        if (bps[bi]) printf("JS bp%2d ", bps[bi]); else printf("PCM     ");
+        for (int ai = 0; ai < NA; ai++) {
+            long b = 0;
+            for (size_t si = 0; si < trains.size(); si++) {
+                Result r = compare(trains[si], edgesFw(through(pcms[ai][si], c)), SPEEDS[si]);
+                b = std::max(b, r.bitErrors);
+                if (!r.bitErrors && !r.edgeDiff) fwHalf[bi] = std::max(fwHalf[bi], r.maxHalfErr);
+            }
+            fwBits[bi][ai] = b;
+            printf(" %6ld", b);
+        }
+        printf(" | %5d\n", fwHalf[bi]);
+    }
+
     // Expectations (what docs/bt-tape-plan.md relies on).
     int fails = 0;
     for (int bi = 0; bi < NB; bi++) {
@@ -280,6 +321,12 @@ int main(int argc, char** argv) {
         }
         // 4x margin is ~214 T; keep SBC's timing error far below it.
         if ((bps[bi] == 0 || bps[bi] >= 41) && worstHalf[bi] > 60) { printf("FAIL: bp%d half-pulse error %d T\n", bps[bi], worstHalf[bi]); fails++; }
+    }
+    for (int bi = 0; bi < NB; bi++) {
+        if (bps[bi] != 0 && bps[bi] < 41) continue;
+        for (int ai = 0; ai < NA; ai++)
+            if (fwBits[bi][ai]) { printf("FAIL: firmware receiver, bp%d level %.2f must load\n", bps[bi], amps[ai]); fails++; }
+        if (fwHalf[bi] > 60) { printf("FAIL: firmware receiver bp%d half-pulse error %d T\n", bps[bi], fwHalf[bi]); fails++; }
     }
     // The known failure must still show up, or the harness is not looking.
     if (worstBits[1][0] == 0) { printf("FAIL: bp19 at 0 dBFS loaded — harness blind?\n"); fails++; }

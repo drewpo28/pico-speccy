@@ -21,6 +21,8 @@
 #include "hardware/xip_cache.h"
 #include "btstack.h"
 #include "hci_dump.h"
+#include "oi_codec_sbc.h"                       // the SBC decoder of the tape sink
+#include "speccy/devices/tape/BtTapeEdges.h"
 
 // The 31250 Hz audio tick's tap (pwm_audio.cpp, core1 producer -> core0 consumer).
 extern volatile int16_t* pcm_bt_ring;
@@ -657,6 +659,85 @@ bool       s_tSeqValid = false;
 uint32_t   s_tStatT = 0;
 uint32_t   s_tPkts5 = 0, s_tFrames5 = 0, s_tLost5 = 0, s_tBytes5 = 0;
 
+// Stage 2: decode + edges. Allocated when a stream starts, freed when it is
+// released (2.4 KB of SRAM + the 16 KB edge ring, PSRAM when there is one).
+// The OI decoder is used directly: BTstack's wrapper is a static singleton with
+// packet-loss concealment, which would invent audio — and pulses — over a gap.
+constexpr int TAPE_DEC_DATA = 2 * SBC_MAX_BLOCKS * SBC_MAX_BANDS * 4 +
+                              SBC_CODEC_MIN_FILTER_BUFFERS * SBC_MAX_BANDS * 2 * 2;
+struct TapeDec {
+    OI_CODEC_SBC_DECODER_CONTEXT ctx;
+    OI_UINT32 data[(TAPE_DEC_DATA + 3) / 4];
+    int16_t   pcm[2 * SBC_MAX_BLOCKS * SBC_MAX_BANDS];   // stride 2: L R (mono duplicated)
+    bttape::EdgeExtractor ex;
+};
+TapeDec*  s_dec = nullptr;
+// Edge ring: producer = sinkMedia (cyw43 poll, core0), consumer = the tape player
+// (stage 3, core0 too). 4096 edges = 0.27 s of a 4x turbo, 2.5 s of pilot tone.
+constexpr uint32_t TAPE_RING = 4096;
+uint32_t* s_edgeRing = nullptr;
+uint32_t  s_edgeW = 0, s_edgeR = 0, s_edgeDrops = 0;
+bool      s_edgeAttached = false;    // a consumer takes the edges; else the histogram does
+// Stats (5 s): decode time, edges, and with no consumer a histogram of the
+// half-pulse lengths in T-states — the hw check that a tape arrives clean.
+uint32_t  s_tDecUs5 = 0, s_tEdges5 = 0, s_tDecErr = 0;
+uint32_t  s_lastEdge = 0; bool s_lastEdgeValid = false;
+enum { H_SHORT, H_SYNC, H_BIT0, H_MID, H_BIT1, H_PILOT, H_LONG, H_N };
+uint32_t  s_hist[H_N];
+uint16_t  s_hMin[H_N], s_hMax[H_N];
+
+void histReset() {
+    for (int i = 0; i < H_N; i++) { s_hist[i] = 0; s_hMin[i] = 0xFFFF; s_hMax[i] = 0; }
+}
+
+void histEdge(uint32_t e) {
+    if (s_lastEdgeValid && s_ti.fs > 0) {
+        const uint32_t dq8 = (e & ~1u) - (s_lastEdge & ~1u);
+        const uint64_t t = (uint64_t)dq8 * 3500000u / ((uint64_t)s_ti.fs * 256u);
+        int b = t < 550 ? H_SHORT : t < 800 ? H_SYNC : t < 1100 ? H_BIT0 : t < 1450 ? H_MID
+              : t < 2000 ? H_BIT1 : t < 2400 ? H_PILOT : H_LONG;
+        s_hist[b]++;
+        const uint16_t t16 = t > 0xFFFF ? 0xFFFF : (uint16_t)t;
+        if (t16 < s_hMin[b]) s_hMin[b] = t16;
+        if (t16 > s_hMax[b]) s_hMax[b] = t16;
+    }
+    s_lastEdge = e; s_lastEdgeValid = true;
+}
+
+void edgeOut(uint32_t e) {
+    s_tEdges5++;
+    if (!s_edgeAttached || !s_edgeRing) { histEdge(e); return; }
+    if (s_edgeW - s_edgeR >= TAPE_RING) { s_edgeDrops++; return; }
+    s_edgeRing[s_edgeW++ & (TAPE_RING - 1)] = e;
+}
+
+void decFree() {
+    if (s_dec) { Buffer::pfree(s_dec); s_dec = nullptr; }
+    if (s_edgeRing) { Buffer::pfree(s_edgeRing); s_edgeRing = nullptr; }
+    s_edgeW = s_edgeR = 0;
+}
+
+// A stream (re)starts: fresh decoder, extractor and ring.
+void decStart() {
+    if (!s_dec) s_dec = (TapeDec*)Buffer::palloc(sizeof(TapeDec), Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    if (!s_edgeRing) s_edgeRing = (uint32_t*)Buffer::palloc(TAPE_RING * 4, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!s_dec || !s_edgeRing) {
+        blog("tape: no memory for the decoder (%u B) / edge ring (%u B) - counting only",
+             (unsigned)sizeof(TapeDec), (unsigned)(TAPE_RING * 4));
+        decFree();
+        return;
+    }
+    if (OI_CODEC_SBC_DecoderReset(&s_dec->ctx, s_dec->data, sizeof(s_dec->data), 2, 2, FALSE) != OI_STATUS_SUCCESS) {
+        blog("tape: SBC decoder reset failed");
+        decFree();
+        return;
+    }
+    s_dec->ex.reset();
+    s_edgeW = s_edgeR = s_edgeDrops = 0;
+    s_lastEdgeValid = false;
+    histReset();
+}
+
 void tapeNameFor(const bd_addr_t a) {
     s_tName[0] = 0;
     for (int i = 0; i < s_ndev; i++)
@@ -688,6 +769,7 @@ void tapeStatsReset() {
     s_ti.frameBpMin = 0xFF; s_ti.frameBpMax = 0;
     s_tSeqValid = false;
     s_tPkts5 = s_tFrames5 = s_tLost5 = s_tBytes5 = 0;
+    s_tDecUs5 = s_tEdges5 = s_tDecErr = 0;
     s_tStatT = nowMs();
 }
 
@@ -715,6 +797,31 @@ void sinkMedia(uint8_t seid, uint8_t* p, uint16_t n) {
     const uint8_t bp = f[2];
     if (bp < s_ti.frameBpMin) s_ti.frameBpMin = bp;
     if (bp > s_ti.frameBpMax) s_ti.frameBpMax = bp;
+
+    // Stage 2: decode every frame, channel 0 sample by sample into the extractor.
+    TapeDec* d = s_dec;
+    if (!d) return;
+    const uint32_t t0 = time_us_32();
+    const OI_BYTE* fp = f;
+    OI_UINT32 left = n - hdr - 1;
+    for (int k = 0; k < nf && left > 0; k++) {
+        OI_UINT32 bytes = sizeof(d->pcm);
+        const OI_STATUS st = OI_CODEC_SBC_DecodeFrame(&d->ctx, &fp, &left, d->pcm, &bytes);
+        if (st != OI_STATUS_SUCCESS) {
+            s_tDecErr++;
+            // A corrupt frame can leave the codec unusable (BTstack's wrapper does
+            // the same): reset it; the extractor keeps its level and clock.
+            if (st == OI_STATUS_INVALID_PARAMETERS)
+                OI_CODEC_SBC_DecoderReset(&d->ctx, d->data, sizeof(d->data), 2, 2, FALSE);
+            break;
+        }
+        const int ns = (int)(bytes / 4);            // stride 2, 2 bytes a sample
+        for (int i = 0; i < ns; i++) {
+            uint32_t e;
+            if (d->ex.push(d->pcm[2 * i], &e)) edgeOut(e);
+        }
+    }
+    s_tDecUs5 += time_us_32() - t0;
 }
 
 // Every 5 s while streaming (from pump()): what arrived, for the log and the pane.
@@ -728,6 +835,27 @@ void tapeStatsTick() {
          (unsigned)s_tLost5, (unsigned)s_ti.bad);
     if (s_ti.frameBpMin != 0xFF && s_ti.frameBpMin < BT_TAPE_MIN_BITPOOL)
         blog("tape: WARNING the phone encodes below bitpool %d - a loud tape may not load", BT_TAPE_MIN_BITPOOL);
+    if (s_dec) {
+        blog("tape: decode %u ms/5s, %u edges, peak %u%%, dec err %u, ring drops %u",
+             (unsigned)(s_tDecUs5 / 1000), (unsigned)s_tEdges5,
+             (unsigned)(s_dec->ex.peakLevel() * 100 / 32768), (unsigned)s_tDecErr, (unsigned)s_edgeDrops);
+        if (!s_edgeAttached) {
+            // Half pulses in T: ROM timings are sync 667/735, bit0 855, bit1 1710,
+            // pilot 2168. A clean standard-speed tape shows only those bins.
+            auto rng = [](int b, char* o, int cap) {
+                if (s_hist[b]) snprintf(o, cap, "%u (%u..%u)", (unsigned)s_hist[b], s_hMin[b], s_hMax[b]);
+                else snprintf(o, cap, "0");
+            };
+            char p[24], b0[24], b1[24], sy[24];
+            rng(H_PILOT, p, sizeof(p)); rng(H_BIT0, b0, sizeof(b0));
+            rng(H_BIT1, b1, sizeof(b1)); rng(H_SYNC, sy, sizeof(sy));
+            blog("tape: pilot %s, bit0 %s, bit1 %s", p, b0, b1);
+            blog("tape: sync %s, short %u, mid %u, long %u", sy, (unsigned)s_hist[H_SHORT],
+                 (unsigned)s_hist[H_MID], (unsigned)s_hist[H_LONG]);
+            histReset();
+        }
+    }
+    s_tDecUs5 = s_tEdges5 = s_tDecErr = 0;
     s_tPkts5 = s_tFrames5 = s_tLost5 = s_tBytes5 = 0;
     s_ti.frameBpMin = 0xFF; s_ti.frameBpMax = 0;
     s_tStatT = now;
@@ -785,6 +913,7 @@ void sinkHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
         case A2DP_SUBEVENT_STREAM_STARTED:
             if (a2dp_subevent_stream_started_get_a2dp_cid(p) != s_tcid) break;
             tapeStatsReset();
+            decStart();
             s_tape = T_STREAMING;
             blog("tape: %s is playing", s_tName);
             break;
@@ -798,6 +927,7 @@ void sinkHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             if (a2dp_subevent_stream_released_get_a2dp_cid(p) != s_tcid) break;
             if (s_tape == T_STREAMING) s_tape = T_CONNECTED;
             s_tiValid = false;
+            decFree();
             break;
         case A2DP_SUBEVENT_SIGNALING_CONNECTION_RELEASED:
             if (a2dp_subevent_signaling_connection_released_get_a2dp_cid(p) != s_tcid) break;
@@ -805,6 +935,7 @@ void sinkHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             s_tcid = 0;
             s_tseid = 0;
             s_tiValid = false;
+            decFree();
             s_tape = s_tapeOn ? T_LISTEN : T_OFF;
             break;
         default:
@@ -1964,6 +2095,7 @@ bool tapeListen(bool on) {
     if (s_tcid) a2dp_sink_disconnect(s_tcid);   // the release event clears s_tcid
     s_tape = T_OFF;
     s_tiValid = false;
+    decFree();
     if (s_state == S_UP) {
         gap_discoverable_control(0);
         gap_set_class_of_device(COD_DEFAULT);
@@ -1979,8 +2111,24 @@ const char* tapeName() { return s_tName; }
 bool tapeInfo(TapeInfo& t) {
     if (!s_tiValid || !s_tcid) return false;
     t = s_ti;
+    t.peakPct = s_dec ? (uint8_t)(s_dec->ex.peakLevel() * 100 / 32768) : 0;
     return true;
 }
+
+void tapeEdgeAttach(bool on) {
+    s_edgeAttached = on;
+    s_edgeR = s_edgeW;              // a new consumer starts from now
+    s_lastEdgeValid = false;
+}
+int tapeEdgesAvail() { return s_edgeRing ? (int)(s_edgeW - s_edgeR) : 0; }
+bool tapeEdgePop(uint32_t& e) {
+    if (!s_edgeRing || s_edgeR == s_edgeW) return false;
+    e = s_edgeRing[s_edgeR++ & (TAPE_RING - 1)];
+    return true;
+}
+uint32_t tapeSampleClockQ8() { return s_dec ? s_dec->ex.samples() << 8 : 0; }
+int tapeSampleRate() { return s_ti.fs; }
+uint32_t tapeEdgeDrops() { return s_edgeDrops; }
 
 bool streaming() { return s_audio == A_STREAMING; }
 

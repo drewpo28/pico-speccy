@@ -9,8 +9,9 @@ socket. No app, any phone, real time.
 Not in scope: sending the FILE over BT (OBEX / BLE GATT / Web Bluetooth). Rejected
 by the owner: Wi-Fi FTP and web launch already do that on the same boards.
 
-Status: stage 1 built (DVp2w test image `debug/DVp2w-bttape1-1.1.3`, 2026-11-19),
-**NOT hw-tested**; the SBC question is host-tested (tools/sbc_tape_test.cpp).
+Status: stages 1-2 built (DVp2w test images `debug/DVp2w-bttape1-1.1.3`,
+`debug/DVp2w-bttape2-1.1.3`, 2026-11-19), **NOT hw-tested**; the SBC question and
+the firmware's edge extractor are host-tested (tools/sbc_tape_test.cpp).
 
 ## Host test (2026-11-18, NOT hw-tested)
 
@@ -138,3 +139,40 @@ SBC's), packet loss and jitter on a real link.
   plays, ~"N pkt M sbc/5s ... bitpool 41..53, lost 0"; Esc then brings back the
   headphones; with the page closed, playing from the phone is refused. Android
   and an iPhone if possible (which bitpool does iOS really use?).
+
+## Stage 2 — done in code (2026-11-19, NOT hw-tested)
+
+- **`src/speccy/devices/tape/BtTapeEdges.h`** (`bttape::EdgeExtractor`, no firmware
+  dependencies): Schmitt trigger at 15 % of a slowly decaying peak (floor 200 LSB,
+  -44 dBFS), edge time = the zero crossing into the new level, interpolated, in
+  1/256 sample units with bit 0 = the new level; nothing for the first 441 samples
+  (decoder start-up ringing). **tools/sbc_tape_test.cpp runs this header** on the
+  same grid as its reference receiver: identical results (0 errors at bitpool >= 41,
+  every level 1.0-0.03 and speed 1x-4x; worst half-pulse error 14 T without SBC,
+  17-22 T at bitpool 41-53). The test now also fails if the header regresses.
+- **BtHost**: the OI SBC decoder (`pico_btstack_sbc_decoder`, -O2) is called
+  directly with a context allocated per stream (`TapeDec`, 2.4 KB, HOT_SRAM) —
+  BTstack's wrapper is a static ~4 KB singleton with packet-loss concealment,
+  which would invent audio over a lost packet; it is not referenced and gc drops
+  it (checked: no `bd_decoder_state` in the ELF). Channel 0 of every frame
+  (mono is duplicated into stride 2 by the decoder) goes through the extractor.
+  `INVALID_PARAMETERS` resets the codec (as the wrapper does). Edges go to a
+  4096-entry ring (16 KB, PREFER_PSRAM) once a consumer attaches
+  (`tapeEdgeAttach`, `tapeEdgePop`, `tapeSampleClockQ8`, `tapeSampleRate`;
+  core0 on both ends, so no barriers). With no consumer (stage 2) they feed a
+  histogram of half-pulse lengths in T-states, logged every 5 s with decode
+  time, edge count, peak level, decoder errors and ring drops.
+- Basename check (linker rules match objects by name): the decoder's `dequant.c`
+  also exists in external/picomp3lib; no linker or flags rule names it, so the two
+  objects coexist.
+- Cost (vs the stage-0 baseline, `nm -S`): static RAM +675 B in all (stage 2 adds
+  98 B: histogram + state); no RAM-resident code changed; flash code +10 KB;
+  per stream 2.4 KB SRAM + 16 KB PSRAM, freed when the stream is released.
+- **What the hw round must show** (page open, a standard-speed tap2wav WAV playing):
+  `tape: decode N ms/5s` (core0 cost: expect well under 5 % = 250 ms/5s),
+  `tape: pilot X (2100..2230), bit0 Y (820..890), bit1 Z (1680..1740)` — ranges
+  within ~+-50 T of 2168/855/1710 mean the edges are as clean as the host test
+  says — and `short 0, mid 0` (anything there is a false edge). Pauses land in
+  `long`. Peak % shows the phone's volume: 100 % is fine at bitpool >= 41.
+- Not handled yet (stage 3): a lost RTP packet leaves a hole in the sample clock
+  (the following edges arrive early by its duration) — counted as `lost`.

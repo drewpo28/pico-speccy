@@ -2785,7 +2785,7 @@ void bt_buildInput(DynRows& r)              { btBuild(r, true); }
 void bt_keyAudio(int32_t tag, uint8_t key)  { btKey(false, tag, key); }
 void bt_keyInput(int32_t tag, uint8_t key)  { btKey(true, tag, key); }
 
-// Bluetooth > Tape from phone (docs/bt-tape-plan.md, stage 1): the board listens as
+// Bluetooth > Tape from phone (docs/bt-tape-plan.md, stages 1-2): the board listens as
 // a Bluetooth speaker while this page is open; the log shows the pairing, the SBC
 // configuration the phone picks and, every 5 s, what arrives. Esc stops listening
 // (and brings back the headphones that were playing, if any).
@@ -2796,7 +2796,8 @@ void act_btTape() {
     if (!BtHost::tapeListen(true)) { btDone(); return; }
     wlogAdd("On the phone: Bluetooth settings, pair \"Pico-Speccy\",", C_TEXT_DIM);
     wlogAdd("then play a tape's sound (WAV / MP3) to it.", C_TEXT_DIM);
-    wlogAdd("Link test only: the sound does not load yet.", C_TEXT_DIM);
+    wlogAdd("Test: nothing loads yet; every 5 s the log counts", C_TEXT_DIM);
+    wlogAdd("the pulses heard (pilot / bit0 / bit1, in T-states).", C_TEXT_DIM);
     paneFooter("Esc Stop");
     auto kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem k;
