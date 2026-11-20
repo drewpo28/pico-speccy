@@ -365,12 +365,20 @@ void act_ledLegend() {
     // LED::drawGlyph takes palette bytes: hand it ours (the sprites are 8x8 and
     // drawn via dotFast, so they land in the framebuffer like any other pixel).
     const uint8_t fg = uiPaletteSlot(C_ACCENT), bg = uiPaletteSlot(C_PANEL);
+    // Colour icons: their accents (ZX colours) as the nearest menu colours — the ZX
+    // palette itself is not ours to use here (DS80 rebuilds the LUT for the UI block).
+    uint8_t acc[16];
+    for (int k = 0; k < 16; k++) acc[k] = uiPaletteSlot(C_TEXT);          // white & the rest
+    acc[14] = uiPaletteSlot(C_ICON_Y);                                     // gold
+    acc[13] = uiPaletteSlot(C_ICON_C);                                     // cyan
+    acc[10] = acc[11] = uiPaletteSlot(C_ICON_R);                           // red, magenta
+    const uint8_t blk = uiPaletteSlot(C_BG);
     for (int i = 0; i < N; i++) {
         const int col = i / perCol, r = i % perCol;
         if (r >= rows) continue;
         const int x = ix + pad + col * colw;
         const int y = body_y + r * lh;
-        LED::drawGlyph(entries[i].id, Sf.ds80 ? (x >> 1) : x, y + 1, fg, bg);
+        LED::drawLegendIcon(entries[i].id, Sf.ds80 ? (x >> 1) : x, y + 1, fg, blk, acc, bg);
         textClip(x + 10 * sc, y + 1, colw - 12 * sc, entries[i].label, C_TEXT);
     }
 

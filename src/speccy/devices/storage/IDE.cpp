@@ -46,6 +46,9 @@ bool IDE::rawCard(int d, uint32_t l, uint32_t* card) {
 }
 bool IDE::is_atapi[2]  = { false, false };
 bool IDE::sig_valid[2] = { false, false };
+uint8_t IDE::act_decay = 0;
+bool    IDE::act_wrote = false;
+bool    IDE::act_cd    = false;
 bool IDE::profi_hidd_slot[2] = { false, false };
 
 uint32_t IDE::data_offset[2] = { 0, 0 };
@@ -959,6 +962,7 @@ void IDE::read_sector() {
             }
         }
     }
+    noteActivity(false, false);
     data_index = 0;
     data_write = false;
     reg_status = IDE_STATUS_READY | IDE_STATUS_DRQ;
@@ -972,6 +976,7 @@ void IDE::write_sector_done() {
     // the window it was given, whatever the geometry says (see lbaBeyondEnd).
     if (raw[d] && l >= raw_count[d] + (raw_vmbr[d] ? 1u : 0u)) return;
     if (writeProtected(d)) return;      // refused at command time; belt and braces
+    noteActivity(true, false);
     UINT bw;
     if (raw[d]) {
         // A write goes into the card's own sector. That is why the default is
@@ -1361,6 +1366,7 @@ void IDE::atapi_fill_block() {
     }
     atapi_lba++;
     if (atapi_blocks) atapi_blocks--;
+    noteActivity(false, true);
 }
 
 // Dispatch a completed 12-byte SCSI CDB (boot-minimal data-CD command set).

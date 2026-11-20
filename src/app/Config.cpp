@@ -71,6 +71,8 @@ bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::rzx_loop = false;
 bool     Config::led_panel = false;
+bool     Config::ide_led = true;
+uint8_t  Config::led_style = 0;
 bool     Config::sdLedBlink = false;
 int8_t   Config::temp_offset = 0;
 uint8_t  Config::gm_field = 0;      // Pico-Scwong options (see Config.h)
@@ -1521,6 +1523,9 @@ void Config::load() {
         nvs_get_b("wasd", wasd, sts);
         nvs_get_b("ledIndicators", ledIndicators, sts);
         nvs_get_b("ledPanel", led_panel, sts);
+        nvs_get_b("ideLed", ide_led, sts);
+        nvs_get_u8("ledStyle", led_style, sts);
+        if (led_style > 1) led_style = 0;
         nvs_get_b("rzx_loop", rzx_loop, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
         nvs_get_i8("temp_offset", temp_offset, sts);
@@ -2097,6 +2102,8 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
     nvs_set_str(buf,"ledPanel", led_panel ? "true" : "false");
+    nvs_set_str(buf,"ideLed", ide_led ? "true" : "false");
+    nvs_set_u8(buf,"ledStyle", led_style);
     nvs_set_str(buf,"rzx_loop", rzx_loop ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
     nvs_set_i8(buf,"temp_offset", temp_offset);

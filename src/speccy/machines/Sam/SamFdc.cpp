@@ -13,7 +13,6 @@
 #include "app/Debug.h"
 #include "fs/FileUtils.h"
 #include "speccy/devices/disk/DskImage.h"
-#include "ui/LEDIndicators.h"
 #include "fatfs/ff.h"
 
 namespace SamFdc {
@@ -104,7 +103,6 @@ static bool fsRd(void* ctx, uint32_t off, void* dst, uint32_t n) {
     if (f_lseek(f, off) != FR_OK) return false;
     UINT br = 0;
     if (f_read(f, dst, n, &br) != FR_OK || br != n) return false;
-    LED::touchR(LED::SD);
     return true;
 }
 static bool fsWr(void* ctx, uint32_t off, const void* src, uint32_t n) {
@@ -112,7 +110,6 @@ static bool fsWr(void* ctx, uint32_t off, const void* src, uint32_t n) {
     if (f_lseek(f, off) != FR_OK) return false;
     UINT bw = 0;
     if (f_write(f, src, n, &bw) != FR_OK || bw != n) return false;
-    LED::touchW(LED::SD);
     return true;
 }
 static bool fsSync(void* ctx) { return f_sync((FIL*)ctx) == FR_OK; }

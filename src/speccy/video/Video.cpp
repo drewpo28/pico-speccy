@@ -7460,7 +7460,9 @@ void VIDEO::osdGeomRecalc() {
             osd_win_x0 = x0; osd_win_y0 = y0; osd_win_x1 = x1; osd_win_y1 = y1;
             osd_bar_x  = (x1 - OSD_BAR_W - 4) & ~7;  // right-aligned, as in the border
             osd_bar_y  = y1 - OSD_BAR_H - 2;
-            osd_led_x  = x0;
+            // The LED panel mirrors the stats bar: the same gap from the left edge as
+            // the bar keeps from the right one.
+            osd_led_x  = (x0 + (x1 - osd_bar_x - OSD_BAR_W) + 3) & ~3;
             osd_lamp_x = x1 - 9;
             osd_lamp_y = y0 + 2;
             Debug::log("[VID] OSD on the paper: window %d,%d..%d,%d", x0, y0, x1, y1);
@@ -7475,9 +7477,15 @@ void VIDEO::osdGeomRecalc() {
     // the bottom edge.
     osd_bar_x  = (xr >= 360) ? 200 : 160;
     osd_bar_y  = (yr >= 288) ? 288 - OSD_BAR_H - 2 : 240 - OSD_BAR_H - 2;
-    osd_led_x  = 0;
-    osd_lamp_x = 311;
-    osd_lamp_y = 2;
+    // The LED panel mirrors the stats bar: as far from the left edge as the bar is
+    // from the right one (8 px in every border layout, so still 8-aligned).
+    osd_led_x  = xr - (osd_bar_x + OSD_BAR_W);
+    if (osd_led_x < 0) osd_led_x = 0;
+    // The corner drive icons: the 320-wide modes keep x=311 (DS80's right border band
+    // and the notify banner's margin are measured against it); the 360-wide 480/576
+    // modes put them in the corner itself, 4 px in from both edges.
+    osd_lamp_x = (xr >= 360) ? xr - 8 - 4 : 311;
+    osd_lamp_y = (xr >= 360) ? 4 : 2;
 }
 
 void VIDEO::blRecalc() {
@@ -8206,6 +8214,8 @@ void VIDEO::setLedStrip(int y0) { led_strip_y0 = y0; }
 bool VIDEO::osdBoxCarved() {
     return ds80_border_geom ? ((OSD & 0x03) && !(OSD & 0x04)) : ((OSD & 0x07) != 0);
 }
+
+int VIDEO::ledBarW() { return osd_led_w; }
 
 void VIDEO::setLedBar(int w) {
     if (w == osd_led_w) return;

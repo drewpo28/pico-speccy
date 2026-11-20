@@ -1894,6 +1894,10 @@ static const Option opt_ui_vga_pal[] = {
     { "Solid 2:2:2", 1 },     // on-grid twin: solid fills, coarser colours
     { "Dithered",    0 },     // full-depth scheme through the Bayer dither
 };
+static const Option opt_led_style[] = {    // Config::led_style
+    { "Classic", 0 },
+    { "Colour",  1 },
+};
 static const Option opt_ui_corners[] = {
     { "Rounded", 1 },
     { "Square",  0 },
@@ -1936,11 +1940,15 @@ static const Node kInterface[] = {
     // which came over from Devices — it is indication, not an interface setting
     // of the machine.
     NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
+    NM_RADIO_EN (NM_IND TXT_HW_LEDSTYLE, SET_LED_STYLE, opt_led_style, nullptr, p_ledOn),
     NM_BOOL_EN  (NM_IND TXT_HW_LEDPANEL, SET_LED_PANEL, nullptr, p_ledOn),
     // Always available: the legend is reference material, useful before you turn
     // the indicators on (to see what they will mean) as much as after.
     NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
     NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
+    // The corner HDD / CD icon: here, not under Devices > IDE / HDD, because DivIDE
+    // (esxDOS in IDE mode) lights it too and that menu is hidden without an IDE scheme.
+    NM_BOOL     (NM_IND TXT_IDE_LED,   SET_IDE_LED,   nullptr),
 };
 
 // The footer verb line of the profile list (K_PICK keeps it in opts[0]; the right

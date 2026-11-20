@@ -397,7 +397,12 @@ const char* romsetName(int32_t composite);
     X(SET_KBD_REP_DELAY,  AC_LIVE,   0,                     get_kbdRepDelay, put_kbdRepDelay, hook_uiLook,  -1) \
     /* Devices > esxDOS > ROM (Config::esxdos_ver, 0 = 0.9.0, 1 = 0.8.9). Reboot-class */ \
     /* like esxDOS itself: DivMMC::init picks and assembles the ROM at boot.          */ \
-    X(SET_ESXDOS_VER,     AC_REBOOT, 0,                     get_esxdosVer,  put_esxdosVer, nullptr,        -1)
+    X(SET_ESXDOS_VER,     AC_REBOOT, 0,                     get_esxdosVer,  put_esxdosVer, nullptr,        -1) \
+    /* Interface > HDD / CD icon (Config::ide_led): read live each frame by           */ \
+    /* LED::drawCornerIcons, nothing to apply. Appended last per the APPEND ONLY rule. */ \
+    X(SET_IDE_LED,        AC_PURE,   0,                     get_ideLed,     put_ideLed,    nullptr,        -1) \
+    /* Interface > LED indicators > Icons (Config::led_style): read live by LED::draw. */ \
+    X(SET_LED_STYLE,      AC_PURE,   0,                     get_ledStyle,   put_ledStyle,  nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

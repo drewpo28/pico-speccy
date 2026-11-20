@@ -1452,13 +1452,16 @@ static nm::UiColor statsFrameColour() {
     }
 }
 
+// With the LED panel ("Solid background") on, the panel runs right up to the box
+// and the two are ONE framed bar: the box drops its left edge and the panel its
+// right one (LEDIndicators drawPanel), so no double rule sits between them.
 static void barPanel(int x, int y, nm::UiColor frameCol) {
     const int W = VIDEO::OSD_BAR_W, H = VIDEO::OSD_BAR_H;
     const uint8_t f = nm::uiPaletteSlot(frameCol);
     VIDEO::vga.fillRect(x, y, W, H, nm::uiPaletteSlot(nm::C_PANEL));
     VIDEO::vga.fillRect(x, y, W, 1, f);
     VIDEO::vga.fillRect(x, y + H - 1, W, 1, f);
-    VIDEO::vga.fillRect(x, y, 1, H, f);
+    if (!VIDEO::ledBarW()) VIDEO::vga.fillRect(x, y, 1, H, f);
     VIDEO::vga.fillRect(x + W - 1, y, 1, H, f);
 }
 

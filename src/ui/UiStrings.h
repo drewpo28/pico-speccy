@@ -200,6 +200,7 @@
 #define TXT_HW_IDE          "IDE / HDD"
 #define TXT_IDE_IMAGES      "Images hd0 / hd1"
 #define TXT_IDE_CREATE      "Create image"
+#define TXT_IDE_LED         "HDD / CD icon"
 // Enter on an IDE slot: its source, an image or the card's own sectors (the DivSD idea,
 // one level up). Picking the card lands on read-only; Write needs an explicit F6.
 #define TXT_IDE_SRC_TITLE   "Disk source"
@@ -224,6 +225,7 @@
 // Indicators on their own panel beside the F8 stats box instead of bare glyphs
 // over the border — readable in modes whose border is thin or absent (DS80,
 // GMX 640x200, TS-Conf).
+#define TXT_HW_LEDSTYLE     "Icons"
 #define TXT_HW_LEDPANEL     "Solid background"
 // The board's own LED (GPIO 25), blinking on real SD traffic — internal /tmp
 // files (swap, .idx) are deliberately not indicated. Not an on-screen indicator.

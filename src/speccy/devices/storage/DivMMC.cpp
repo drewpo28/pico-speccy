@@ -22,6 +22,7 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "speccy/machines/Atm.h"   // Atm::evo: the ZX-Evo drives the card CS
 #include "speccy/devices/disk/MB02.h"   // page 0 goes back to MB-02+'s mapping when the divMMC window drops
 #include "app/Debug.h"
+#include "speccy/devices/storage/IDE.h"   // IDE::noteActivity: DivIDE lights the IDE icons
 #include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line
 #include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
 #include "hardware/timer.h"
@@ -2938,6 +2939,7 @@ void DivMMC::ide_read_sector() {
         f_read(&mmc_file[d], ide_buffer, 512, &br);
         if (br < 512) memset(ide_buffer + br, 0xFF, 512 - br);
     }
+    IDE::noteActivity(false, false);
     ide_data_index = 0;
     ide_data_write = false;
     ide_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
@@ -2958,6 +2960,7 @@ void DivMMC::ide_write_sector_done() {
     }
     uint32_t lba = ide_lba();
     if (ideWriteProtected(d)) { ide_error = IDE_ERROR_ABRT; ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR; return; }
+    IDE::noteActivity(true, false);
     if (d == 0 && s_ideRaw.present) {
         const LBA_t card_lba = (LBA_t)(s_ideRaw.base + lba);
         // The firmware's FatFs has this volume mounted too (ff_raw_write_notify, as DivSD)

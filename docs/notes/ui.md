@@ -413,6 +413,54 @@ any ONE of them restores the bug completely.
   verdict carried over on re-plug); and a genuinely stuck key still healing, now
   ~800 ms later than before because of the two-strike rule.
 
+## Corner drive icons + colour LED icons (hw-confirmed 2026-11-20 DVp2w)
+
+- **Corner icons** (`LED::drawCornerIcons`, moved out of `ESPectrum` loop): pico-amiga's
+  `UiStats.cpp` floppy / HDD / CD, 8x8 at 2 bits a pixel (body = blue read / red write,
+  white label, HDD light). The floppy keeps its old gates (`trdosSoundLed` / `mb02SoundLed`
+  bit 0); the IDE drive's icon sits 12 px left of it (or in the corner alone), gated by
+  **Interface > HDD / CD icon** (`Config::ide_led`, nvs `ideLed`, default on).
+  Any change of what is shown sets `brdChange` (the old erase contract), since the HDD
+  icon slides into the corner when the floppy goes out.
+- **IDE activity = `IDE::noteActivity`** in `read_sector`, `write_sector_done`,
+  `atapi_fill_block` (CD), decayed in `LED::decay()`. The strip's IDE glyph uses it too:
+  port touches lit it yellow on a bare status poll (seen on the +3e boot).
+- **Interface > LED indicators > Icons** (`Config::led_style`, nvs `ledStyle`): 1 = Colour
+  (default), 0 = Classic — the old 1-bit glyphs kept as `CLASSIC[]`, drawn in the state
+  colour alone (strip, panel, Next stamp and the menu legend all follow it; the corner
+  drive icons are always the colour ones).
+- **Legend (Interface > LED legend) follows the style**: `LED::drawLegendIcon` draws
+  the Colour icons in full — body C_ACCENT, black C_BG, accents mapped to menu colours
+  (white C_TEXT, gold C_ICON_Y, cyan C_ICON_C, red/magenta C_ICON_R): the ZX palette is
+  not usable there (DS80 rebuilds the LUT for the UI block). A green silhouette lost
+  every detail (owner screenshot, Profi).
+- **LED panel + F8 / volume box = one framed bar**: `barPanel` (OSDMain) skips its left
+  edge while `VIDEO::ledBarW()` is non-zero, the panel skips its right edge while
+  `osdBoxCarved()` — two touching frames left a double rule (owner screenshot, Profi).
+  Host-checked (Shift+F8 opens the stats on the host bench), hw-confirmed 2026-11-20 DVp2w.
+- **Corner position:** 320-wide modes keep x=311,y=2; 360-wide (480/576) modes
+  `osd_lamp_x = xres-12`, `osd_lamp_y = 4` (`VIDEO::osdGeomRecalc`).
+- **LED panel ("Solid background") = the F8 bar's look** (4fe02e72): C_PANEL inside a
+  1-px frame in the speed colour (C_SEP / C_SEL_BG / C_ACCENT / C_ICON_Y / C_ICON_C),
+  idle ink C_TEXT; with F8 up it still runs up to the bar (that stretch is carved).
+  `osd_led_x` = the bar's right gap (8 px in border layouts), so the two are symmetric.
+- **Strip icons are 2-bit now** (`ICON[]`, `IROW` strings): `B` body = the state colour,
+  `K` black, `A` a per-icon accent ZX colour (`ACCENT[]`), each mapped through `zxByte`
+  (COVOX/SAA/MIDI/GS keep their old shapes at the owner's request: first letter = state,
+  second = accent; COVOX = the old thin cone with a thin accent chevron inside — filled, it read as Pac-Man)
+  for DS80. `drawGlyph` (menu legend) and `drawSpriteFg` take the shape only (`maskRow`).
+
+## What the SD and IDE indicators mean (hw-confirmed 2026-11-20 DVp2w)
+
+- **SD = the guest's SD interfaces only**: DivMMC/DivSD SPI (#E7/#EB, the INIR fast path)
+  and NeoGS's own card. NOT the +3 / SAM / EP floppy images (their FatFs reads are the
+  FDD indicator's activity; the `touch(SD)` in Plus3Fdc/SamFdc/EpFdc is gone, and so is
+  `isPlus3()` in `isVisible(SD)`), NOT DivMMC's #E3 (paging register), NOT DivIDE.
+- **DivIDE is IDE**: `DivMMC::ide_read_sector` / `ide_write_sector_done` call
+  `IDE::noteActivity`, so the IDE glyph and the corner HDD icon light for it;
+  `isVisible(IDE)` includes `DivMMC::divide_mode`, `isVisible(SD)` excludes it.
+- ZCTRL stays separate: DivMMC and Z-Controller can run on one machine (two cards).
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the

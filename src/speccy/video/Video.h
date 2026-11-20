@@ -460,6 +460,7 @@ public:
   // LED indicator panel ("Solid background"): w fb bytes from the left edge of
   // the F8 stats box's 16 rows. Every renderer leaves the rect to LED::draw.
   static void setLedBar(int w);
+  static int  ledBarW();        // the LED panel's width, 0 = no panel (setLedBar)
   static bool osdBoxCarved();
   // Overlay rects on fb row `row` a whole-frame renderer must leave alone (stats /
   // volume box + LED panel, notify banner, LED/lamp carves): fills cx[i] = {x0, x1},

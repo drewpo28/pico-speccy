@@ -1545,13 +1545,11 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
 
     if (DivMMC::enabled) {
       uint8_t lo = address & 0xFF;
-      if (lo == 0xE3 && NextReg::portOn(NextReg::PE_DIVMMC)) {
-        LED::touchR(LED::SD);
+      if (lo == 0xE3 && NextReg::portOn(NextReg::PE_DIVMMC)) {   // paging, not the card: no LED::SD
         return (DivMMC::conmem ? 0x80 : 0) | (DivMMC::mapram ? 0x40 : 0) | DivMMC::bank;
       }
       if (DivMMC::divide_mode) {
-        if ((lo & 0xE3) == 0xA3) {
-          LED::touchR(LED::SD);
+        if ((lo & 0xE3) == 0xA3) {   // DivIDE: the IDE indicator comes from DivMMC's sector moves
           uint8_t reg = (lo >> 2) & 0x07;
           return DivMMC::ide_read(reg);
         }
@@ -3810,8 +3808,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
 
     if (DivMMC::enabled) {
       uint8_t lo = address & 0xFF;
-      if (lo == 0xE3 && NextReg::portOn(NextReg::PE_DIVMMC)) {
-        LED::touchW(LED::SD);
+      if (lo == 0xE3 && NextReg::portOn(NextReg::PE_DIVMMC)) {   // paging, not the card: no LED::SD
         if (!(Z80Ops::isNext && NextPorts::divE3Fast(data))) {
           DivMMC::bank = data & (DIVMMC_NUM_BANKS - 1);
           if (data & 0x40) DivMMC::mapram = true;
@@ -3825,8 +3822,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         return;
       }
       if (DivMMC::divide_mode) {
-        if ((lo & 0xE3) == 0xA3) {
-          LED::touchW(LED::SD);
+        if ((lo & 0xE3) == 0xA3) {   // DivIDE: the IDE indicator comes from DivMMC's sector moves
           uint8_t reg = (lo >> 2) & 0x07;
           DivMMC::ide_write(reg, data);
           return;
@@ -4439,7 +4435,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         NextPorts::divE3Fast(data)) {
       VIDEO::Draw(1, MemESP::ramContended[address >> 13]);
       p_states = CPU::tstates;
-      LED::touchW(LED::SD);
       ioContentionLate(false);
       return;
     }

@@ -67,11 +67,22 @@ namespace LED {
     void stampStripRow(int r, uint8_t* line);
     void clear();
     void drawGlyph(Id i, int xpix, int ypix, uint8_t fg, uint8_t bg);
+    // The menu legend's icon in the current style (Config::led_style), via dotFast:
+    // Classic = the shape in `body` over `bg`; Colour = body, `black` for the dark
+    // details and accentSlot[zx] for the icon's accent (a ZX index -> a caller's byte,
+    // so the menu can hand its own palette slots), transparent pixels = `bg`.
+    void drawLegendIcon(Id i, int xpix, int ypix, uint8_t body, uint8_t black,
+                        const uint8_t accentSlot[16], uint8_t bg);
     // Foreground pixels only, via dotFast (so DS80 index→pair mapping applies);
     // background shows through. Erase is the caller's problem — the corner FDD
     // lamp repaints the border (VIDEO::brdChange) on its active→idle edge
     // instead of trying to self-erase by matching the border colour byte.
     void drawSpriteFg(Id i, int xpix, int ypix, uint8_t fg);
+    // The top-right drive icons (after pico-amiga's): the floppy at VIDEO::osd_lamp_x
+    // while `fdd_on`, the IDE drive's HDD or CD (IDE::act_*) 12 px left of it, or in
+    // the corner on its own. Blue body = read, red = write. Same erase contract as
+    // drawSpriteFg: any change of what is shown repaints the border (brdChange).
+    void drawCornerIcons(bool fdd_on, bool fdd_write);
 }
 
 #endif
