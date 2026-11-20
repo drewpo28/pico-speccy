@@ -63,8 +63,23 @@ set_source_files_properties(src/drivers/sound/pwm_audio.cpp PROPERTIES
     COMPILE_FLAGS "-O3")
 
 # redcode/Z80 build configuration for GS (LGPLv3 library vendored in external/redcode/, with its Z80_compat.h)
+# GS_Z80_SWITCH (2026-11-20): z80_run's switch loop with inlined, opcode-specialised bodies and
+# cycles / R / PC in locals (Z80_redcode.c, tools/gen_gs_switch.py; numbers in docs/notes/neogs-gs.md).
+# +8.2 KB of .gsovl (SRAM on GS boots, and flash): AUTO = 16 MB images only - the 4 MB ones sit
+# at the GM.DLS floor (MURM2 4 MB did not link with it, 2026-11-20).
+set(GS_Z80_SWITCH "AUTO" CACHE STRING "GS-Z80 switch loop: AUTO (16 MB images), ON, OFF")
+if(GS_Z80_SWITCH STREQUAL "AUTO")
+    set(GS_Z80_SWITCH_EFFECTIVE ${FLASH_16MB})
+else()
+    set(GS_Z80_SWITCH_EFFECTIVE ${GS_Z80_SWITCH})
+endif()
+if(GS_Z80_SWITCH_EFFECTIVE)
+    set(_GS_SW_FLAG "-DGS_Z80_SWITCH")
+else()
+    set(_GS_SW_FLAG "")
+endif()
 set_source_files_properties(external/redcode/Z80_redcode.c PROPERTIES
-    COMPILE_FLAGS "-O3 -funroll-loops -DZ80_STATIC -DGS_Z80_INSN_IN_SRAM -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
+    COMPILE_FLAGS "-O3 -funroll-loops -DZ80_STATIC -DGS_Z80_INSN_IN_SRAM -DGS_Z80_DIRECT_CALLBACKS -DGS_Z80_INLINE_MEM ${_GS_SW_FLAG} -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
 set_source_files_properties(src/speccy/devices/gs/GS.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops -DZ80_STATIC -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
 # minimp3 decode (NeoGS MP3 path): -O3 buys ~2x over the default -Os — one MP3

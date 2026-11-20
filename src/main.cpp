@@ -24,6 +24,7 @@
 #include <hardware/uart.h>
 #include <hardware/watchdog.h>    // watchdog_caused_reboot (boot breadcrumb)
 extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
+extern "C" void pcprof_core1_poll(void);         // PcProf.cpp (a no-op without PERF_HIST)
 #include <hardware/structs/powman.h>  // chip_reset reason decode (boot breadcrumb)
 
 #include <hardware/pll.h>
@@ -1142,6 +1143,9 @@ void __not_in_flash_func(render_core)() {
         // The body lives in flash, not the TS overlay, so the gate is only a
         // fast exit — no jump-into-heap hazard here.
         if (g_ft_c1_live) ft812_render_core1_pump();
+#if PERF_TRACE && PERF_HIST
+        pcprof_core1_poll();          // PCPROF_CORE=1: core1 arms its own SysTick (PcProf.cpp)
+#endif
         if (g_elm_c1_live) C1LOOP(2, Hgfx::core1Pump());         // eLeMeNt ZX: HGFX engine + picture (flash body)
         if (g_next_c1_live) {                         // Spectrum Next scanlines (NextVideo.cpp)
 #if NEXT_TRACE

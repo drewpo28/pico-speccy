@@ -1170,3 +1170,68 @@ NOT hw-tested.
 Host: dragon fetches 98-99% from the copies, frames identical (animation phase only).
 Overlay terms raised: `.gsovl` 23 344 B, `.ngsovl` 7 656 B measured. Test ELFs
 `debug/DVp2w-sram46ngs-1.1.2` (plain) and `-ngsprof-` (PERF + GS_PERF: compare GS MHz).
+
+## GS-Z80 switch loop: the Next loop's tricks on redcode (2026-11-20, z80bench + host-tested; hw-run DVp2w 2026-11-20, owner: "кажется хорошо" - no GS MHz figures)
+
+`GS_Z80_SWITCH` (cmake/source-flags.cmake, host/CMakeLists.txt): `z80_run`'s inner loop
+dispatches the unprefixed opcodes through a `switch` (`external/redcode/Z80_gs_switch.inc`,
+written by `tools/gen_gs_switch.py` from redcode's own `insn_table`) with the handler bodies
+inlined; the cycle count, its limit, R and PC live in locals until a request (INT / NMI / EI)
+or the limit. Built on the same day's memory fast path (`GS_Z80_INLINE_MEM`, Z80_compat.h).
+
+- **Why the specialisation is the whole gain:** a `case` with ONE opcode sees it as a
+  constant, so the register-table lookups (`J0`/`K0`/`SS0`/`TT`/`Z()`) and the ALU's operation
+  switch fold away. Inlining one copy per handler (policy `none`) bought nothing at all.
+  The opcode reaches the body as a VALUE (`op0`, macro `OPC(n)`), not through `DATA[0]`:
+  after any memory call GCC re-read `DATA[0]` (the call may write it as far as it knows)
+  and every `ADD A,(HL)` / `SUB n` case carried the full ALU switch (2.6 KB).
+- **PC as a local:** `PC` is `(*pcp)` under the flag; the out-of-line copies (what the
+  CB / ED / DD / FD tables, IM 0 and the hook call) pass `&self->pc`, the switch a local.
+  Cases that call a table or read `self->cycles` / R (`GS_SWX`: HALT, DD, FD, ED, hook;
+  `GS_SWP`: CB and the `call` policy) publish around the call. **`IN` / `OUT` publish PC
+  first**: `ngs_cb_in`'s ZXSTAT idle detector (`pc == 0x0270 / 0x0281`) and the traces read
+  `Z80_PC(s_cpu)` inside the port callbacks; the memory callbacks do not read it.
+- **Policy `gs`** (the size knob): per-opcode cases for LD r,r' / INC-DEC r / LD r,n /
+  LD r,(HL) / LD (HL),r / ALU (HL) and n / JR cc / 16-bit INC-DEC-ADD / LD rr,nn / PUSH /
+  POP, one case per ALU operation for ALU r, one inline case for the conditional CALL / RET /
+  JP, calls to the out-of-line copies for the rare ones (DAA, SCF/CCF, the A rotates, RST,
+  EX (SP),HL, DI/EI, LD (nn) forms, INC/DEC (HL)). Chosen from the card's opcode mix:
+  host `PICOSPECCY_GSMEM=1` now also prints `[GSOPS]` lines (M1 share per opcode, planes
+  base / CB / ED / XY). TheLink (P1024 + NeoGS, 26 busy dumps): 95 % unprefixed, top JR NZ
+  6.1, OR A 6.0, IN A,(n) 6.0, LD A,(BC) 5.2, ADD HL,DE 4.4, LD (DE),A 4.4, INC D 3.5, INC L
+  2.7, SUB n 2.6, POP HL 2.4; CB 1.9 %, DD/FD 1.6 %, ED 0.2 %.
+- **Bench** (`tools/z80bench`: new `gsbuild` = Z80_redcode.c from the tree with the
+  firmware's command line + `gs_harness.c`, every slot pointer-backed like a butter NeoGS,
+  GS::step's 640 + 32 T slices; ARM instructions for 30 M T):
+
+  | workload | before | `gs` | | `all` (every opcode a case) |
+  |---|---|---|---|---|
+  | ZEXDOC | 223.8 M | 175.2 M | -21.7 % | 167.1 M (-25.4 %) |
+  | `game` | 233.5 M (~54 / Z80 insn) | 170.8 M (~40) | -26.8 % | 164.1 M |
+  | `high` (LDIR / IX / IY) | 176.9 M | 156.4 M | -11.6 % | 154.6 M |
+
+  Before, `z80_run`'s head was 44 % of the core: 24 ARM instructions + the call, push/pop
+  and return per Z80 instruction; now 14 + a 5-instruction tail.
+  Bit-exact: `fuzz` 2 x 400 000 tests (INT mid-test, IM 0/1/2, HALT, prefix chains) and
+  `lock` (ZEXDOC 40 M T, `high` 20 M T) give identical hashes against the old core; a
+  planted bug (R not published before ED) shows within the first 4 096 fuzz tests. ZEXALL:
+  see below.
+- **Size:** `.gsovl` code 23 456 -> 31 672 B (+8.2 KB = heap on every GS / NeoGS boot),
+  AUTO term 33 280. `all` would be ~+5 KB more for ~3 % more, `none` ~-4 KB for no gain;
+  grouping the conditional CALL / RET / JP saved 1.7 KB for ~2 % of ZEXDOC only.
+  No `bl` from `.gsovl` into flash. **16 MB images only** (`GS_Z80_SWITCH` cache string,
+  AUTO = `FLASH_16MB`; ON / OFF force it): the window's image is flash too, and the 4 MB
+  MURM2 did not link - but it did not link WITHOUT the switch either (GM.DLS floor, FLASH
+  4 016 888 B; with the switch 4 025 080; committed HEAD 7f987a31 fails the same way at
+  4 004 600 B, so the 4 MB images were already broken before this day's GS work). The player's copy (`src/player/PlayerZ80.c`, no GS_Z80_*
+  flags) compiles the old shape. Compiler flags do not move the size (always_inline).
+- **Host:** TheLink runs through the dragon; the `[GSMEM]` dumps match the old core for
+  the first 64 M card M1s and then differ - and so do two runs of the SAME binary at the
+  same dump: the host's ZX <-> card exchange is not deterministic, no bit test.
+- **hw 2026-11-20** (`debug/DVp2w-gssw1-1.1.3`, build 22:17:31, log `...22.29.21.370`, eLeMeNt +
+  NeoGS): owner "seems good"; card boots, idle throttle episodes normal (the ZXSTAT PC
+  publish works), no fault; NeoGS page cache 3 x 16 KB lent by the HGFX arena as before;
+  heap at setup 82 784 B (was 90 208), at COMPLETE 58 976 B (was 66 400) - the window's 7.4 KB.
+  Not measured (plain build, no GS_PERF_TRACE): the card's MHz. Still owed: TheLink dragon (was GS 21.0 of
+  24 MHz), LIMSHOWM, a classic GS MOD player, NeoGS MP3, the boot log's `GS::init: NeoGS SRAM
+  page cache` line (64 KB free-heap gate - the window took 8 KB more).

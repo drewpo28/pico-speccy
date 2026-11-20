@@ -257,7 +257,15 @@ typedef zuint8 (* Insn)(Z80 *self);
 /* MARK: - Shortcuts for Instance Variables and Callbacks */
 
 #define MEMPTR	  self->memptr.uint16_value
-#define PC	  self->pc.uint16_value
+#if defined(GS_Z80_SWITCH)
+	/* pico-speccy: PC through a pointer - to self->pc in the out-of-line handlers and
+	   the API functions (GS_PCP), to a local inside z80_run's switch loop. */
+#	define PC  (*pcp)
+#	define GS_PCP zuint16 *pcp = &self->pc.uint16_value;
+#else
+#	define PC  self->pc.uint16_value
+#	define GS_PCP
+#endif
 #define SP	  self->sp.uint16_value
 #define XY	  self->xy.uint16_value
 #define IX	  self->ix_iy[0].uint16_value
@@ -272,7 +280,7 @@ typedef zuint8 (* Insn)(Z80 *self);
 #define HL_	  self->hl_.uint16_value
 #define MEMPTRH	  self->memptr.uint8_values.at_1
 #define MEMPTRL	  self->memptr.uint8_values.at_0
-#define PCH	  self->pc.uint8_values.at_1
+#define PCH	  ((zuint8)(PC >> 8))
 #define A	  self->af.uint8_values.at_1
 #define F	  self->af.uint8_values.at_0
 #define B	  self->bc.uint8_values.at_1
@@ -294,7 +302,15 @@ typedef zuint8 (* Insn)(Z80 *self);
 #define OPTIONS	  self->options
 #define CONTEXT	  self->context
 
-#if defined(GS_Z80_DIRECT_CALLBACKS)
+#if defined(GS_Z80_INLINE_MEM) && defined(GS_Z80_DIRECT_CALLBACKS)
+/* pico-speccy: the slot-table fast path inline, the rest direct (Z80_compat.h). */
+#  define FETCH_OPCODE(address) gs_fx_fetch_op(address)
+#  define FETCH(address)        gs_fx_fetch(address)
+#  define READ(address)         gs_fx_read (address)
+#  define WRITE(address, value) gs_fx_write(address, value)
+#  define GS_IN_RAW(port)              gs_direct_in (port)
+#  define GS_OUT_RAW(port, value)      gs_direct_out(port, value)
+#elif defined(GS_Z80_DIRECT_CALLBACKS)
 /* Direct-call shortcut — see Z80_compat.h. Removes the indirect call on the
  * hottest path of the emulator. We still pass `self` and CONTEXT to keep the
  * macro signature matching original code; arguments are unused here. */
@@ -302,17 +318,28 @@ typedef zuint8 (* Insn)(Z80 *self);
 #  define FETCH(address)        gs_direct_fetch       (address)
 #  define READ(address)         gs_direct_read        (address)
 #  define WRITE(address, value) gs_direct_write       (address, value)
-#  define IN(port)              gs_direct_in          (port)
-#  define OUT(port, value)      gs_direct_out         (port, value)
+#  define GS_IN_RAW(port)              gs_direct_in          (port)
+#  define GS_OUT_RAW(port, value)      gs_direct_out         (port, value)
 #else
 #  define FETCH_OPCODE(address) self->fetch_opcode(CONTEXT, address)
 #  define FETCH(address)	  self->fetch	  (CONTEXT, address)
 #  define READ(address)	          self->read	  (CONTEXT, address)
 #  define WRITE(address, value)   self->write	  (CONTEXT, address, value)
-#  define IN(port)	          self->in	  (CONTEXT, port)
-#  define OUT(port, value)        self->out	  (CONTEXT, port, value)
+#  define GS_IN_RAW(port)	          self->in	  (CONTEXT, port)
+#  define GS_OUT_RAW(port, value)        self->out	  (CONTEXT, port, value)
 #endif
 #define NOTIFY(callback)      if (self->callback != Z_NULL) self->callback(CONTEXT)
+
+#if defined(GS_Z80_SWITCH)
+	/* PC may be a register copy inside z80_run's switch loop: GS.cpp's port handlers
+	   read Z80_PC(s_cpu) (ZXSTAT's fw idle-loop detector, the traces), so a port
+	   access publishes it first. (The memory callbacks do not read it.) */
+#	define IN(port)		(self->pc.uint16_value = PC, GS_IN_RAW(port))
+#	define OUT(port, value) (self->pc.uint16_value = PC, GS_OUT_RAW(port, value))
+#else
+#	define IN(port)		GS_IN_RAW(port)
+#	define OUT(port, value) GS_OUT_RAW(port, value)
+#endif
 
 
 /* MARK: - 16-bit Callback Operations */
@@ -348,6 +375,7 @@ static Z_ALWAYS_INLINE void write_16b(Z80 *self, zuint16 address, zuint16 value)
 #ifndef Z80_WITH_FULL_IM0
 	static Z_ALWAYS_INLINE zuint16 int_fetch_16(Z80 *self)
 		{
+		GS_PCP
 		zuint8 l = self->int_fetch(CONTEXT, PC);
 		return (zuint16)(l | ((zuint16)self->int_fetch(CONTEXT, PC) << 8));
 		}
@@ -551,6 +579,21 @@ static Z_ALWAYS_INLINE void write_16b(Z80 *self, zuint16 address, zuint16 value)
 #define ROR(value) Z_UINT8_ROTATE_RIGHT(value, 1)
 
 
+/* OPC(n): the instruction's n-th opcode byte. GS_Z80_SWITCH: byte 0 comes in as the
+ * value op0 (the switch case's constant; DATA[0] in the out-of-line copies), so it stays
+ * a constant across the memory calls - a call may write DATA as far as GCC knows, and
+ * re-reading DATA[0] after a READ undid the case's folding (2.6 KB of ALU switches). */
+#if defined(GS_Z80_SWITCH)
+#	define OPC(n)	     ((n) == 0 ? op0 : DATA[n])
+#	define GS_OP0_P	     , zuint8 const op0
+#	define GS_OP0_A	     , op0
+#else
+#	define OPC(n)	     DATA[n]
+#	define GS_OP0_P
+#	define GS_OP0_A
+#endif
+
+
 /* MARK: - 8-Bit Register Resolution */
 
 /*---------.   .---------------------.
@@ -586,7 +629,7 @@ static zusize const o_p_table[8] = {
 	Z_MEMBER_OFFSET(Z80, af.uint8_values.at_1)};
 
 #define REGISTER_8(table, offset, shift) \
-	*((zuint8 *)self + table[(DATA[offset] shift) & 7])
+	*((zuint8 *)self + table[(OPC(offset) shift) & 7])
 
 #define J0 REGISTER_8(j_k_table, 0, >> 3   )
 #define J1 REGISTER_8(j_k_table, 1, >> 3   )
@@ -627,7 +670,7 @@ static zusize const w_table[4] = {
 	Z_MEMBER_OFFSET(Z80, sp.uint16_value)};
 
 #define REGISTER_16(table, offset) \
-	*(zuint16 *)(void *)((zchar *)self + table[(DATA[offset] >> 4) & 3])
+	*(zuint16 *)(void *)((zchar *)self + table[(OPC(offset) >> 4) & 3])
 
 #define SS0 REGISTER_16(s_table, 0)
 #define SS1 REGISTER_16(s_table, 1)
@@ -653,12 +696,21 @@ static zusize const w_table[4] = {
 static zuint8 const z_table[8] = {ZF, ZF, CF, CF, PF, PF, SF, SF};
 
 
-static Z_ALWAYS_INLINE zsint zzz(Z80 const *self, zuint8 mask)
+static Z_ALWAYS_INLINE zsint zzz(Z80 const *self, zuint8 mask GS_OP0_P)
 	{
-	zsint z = (DATA[0] >> 3) & mask;
+	zsint z = (OPC(0) >> 3) & mask;
 
 	return !(F & z_table[z]) ^ (z & 1);
 	}
+
+
+/* GS_Z80_SWITCH: the ALU helpers go inline too - called from 64 switch cases GCC would
+ * keep one out-of-line copy, and the operation switch on the opcode would stay. */
+#if defined(GS_Z80_SWITCH)
+#	define GS_HELPER static Z_ALWAYS_INLINE
+#else
+#	define GS_HELPER static
+#endif
 
 
 /* MARK: - 8-Bit Arithmetic and Logical Operations */
@@ -681,11 +733,11 @@ static Z_ALWAYS_INLINE zsint zzz(Z80 const *self, zuint8 mask)
 	       | 101 = dec  szybxv1. |
 	       '--------------------*/
 
-static void uuu(Z80 *self, zuint8 offset, zuint8 rhs)
+GS_HELPER void uuu(Z80 *self, zuint8 offset, zuint8 rhs GS_OP0_P)
 	{
 	zuint8 t, f;
 
-	switch ((DATA[offset] >> 3) & 7)
+	switch ((OPC(offset) >> 3) & 7)
 		{
 		case 0: /* add */
 		t = A + rhs;
@@ -766,9 +818,9 @@ static void uuu(Z80 *self, zuint8 offset, zuint8 rhs)
 	}
 
 
-static zuint8 vvv(Z80 *self, zuint8 offset, zuint8 value)
+GS_HELPER zuint8 vvv(Z80 *self, zuint8 offset, zuint8 value GS_OP0_P)
 	{
-	zuint8 dec = DATA[offset] & 1;
+	zuint8 dec = OPC(offset) & 1;
 	zuint8 nf  = (zuint8)(dec << 1);
 	zuint8 t   = value + 1 - nf;
 
@@ -799,11 +851,11 @@ static zuint8 vvv(Z80 *self, zuint8 offset, zuint8 value)
 	       | 111 = srl |
 	       '----------*/
 
-static zuint8 ggg(Z80 *self, zuint8 offset, zuint8 value)
+GS_HELPER zuint8 ggg(Z80 *self, zuint8 offset, zuint8 value GS_OP0_P)
 	{
 	zuint8 cf;
 
-	switch ((DATA[offset] >> 3) & 7)
+	switch ((OPC(offset) >> 3) & 7)
 		{
 		/* rlc		 .----------------.
 			.----.	 |  .---------.   |
@@ -896,13 +948,13 @@ static zuint8 ggg(Z80 *self, zuint8 offset, zuint8 value)
 '----------'   | 1 = set |
 	       '--------*/
 
-static Z_ALWAYS_INLINE zuint8 m(Z80 *self, zuint8 offset, zuint8 value)
+static Z_ALWAYS_INLINE zuint8 m(Z80 *self, zuint8 offset, zuint8 value GS_OP0_P)
 	{
 	zuint8 t;
 
 	Q_0
 
-	return (zuint8)(((t = DATA[offset]) & 64)
+	return (zuint8)(((t = OPC(offset)) & 64)
 		? value |  (1U << ((t >> 3) & 7))
 		: value & ~(1U << ((t >> 3) & 7)));
 	}
@@ -916,21 +968,39 @@ static Z_ALWAYS_INLINE zuint8 m(Z80 *self, zuint8 offset, zuint8 value)
  * All handlers go into one shared section so they end up packed
  * contiguously in SRAM next to z80_run (which uses Z80_API → same section
  * prefix) — keeps the branch predictor happy. */
+/* GS_Z80_SWITCH (pico-speccy): z80_run dispatches the unprefixed opcodes through a
+ * switch (Z80_gs_switch.inc, tools/gen_gs_switch.py) with the handler bodies inlined, so
+ * each case sees its opcode as a constant - the register-table lookups (J0 / K0 / SS0 /
+ * Z(...)) and the ALU's operation switch fold away - and pays no call, no push/pop. The
+ * prefix tables (CB / ED / DD / FD) still call through their tables; they get the
+ * out-of-line copies, which is why the handlers keep their SRAM section. */
 #if defined(GS_Z80_INSN_IN_SRAM)
-#  define INSN(name)	     static __attribute__((section(".time_critical.gs_z80_insn"))) zuint8 name(Z80 *self)
+#  define GS_INSN_SECTION __attribute__((section(".time_critical.gs_z80_insn")))
 #else
-#  define INSN(name)	     static zuint8 name(Z80 *self)
+#  define GS_INSN_SECTION
 #endif
-#define N(offset)	     ((DATA[offset] >> 3) & 7)
-#define Z(mask)		     zzz(self, mask)
-#define U0(value)	     uuu(self, 0, value)
-#define U1(value)	     uuu(self, 1, value)
-#define V0(value)	     vvv(self, 0, value)
-#define V1(value)	     vvv(self, 1, value)
-#define G1(value)	     ggg(self, 1, value)
-#define G3(value)	     ggg(self, 3, value)
-#define M1(value)	     m	(self, 1, value)
-#define M3(value)	     m	(self, 3, value)
+#if defined(GS_Z80_SWITCH)
+	/* name##_b is the body (inlined into the switch with PC in a local, opcode byte 0
+	   a constant), name the out-of-line copy the tables call (PC = self->pc). */
+#  define INSN(name)							       \
+	static Z_ALWAYS_INLINE zuint8 name##_b(Z80 *self, zuint16 *pcp, zuint8 const op0); \
+	static GS_INSN_SECTION __attribute__((unused))			       \
+	zuint8 name(Z80 *self) {return name##_b(self, &self->pc.uint16_value, DATA[0]);} \
+	static Z_ALWAYS_INLINE zuint8 name##_b(Z80 *self, zuint16 *pcp, zuint8 const op0)
+#else
+#  define INSN(name)	     static GS_INSN_SECTION zuint8 name(Z80 *self)
+#endif
+
+#define N(offset)	     ((OPC(offset) >> 3) & 7)
+#define Z(mask)		     zzz(self, mask GS_OP0_A)
+#define U0(value)	     uuu(self, 0, value GS_OP0_A)
+#define U1(value)	     uuu(self, 1, value GS_OP0_A)
+#define V0(value)	     vvv(self, 0, value GS_OP0_A)
+#define V1(value)	     vvv(self, 1, value GS_OP0_A)
+#define G1(value)	     ggg(self, 1, value GS_OP0_A)
+#define G3(value)	     ggg(self, 3, value GS_OP0_A)
+#define M1(value)	     m	(self, 1, value GS_OP0_A)
+#define M3(value)	     m	(self, 3, value GS_OP0_A)
 #define PUSH(value)	     WRITE_16B(SP -= 2, value)
 #define R_ALL		     ((R & 127) | (R7 & 128))
 #define RET		     MEMPTR = PC = READ_16(SP); SP += 2
@@ -1961,7 +2031,7 @@ INSN(ret      ) {Q_0 RET;							       return 10;}
 INSN(ret_Z    ) {Q_0 if (Z(7)) {RET; return 11;} PC++;				       return  5;}
 INSN(reti     ) {RETX(reti);									 }
 INSN(retn     ) {RETX(retn);									 }
-INSN(rst_N    ) {zuint16 pci = PC; Q_0 MEMPTR = PC = DATA[0] & 56; PUSH(pci + 1);      return 11;}
+INSN(rst_N    ) {zuint16 pci = PC; Q_0 MEMPTR = PC = OPC(0) & 56; PUSH(pci + 1);      return 11;}
 
 
 INSN(call_Z_WORD)
@@ -2355,6 +2425,7 @@ static Insn const xy_cb_insn_table[256] = {
 
 Z80_API void z80_power(Z80 *self, zbool state)
 	{
+	GS_PCP
 	MEMPTR = PC = R = I = IFF1 = IFF2 = IM = Q =
 	DATA[0] = HALT_LINE = INT_LINE = RESUME = REQUEST = 0;
 
@@ -2382,6 +2453,7 @@ Z80_API void z80_power(Z80 *self, zbool state)
 
 Z80_API void z80_instant_reset(Z80 *self)
 	{
+	GS_PCP
 	if (HALT_LINE) {EXIT_HALT;}
 
 	PC = R = I = IFF1 = IFF2 = IM =
@@ -2409,6 +2481,7 @@ Z80_API void z80_nmi(Z80 *self)
 #ifdef Z80_WITH_EXECUTE
 	Z80_API zusize z80_execute(Z80 *self, zusize cycles)
 		{
+		GS_PCP
 		ZInt16 *xy;
 
 		R7		  = R;
@@ -2444,6 +2517,7 @@ Z80_API void z80_nmi(Z80 *self)
 
 Z80_API zusize z80_run(Z80 *self, zusize cycles)
 	{
+	GS_PCP
 	ZInt16 *xy;
 	zuint8 ird;
 
@@ -2976,8 +3050,58 @@ Z80_API zusize z80_run(Z80 *self, zusize cycles)
 #			endif
 			}
 
-		R++;
-		self->cycles += insn_table[DATA[0] = FETCH_OPCODE(PC)](self);
+#		if defined(GS_Z80_SWITCH)
+			/*-----------------------------------------------------------------.
+			| pico-speccy: the cycle count, its limit and the R increments live |
+			| in locals until a request (INT / NMI / EI / RETN) or the limit;   |
+			| R is only added up, so the prefixes' and HALT's own R++ commute.  |
+			| GS_SWX handlers (HALT, DD / FD, ED, the hook) read or set the     |
+			| cycle count or R themselves: both are published around them.	   |
+			'=================================================================*/
+			{
+			zusize cycles = self->cycles, limit = self->cycle_limit;
+			zuint r = 0;
+			zuint16 pc = PC;
+			zuint16 *pcp = &pc;
+
+			do	{
+				zuint8 const op = DATA[0] = FETCH_OPCODE(PC);
+
+				r++;
+
+				switch (op)
+					{
+#					define GS_SW(f) cycles += f##_b(self, pcp, op); break;
+#					define GS_SWP(f)				\
+						self->pc.uint16_value = pc;		\
+						cycles += f(self);			\
+						pc = self->pc.uint16_value;		\
+						break;
+#					define GS_SWX(f)				\
+						self->cycles = cycles; R += (zuint8)r; r = 0; \
+						self->pc.uint16_value = pc;		\
+						cycles = f(self);			\
+						cycles += self->cycles;			\
+						limit = self->cycle_limit;		\
+						pc = self->pc.uint16_value;		\
+						break;
+#					include "Z80_gs_switch.inc"
+#					undef GS_SW
+#					undef GS_SWP
+#					undef GS_SWX
+					default: __builtin_unreachable();
+					}
+				}
+			while (cycles < limit && !REQUEST);
+
+			self->cycles = cycles;
+			self->pc.uint16_value = pc;
+			R += (zuint8)r;
+			}
+#		else
+			R++;
+			self->cycles += insn_table[DATA[0] = FETCH_OPCODE(PC)](self);
+#		endif
 		}
 
 	R = R_ALL; /* Restore R7 bit. */

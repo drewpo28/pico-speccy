@@ -166,7 +166,20 @@ if (GSOVL_WIN_SIZE STREQUAL "AUTO")
     # The NeoGS-only code and data moved to .ngsovl (below).
     # 2026-11-04: 23 344 B measured (DVp2w) after the NeoGS SRAM page cache — the
     # card-PC sampler on the 37.5 kHz tick + ngs_ram_ptr in the ZX-DMA peek/poke.
-    set(_GSOVL_BYTES 23552)
+    # 2026-11-20: 23 840 B (code 22 264 + bss 1 576) - the cache's third slot (lent by the
+    # eLeMeNt's HGFX arena) widens every ngs_ram_ptr loop, and the sampler counts the
+    # card's write page beside its PC (gs_cb_write keeps the slot).
+    # Same day, 25 032 B (code 23 456 + bss 1 576): the redcode core reads the slot tables
+    # itself (Z80_compat.h GS_Z80_INLINE_MEM: the opcode fetch inline, READ / WRITE / FETCH
+    # one SRAM copy each, direct calls) - the opcode fetch inlined in the dispatch is most of it.
+    # Same day, 33 248 B (code 31 672 + bss 1 576): GS_Z80_SWITCH, z80_run's switch loop with
+    # the unprefixed bodies inlined and opcode-specialised (tools/gen_gs_switch.py policy "gs";
+    # the policy is the size knob: "all" ~ +5 KB more, "none" ~ -4 KB and no gain).
+    if(GS_Z80_SWITCH_EFFECTIVE)
+        set(_GSOVL_BYTES 33280)
+    else()
+        set(_GSOVL_BYTES 25088)
+    endif()
     # The GS trace options add code to the same objects (counters, the handshake
     # ring writer, the per-command SD log), so the window has to grow with them.
     if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)
@@ -188,7 +201,8 @@ if (NGSOVL_WIN_SIZE STREQUAL "AUTO")
     # NeoGS boot.
     # 2026-11-04: 7 656 B measured (DVp2w) — ngs_map_half16 / ngs_rebuild_map
     # resolve every RAM slot through ngs_ram_ptr (the NeoGS SRAM page cache).
-    set(NGSOVL_WIN_SIZE_EFFECTIVE 7680)
+    # 2026-11-20: 7 808 B (code 6 456 + bss 1 352): the third cache slot in ngs_rebuild_map.
+    set(NGSOVL_WIN_SIZE_EFFECTIVE 7936)
     if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)
         math(EXPR NGSOVL_WIN_SIZE_EFFECTIVE "${NGSOVL_WIN_SIZE_EFFECTIVE} + 2048")
     endif()

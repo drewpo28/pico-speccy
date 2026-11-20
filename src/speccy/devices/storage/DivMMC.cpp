@@ -6,6 +6,7 @@
 extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card takes PC-side changes here
 #endif
 #include "app/TryAlloc.h"
+#include "speccy/devices/gs/GS.h"   // GS::behind: a speculative SD read-ahead gives way to the card (sd_async_render_behind)
 #include "hardware/sync.h"
 #include "speccy/z80/CPU.h"
 #include "ff.h"
@@ -1567,6 +1568,18 @@ static inline bool sdAsyncMachine() {
 // declared that the following blocks belong to this read, so the burst may use
 // the whole buffer; a merely detected run stays at DIVSD_RA_SECTORS.
 static inline uint32_t winCap() { return s_stream ? DIVSD_RA_STREAM : DIVSD_RA_SECTORS; }
+
+// For sdcard.c (core1, before a posted read and between the blocks of a running one): a
+// speculative read-ahead (g_sd_as_need 0) gives way while core1 is wanted elsewhere - the
+// Next's row queue (NextVideo.cpp), or a General Sound card owing more than half its
+// backlog (GS::behind). Not taken, a read-ahead is read by core0 when the guest reaches it
+// (sqAsyncTake); cut short, its blocks so far count. hw 2026-11-20, LIMSHOWM on the eLeMeNt:
+// core1 spent 40 % of the picture changes in pio_spi_repeat8_read8_blocking while the card
+// fell to 17-19 MHz, and core0 idled at 3 ms of 20 a frame.
+int nextSdRenderBehind();
+extern "C" int sd_async_render_behind(void) {
+    return nextSdRenderBehind() || (GS::enabled && !GS::idleThrottled && GS::behind());
+}
 
 static void sqAsyncRequest(uint32_t next, uint32_t count) {
     if (!sdAsyncMachine() || g_sd_as_state != 0) return;

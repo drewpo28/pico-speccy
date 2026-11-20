@@ -99,8 +99,9 @@ list(APPEND EXT_SRC ${MBEDTLS_SRC})
 list(APPEND EXT_SRC ${XMP_SRC})
 
 # Per-file flags the firmware sets in cmake/source-flags.cmake that change meaning.
+# GS_Z80_SWITCH: the firmware's switch loop (cmake/source-flags.cmake), here on the callback path.
 set_source_files_properties(${ROOT}/external/redcode/Z80_redcode.c PROPERTIES
-    COMPILE_FLAGS "-DZ80_STATIC -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
+    COMPILE_FLAGS "-DZ80_STATIC -DGS_Z80_SWITCH -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
 set_source_files_properties(${ROOT}/src/speccy/devices/gs/GS.cpp PROPERTIES
     COMPILE_FLAGS "-DZ80_STATIC -DZ80_EXTERNAL_HEADER=\\\"Z80_compat.h\\\"")
 

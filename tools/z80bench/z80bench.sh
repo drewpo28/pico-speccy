@@ -18,6 +18,7 @@
 #
 #   z80bench.sh plugins                      build the two plugins (once)
 #   z80bench.sh build <fw build dir> <out.elf>
+#   z80bench.sh gsbuild <fw build dir> <out.elf>   the GS-Z80 (redcode) instead, gs_harness.c
 #   z80bench.sh run   <elf> <file.com> <M T-states, 0 = to the end> [skip] [ntests]
 #   z80bench.sh prof  <elf> <file.com> <M T-states> [skip]   per-function profile
 #   z80bench.sh zex   <elf> <out-prefix> [file.com]   all 67 tests in 4 parallel shards
@@ -71,6 +72,30 @@ for e in json.load(open('$B/compile_commands.json')):
     [ -f "$OUT" ]
 }
 
+# The GS-Z80 (redcode) bench: Z80_redcode.c compiled from the working tree with the
+# firmware's own command line for it (compile_commands.json of <fw build dir>), so the
+# source-flags.cmake defines (GS_Z80_*) come along; gs_harness.c gives it the NeoGS
+# slot tables. run / prof / lock / fuzz / zex take the resulting ELF like the others.
+# Extra -D flags for an A/B: GSBENCH_CFLAGS="-DGS_Z80_SWITCH=0".
+gsbuild() {
+    local B="$1" OUT="$2"
+    local CMD
+    CMD=$(python3 -c "
+import json,sys
+for e in json.load(open('$B/compile_commands.json')):
+    if e['file'].endswith('Z80_redcode.c'): print(e['command']); break")
+    local FLAGS
+    FLAGS=$(echo "$CMD" | sed -e 's/^[^ ]* //' -e 's/ -o [^ ]*//' -e 's/ -c [^ ]*//')
+    (cd "$REPO" && eval arm-none-eabi-gcc $FLAGS $GSBENCH_CFLAGS -c external/redcode/Z80_redcode.c -o "$WORK/gs_core.o")
+    (cd "$REPO" && arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -O2 -std=gnu11 -w \
+        -DZ80_EXTERNAL_HEADER=\"Z80_compat.h\" -DGS_Z80_DIRECT_CALLBACKS -DGS_Z80_INLINE_MEM -Iexternal/redcode \
+        -c "$HERE/gs_harness.c" -o "$WORK/gs_harness.o")
+    arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp --specs=rdimon.specs -nostartfiles \
+        -T "$HERE/link.ld" "$WORK/gs_harness.o" "$WORK/gs_core.o" -o "$OUT" \
+        -Wl,--start-group -lc -lrdimon -lgcc -Wl,--end-group 2>&1 | grep -v warning || true
+    [ -f "$OUT" ] && arm-none-eabi-size -A "$WORK/gs_core.o" | grep -E 'time_critical|text' | awk '{s+=$2} END {print "core code bytes:", s}'
+}
+
 # Z80BENCH_MODE=next selects the Spectrum Next loop (harness argv[5]); anything
 # else (default "ts") is the TS-Conf fast path.
 MODE="${Z80BENCH_MODE:-ts}"
@@ -119,6 +144,7 @@ cmd="$1"; shift || true
 case "$cmd" in
     plugins) plugins ;;
     build)   build "$@" ;;
+    gsbuild) gsbuild "$@" ;;
     run)     run "$@" ;;
     prof)    prof "$@" ;;
     zex)     zex "$@" ;;

@@ -43,6 +43,12 @@ set(PCPROF_SHIFT "6" CACHE STRING "PERF_HIST PC sampler: log2 of the code bucket
 # (eLeMeNt PF2026: 56 buckets = 5% of the samples) wants 512 / 16.
 set(PCPROF_SLOTS "256" CACHE STRING "PERF_HIST PC sampler: hash slots (power of two)")
 set(PCPROF_LINES "4" CACHE STRING "PERF_HIST PC sampler: PROF lines printed per window")
+# Which core the sampler samples: 0 = the Z80 core, 1 = core1 (GS-Z80, HGFX engine, renderers).
+# The SysTick is per core; core1 arms its own from the render_core loop (pcprof_core1_poll).
+set(PCPROF_CORE "0" CACHE STRING "PERF_HIST PC sampler: the core it samples (0 or 1)")
+# With PCPROF_CORE 1: count only the samples taken while the General Sound card has not been
+# pumped for this many us (0 = every sample) - where core1 is when the card starves.
+set(PCPROF_GSGAP "0" CACHE STRING "PERF_HIST core1 PC sampler: only while GS::pump has not run for N us (0 = off)")
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 option(TS_VIDEO_TRACE "TS-Conf: capped trace of VConfig/TSConfig/page/offset register writes with frame line + PC" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)

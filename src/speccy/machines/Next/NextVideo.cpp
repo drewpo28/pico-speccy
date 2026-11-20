@@ -2768,10 +2768,11 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
 }
 
 
-// For sdcard.c (core1, between SD blocks): the renderer is behind — core0 is
-// draining the row queue, or the queue is within 64 rows of full and core0 is
-// (or is about to be) waiting for room. A speculative SD read-ahead then gives way (see g_sd_as_need).
-extern "C" int sd_async_render_behind(void) {
+// For sdcard.c (core1, between SD blocks, through DivMMC.cpp's sd_async_render_behind):
+// the renderer is behind — core0 is draining the row queue, or the queue is within 64
+// rows of full and core0 is (or is about to be) waiting for room. A speculative SD
+// read-ahead then gives way (see g_sd_as_need).
+int nextSdRenderBehind() {
     return g_next_c1_live && (g_nx_c0wait || (uint32_t)(nx_w - nx_r) > NEXT_C1_RING - 64u);
 }
 

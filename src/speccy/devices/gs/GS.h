@@ -71,6 +71,15 @@ public:
     // a core1 renderer that starves pump() for a whole draw is bridged by the backlog.
     // 0 = the default 2 ms cushion. Lives in the GS overlay: call only with `enabled`.
     static void setAhead(uint32_t ms);
+    // Ahead mode only: the card owes more than half its backlog cap, counting the time
+    // since the last pump - a renderer that withholds pumps should give it one now.
+    static bool behind();
+    // NeoGS SRAM page cache pages lent by another owner (the eLeMeNt's HGFX arena): core1
+    // adopts them at its next pump. shReclaim asks them back (core1 copies the cached pages
+    // home first); the memory is the lender's again once shLent() reads false.
+    static void shLend(uint8_t* p, uint32_t bytes);
+    static void shReclaim();
+    static bool shLent();
 #if HOST_BUILD
     // Host build: the GS-Z80 runs on the emulator thread in lockstep with the
     // guest's clock. Call at every host port access and once per frame; it

@@ -69,6 +69,11 @@ const uint8_t* gigaOther;
 static inline bool keyIs(uint8_t c) {
     return c == keyColour || (mode != 2 && !(keyColour & 7) && !(c & 7));
 }
+// keyIs for the 32 indices a pair cell can carry (INK 0-15, PAPER 0-15 or 16-31), one bit
+// each, built by renderFrame once a frame: pairRowFast (RAM window) called keyIs out of line
+// in FLASH through a veneer, twice a KeyLayer cell - ~90 % of the time the NeoGS starved
+// beside the pair draw was inside pairRowFast / keyIs (hw 2026-11-20, core1 gap profile).
+static uint32_t s_keyMask;
 
 static uint8_t* s_buf;              // 128K, PSRAM
 // Buffer 1 in SRAM (h1Manage, at()): the half's offsets [s_h1Base - BUF1, +s_h1Size) live
@@ -453,6 +458,38 @@ static uint8_t s_h1CandRun;
 static bool s_c1Limits;               // last window: core1 was still drawing on half the frames or more
 static uint8_t s_h1Hold;              // frames before the half may change buffers again
 static volatile uint32_t s_drawUse[2];   // bytes the draw read from each buffer this window
+// The arena LENT to the NeoGS page cache while nothing here uses it (GS::shLend, 2026-11-20):
+// in the pair frame (LIMSHOWM's HRXC) and plain ZX screens its 57 KB sat idle while the card
+// ran short of core1 time beside the draw. Lent after ARENA_LEND_IDLE frames with no half and
+// no row blocks in it; asked back the moment one of them wants it (arenaForUs: that user
+// tries again next frame, the card's cached pages go home first), then not lent again for
+// ARENA_LEND_HOLD frames.
+enum { ARENA_LEND_IDLE = 50, ARENA_LEND_HOLD = 250 };
+static uint16_t s_arenaIdle, s_arenaHold;
+static bool s_arenaLentLog;
+static bool arenaForUs() {
+    if (!GS::shLent()) {
+        if (s_arenaLentLog) { s_arenaLentLog = false; Debug::log("[ELM] HGFX arena back from the NeoGS cache"); }
+        return true;
+    }
+    GS::shReclaim();
+    s_arenaIdle = 0; s_arenaHold = ARENA_LEND_HOLD;
+    return false;
+}
+#ifndef ELM_ARENA_LEND
+#define ELM_ARENA_LEND 1
+#endif
+static void arenaLendTick() {
+    if (!ELM_ARENA_LEND || !s_arena || !GS::enabled) return;
+    if (s_h1 || s_sramOn[0] || s_sramOn[1]) { s_arenaIdle = 0; return; }
+    if (s_arenaHold) { s_arenaHold--; return; }
+    if (GS::shLent()) return;
+    if (s_arenaLentLog) { s_arenaLentLog = false; Debug::log("[ELM] HGFX arena back from the NeoGS cache"); }
+    if (++s_arenaIdle < ARENA_LEND_IDLE) return;
+    s_arenaIdle = 0;
+    GS::shLend(s_arena, s_arenaSize);
+    if (GS::shLent()) { s_arenaLentLog = true; Debug::log("[ELM] HGFX arena lent to the NeoGS page cache (%u B)", (unsigned)s_arenaSize); }
+}
 static void h1Manage() {
     const bool want = s_direct && mode == 3 && s_buf && s_b1 == BUF1 && s_bpp == 8 && s_w == WIDTH && s_h == HEIGHT &&
                       s_stride == WIDTH && !s_sramOn[0] && !s_sramOn[1];
@@ -467,6 +504,7 @@ static void h1Manage() {
     }
     if (s_h1Retry) { s_h1Retry--; return; }
     if (!s_arena) return;                 // no arena this session: the half stays in PSRAM
+    if (!arenaForUs()) return;            // lent to the NeoGS cache: back by a later frame
     // Windows across the arena's edges three times: this program's windows reach past what
     // the arena covers (PF2026 maps from #0000 and down to #E800 = 58 KB; the hw arena is the
     // 56 KB overlay region). Each round trip is a drain + a copy + a remap: stop, until the
@@ -495,6 +533,7 @@ static void sramPromote() {
     // never fit all six: 49 152; hw 2026-11-18, HGFXAGON at PSRAM speed with a 48 896 B
     // arena beside it). The blocks past it keep their PSRAM bytes by pointer: at() and
     // the engine never know the difference, sramOff copies nothing back for them.
+    if (s_arena && s_arenaSize >= SRAM_BLOCK && !arenaForUs()) return;   // lent to the NeoGS cache: next window
     if (s_arena && s_arenaSize >= SRAM_BLOCK) {
         const int inArena = (int)(s_arenaSize / SRAM_BLOCK) < SRAM_PER ? (int)(s_arenaSize / SRAM_BLOCK) : SRAM_PER;
         int heapN = 0;
@@ -576,6 +615,16 @@ static void gsAhead(bool on);
 void arenaFree() {
     gsAhead(false);
     if (!s_arena) return;
+    if (GS::shLent()) {                   // core1 copies the card's pages home, then lets go
+        GS::shReclaim();
+        const uint64_t t0 = time_us_64();
+        while (GS::shLent() && time_us_64() - t0 < 200000) {}
+        if (GS::shLent()) {               // core1 never answered: losing 57 KB beats freeing what it uses
+            Debug::log("[ELM] HGFX arena still lent to the NeoGS cache: kept, not freed");
+            s_arena = nullptr; s_arenaSize = 0;
+            return;
+        }
+    }
     sramOff(true);
     h1Off(true, "machine change");
     free(s_arena); s_arena = nullptr;
@@ -1590,6 +1639,7 @@ static inline void putCarved(uint8_t* row, int fx, uint8_t v, int nc, int (*cx)[
 // itself. The Next pumps between its line batches the same way. One byte test otherwise.
 #if PERF_TRACE
 static uint32_t s_pRowPump, s_pRowSkip;   // row pumps given to the NeoGS / withheld (beam too close)
+static uint32_t s_pGsSkip;                 // pair draws given up for the NeoGS (core1Pump)
 #endif
 #if !HOST_BUILD
 #include "pico/platform.h"           // get_core_num
@@ -1683,6 +1733,7 @@ ELM_HOT void pairRowFast(const uint8_t* bm, const uint8_t* at, const uint8_t* bm
     const bool fast = !nc && !(x0 & 3);
     const uint8_t* pidx = H->pidx;
     uint16_t* cnt2 = indexed ? s_cnt2 : nullptr;
+    const uint32_t km = s_keyMask;
     for (int c = 0; c < 64; c++) {
         uint8_t bits = bm[c];
         const uint8_t a = at[c];
@@ -1696,7 +1747,7 @@ ELM_HOT void pairRowFast(const uint8_t* bm, const uint8_t* at, const uint8_t* bm
         uint8_t b0, b1, b2, b3;
         bool plain = true;
         if (bm2) {
-            const bool kI = keyIs(ink), kP = keyIs(pap);
+            const bool kI = (km >> (ink & 31)) & 1, kP = (km >> (pap & 31)) & 1;
             if (kI || kP) {
                 uint8_t bits2 = bm2[c], ink2, pap2;
                 const uint8_t a2 = at2[c];
@@ -1711,19 +1762,26 @@ ELM_HOT void pairRowFast(const uint8_t* bm, const uint8_t* at, const uint8_t* bm
                     // Mixed: a pixel is the top screen's INK / PAPER, or the bottom screen's
                     // where the top one is the key. ix[]: the four candidates by table index,
                     // sel[top bit][bottom bit] picks one; the pairs then go as below.
+                    // Per pixel the candidate is hi:lo, hi = top bit ? kI : kP, lo = hi ? bottom bit
+                    // : top bit - 0 PAPER, 1 INK, 2 PAPER2, 3 INK2 - eight pixels at once in H / L;
+                    // the four candidates packed a byte each (C: table index, S: slot). The arrays
+                    // this replaced lived on the stack, ~150 instructions a cell (hw 2026-11-20:
+                    // the NeoGS starved inside this loop; host test, 2 M cases, identical bytes
+                    // and census).
                     plain = false;
-                    const uint8_t ix[4] = { pap, ink, pap2, ink2 };
-                    const uint8_t sel[2][2] = { { (uint8_t)(kP ? 2 : 0), (uint8_t)(kP ? 3 : 0) }, { (uint8_t)(kI ? 2 : 1), (uint8_t)(kI ? 3 : 1) } };
-                    uint8_t sl[4];
-                    for (int i = 0; i < 4; i++) sl[i] = indexed ? pidx[ix[i]] : ix[i];
-                    uint8_t out[4];
-                    for (int i = 0; i < 4; i++) {
-                        const int sh = 6 - 2 * i;
-                        const uint8_t l = sel[(bits >> (sh + 1)) & 1][(bits2 >> (sh + 1)) & 1], r = sel[(bits >> sh) & 1][(bits2 >> sh) & 1];
-                        if (cnt2) cnt2[(ix[l] & 63) << 6 | (ix[r] & 63)]++;
-                        out[i] = lut[sl[l] * 16 + sl[r]];
+                    const uint32_t T = bits, B = bits2;
+                    const uint32_t H = ((kI ? T : 0u) | (kP ? ~T : 0u)) & 0xFFu;
+                    const uint32_t L = (H & B) | (~H & T);
+                    const uint32_t C = (uint32_t)pap | (uint32_t)ink << 8 | (uint32_t)pap2 << 16 | (uint32_t)ink2 << 24;
+                    const uint32_t S = indexed ? ((uint32_t)pidx[pap] | (uint32_t)pidx[ink] << 8 |
+                                                  (uint32_t)pidx[pap2] << 16 | (uint32_t)pidx[ink2] << 24) : C;
+                    uint32_t o = 0;
+                    for (int sh = 7; sh > 0; sh -= 2) {
+                        const uint32_t l = ((H >> sh) & 1) << 1 | ((L >> sh) & 1), r = ((H >> (sh - 1)) & 1) << 1 | ((L >> (sh - 1)) & 1);
+                        if (cnt2) cnt2[((C >> (l << 3)) & 63) << 6 | ((C >> (r << 3)) & 63)]++;
+                        o = o << 8 | lut[((S >> (l << 3)) & 0xFF) * 16 + ((S >> (r << 3)) & 0xFF)];
                     }
-                    b0 = out[0]; b1 = out[1]; b2 = out[2]; b3 = out[3];
+                    b0 = (uint8_t)(o >> 24); b1 = (uint8_t)(o >> 16); b2 = (uint8_t)(o >> 8); b3 = (uint8_t)o;
 #if PERF_TRACE
                     s_pCellMix++;
 #endif
@@ -1748,8 +1806,12 @@ ELM_HOT void pairRowFast(const uint8_t* bm, const uint8_t* at, const uint8_t* bm
                 cnt2[p6 << 6 | i6] += n01; cnt2[p6 << 6 | p6] += 4 - n11 - n10 - n01;
             }
             const uint8_t A = indexed ? pidx[ink] : ink, B = indexed ? pidx[pap] : pap;
-            const uint8_t t[4] = { lut[B * 16 + B], lut[B * 16 + A], lut[A * 16 + B], lut[A * 16 + A] };   // code = left << 1 | right, 1 = INK
-            b0 = t[bits >> 6]; b1 = t[(bits >> 4) & 3]; b2 = t[(bits >> 2) & 3]; b3 = t[bits & 3];
+            // code = left << 1 | right, 1 = INK; the four pair bytes packed in a word (a stack
+            // array before, stored and reloaded every cell)
+            const uint32_t t = (uint32_t)lut[B * 16 + B] | (uint32_t)lut[B * 16 + A] << 8 |
+                               (uint32_t)lut[A * 16 + B] << 16 | (uint32_t)lut[A * 16 + A] << 24;
+            b0 = (uint8_t)(t >> ((bits >> 6) << 3)); b1 = (uint8_t)(t >> (((bits >> 4) & 3) << 3));
+            b2 = (uint8_t)(t >> (((bits >> 2) & 3) << 3)); b3 = (uint8_t)(t >> ((bits & 3) << 3));
         }
         if (fast) *(uint32_t*)(row + x0 + c * 4) = b2 | (uint32_t)b3 << 8 | (uint32_t)b0 << 16 | (uint32_t)b1 << 24;
         else {
@@ -2521,6 +2583,7 @@ static void renderFrame() {
                 return;
             }
             s_sig = sig; s_clean = 0; s_pairStale = false;
+            { uint32_t m = 0; for (uint8_t c = 0; c < 32; c++) if (keyIs(c)) m |= 1u << c; s_keyMask = m; }
             if (idx && s_cnt2) memset(s_cnt2, 0, 8192);   // the census of THIS draw (pairLutUpdate)
             if (!cow) {
                 for (int y = 0; y < HEIGHT; y++)
@@ -2813,6 +2876,12 @@ void frameEnd() {
 #endif
 }
 static void frameEndBody() {
+    arenaLendTick();
+    // The card runs ahead on the plain screens too, not only while the engine draws on
+    // core1: between LIMSHOWM's pictures (no extra video) it ran on the 2 ms cushion and
+    // underran 120-170 times a second beside the SD and the frame end (hw 2026-11-20,
+    // PERF-A und=, clamp ~40). setAhead returns at once while the value holds.
+    gsAhead(true);
     if (s_direct && !s_directWant && s_directHold && !--s_directHold) s_direct = false;
     const bool want = (mode >= 1 || keyBottom || radastan) && ensure();
     if (want != s_live) {
@@ -2838,6 +2907,25 @@ static void frameEndBody() {
     if (!s_live) { static uint8_t n; if (++n >= 60) { n = 0; ::pcprof_dump(); } }
 #endif
     if (!s_live) { if (s_h1) { h1Off(true, "video off"); Elm::remap(); } return; }
+    // A pair frame given up for the NeoGS: the card owes more than half its 24 ms backlog
+    // (GS::behind). A picture change draws the whole picture every frame (17-21 ms on core1)
+    // and stages a new palette for nearly every one; the row pumps are withheld while the
+    // beam is close (the tear rule), and the credit ran into the cap: GS time dropped, the
+    // sound broke at every change (hw 2026-11-20, LIMSHOWM: GS 9-17 MHz, cred=480000). This
+    // frame is not dealt, captured or drawn: the screen keeps the last one whole (pixels and
+    // palette, no tear), core0 does not wait for core1, and the next frame end deals and
+    // draws the screens as they are then. Never two in a row: the change runs at >= 25 FPS.
+    // (Skipping the draw on core1 never fired: its palette was staged, push at draw 57/60.)
+    static bool s_gsSkipLast;
+    if (s_pair && (mode == 1 || mode == 2) && s_q && g_elm_c1_live && !s_gsSkipLast &&
+        GS::enabled && GS::behind()) {
+        s_gsSkipLast = true;
+#if PERF_TRACE
+        s_pGsSkip++;
+#endif
+        return;
+    }
+    s_gsSkipLast = false;
     h1Manage();
     if (mode == 1 && !giga && gigaAuto && hrcFlicker()) giga = gigaAuto;
     if (s_palDirty || !s_palValid) s_fbDirty = true;
@@ -3062,9 +3150,9 @@ posted:
             }
         }
         if (s_pCellTop | s_pCellBot | s_pCellMix | s_pPushPoll | s_pPushLate | s_pPushCap) {   // the push counters on their own too (HRXC: WOWDEMO)
-            Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u | lut free %u lost %u (%u px)",
+            Debug::log("[HGFX] pair cells/fr: top %u bottom %u mixed %u | push at draw %u late %u cap %u beam %u..%u (top %d) | gs row pumps %u skipped %u, draws given up %u | lut free %u lost %u (%u px)",
                        s_pCellTop / 60, s_pCellBot / 60, s_pCellMix / 60, s_pPushPoll, s_pPushLate, s_pPushCap, s_pPushBeamMin, s_pPushBeamMax, VIDEO::screenTopRows(),
-                       s_pRowPump / 60, s_pRowSkip / 60, s_pLutFree, s_pLutLost, s_pLutLostPx);
+                       s_pRowPump / 60, s_pRowSkip / 60, s_pGsSkip, s_pLutFree, s_pLutLost, s_pLutLostPx);
             // LIVE: the pair palette as dealt this frame (s_hot->pal), the guest's HRXC table
             // (first four entries, BGR bytes as written) and whether a push is still staged.
             const uint32_t* lp = s_hot->pal;
@@ -3099,7 +3187,7 @@ posted:
             }
         }
         s_pPidxChg = s_pPalChg = s_pFullFlip = s_pLutPush = 0; s_pCellTop = s_pCellBot = s_pCellMix = 0;
-        s_pPushPoll = s_pPushLate = s_pPushCap = 0; s_pPushBeamMin = 999; s_pPushBeamMax = 0; s_pRowPump = s_pRowSkip = 0;
+        s_pPushPoll = s_pPushLate = s_pPushCap = 0; s_pPushBeamMin = 999; s_pPushBeamMax = 0; s_pRowPump = s_pRowSkip = 0; s_pGsSkip = 0;
 #if PERF_HIST
         ::pcprof_dump();   // core0 PC sampler (PcProf.cpp): only the Next and the EP dumped it
 #endif

@@ -136,4 +136,39 @@ void   gs_direct_out         (zuint16 port, zuint8 value);
 #  endif
 #endif
 
+/* Memory fast path (2026-11-20, pico-speccy): the GS-Z80 reads its 8 KB slot tables
+ * itself; only a slot without a pointer (banked PSRAM), the DAC latch slot 3 on reads and
+ * a plain GS's writes call into GS.cpp. A core1 PC profile of the NeoGS beside the
+ * eLeMeNt's pair draw had the callbacks and the dispatch at ~40 % of core1.
+ * Only the opcode fetch is inlined: READ / WRITE / FETCH sit in ~75 instruction bodies,
+ * and inlined under -O3 -funroll-loops they grew .gsovl by 7.7 KB (every NeoGS boot's
+ * heap). They get one copy each in SRAM (.time_critical: the core runs from there and a
+ * flash copy cost a veneer per access), called directly - no context argument, no
+ * indirect branch. */
+#if defined(GS_Z80_INLINE_MEM) && defined(GS_Z80_DIRECT_CALLBACKS)
+#  include <stdbool.h>
+extern const zuint8*   s_fetch_page[8];
+extern zuint8*         s_write_page[8];
+extern volatile zuint8 s_wr_slot;
+extern bool            s_ngs;
+#  define GS_FX_RAM __attribute__((noinline, section(".time_critical.gs_fx")))
+static inline zuint8 gs_fx_fetch_op(zuint16 a) {
+	const zuint8* b = s_fetch_page[a >> 13];
+	return b ? b[a & 0x1FFF] : gs_direct_fetch_opcode(a);
+}
+static GS_FX_RAM zuint8 gs_fx_fetch(zuint16 a) {
+	const zuint8* b = s_fetch_page[a >> 13];
+	return b ? b[a & 0x1FFF] : gs_direct_fetch(a);
+}
+static GS_FX_RAM zuint8 gs_fx_read(zuint16 a) {
+	const zuint8* b = s_fetch_page[a >> 13];
+	return (b && (a >> 13) != 3) ? b[a & 0x1FFF] : gs_direct_read(a);
+}
+static GS_FX_RAM void gs_fx_write(zuint16 a, zuint8 v) {
+	zuint8* p = s_write_page[a >> 13];
+	if (p && s_ngs) { s_wr_slot = (zuint8)(a >> 13); p[a & 0x1FFF] = v; }
+	else gs_direct_write(a, v);
+}
+#endif
+
 #endif /* Z80_COMPAT_H */

@@ -27,6 +27,16 @@
 #ifndef PCPROF_LINES
 #define PCPROF_LINES 4           // 14 buckets a line: 56 named, the rest is "unlisted"
 #endif
+#ifndef PCPROF_CORE
+#define PCPROF_CORE 0            // 1: core1's SysTick (armed by pcprof_core1_poll on core1)
+#endif
+#ifndef PCPROF_GSGAP
+#define PCPROF_GSGAP 0           // > 0: only samples taken while GS::pump has not run for this many us
+#endif
+#if PCPROF_GSGAP
+extern "C" volatile uint32_t gs_pump_last_us;   // GS.cpp: the last pump that ran the card
+#include "hardware/timer.h"
+#endif
 
 // The table lives in PSRAM (2 x 4 B a slot): 512 slots in SRAM were 4 KB of .bss on
 // a machine with 3.3 KB of heap left, and the Next could not open the menu on a
@@ -36,9 +46,14 @@ static uint32_t* s_key;
 static uint32_t* s_cnt;
 static volatile uint32_t s_total, s_lost;
 static uint32_t s_hz = 0;   // clk_sys the SysTick reload was derived from
+static volatile bool s_c1Arm;    // PCPROF_CORE 1: core1 arms its SysTick at its next poll
+static volatile bool s_pause;    // PCPROF_CORE 1: core0 reads the table (core1's tick cannot be masked from core0)
 
 extern "C" void __not_in_flash_func(pcprof_sample)(const uint32_t* frame) {
-    if (!s_key) return;
+    if (!s_key || s_pause) return;
+#if PCPROF_GSGAP
+    if (time_us_32() - gs_pump_last_us < (uint32_t)PCPROF_GSGAP) return;
+#endif
     const uint32_t k = (frame[6] >> PCPROF_SHIFT) + 1u;   // + 1: 0 means empty
     uint32_t h = (k * 2654435761u) >> 24;                  // 8 bits
     for (uint32_t i = 0; i < 16; i++, h = (h + 1) & (PCPROF_SLOTS - 1)) {
@@ -67,7 +82,7 @@ static void pcprof_reload() {
     systick_hw->rvr = s_hz / PCPROF_HZ - 1;
     systick_hw->cvr = 0;
     systick_hw->csr = 0x7;   // CLKSOURCE = processor, TICKINT, ENABLE
-    Debug::log("PROF: SysTick PC sampling at %u Hz (clk_sys %u)", PCPROF_HZ, (unsigned)s_hz);
+    Debug::log("PROF: SysTick PC sampling of core%u at %u Hz (clk_sys %u)", (unsigned)PCPROF_CORE, PCPROF_HZ, (unsigned)s_hz);
 }
 
 void nxprofAlloc();     // Z80_JLS.cpp: the Next prefix / PC histograms
@@ -83,7 +98,12 @@ void pcprof_start() {
     s_cnt = t + PCPROF_SLOTS;
     s_key = t;
     exception_set_exclusive_handler(SYSTICK_EXCEPTION, pcprof_isr);
-    pcprof_reload();
+    if (PCPROF_CORE == 0) pcprof_reload();
+    else s_c1Arm = true;
+}
+// core1's render_core loop: arms core1's own SysTick (the registers are per core).
+extern "C" void __not_in_flash_func(pcprof_core1_poll)() {
+    if (__builtin_expect(s_c1Arm, 0)) { s_c1Arm = false; pcprof_reload(); }
 }
 
 void pcprof_dump() {
@@ -92,7 +112,8 @@ void pcprof_dump() {
     // The 56 hottest buckets over PCPROF_LINES lines ("PROF", "PROF+", ...):
     // the handlers are spread thinly, 14 buckets covered only ~60% of the time.
     if (!s_key) return;
-    systick_hw->csr &= ~0x2u;
+    if (PCPROF_CORE == 0) systick_hw->csr &= ~0x2u;
+    else { s_pause = true; __asm volatile("dmb" ::: "memory"); }
     const uint32_t total = s_total, lost = s_lost;
     for (int part = 0; total && part < PCPROF_LINES; part++) {
         char line[240];
@@ -112,6 +133,7 @@ void pcprof_dump() {
     }
     memset(s_key, 0, PCPROF_SLOTS * sizeof(uint32_t)); memset(s_cnt, 0, PCPROF_SLOTS * sizeof(uint32_t));
     s_total = s_lost = 0;
+    if (PCPROF_CORE != 0) { s_pause = false; if (clock_get_hz(clk_sys) != s_hz) s_c1Arm = true; return; }
     if (clock_get_hz(clk_sys) != s_hz) pcprof_reload();
     else systick_hw->csr |= 0x2u;
 }
@@ -119,4 +141,5 @@ void pcprof_dump() {
 #else
 void pcprof_start() {}
 void pcprof_dump() {}
+extern "C" void pcprof_core1_poll() {}
 #endif

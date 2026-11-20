@@ -319,6 +319,7 @@ static volatile uint32_t s_run_state = GS_RUN_IDLE;
 // pump call"; reset() clears it so a paused/restarted GS doesn't try to
 // catch up time spent paused.
 static uint32_t s_pump_last_us = 0;
+extern "C" { volatile uint32_t gs_pump_last_us; }   // PcProf.cpp PCPROF_GSGAP: the core1 sampler's "card starving" gate
 static int32_t  s_pump_credit_t = 0;
 static uint32_t s_pump_frac_t = 0;
 // Idle throttle. An "unused" card is not idle on real hardware or here: fw 1.11
@@ -707,7 +708,8 @@ static inline bool __not_in_flash_func(gs_p1b3)(uint16_t address) {
 // ROM mapped, 4 channels.
 #define NGS_CFG0_RESET   0x30
 #define NGS_LOW_RAM_SIZE 0x10000   // physical RAM pages 0+1, pointer-backed
-static bool     s_ngs = false;        // mirror of GS::neogs for hot paths
+// C linkage: the redcode core reads it in its inlined write path (Z80_compat.h, GS_Z80_INLINE_MEM).
+extern "C" { bool s_ngs = false; }      // mirror of GS::neogs for hot paths
 static uint8_t  s_ngs_cfg0   = NGS_CFG0_RESET;
 static uint8_t  s_ngs_mpag   = 0;     // MPAG   #00
 static uint8_t  s_ngs_pg2_b0 = 0;     // RTL mode_pg2[0] latch — only #0A reads it (ngs_damnport1)
@@ -769,7 +771,7 @@ static uint32_t       s_ngs_ram_total = 0;   // full RAM incl. the 64 KB low par
 static GS_OVL_BSS uint32_t s_bank_off[8];
 static uint32_t s_bank_woff[8] = {NGS_BANK_NONE, NGS_BANK_NONE, NGS_BANK_NONE, NGS_BANK_NONE,
                                   NGS_BANK_NONE, NGS_BANK_NONE, NGS_BANK_NONE, NGS_BANK_NONE};
-static GS_OVL_BSS uint8_t* s_write_page[8];
+extern "C" { GS_OVL_BSS uint8_t* s_write_page[8]; }   // C linkage: Z80_compat.h's inlined write
 
 // Private SRAM cache for PSRAM (banked sample pages). XIP cache on RP2350 is
 // shared between cores — core0 video rendering evicts lines we need. A small
@@ -861,7 +863,7 @@ static inline zuint8 __not_in_flash_func(gs_pc_read)(uint32_t psram_off) {
 // NOROM/MPAG/MPAGEX/EXPAG (ngs_rebuild_map), leaving nullptr only where a
 // window maps PSRAM-resident RAM (physical pages >= 2) — those reads go
 // through s_bank_off + the SRAM prefetch cache.
-static GS_OVL_BSS const uint8_t* s_fetch_page[8];
+extern "C" { GS_OVL_BSS const uint8_t* s_fetch_page[8]; }   // C linkage: Z80_compat.h's inlined fetch / read
 
 static inline zuint8 __not_in_flash_func(gs_mem_raw_read)(zuint16 address) {
     const uint8_t* base = s_fetch_page[address >> 13];
@@ -893,6 +895,8 @@ static int      s_mp_on = -1;
 static uint32_t s_mp_cnt[3][1025];          // [r,w,f][4 KB block of 4 MB; 1024 = ROM/other]
 static uint32_t s_mp_pc[256];
 static uint32_t s_mp_fetches = 0;
+static uint32_t s_mp_op[4][256];            // opcode mix per prefix plane (gs_mp_dump)
+static uint8_t  s_mp_plane = 0;
 static void gs_mp_dump() {
     static const char* kn[3] = { "rd", "wr", "op" };
     for (int k = 0; k < 3; k++) {
@@ -917,6 +921,22 @@ static void gs_mp_dump() {
     }
     Debug::log("%s", line);
     memset(s_mp_pc, 0, sizeof s_mp_pc);
+    // [GSOPS]: the opcode mix (M1 fetches) - what z80_run's switch specialises
+    // (tools/gen_gs_switch.py). Plane 0 = unprefixed, 1 = after CB, 2 = ED, 3 = DD/FD.
+    static const char* pn[4] = { "", "CB", "ED", "XY" };
+    for (int pl = 0; pl < 4; pl++) {
+        uint64_t tot = 0; for (int i = 0; i < 256; i++) tot += s_mp_op[pl][i];
+        n = snprintf(line, sizeof line, "[GSOPS] %s%s %u%%:", pn[pl], pl ? "" : "base",
+                     (unsigned)(tot * 100ull / (s_mp_fetches ? s_mp_fetches : 1)));
+        for (int t = 0; t < (pl ? 12 : 40) && tot; t++) {
+            int best = 0; for (int i = 1; i < 256; i++) if (s_mp_op[pl][i] > s_mp_op[pl][best]) best = i;
+            if (!s_mp_op[pl][best] || n > (int)sizeof line - 16) break;
+            n += snprintf(line + n, sizeof line - n, " %02X:%.1f", best, s_mp_op[pl][best] * 100.0 / s_mp_fetches);
+            s_mp_op[pl][best] = 0;
+        }
+        Debug::log("%s", line);
+        memset(s_mp_op[pl], 0, sizeof s_mp_op[pl]);
+    }
     s_mp_fetches = 0;
 }
 static inline void gs_mp(const uint8_t* base, zuint16 a, int k) {
@@ -934,6 +954,10 @@ static inline void gs_mp(const uint8_t* base, zuint16 a, int k) {
     s_mp_cnt[k][blk]++;
     if (k == 2) {
         s_mp_pc[a >> 8]++;
+        const uint8_t op = gs_mem_raw_read(a);
+        const uint8_t pl = s_mp_plane;
+        s_mp_op[pl][op]++;
+        s_mp_plane = pl ? 0 : op == 0xCB ? 1 : op == 0xED ? 2 : (op | 0x20) == 0xFD ? 3 : 0;
         if (++s_mp_fetches >= 16000000u) gs_mp_dump();
     }
 }
@@ -942,7 +966,7 @@ static inline void gs_mp(const uint8_t* base, zuint16 a, int k) {
 #define GS_MP(base, a, k) ((void)0)
 #endif
 
-static zuint8 __not_in_flash_func(gs_cb_read)(void* ctx, zuint16 address) {
+static __attribute__((noinline)) zuint8 __not_in_flash_func(gs_cb_read)(void* ctx, zuint16 address) {
     (void)ctx;
     const uint8_t* base = s_fetch_page[address >> 13];
     GS_MP(base, address, 0);
@@ -964,11 +988,17 @@ static zuint8 __not_in_flash_func(gs_cb_read)(void* ctx, zuint16 address) {
     return gs_pc_read(off);
 }
 
-static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 value) {
+// The 8 KB slot of the card's last write (gs_cb_write), counted beside the PC on every
+// tick: a MOD player's mixing buffer is a data page the PC never visits, and its writes
+// went to PSRAM - the store behind each one stalled the next access, 32 % of core1 in
+// gs_cb_write's first bucket (hw 2026-11-20, LIMSHOWM, core1 PC profile).
+extern "C" { volatile uint8_t s_wr_slot; }   // read by the NeoGS SRAM page cache sampler (GS::step); set by Z80_compat.h too
+static __attribute__((noinline)) void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 value) {
     (void)ctx;
     if (s_ngs) {
         uint8_t slot = address >> 13;
         uint8_t* p = s_write_page[slot];
+        s_wr_slot = slot;
         GS_MP(p, address, 1);
         if (p) { p[address & 0x1FFF] = value; return; }
         uint32_t off = s_bank_woff[slot];
@@ -1018,8 +1048,9 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
 // ack) and only with the ZX-DMA window closed — the one core0 path into card
 // RAM. Butter-backed cards only (SPI PSRAM keeps its private line cache).
 #ifndef NGS_SRAM_PAGES
-#define NGS_SRAM_PAGES 2
+#define NGS_SRAM_PAGES 3          // slots; the heap gives at most NGS_SH_HEAP_MAX, a lender (the eLeMeNt arena) all
 #endif
+#define NGS_SH_HEAP_MAX 2
 #define NGS_SH_N        (NGS_SRAM_PAGES > 0 ? NGS_SRAM_PAGES : 1)
 #define NGS_SH_PAGE     0x4000u
 #define NGS_SH_SAMPLES  8192u          // card INTs per decision (~0.22 s at 37.5 kHz)
@@ -1738,6 +1769,7 @@ static __attribute__((noinline)) void ngs_sh_rebalance() {
             changed = true;
         }
         memcpy(s_sh_buf[victim], ngs_butter_ptr((uint32_t)(want - 1) << 14), NGS_SH_PAGE);
+        GS_PERF(Debug::log("NGS: page %u -> SRAM slot %d (%p), %u hits", (unsigned)(want - 1), victim, s_sh_buf[victim], (unsigned)wantHits));
         __dmb();                                          // bytes before the page number
         if (s_ngs_dma_wr != wr0) break;                   // core0 wrote meanwhile: stay in butter
         s_sh_page[victim] = want;
@@ -1745,6 +1777,73 @@ static __attribute__((noinline)) void ngs_sh_rebalance() {
     }
     if (changed) ngs_rebuild_map();
 }
+
+// Pages LENT by the eLeMeNt's HGFX arena (GS::shLend / shReclaim, 2026-11-20). The arena
+// (57 KB of SRAM, ElmHgfx) holds HGFX's 8 bpp buffer rows only in those modes; in the
+// pair frame (LIMSHOWM's HRXC) it sat idle while the card ran short of core1 time beside
+// a 17-27 ms draw (GS 17-18 MHz of 20, cred at the cap, hw 2026-11-20). core0 posts the
+// command, this core takes it at the top of the next pump (the pump lock held: the card
+// is not stepping). A return moves every cached page home, under the same rule as
+// ngs_sh_rebalance: not while core0 writes card RAM through the ZX-DMA window - core0
+// asks again next frame.
+static volatile uint8_t   s_lend_cmd;          // 1 adopt s_lend_ptr / s_lend_n, 2 give everything back
+static uint8_t*           s_lend_ptr;
+static uint32_t           s_lend_n;
+static volatile uint8_t   s_lend_have;         // slots holding lent memory (core0 reads: 0 = free to reuse)
+static uint8_t            s_sh_lent;           // bit k: s_sh_buf[k] is lent, not ours to free
+static __attribute__((noinline)) void ngs_lend_service() {
+    const uint8_t cmd = s_lend_cmd;
+    if (cmd == 1) {
+        if (!s_sh_buf[0] && s_lend_ptr) {        // only into an empty cache (never beside heap pages)
+            uint32_t n = s_lend_n < (uint32_t)NGS_SH_N ? s_lend_n : (uint32_t)NGS_SH_N;
+            for (uint32_t k = 0; k < n; k++) { s_sh_page[k] = 0; s_sh_buf[k] = s_lend_ptr + k * NGS_SH_PAGE; }
+            s_sh_lent = (uint8_t)((1u << n) - 1);
+            memset(s_hot_pg, 0, sizeof s_hot_pg); memset(s_hot_hits, 0, sizeof s_hot_hits); s_sh_samples = 0;
+            s_lend_have = (uint8_t)n;
+            Debug::log("NGS: lent cache pages %u x 16 KB at %p..%p", (unsigned)n, s_lend_ptr, s_lend_ptr + n * NGS_SH_PAGE);
+        }
+        __dmb();
+        s_lend_cmd = 0;
+        return;
+    }
+    if (cmd == 2) {
+        static uint32_t s_wr_seen;
+        const uint32_t wr0 = s_ngs_dma_wr;
+        const bool quiet = !g_ngs_zxdma || wr0 == s_wr_seen;
+        s_wr_seen = wr0;
+        if (!quiet) return;                      // core0 is writing through the window: next pump
+        bool changed = false;
+        for (int k = 0; k < NGS_SH_N; k++) {
+            if (!(s_sh_lent & (1u << k))) continue;
+            if (s_sh_page[k]) {
+                memcpy(ngs_butter_ptr((uint32_t)(s_sh_page[k] - 1) << 14), s_sh_buf[k], NGS_SH_PAGE);
+                __dmb();
+                s_sh_page[k] = 0;
+                changed = true;
+            }
+        }
+        if (changed) ngs_rebuild_map();
+        __dmb();
+        for (int k = 0; k < NGS_SH_N; k++) if (s_sh_lent & (1u << k)) s_sh_buf[k] = nullptr;
+        s_sh_lent = 0;
+        __dmb();
+        s_lend_have = 0;
+        s_lend_cmd = 0;
+    }
+}
+void GS::shLend(uint8_t* p, uint32_t bytes) {
+    if (!enabled || !s_ngs || s_gs_use_spi || s_lend_have || s_lend_cmd || !p) return;
+    s_lend_ptr = p;
+    s_lend_n = bytes / NGS_SH_PAGE;
+    if (!s_lend_n) return;
+    __dmb();
+    s_lend_cmd = 1;
+}
+void GS::shReclaim() {
+    if (!enabled) { s_lend_have = 0; s_lend_cmd = 0; return; }   // no pump runs: nothing uses them
+    if (s_lend_have || s_lend_cmd == 1) s_lend_cmd = 2;
+}
+bool GS::shLent() { return enabled && (s_lend_have != 0 || s_lend_cmd != 0); }
 
 // ---------------------------------------------------------------
 // Minimal VS1011 MP3-decoder model — just enough for players to believe a
@@ -2212,7 +2311,7 @@ static inline void gs_init_fetch_pages(void) {
     for (int i = 4; i < 8; i++) s_fetch_page[i] = nullptr;
 }
 
-static zuint8 __not_in_flash_func(gs_cb_fetch_opcode)(void* ctx, zuint16 address) {
+static __attribute__((noinline)) zuint8 __not_in_flash_func(gs_cb_fetch_opcode)(void* ctx, zuint16 address) {
     (void)ctx;
     const uint8_t* base = s_fetch_page[address >> 13];
     GS_MP(base, address, 2);
@@ -2220,7 +2319,7 @@ static zuint8 __not_in_flash_func(gs_cb_fetch_opcode)(void* ctx, zuint16 address
     // Defensive fallback if firmware ever jumps into banked PSRAM.
     return gs_mem_raw_read(address);
 }
-static zuint8 __not_in_flash_func(gs_cb_fetch)(void* ctx, zuint16 address) {
+static __attribute__((noinline)) zuint8 __not_in_flash_func(gs_cb_fetch)(void* ctx, zuint16 address) {
     (void)ctx;
     const uint8_t* base = s_fetch_page[address >> 13];
     if (base) return base[address & 0x1FFF];
@@ -2285,6 +2384,18 @@ void GS::setAhead(uint32_t ms) {
 #if !HOST_BUILD
     if (ms && enabled && !s_ngs_boot_hold) s_ahead_inject_t = ms * (GS_CLOCK_HZ / 1000u);
 #endif
+}
+
+// The eLeMeNt pair draw withholds its row pumps while the beam is close (tear-free); at a
+// picture change it draws every frame, the beam is always close, and the credit ran into
+// the 24 ms cap: GS time dropped, the sound broke at every change (hw 2026-11-20, LIMSHOWM:
+// GS 9-17 MHz, cred=480000, row pumps 20 given / 129 withheld). Past half the cap the
+// sound wins over the tear.
+bool GS::behind() {
+    if (!s_ahead_ms) return false;
+    const uint32_t gap = time_us_32() - s_pump_last_us;
+    const int32_t owed = s_pump_credit_t + (int32_t)(((uint64_t)(gap < 30000u ? gap : 30000u) * s_t_per_us_q16) >> 16);
+    return owed > s_credit_cap / 2;
 }
 
 void GS::setClock() {
@@ -2487,9 +2598,11 @@ bool GS::init(uint32_t ram_size_bytes) {
         // while the heap keeps NGS_SH_RESERVE free after every 16 KB copy. Never on
         // the Spectrum Next: its video state (~19.5 KB) and hot-page frames are
         // claimed AFTER this, and a 16 KB copy left the session with 4 KB of heap
-        // (hw 2026-11-04, 576p + NeoGS). Nor on the eLeMeNt ZX: its HGFX buffer (48 KB +
-        // 16 KB reserve, ElmHgfx sramPromote) is claimed lazily later, and with the cache
-        // in its place HGFXAGON fell back to the all-PSRAM speed (2026-11-05).
+        // (hw 2026-11-04, 576p + NeoGS). Nor from the heap on the eLeMeNt ZX: its HGFX buffer
+        // (48 KB + 16 KB reserve, ElmHgfx sramPromote) is claimed lazily later, and with the
+        // cache in its place HGFXAGON fell back to the all-PSRAM speed (2026-11-05).
+        // The eLeMeNt gets its pages LENT from the HGFX arena instead (GS::shLend, below):
+        // 57 KB of SRAM nothing uses while a program stays out of the 8 bpp modes.
         #define NGS_SH_RESERVE (64u * 1024u)
         const bool shNext = Config::arch == A_NEXT || Config::arch == A_ELM;   // final here: setup's requestMachine ran
         memset(s_sh_page, 0, sizeof s_sh_page);
@@ -2497,9 +2610,10 @@ bool GS::init(uint32_t ram_size_bytes) {
         memset(s_hot_hits, 0, sizeof s_hot_hits);
         s_sh_samples = 0;
         int nsh = 0;
+        s_sh_lent = 0; s_lend_have = 0; s_lend_cmd = 0;
         for (int k = 0; k < NGS_SH_N; k++) {
             s_sh_buf[k] = nullptr;
-            if (s_gs_use_spi || shNext || getFreeHeap() < NGS_SH_PAGE + NGS_SH_RESERVE) continue;
+            if (s_gs_use_spi || shNext || k >= NGS_SH_HEAP_MAX || getFreeHeap() < NGS_SH_PAGE + NGS_SH_RESERVE) continue;
             s_sh_buf[k] = (uint8_t*)tryMalloc(NGS_SH_PAGE);
             if (s_sh_buf[k]) nsh++;
         }
@@ -2563,7 +2677,8 @@ void GS::deinit() {
     gs_ram_size = 0;
     s_workRamBuf.free();    s_gs_work_ram = nullptr;   // free() is a no-op for the butter alias (never allocated)
 #if NGS_SRAM_PAGES > 0
-    for (int k = 0; k < NGS_SH_N; k++) { free(s_sh_buf[k]); s_sh_buf[k] = nullptr; s_sh_page[k] = 0; }
+    for (int k = 0; k < NGS_SH_N; k++) { if (!(s_sh_lent & (1u << k))) free(s_sh_buf[k]); s_sh_buf[k] = nullptr; s_sh_page[k] = 0; }
+    s_sh_lent = 0; s_lend_have = 0; s_lend_cmd = 0;   // lent arena pages: the lender's again
 #endif
     s_ngs_low_ram = nullptr;
     s_ngs_blank   = nullptr;
@@ -3011,6 +3126,9 @@ void __not_in_flash_func(GS::pump)() {
         return;
     }
     if (!gs_try_begin_pump()) { GS_DBG_PUMP(gs_dbg_pump_exits++); return; }
+#if NGS_SRAM_PAGES > 0
+    if (__builtin_expect(s_lend_cmd != 0, 0)) ngs_lend_service();   // the eLeMeNt's arena pages (GS::shLend)
+#endif
     GS_PERF(s_perf_pump_calls++);
     // Wall-clock-locked pacing. Independent of how fast the emulator can
     // crunch instructions — we always advance GS-Z80 time at exactly
@@ -3122,6 +3240,7 @@ void __not_in_flash_func(GS::pump)() {
     s_pump_credit_t += (int32_t)(scaled >> 16);
     s_pump_frac_t = (uint32_t)scaled & 0xFFFFu;
     s_pump_last_us = now;
+    GS_PERF(gs_pump_last_us = now);
     if (__builtin_expect(s_ahead_inject_t != 0, 0)) { s_pump_credit_t += (int32_t)s_ahead_inject_t; s_ahead_inject_t = 0; }
     // Bound the backlog. Under a genuine capacity deficit (hw: HDMI-audio ISR
     // load at 378 MHz leaves ~16.6M T/s of core1 for a 20 MHz GS) the credit
@@ -3245,6 +3364,9 @@ static void gs_lk_run(int32_t floor_t) {
 
 void GS::pumpGuest() {
     if (!enabled) return;
+#if NGS_SRAM_PAGES > 0
+    if (s_lend_cmd) ngs_lend_service();   // the eLeMeNt's arena pages: here the card runs on this thread
+#endif
     // Monotonic guest clock: the per-frame counter wraps at the frame end, and a
     // frame with no host access would otherwise look like a few T (first cut:
     // GS at 13 of 20 MHz).
@@ -3398,8 +3520,9 @@ int __not_in_flash_func(GS::step)(int tstates) {
             // NeoGS SRAM page cache: sample the card PC on the 37.5 kHz tick (not
             // the INT ack — TheLink's card runs with its timer INT disabled).
             if (s_sh_buf[0]) {
-                const uint16_t p = s_slot_pg[Z80_PC(s_cpu) >> 13];
-                if (p) {
+                for (int src = 0; src < 2; src++) {      // the page the card executes, the page it last wrote
+                    const uint16_t p = s_slot_pg[src ? (s_wr_slot & 7) : (Z80_PC(s_cpu) >> 13)];
+                    if (!p) continue;
                     int j = 0, lo = 0;
                     for (; j < 8 && s_hot_pg[j] != p; j++)
                         if (s_hot_hits[j] < s_hot_hits[lo]) lo = j;
