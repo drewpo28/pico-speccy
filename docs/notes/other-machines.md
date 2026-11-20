@@ -660,7 +660,8 @@ when absent; URAM layout 6 (zone 0, pages relative to `e_zxi_00F`) writes = SST3
 Area1 = the 8 KB FRAM (`fram.bin`). ROMs `rom[0..3]` = blocks 0-3 of the Area, esxDOS from block 4 when `e_02D` bit 0
 (`DivMMC::setRom`), both bound at RESET only (FLASH2A returns to BASIC between blocks). FRAM `#2000+N` -> `e_zxi_N` at
 power-up only. URAM also on with `e_001 = #FF` (old FLASH6, SetUp). The MB03+SD esxDOS build needs the LIFO (`IN (#2B)` ->
-`OUT (#E3)`): defaults = the SetUp's table + Pentagon 1024. SetUp entry = block 7 as ROM + `g_elm_nodiv` until the first
+`OUT (#E3)`): defaults = the SetUp's table + Pentagon 1024 (since 2026-11-20 `e_02D` bit 0 = 0 as in the table: our
+built-in esxDOS by default, `Config::esxdos_ver` picks it; a non-blank FRAM keeps what the SetUp saved; NOT hw-tested). SetUp entry = block 7 as ROM + `g_elm_nodiv` until the first
 Element port write (Alt+F11 Reset to... > SetUp (firmware); the Machine-menu row was removed 2026-11-03; bench `PICOSPECCY_ELM_SETUP=1`). FLASHESX/FLASHZXD/FlashSetUp_V2,
 the flashed esxDOS, Area 3 boot, SetUp menu/R/L and ElCoreUp's graceful failure all ran on the bench. `tools/elm_flash_test.cpp`.
 **Personalities (2026-11-03, hw-confirmed DVp2w, committed ef5a1d58):** `e_zxi_000` is armed at reset only (`Elm::armPersonality`, FRAM at

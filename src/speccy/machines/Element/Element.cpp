@@ -139,7 +139,7 @@ static bool s_flashOpen;              // zone 0 shows the flash (layout 6)
 static const uint8_t kDefaults[0x40] = {
     0x07, 0x01, 0x3F, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01,
-    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x01,
     0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00 };
 
 static bool s_setupBoot, s_setupRom, s_setupOnce;
@@ -1650,11 +1650,13 @@ void reset() {
     s_r->g[0x049] = 0x5E;   // SoundDMA
     s_r->g[0x051] = 0x5F;   // eINT
     s_r->g[0x061] = 0x60;   // LCU2
-    // The SetUp's own "Load defaults" table (setup-20260406, D3ED), two of ours on top:
-    // e_000 = Pentagon 1024 (the owner's base personality, the table says 128/+2) and
-    // e_02D bit 0 = esxDOS from the flash block when one is flashed (the table boots the
-    // FPGA copy). LIFO and DMA on: the MB03+SD esxDOS build keeps its divMMC control
-    // byte in the LIFO (IN A,(#2B) before OUT (#E3)) and hangs without it.
+    // The SetUp's own "Load defaults" table (setup-20260406, D3ED), one of ours on top:
+    // e_000 = Pentagon 1024 (the owner's base personality, the table says 128/+2).
+    // e_02D bit 0 = 0 like the table: esxDOS is our built-in one (the "FPGA copy", the
+    // version Config::esxdos_ver picks); bit 0 = 1 takes block 4 of the ROM Area, the
+    // MB03+SD build (owner 2026-11-20: ours by default). LIFO and DMA on: the MB03+SD
+    // build keeps its divMMC control byte in the LIFO (IN A,(#2B) before OUT (#E3)) and
+    // hangs without it.
     memcpy(s_r->e, kDefaults, sizeof kDefaults);
     // The FRAM's SetUp area (#2000 + N = e_zxi_N, 64 bytes) is what the board loads at
     // power-up; a blank FRAM (no file yet, or defaults never saved) keeps the table.
