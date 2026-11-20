@@ -381,13 +381,18 @@ ELM_INL int dstE() { return (s_e[REG_VP] >> 1) & 1; }
 ELM_INL int srcE() { return (s_e[REG_VP] >> 2) & 1; }
 static inline uint64_t now() { return CPU::global_tstates + CPU::tstates; }
 
-bool ensure() {
+bool hotEnsure() {
     if (!s_hot) {
         s_hot = (Hot*)Elm::tailAlloc(sizeof(Hot));   // per pixel: SRAM, the pages57 tail first
         if (s_hot) { memset(s_hot->mapK, 0xFF, sizeof s_hot->mapK); memset(s_hot->cnt, 0, sizeof s_hot->cnt); s_hot->lutOn = false; }
         if (s_hot) for (int n = 0; n < 16; n++)
             s_hot->nib[n] = ((n & 8) ? 0xFFu : 0) | ((n & 4) ? 0xFF00u : 0) | ((n & 2) ? 0xFF0000u : 0) | ((n & 1) ? 0xFF000000u : 0);
     }
+    return s_hot != nullptr;
+}
+
+bool ensure() {
+    hotEnsure();
     if (!s_buf) {
         s_buf = (uint8_t*)Buffer::palloc(BUF_SIZE + COLOURS, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (s_buf) { memset(s_buf, 0, BUF_SIZE + COLOURS); s_col = s_buf + BUF_SIZE; }

@@ -75,3 +75,65 @@ in SRAM is still out of reach without 4.
   `setup: COMPLETE, freeHeap=`, HGFXAGON `HGFX buffer 0 in SRAM (the arena): 5 of 6 blocks + 1 from the heap`
   (sramPromote now takes the blocks past the arena from the heap when free >= 8 KB + SRAM_KEEP;
   `s_sramOwn` marks them for sramOff; bench-run with PICOSPECCY_ELM_ARENA=48896).
+
+## Heap walk on hw 2026-11-20 (DVp2w, `debug/DVp2w-elm-perf2-1.1.3`, PLANETOS running)
+
+SRAM dumped over OpenOCD (`dump_image`, 2.5 s, target not halted), dlmalloc chunks walked and
+each named by the word that points at it (script: chunk header walk from `__malloc_sbrk_base`,
+referrers resolved with `nm -S`). Boot said `heap free 18784 largest 8324`.
+
+**23 144 B of region 0 are lost, and `getFreeHeap` does not count them.** Region 0 =
+`20054870..20065A60`; its chunks end at a dlmalloc fencepost at `2005FFF0`, and
+`2005FFF8..20065A60` is never handed out (a second dump a minute later: 0 bytes changed). The
+cursor jumped to region 1 (the released Next window) when the arena was claimed early, and a
+jump strands whatever the current region has above the cursor. The jump itself comes from
+`getLargestAllocatable()` (OSDMain.cpp): it binary-searches with REAL `malloc`/`free`, starting
+at `getFreeHeap()`, which includes the stranded 57 KB of region 1; the first probe that region 0
+cannot take makes dlmalloc extend top, `hr_sbrk` jumps, and the probe's `free` cannot undo it.
+dlmalloc 2.6.4 also asks `nb + MINSIZE` (page-rounded) for an extension, not `nb - top`, so a
+region is entered by any request bigger than its own gap. Same mechanism on every machine whose
+heap has two regions. NOT fixed yet.
+
+| Chunk(s) | Bytes | Where it could go |
+|---|---|---|
+| `Hgfx::s_arena` (region 1) | 46 088 | stays (HGFX rows) |
+| `Hgfx::s_hot` | 8 280 | the pages57 tail: it is allocated AFTER Regs/Sdma/Sid, which took 5.6 KB of the 10 216 B tail, so Hot (8 268) no longer fits there. Hot + Regs first = 9 484 B in the tail, Sdma + Sid (4.4 KB) to the heap: +3.8 KB |
+| TSFM: 2 x OpnFm 944 + `s_sin_tab` 2 056 + `s_tl_base` 520 + `audioBufferFM` 1 288 | 5 752 | lazy, first #FFFD FM write |
+| AY chip1 1 624, `saaChip` 1 512, Covox buffer 1 288 | 4 424 | lazy, first port write |
+| `s_dbg_ring` | 4 104 | console ring; PSRAM if both cores can write it there |
+| page descriptors (`MemESP::ram` 1 040 + 3 104, `acc_bank` 800, `MemESP::rom` 800) | 5 744 | stays (remap) |
+| `aq_blob` (HDMI audio queue) | 3 080 | stays (ISR) |
+| `FileUtils::fileTypes` std::strings (7 chunks) | 1 488 | static const tables |
+| ZiFi AT emulator state `(anon)::s` | 1 336 | lazy (first ZiFi port access) or PSRAM |
+| DivMMC sector/ide/identity | 1 256 | stays (esxDOS on) |
+| `VIDEO::vga` / sharedFB | 1 160 | stays |
+| libstdc++ `emergency_pool` | 1 096 | 0 with the pool tunable / no exceptions |
+| Buffer pools `g_butter` 776, `g_swapAlloc` 200, `g_flash` 104 | 1 080 | stays |
+| `g_dma_buf` (DMA attr flags) | 368 | stays |
+| strings (`snap_export_dir`, `MountPoint`), `SaveRect` | 80 | - |
+
+Free: 7 528 (region 0, the old top in the bins) + 8 344 (region 1 top) + 2 912 (region 1 above
+the cursor) = 18 784 = the boot figure; the largest single piece 8 324 is what tryMalloc can get.
+
+### Fixes 2026-11-20 (`debug/DVp2w-elm-heap1-1.1.3`, PERF, build 17:43:06)
+
+**hw-confirmed 2026-11-20 on DVp2w (eLeMeNt, log `...17.43.14.432`):** `[OVL] heap: 23136 B left
+below a jump given back to malloc` (the host test's figure), `CPU reset` takes 4 416 B (SoundDMA +
+SID; Hot is in the tail), boot `entering ESPectrum::loop(), freeHeap=45624` (was 18 784); PLANETOS
+`[ELM] mem: ... heap free 44176 largest 32420` (was 18 784 / 8 324), realFPS 47.5-48.0, no OOM.
+Other machines with two heap regions (TS-Conf, Pentagon + DMA) NOT hw-tested yet.
+
+1. **Jump tail back to malloc (generic, every machine with two heap regions).** `hr_sbrk`
+   records `cursor..region end` when it jumps (`HeapRegions::left[]`, the old region's hwm =
+   hi); `heap_reclaim_left()` (CodeOverlay.cpp) lays it out with `hr_left_chunk` the way
+   malloc_extend_top lays out an old top (PREV_INUSE, two SIZE_SZ fenceposts) and `free()`s
+   it, OUTSIDE malloc. Called from `getFreeHeap`, `getContiguousHeap`, after the probes of
+   `getLargestAllocatable` (re-measures when a probe jumped) and after `tryMalloc`'s malloc.
+   Boot log shows `[OVL] heap: N B left below a jump given back to malloc` with the region
+   lines. Host: `tools/heap_regions_test.c` scenario 6 (the hw layout, newlib 4.1.0
+   `mallocr.c` — the recipe's `_mallocr.c` name was wrong) gives back a 23 136 B tail,
+   a 22 880 B malloc lands in it, churn + resident windows clean; scenarios 1-5 unchanged.
+   Expected hw: eLeMeNt boot heap 18.8 -> ~42 KB, largest ~23 KB. Cost: .data +32 B, code in flash.
+2. **Hot first in the pages57 tail.** `Hgfx::hotEnsure()` (the s_hot half of `ensure()`) runs
+   in `Elm::reset` right after Regs: Hot + Regs = 9 488 B in the 10 216 B tail, SoundDMA + SID
+   (4.4 KB) to the heap. Expected +3.8 KB. `.elmovl` unchanged (17 128 / 17 152 PERF).

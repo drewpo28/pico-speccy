@@ -1610,6 +1610,9 @@ void reset() {
     s_corePos = 0;
     if (!s_r) s_r = (Regs*)tailAlloc(sizeof(Regs));
     if (!s_r) { Debug::log("[ELM] no heap for the ZXi registers"); return; }
+    // Hot (8 268 B) before SoundDMA / SID take their 4.4 KB: Hot + Regs fit the 10 216 B
+    // pages57 tail, Hot after them did not and went to the heap (hw heap walk 2026-11-20).
+    Hgfx::hotEnsure();
     if (s_powered) memcpy(s_keep, s_r->e, sizeof s_keep);
     memset(s_r, 0, sizeof(Regs));
     wrKind = s_r->win;

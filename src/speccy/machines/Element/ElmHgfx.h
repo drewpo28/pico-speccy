@@ -38,6 +38,7 @@ extern const uint8_t* gigaOther;  // giga 1: the screen not shown
 extern const uint8_t* hrxcTable;  // HRXC: the colour table latched at the frame start
 
 bool    ensure();             // the buffers (PSRAM), first use
+bool    hotEnsure();          // the per-pixel tables (SRAM): Elm::reset takes them first, the pages57 tail fits them
 void    setMode(uint8_t m);   // g_zxi_001
 int     vramPages();          // size of the VRAM window in 256-byte pages
 void    reset();
