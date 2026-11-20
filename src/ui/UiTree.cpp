@@ -1181,6 +1181,9 @@ static const Node kTape[] = {
     NM_BOOL_EN(TXT_TAPE_REALIN " (GP" _PIN_XSTR(LOAD_WAV_PIO) ")",
                                   SET_TAPE_REALIN,  nullptr, p_wavPinFree),
 #endif
+#if PICOSPECCY_WIFI
+    NM_ACTIONV(TXT_TAPE_BT,       act_tapeBt,       vl_btTape, nullptr),
+#endif
     NM_BOOL_EN(TXT_TAPE_FASTLOAD, SET_FLASHLOAD,    nullptr, p_noTapeWear),
     NM_BOOL  (TXT_TAPE_RG,        SET_TAPE_RG,      nullptr),
     NM_BOOL  (TXT_TAPE_AUTOSTART, SET_TAPE_ASTART,  nullptr),
@@ -1248,7 +1251,7 @@ static bool p_esxRow() {
     if (!p_hasSD()) return false;
     if (a == A_NEXT || a == A_ELM) return true;
     return !devOwnBus() && !devProfi() && !p_plus3On() &&
-           a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
+           a != A_TSCONF && a != A_ATM;
 }
 // The eLeMeNt's "divSD + MB02+" (SetUp e_zxi_001 = 02): the card's 512 KB come from
 // butter PSRAM there, not from the URAM strip (MB02::setExternalRam), so its row shows.
@@ -1282,6 +1285,12 @@ static bool p_rtcRow() {
 // card, a partition, a window). Greyed only while esxDOS is off.
 static bool p_esxImages() {
     return Stage::get(SET_ESXDOS) != 0;
+}
+// esxDOS ROM release. 0.8.9 is in .psramroms: with that range traded to the GM.DLS
+// bank only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
+// 0.9.0 has a TC2068 build (DivMMC::romSync).
+static bool p_esxVerRow() {
+    return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
@@ -1345,6 +1354,13 @@ static const Option opt_esxdos[] = {
     { "DivIDE", 2 },
     { "DivSD",  3 },
 };
+// esxDOS ROM: the value IS Config::esxdos_ver. 0.9.0 boots only from a /SYS of its
+// own version (and 0.8.9 not from 0.9.0's), so the row is what lets a card that has
+// not been updated yet keep working.
+static const Option opt_esx_ver[] = {
+    { "0.9.0", 0 },
+    { "0.8.9 (old /SYS)", 1, "0.8.9" },
+};
 
 // Values ARE Config::mouse_swap. Auto: the first button the user presses this session
 // becomes LEFT (kept until F12 — a machine reset does not forget it).
@@ -1393,6 +1409,7 @@ static const Node kDiskP3[] = {
 };
 static const Node kEsx[] = {
     NM_RADIO   (TXT_IFACE_MODE,    SET_ESXDOS, opt_esxdos, nullptr),
+    NM_RADIO_EN(TXT_HW_ESX_ROM,    SET_ESXDOS_VER, opt_esx_ver, p_esxVerRow, p_esxImages),
     NM_DYN_EN  (TXT_HW_ESX_IMAGES, slots_buildEsx, slots_keyEsx, nullptr, p_esxImages),
 };
 static const Node kMb02[] = {
@@ -1905,6 +1922,10 @@ static const Option opt_ui_vga_pal[] = {
     { "Solid 2:2:2", 1 },     // on-grid twin: solid fills, coarser colours
     { "Dithered",    0 },     // full-depth scheme through the Bayer dither
 };
+static const Option opt_led_style[] = {    // Config::led_style
+    { "Classic", 0 },
+    { "Colour",  1 },
+};
 static const Option opt_ui_corners[] = {
     { "Rounded", 1 },
     { "Square",  0 },
@@ -1947,11 +1968,15 @@ static const Node kInterface[] = {
     // which came over from Devices — it is indication, not an interface setting
     // of the machine.
     NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
+    NM_RADIO_EN (NM_IND TXT_HW_LEDSTYLE, SET_LED_STYLE, opt_led_style, nullptr, p_ledOn),
     NM_BOOL_EN  (NM_IND TXT_HW_LEDPANEL, SET_LED_PANEL, nullptr, p_ledOn),
     // Always available: the legend is reference material, useful before you turn
     // the indicators on (to see what they will mean) as much as after.
     NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
     NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
+    // The corner HDD / CD icon: here, not under Devices > IDE / HDD, because DivIDE
+    // (esxDOS in IDE mode) lights it too and that menu is hidden without an IDE scheme.
+    NM_BOOL     (NM_IND TXT_IDE_LED,   SET_IDE_LED,   nullptr),
 };
 
 // The footer verb line of the profile list (K_PICK keeps it in opts[0]; the right
@@ -2094,7 +2119,7 @@ static const Node kNetwork[] = {
 
 #if PICOSPECCY_WIFI
 // Bluetooth on the on-chip radio (W boards): audio out (A2DP source), input
-// devices (HID host). Each lists the devices added so far + "Add new...".
+// devices (HID host), tape from a phone (A2DP sink, docs/bt-tape-plan.md). Each lists the devices added so far + "Add new...".
 static const Option opt_bt_hints[] = {
     { SYM_ENTER " Connect / disconnect", 0 },
     { "F8  Forget", 0 },
@@ -2102,6 +2127,7 @@ static const Option opt_bt_hints[] = {
 static const Node kBluetooth[] = {
     NM_DYNH(TXT_BT_AUDIO, bt_buildAudio, bt_keyAudio, opt_bt_hints, nullptr),
     NM_DYNH(TXT_BT_INPUT, bt_buildInput, bt_keyInput, opt_bt_hints, nullptr),
+    NM_DYNH(TXT_BT_TAPE,  bt_buildTape,  bt_keyTape,  opt_bt_hints, nullptr),
 };
 #endif
 

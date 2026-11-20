@@ -22,13 +22,17 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "speccy/machines/Atm.h"   // Atm::evo: the ZX-Evo drives the card CS
 #include "speccy/devices/disk/MB02.h"   // page 0 goes back to MB-02+'s mapping when the divMMC window drops
 #include "app/Debug.h"
+#include "speccy/devices/storage/IDE.h"   // IDE::noteActivity: DivIDE lights the IDE icons
 #include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line
 #include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
 #include "hardware/timer.h"
 #include "fs/FileUtils.h"
 #include "speccy/core/roms.h"
+#include "speccy/core/RomOverlay.h"
+#include "app/FlashRoms.h"
 #include "speccy/z80/z80.h"
 #include "app/Buffer.h"
+#include "speccy/devices/storage/IdeMbr.h"   // virtual MBR in front of a one-volume ZC window
 extern "C" {
     #include "fatfs/diskio.h"
 }
@@ -126,6 +130,10 @@ bool DivMMC::conmem = false;
 bool DivMMC::mapram = false;
 uint8_t DivMMC::bank = 0;
 uint8_t *DivMMC::esxdos_rom = nullptr;
+uint8_t *DivMMC::rom_flat = nullptr;
+// eLeMeNt ZX: esxDOS from block 4 of its FlashRAM (Element.cpp, e_zxi_02D bit 0);
+// romSync prefers it over the built-in builds while set.
+extern const uint8_t* g_elm_divrom;
 bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
@@ -296,7 +304,7 @@ bool DivMMC::mediumImage(Medium& m, FIL* f, const char* path, const char* what) 
 // (sector-addressed) for every medium, sized by the window or the image.
 void DivMMC::spiIdentity() {
     sdhc_mode = true;
-    buildCSD_real(s_med[s_card].sectors);
+    buildCSD_real(s_med[s_card].sectors + (s_med[s_card].vmbr ? 1u : 0u));
     mmc_ocr[0] = 0xC0;  // bits 31:24 — power_up=1, CCS=1
     mmc_ocr[1] = 0xFF;  // bits 23:16 — all voltages
     mmc_ocr[2] = 0x80;  // bits 15:8
@@ -408,7 +416,7 @@ void DivMMC::init() {
     }
 
     // Allocate DivMMC bank RAM: prefer butter PSRAM, fallback to swap
-    size_t divmmc_total = (size_t)banks() * DIVMMC_BANK_SIZE;
+    size_t divmmc_total = DIVMMC_BUTTER_BYTES;   // the banks + the assembled-ROM page
     size_t butter_used = (size_t)butter_pages * MEM_PG_SZ;
     size_t butter_free = butter_psram_size() > butter_used ? butter_psram_size() - butter_used : 0;
 
@@ -417,6 +425,7 @@ void DivMMC::init() {
         uint8_t* base = PSRAM_DATA + butter_used;
         for (int i = 0; i < DIVMMC_NUM_BANKS; i++)
             bank_ptr[i] = i < banks() ? base + i * DIVMMC_BANK_SIZE : nullptr;
+        rom_flat = base + (size_t)banks() * DIVMMC_BANK_SIZE;
         Debug::log("DivMMC: %d banks in butter PSRAM @ %p", banks(), base);
     } else {
         use_psram = false;
@@ -453,18 +462,10 @@ void DivMMC::init() {
     }
     clearAllBanks();
 
-    // Point ROM directly to flash (no heap allocation needed)
-    const char* mode_name;
-    if (Config::esxdos == 2) {
-        esxdos_rom = (uint8_t *)gb_rom_esxide;
-        mode_name = "DivIDE";
-    } else {
-        esxdos_rom = (uint8_t *)gb_rom_esxdos;
-        mode_name = divsd_mode ? "DivSD" : "DivMMC";
-    }
-    { extern const uint8_t* g_elm_divrom;      // eLeMeNt ZX: esxDOS from its FlashRAM (Element.cpp)
-      if (Config::arch == A_ELM && g_elm_divrom) { esxdos_rom = (uint8_t*)g_elm_divrom; mode_name = "DivSD (eLeMeNt flash)"; } }
-    rom_loaded = true;
+    const char* mode_name = divide_mode ? "DivIDE" : divsd_mode ? "DivSD" : "DivMMC";
+    s_romKey = 0;                       // pick afresh: the mode may have changed
+    if (!romSync()) return;             // (it turned esxDOS off and said why)
+    if (esxdos_rom == g_elm_divrom) mode_name = "DivSD (eLeMeNt flash)";
     Debug::log("%s ROM verify: %02X %02X %02X %02X %02X %02X %02X @ %p",
         mode_name, esxdos_rom[0], esxdos_rom[1], esxdos_rom[2], esxdos_rom[3],
         esxdos_rom[4], esxdos_rom[5], esxdos_rom[6], esxdos_rom);
@@ -680,6 +681,66 @@ void DivMMC::nextRetn() {
     }
 }
 
+// The ROM the automap pages in. Each esxDOS release ships its DivMMC build raw in
+// flash (served by XIP) and its other builds as run-list overlays over it: the
+// DivIDE build, and for 0.9.0 Hugo Pinto's TC2068 builds (the TC2068's HOME ROM is
+// not Sinclair-derived, so it needs its own esxDOS). An overlaid ROM is flattened
+// into rom_flat — the automap reads page0_lo as a plain pointer, so a run list
+// must never reach the Z80 read path. 0.8.9 sits in .psramroms (gone on a board
+// that traded that range to the GM.DLS bank) and has no TC2068 build: 0.9.0 then.
+// Called by init() and by ESPectrum::reset(), so a machine switch between a
+// Spectrum and the TC2068 takes the right build; a no-op while nothing changed.
+// eLeMeNt ZX: g_elm_divrom wins over the built-in builds; key 0x80 keeps it apart.
+uint8_t DivMMC::s_romKey = 0;
+bool DivMMC::romSync() {
+    if (!enabled) return true;
+    if (Config::arch == A_NEXT && MemESP::nextDivRomBase) return true;   // init() binds enNxtmmc
+    if (Config::arch == A_ELM && g_elm_divrom) {
+        if (s_romKey == 0x80 && rom_loaded && esxdos_rom == g_elm_divrom) return true;
+        esxdos_rom = (uint8_t*)g_elm_divrom;
+        rom_loaded = true;
+        s_romKey = 0x80;
+        if ((automap || conmem) && !mapram) applyMapping();
+        return true;
+    }
+    const bool tc = Config::isTc2068();
+    bool v089 = Config::esxdos_ver == 1 && !tc;
+    if (v089 && !FlashRoms::romsUsable()) v089 = false;
+    const uint8_t key = (uint8_t)(1 | (v089 << 1) | (tc << 2) | (divide_mode << 3));
+    if (key == s_romKey && rom_loaded) return true;
+
+    const uint8_t* base = v089 ? gb_rom_esxdos089 : gb_rom_esxdos090;
+    const uint8_t* ov = tc ? (divide_mode ? gb_overlay_esxdos090_tc2068_divide
+                                          : gb_overlay_esxdos090_tc2068_divmmc)
+                     : divide_mode ? (v089 ? gb_overlay_esxdos089_divide
+                                           : gb_overlay_esxdos090_divide)
+                                   : nullptr;
+    if (!ov) {
+        esxdos_rom = (uint8_t*)base;
+    } else {
+        if (!rom_flat) rom_flat = (uint8_t*)Buffer::palloc(DIVMMC_ROM_SIZE, Buffer::NEED_POINTER);
+        if (!rom_flat) {
+            Debug::log("esxDOS: no 8 KB for the ROM page, esxDOS off");
+            enabled = false;
+            rom_loaded = false;
+            Config::esxdos = 0;
+            automap = conmem = false;
+            applyMapping();
+            return false;
+        }
+        rom_overlay_flatten(ov, base, rom_flat);
+        esxdos_rom = rom_flat;
+    }
+    if (Config::esxdos_ver == 1 && !v089)
+        Debug::log("esxDOS: 0.8.9 is %s, using 0.9.0", tc ? "not built for the TC2068" : "not in flash on this board");
+    rom_loaded = true;
+    s_romKey = key;
+    Debug::log("esxDOS: %s%s %s ROM", v089 ? "0.8.9" : "0.9.0", tc ? " TC2068" : "",
+               divide_mode ? "DivIDE" : "DivMMC");
+    if (automap || conmem) applyMapping();   // page0_lo may point at the old one
+    return true;
+}
+
 void DivMMC::reset() {
     automap = false;
     next_nmi_btn = false;
@@ -741,11 +802,10 @@ void DivMMC::reset() {
 }
 
 void DivMMC::setRom(const uint8_t* rom) {
+    (void)rom;                          // = g_elm_divrom, which romSync reads
     if (!enabled) return;
-    uint8_t* want = rom ? (uint8_t*)rom : (uint8_t*)(divide_mode ? gb_rom_esxide : gb_rom_esxdos);
-    if (want == esxdos_rom) return;
-    esxdos_rom = want;
-    if ((conmem || automap) && !mapram) applyMapping();
+    s_romKey = 0;                       // nullptr = back to the built-in build
+    romSync();
 }
 
 void DivMMC::applyMapping() {
@@ -1134,7 +1194,7 @@ void DivMMC::loadSectorStream(uint32_t sector) {
     s_ra_run++;
     s_ra_next = sector + 1;
     const Medium& m = s_med[s_card];
-    if (!s_ra_buf || !m.present || sector == 0xFFFFFFFFu) { loadSector(sector); return; }
+    if (!s_ra_buf || !m.present || sector >= LBA_VMBR) { loadSector(sector); return; }
     const bool held = s_ra_n && s_ra_gen == g_disk_write_gen;
     ZS_T0();
     if (held && sector >= s_ra_first && sector - s_ra_first < s_ra_n) {
@@ -1711,6 +1771,8 @@ static int c17FromWindow(uint32_t sector) {
 }
 
 static bool c17Begin(uint32_t sector, bool stream) {
+    // Not a card sector (the virtual MBR, or past the medium): loadSector makes it.
+    if (sector >= 0xFFFFFFFEu) return false;      // = DivMMC::LBA_VMBR (private)
     // core1 must be pumping (sd_async_pump runs from its Next renderer loop): a
     // dead queue (nxQueueDead) would leave the request untaken for ever — the
     // 2 s storage probe used to cancel it as a side effect, and without that
@@ -2018,6 +2080,11 @@ void DivMMC::loadSector(uint32_t sector) {
     // `sector` is on the MEDIUM (lba()): a card sector for a raw window, a file
     // sector for an image, ~0 = the guest asked past the medium.
     const Medium& m = s_med[s_card];
+    if (sector == LBA_VMBR && m.present) {           // the synthetic MBR (zcMedium)
+        s1Drop();
+        ide_mbr::buildMbr(mmc_sector_buf, m.vmbr, m.sectors);
+        return;
+    }
     if (!m.present || sector == 0xFFFFFFFFu) {
         s1Drop();
         memset(mmc_sector_buf, m.raw ? 0xFF : 0x00, 512);
@@ -2142,8 +2209,9 @@ void DivMMC::loadSector(uint32_t sector) {
 void DivMMC::storeSector(uint32_t sector) {
     raDrop();
     const Medium& m = s_med[s_card];
-    if (!m.present || m.ro || sector == 0xFFFFFFFFu) {
+    if (!m.present || m.ro || sector >= LBA_VMBR) {
         if (sector == 0xFFFFFFFFu) Debug::log("SD wr: sector past the medium refused");
+        else if (sector == LBA_VMBR) Debug::log("SD wr: the virtual MBR is not stored");
         else if (m.ro) {
             static bool once = false;      // the driver sees 0x0D per block (mmcWriteResponse)
             if (!once) { once = true; Debug::log("SD wr: refused, the medium is write-protected"); }
@@ -2896,6 +2964,7 @@ void DivMMC::ide_read_sector() {
         f_read(&mmc_file[d], ide_buffer, 512, &br);
         if (br < 512) memset(ide_buffer + br, 0xFF, 512 - br);
     }
+    IDE::noteActivity(false, false);
     ide_data_index = 0;
     ide_data_write = false;
     ide_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
@@ -2916,6 +2985,7 @@ void DivMMC::ide_write_sector_done() {
     }
     uint32_t lba = ide_lba();
     if (ideWriteProtected(d)) { ide_error = IDE_ERROR_ABRT; ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR; return; }
+    IDE::noteActivity(true, false);
     if (d == 0 && s_ideRaw.present) {
         const LBA_t card_lba = (LBA_t)(s_ideRaw.base + lba);
         // The firmware's FatFs has this volume mounted too (ff_raw_write_notify, as DivSD)
@@ -3121,11 +3191,32 @@ void DivMMC::zcMedium() {
     if (!Config::zc_image.empty()) {
         if (zcFileEnsure()) mediumImage(s_med[CARD_ZC], zc_file, Config::zc_image.c_str(), "Z-Controller");
     } else {
-        mediumCard(s_med[CARD_ZC], Config::zc_raw_lba, Config::zc_raw_len, "Z-Controller");
+        if (mediumCard(s_med[CARD_ZC], Config::zc_raw_lba, Config::zc_raw_len, "Z-Controller"))
+            zcVirtualMbr();
         logShared();
     }
     if (Config::zc_wp) s_med[CARD_ZC].ro = true;                 // F2 on the row
     if (s_card == CARD_ZC) spiIdentity();
+}
+
+// A window that does not start at the card's sector 0 but on a volume (a partition
+// picked in the menu) shows the guest that volume's boot sector as sector 0. Guests
+// that want a partitioned card refuse it: Karabas ROMain's drive check needs an MBR
+// with a FAT32 entry (bench 2026-11-20, docs/notes/boards.md "Karabas ROMain").
+// Such a window gets a synthetic MBR in front (Medium::vmbr, IdeMbr.h); a window
+// that holds its own MBR, or the whole card, is served as it is.
+void DivMMC::zcVirtualMbr() {
+    Medium& m = s_med[CARD_ZC];
+    if (!m.present || !m.raw || m.base == 0) return;
+    uint8_t* sec = (uint8_t*)tryMalloc(512);
+    if (!sec) return;
+    if (disk_read(raw_pdrv(), sec, (LBA_t)m.base, 1) == RES_OK) {
+        m.vmbr = ide_mbr::vbrType(sec);
+        if (m.vmbr)
+            Debug::log("Z-Controller: window starts on a volume - virtual MBR, type %02X, LBA 1+%lu",
+                       m.vmbr, (unsigned long)m.sectors);
+    }
+    free(sec);
 }
 
 void DivMMC::zc_init() {

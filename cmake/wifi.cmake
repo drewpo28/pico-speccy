@@ -47,7 +47,8 @@ if (PICOSPECCY_WIFI)
     list(FILTER _cybt_srcs EXCLUDE REGEX "cybt_shared_bus_driver\\.c$")
     set_target_properties(cybt_shared_bus PROPERTIES INTERFACE_SOURCES "${_cybt_srcs}")
     target_link_libraries(${PROJECT_NAME} PRIVATE
-        pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder)
+        pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder
+        pico_btstack_sbc_decoder)
     # BTstack's link-key bank writes flash through flash_safe_execute from code that
     # lives in flash; the wrappers (end of BtHost.cpp) restore the overclocked QMI
     # timing before returning into it. Pairing hung the board at 504 MHz without them.
@@ -61,6 +62,13 @@ if (PICOSPECCY_WIFI)
     set_source_files_properties(${_sbc_enc_srcs}
         "${PICO_BTSTACK_PATH}/src/classic/btstack_sbc_encoder_bluedroid.c"
         PROPERTIES COMPILE_OPTIONS "-O2")
+    # The SBC decoder of the tape-from-a-phone sink (BtHost, docs/bt-tape-plan.md):
+    # ~350 frames a second on core0 while a phone streams, -O2 likewise. BtHost calls
+    # the OI_CODEC_SBC_* API directly with a context allocated per stream; BTstack's
+    # wrapper (btstack_sbc_decoder_bluedroid.c, a ~4 KB static singleton + PLC that
+    # would invent audio over a lost packet) is never referenced, so gc drops it.
+    file(GLOB _sbc_dec_srcs "${PICO_BTSTACK_PATH}/3rd-party/bluedroid/decoder/srce/*.c")
+    set_source_files_properties(${_sbc_dec_srcs} PROPERTIES COMPILE_OPTIONS "-O2")
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
 endif()

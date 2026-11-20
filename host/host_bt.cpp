@@ -37,4 +37,21 @@ void bootTick() {}
 bool streaming() { return false; }
 void pump() {}
 const char* stateStr() { return "off (no radio on the host)"; }
+// Tape in (A2DP sink): no radio, never listening.
+bool tapeListen(bool) { return false; }
+void tapePairing(bool) {}
+bool tapeConnect(const uint8_t*, const char*) { return false; }
+bool tapeConnecting() { return false; }
+bool tapeConnectedTo(const uint8_t*) { return false; }
+int  tapeKnown(Known*, int) { return 0; }
+uint8_t tapePeakPct() { return 0; }
+TapeState tapeState() { return T_OFF; }
+const char* tapeName() { return ""; }
+bool tapeInfo(TapeInfo&) { return false; }
+void tapeEdgeAttach(bool) {}
+int  tapeEdgesAvail() { return 0; }
+bool tapeEdgePop(uint32_t&) { return false; }
+uint32_t tapeSampleClockQ8() { return 0; }
+int  tapeSampleRate() { return 0; }
+uint32_t tapeEdgeDrops() { return 0; }
 }

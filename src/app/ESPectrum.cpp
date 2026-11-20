@@ -2349,6 +2349,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   PerfFdc::reset();
 #endif
   Rzx::onReset();   // a reset ends an RZX playback (not the one its own snapshot load does)
+  // esxDOS: the TC2068 runs its own build of the ROM; a machine switch ends here.
+  DivMMC::romSync();
   // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
   // physical on real hardware, so keys held THROUGH a reset stay pressed —
   // the Byte's built-in ROM test is entered exactly that way (Ы+В+А = S+D+F
@@ -4462,6 +4464,7 @@ void ESPectrum::netBackgroundTick() {
 #if PICOSPECCY_WIFI
     BtHost::pump();    // A2DP stream: encode what core1 produced, send it (no-op when idle)
     BtHost::bootTick(); // a remembered keyboard/mouse/pad: bring Bluetooth up after boot
+    Tape::BT_Frame();   // tape from a phone: start / stop the live deck, trim its clock
 #endif
 
     // A WiFi dialog on screen owns the radio (its scan/connect cancelled the FSM
@@ -5489,6 +5492,15 @@ void ESPectrum::loop() {
         }
       }
       if ((VIDEO::OSD & 0x04) == 0 && !CPU::paused) {
+#if PICOSPECCY_WIFI
+        if (VIDEO::OSD == 1 && Tape::btLive) {   // tape from a phone: no file, no blocks list
+          Tape::BT_Stats(OSD::stats_lin1, sizeof(OSD::stats_lin1), OSD::stats_lin2,
+                         sizeof(OSD::stats_lin2), ESPectrum::TapeNameScroller);
+          if ((++ESPectrum::TapeNameScroller + 12) > Tape::tapeFileName.length())
+            ESPectrum::TapeNameScroller = 0;
+          OSD::drawStats();
+        } else
+#endif
         if (VIDEO::OSD == 1 && Tape::tapeStatus == TAPE_LOADING) {
           snprintf(
               OSD::stats_lin1, sizeof(OSD::stats_lin1), " %-12s %04d/%04d ",
@@ -5612,30 +5624,8 @@ void ESPectrum::loop() {
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
                     ((Z80Ops::isP3 || Z80Ops::isSam) && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
-    static bool lamp_was_on = false;
-    const int lx = VIDEO::osd_lamp_x, ly = VIDEO::osd_lamp_y;
-    if (VIDEO::osdCarveLive()) {
-        // Borderless / a big mode that hides the border: the lamp sits on the
-        // picture. Reserve its cell and back it with the border colour while lit;
-        // hand the cell back when it goes out.
-        if (lamp_on) {
-            VIDEO::blSetCarve(VIDEO::BL_CARVE_LAMP, lx - 3, ly, lx + 9, ly + 8);
-            for (int row = ly; row < ly + 8; row++) {
-                uint8_t* line = (uint8_t*)VIDEO::vga.frameBuffer[row];
-                if (line) memset(line + ((lx - 3) & ~3), (uint8_t)VIDEO::brd, 12);
-            }
-        } else {
-            VIDEO::blClearCarve(VIDEO::BL_CARVE_LAMP);
-        }
-    }
-    if (lamp_on) {
-        LED::drawSpriteFg(LED::FDD, lx, ly,
-                          fdd_write ? zxColor(2, 1)      // red  — write
-                                    : zxColor(1, 1));    // blue — read / seek
-    } else if (lamp_was_on) {
-        VIDEO::brdChange = true;   // border repaint next frame erases the glyph
-    }
-    lamp_was_on = lamp_on;
+    // The floppy, plus the IDE drive's HDD / CD icon beside it (LEDIndicators.cpp).
+    LED::drawCornerIcons(lamp_on, fdd_write);
 
     elapsed = time_us_64() - ts_start;
     idle = target - elapsed;

@@ -1,0 +1,55 @@
+{
+  "id": "esxdos",
+  "sets": [
+    {
+      "version": "090",
+      "file": "esxdos_roms.c",
+      "note": "esxDOS 0.9.0 (18.11.2026): ordinary flash",
+      "raw": {
+        "sym": "gb_rom_esxdos090",
+        "len": 8192,
+        "md5": "f5bcb0d428a271d04ca4d50960e20bc4"
+      },
+      "overlay": {
+        "sym": "gb_overlay_esxdos090_divide",
+        "len": 873,
+        "runs": 27,
+        "diff_bytes": 699,
+        "md5": "0b2ec969bb90655c93e9948d88773ea9"
+      }
+    },
+    {
+      "version": "089",
+      "file": "esxdos089_roms.c",
+      "note": "esxDOS 0.8.9: .psramroms, only while FlashRoms::romsUsable()",
+      "raw": {
+        "sym": "gb_rom_esxdos089",
+        "len": 8192,
+        "md5": "fa50b0258e52b8d72bd83cc2fb6e1013"
+      },
+      "overlay": {
+        "sym": "gb_overlay_esxdos089_divide",
+        "len": 939,
+        "runs": 26,
+        "diff_bytes": 771,
+        "md5": "d02c84056e0c6250c42456732079b9f9"
+      }
+    }
+  ],
+  "tc2068": [
+    {
+      "sym": "gb_overlay_esxdos090_tc2068_divmmc",
+      "len": 1502,
+      "runs": 57,
+      "diff_bytes": 1148,
+      "md5": "3dfe08e064b1ef27b310741288761b63"
+    },
+    {
+      "sym": "gb_overlay_esxdos090_tc2068_divide",
+      "len": 1576,
+      "runs": 65,
+      "diff_bytes": 1174,
+      "md5": "e6a0f2be7a566af3330e6b1382e487d3"
+    }
+  ]
+}

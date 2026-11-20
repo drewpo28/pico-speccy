@@ -7,12 +7,18 @@
 #include "fatfs/ff.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/core/MemESP.h"
+#include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd: TC2068 traps fire on HOME ROM only
 
 #define DIVMMC_ROM_SIZE  0x2000   // 8KB ESXDOS ROM
 #define DIVMMC_BANK_SIZE 0x2000   // 8KB per bank
 #include "app/Config.h"
 #define DIVMMC_NUM_BANKS 64       // the bank TABLE: 64 = 512 KB; banks() says how many are real
 #define DIVMMC_CACHE_SLOTS 3      // swap mode: number of cached bank buffers
+// What DivMMC takes of butter PSRAM right above the ZX pages: its banks() (16, or 64
+// on the eLeMeNt ZX) plus one 8 KB page for a ROM DivMMC::init assembles from a base +
+// overlay (the DivIDE builds of esxDOS). Buffer::pageBudget / initPools, GS and the
+// stats bar all count this. Expands to a DivMMC:: call: use it after the class.
+#define DIVMMC_BUTTER_BYTES ((size_t)DivMMC::banks() * DIVMMC_BANK_SIZE + DIVMMC_ROM_SIZE)
 
 // DivMMC automap trap addresses (M1 cycle entry points)
 #define DIVMMC_TRAP_0000 0x0000
@@ -47,6 +53,9 @@ public:
         uint32_t base;      // raw: the first card sector of the window
         uint32_t sectors;   // window / image length
         FIL*     file;      // image: its handle
+        uint8_t  vmbr;      // raw window over one volume: the partition type of a
+                            // synthetic MBR the guest sees at sector 0 (0 = none;
+                            // then guest sector N+1 = window sector N, IdeMbr.h)
     };
     static const Medium& medium(uint8_t card) { return s_med[card]; }
     static uint8_t  currentCard() { return s_card; }
@@ -67,7 +76,15 @@ public:
     static bool next_nmi_hold;
     static void nextRetn();       // Next: RETN unmaps (divmmc i_retn_seen)
 
-    static uint8_t *esxdos_rom;   // 8KB ESXDOS ROM (dynamically allocated)
+    static uint8_t *esxdos_rom;   // 8KB ROM the automap pages in: flash, or rom_flat
+    // The 8 KB page an overlaid ROM (base + RomOverlay.h run list) is flattened into:
+    // butter PSRAM above the banks, else heap (Buffer::palloc). Kept for the session
+    // once allocated, as the bank cache is (re-allocation after toggles fragments).
+    static uint8_t *rom_flat;
+    // Bind esxdos_rom for the machine and mode (see DivMMC.cpp); false = no room
+    // for the flattened page, esxDOS turned off.
+    static bool romSync();
+    static uint8_t s_romKey;      // what esxdos_rom holds now (0 = nothing yet)
     static uint8_t* bank_ptr[DIVMMC_NUM_BANKS]; // direct pointer per bank (null = swapped out)
     // How many 8 KB banks this machine's divMMC has: 16 (128 KB, the historical size)
     // everywhere, 64 (512 KB) on the eLeMeNt ZX, whose divSD RAM is also the MB-02+
@@ -188,6 +205,8 @@ private:
     static bool    mediumImage(Medium& m, FIL* f, const char* path, const char* what);
     // One log line when esxDOS's card window and the Z-Controller's share sectors.
     static void    logShared();
+    // ZC window that starts on a volume: put a synthetic MBR in front (Medium::vmbr).
+    static void    zcVirtualMbr();
     static bool    ideWriteProtected(int d);
     // The SPI machine proper, on the current card (the public entries pick the card).
     static void     csEdge(uint8_t value);
@@ -198,8 +217,11 @@ private:
     // The guest's sector of the current card on the medium: raw media add the
     // window's base; anything past the medium answers ~0u (loadSector fills 0xFF,
     // storeSector drops the block).
+    // A medium with a virtual MBR answers LBA_VMBR for guest sector 0.
+    static constexpr uint32_t LBA_VMBR = 0xFFFFFFFEu;
     static inline uint32_t lba(uint32_t s) {
         const Medium& m = s_med[s_card];
+        if (m.vmbr) { if (s == 0) return LBA_VMBR; s--; }
         if (s >= m.sectors) return 0xFFFFFFFFu;
         return m.raw ? s + m.base : s;
     }
@@ -463,12 +485,17 @@ __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
         } else if (pc == DIVMMC_TRAP_0000 || pc == DIVMMC_TRAP_0008 ||
             pc == DIVMMC_TRAP_0038 || pc == DIVMMC_TRAP_0066 ||
             pc == DIVMMC_TRAP_04C6 || pc == DIVMMC_TRAP_0562) {
-            pend_after |= 1;
+            // TC2068: the interface sees the HOME ROM select, so a fetch the SCLD
+            // serves from the EX-ROM or a DOCK chunk is not an entry point (Hugo
+            // Pinto's ROM has no EX-ROM test at 0x0008: the EX-ROM's own RST 8 at
+            // boot hijacked esxDOS and a DOCK cartridge never started). HSR bit n =
+            // slot n windowed; it stays 0 on every other machine.
+            if (!(Timex::hsr & 1)) pend_after |= 1;
         }
     }
 
     // 0x3D00-0x3DFF: instant map BEFORE fetch
-    if (pc >= 0x3D00 && pc <= 0x3DFF) {
+    if (pc >= 0x3D00 && pc <= 0x3DFF && !(Timex::hsr & 2)) {
         if (!automap) {
             automap = true;
             if (!conmem) applyMapping();

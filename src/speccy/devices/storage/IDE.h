@@ -92,6 +92,18 @@ public:
     // True if the slot holds an ATAPI CD-ROM (.iso). Used by the OSD menu/info.
     static bool isCD(int slot);
 
+    // Media activity for the corner drive icon (LED::drawCornerIcons): set only where
+    // a sector really moves (read_sector, write_sector_done, atapi_fill_block), never
+    // on register traffic — status polling must not light it. `act_decay` counts
+    // frames down in LED::decay(); `act_wrote` / `act_cd` describe the last transfer.
+    static uint8_t act_decay;
+    static bool    act_wrote;
+    static bool    act_cd;
+    static inline void noteActivity(bool write, bool cd) {
+        act_decay = 10; act_cd = cd;
+        if (write) act_wrote = true;
+    }
+
     // Geometry accessors for the OSD menu (per slot 0/1). After init(), these
     // reflect the effective geometry (auto-detected or Config override).
     static uint16_t geomC(int slot);
@@ -182,6 +194,11 @@ private:
     static bool     raw_ro[2];
     static uint32_t raw_start[2];    // card LBA of the guest's LBA 0
     static uint32_t raw_count[2];    // window length in sectors, after clamping
+    // A window that starts on a volume (a picked partition): the partition type of a
+    // synthetic MBR at the guest's LBA 0, guest LBA N+1 = window sector N (IdeMbr.h).
+    static uint8_t  raw_vmbr[2];
+    // The card sector behind guest LBA `l` of raw slot `d`; false = the virtual MBR.
+    static bool     rawCard(int d, uint32_t l, uint32_t* card);
 
     // Per-slot device type + post-reset signature validity (master/slave).
     static bool is_atapi[2];   // slot is an ATAPI CD-ROM (.iso)

@@ -1,6 +1,6 @@
 // esxDOS 0.8.9 MB03+SD build for the eLeMeNt ZX (ESX-SD.ROM of the FLASHESX package,
 // 8192 bytes): what FLASHESX writes into block 4 of a ROM Area. Differs from the generic
-// gb_rom_esxdos in 810 bytes (the LIFO-held divMMC control byte, the MB03+ paths).
+// generic 0.8.9 gb_rom_esxdos089 in 810 bytes (the LIFO-held divMMC control byte, the MB03+ paths).
 // 16 MB images only (ELM_ROMS_BUILTIN).
 #include <hardware/flash.h>
 #include "speccy/roms/element/elm_roms.h"

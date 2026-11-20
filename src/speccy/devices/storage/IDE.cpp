@@ -37,8 +37,18 @@ bool IDE::raw[2] = { false, false };
 bool IDE::raw_ro[2] = { false, false };
 uint32_t IDE::raw_start[2] = { 0, 0 };
 uint32_t IDE::raw_count[2] = { 0, 0 };
+uint8_t  IDE::raw_vmbr[2] = { 0, 0 };
+
+bool IDE::rawCard(int d, uint32_t l, uint32_t* card) {
+    if (raw_vmbr[d]) { if (l == 0) return false; l--; }
+    *card = raw_start[d] + l;
+    return true;
+}
 bool IDE::is_atapi[2]  = { false, false };
 bool IDE::sig_valid[2] = { false, false };
+uint8_t IDE::act_decay = 0;
+bool    IDE::act_wrote = false;
+bool    IDE::act_cd    = false;
 bool IDE::profi_hidd_slot[2] = { false, false };
 
 uint32_t IDE::data_offset[2] = { 0, 0 };
@@ -408,6 +418,7 @@ void IDE::init() {
         // A raw-SD slot has no image: the medium is the card itself (see openRaw).
         raw[d] = raw_ro[d] = false;
         raw_start[d] = raw_count[d] = 0;
+        raw_vmbr[d] = 0;
         if (Config::ide_raw[d]) openRaw(d);
         else                    open_image(d, Config::ide_image[d].c_str());
         // Per-slot geometry override (Config::ide_chs); 0,0,0 = keep auto-detect.
@@ -559,6 +570,18 @@ bool IDE::openRaw(int slot) {
     raw_ro[slot] = (Config::ide_raw[slot] == 1);
     raw_start[slot] = start;
     raw_count[slot] = len;
+    // A window that starts on a FAT volume (a partition picked in the menu) gets a
+    // synthetic MBR in front: guests that want a partitioned disk (Karabas ROMain's
+    // CF check: MBR + a FAT32 entry) refuse a bare boot sector at LBA 0. A Profi
+    // HiDD volume, a window holding its own MBR and the whole card stay as they are.
+    raw_vmbr[slot] = 0;
+    if (start != 0 && !hdr_c && buffer &&
+        disk_read(drv, buffer, (LBA_t)start, 1) == RES_OK) {
+        raw_vmbr[slot] = ide_mbr::vbrType(buffer);
+        if (raw_vmbr[slot])
+            Debug::log("IDE hd%d: window starts on a volume - virtual MBR, type %02X, LBA 1+%u",
+                       slot, raw_vmbr[slot], (unsigned)len);
+    }
     data_offset[slot] = 0;
     half_sector[slot] = false;
     is_atapi[slot] = false;
@@ -728,6 +751,7 @@ void IDE::close() {
         if (clmt[d]) { Buffer::pfree(clmt[d]); clmt[d] = nullptr; }
         raw[d] = raw_ro[d] = false;
         raw_start[d] = raw_count[d] = 0;
+        raw_vmbr[d] = 0;
         data_offset[d] = 0;
         cylinders[d] = heads[d] = sectors[d] = 0;
         is_atapi[d] = false;
@@ -787,7 +811,7 @@ bool IDE::lbaBeyondEnd(int d, uint32_t l) {
     // CHS editor believes: a C/H/S override, or a HiDD header from a bigger drive,
     // must never name card sectors the user did not hand over. Everything below is
     // then free to trust the geometry for the IDENTIFY/size answers.
-    if (raw[d] && l >= raw_count[d]) return true;
+    if (raw[d] && l >= raw_count[d] + (raw_vmbr[d] ? 1u : 0u)) return true;
     const uint32_t total = (uint32_t)cylinders[d] * heads[d] * sectors[d];
     return total != 0 && l >= total;
 }
@@ -819,8 +843,11 @@ void IDE::read_sector() {
         // raw access DivSD serves esxDOS with). A card error is reported as a bad
         // sector, never served as 0xFF — a guest SIZES a drive by reading until one
         // fails, and 0xFF would read as "the disk goes on and on".
-        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
-        if (disk_read(rawDevice(), buffer, card_lba, 1) != RES_OK) {
+        uint32_t cl = 0;
+        const bool onCard = rawCard(d, l, &cl);
+        const LBA_t card_lba = (LBA_t)cl;
+        if (!onCard) ide_mbr::buildMbr(buffer, raw_vmbr[d], raw_count[d]);
+        else if (disk_read(rawDevice(), buffer, card_lba, 1) != RES_OK) {
             Debug::log("IDE hd%d: raw SD read failed at card lba %u", d, (unsigned)card_lba);
             reg_error = IDE_ERROR_IDNF;
             reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
@@ -935,6 +962,7 @@ void IDE::read_sector() {
             }
         }
     }
+    noteActivity(false, false);
     data_index = 0;
     data_write = false;
     reg_status = IDE_STATUS_READY | IDE_STATUS_DRQ;
@@ -946,8 +974,9 @@ void IDE::write_sector_done() {
     uint32_t l = lba();
     // Belt and braces next to the command-time IDNF: a raw slot never writes outside
     // the window it was given, whatever the geometry says (see lbaBeyondEnd).
-    if (raw[d] && l >= raw_count[d]) return;
+    if (raw[d] && l >= raw_count[d] + (raw_vmbr[d] ? 1u : 0u)) return;
     if (writeProtected(d)) return;      // refused at command time; belt and braces
+    noteActivity(true, false);
     UINT bw;
     if (raw[d]) {
         // A write goes into the card's own sector. That is why the default is
@@ -957,7 +986,9 @@ void IDE::write_sector_done() {
         // FAT and directory sectors, so without it the next f_write/f_read would
         // overwrite this sector from a stale copy (DivSD does exactly this).
         if (raw_ro[d]) return;
-        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
+        uint32_t cl = 0;
+        if (!rawCard(d, l, &cl)) { Debug::log("IDE hd%d: the virtual MBR is not stored", d); return; }
+        const LBA_t card_lba = (LBA_t)cl;
         if (disk_write(rawDevice(), buffer, card_lba, 1) == RES_OK)
             ff_raw_write_notify(rawDevice(), card_lba, buffer);
         else
@@ -1006,8 +1037,9 @@ void IDE::preload_sector() {
     uint32_t l = lba();
     UINT br;
     if (raw[d]) {
-        const LBA_t card_lba = (LBA_t)(raw_start[d] + l);
-        if (disk_read(rawDevice(), buffer, card_lba, 1) != RES_OK)
+        uint32_t cl = 0;
+        if (!rawCard(d, l, &cl)) { ide_mbr::buildMbr(buffer, raw_vmbr[d], raw_count[d]); return; }
+        if (disk_read(rawDevice(), buffer, (LBA_t)cl, 1) != RES_OK)
             memset(buffer, 0xFF, 512);
         return;
     }
@@ -1334,6 +1366,7 @@ void IDE::atapi_fill_block() {
     }
     atapi_lba++;
     if (atapi_blocks) atapi_blocks--;
+    noteActivity(false, true);
 }
 
 // Dispatch a completed 12-byte SCSI CDB (boot-minimal data-CD command set).

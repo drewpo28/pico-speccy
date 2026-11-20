@@ -2363,7 +2363,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         // Butter XIP path — fast, direct SRAM pointer at 0x11000000.
         size_t butter_used  = (size_t)butter_pages * MEM_PG_SZ;
         size_t divmmc_total = DivMMC::use_psram
-            ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE
+            ? (size_t)DIVMMC_BUTTER_BYTES
             : 0;
         size_t reserved_below = butter_used + divmmc_total;
 

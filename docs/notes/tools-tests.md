@@ -7,6 +7,14 @@
   - Raw binaries: `python3 tools/z80disasm.py code.bin --org 0x8000`
   - API: `from tools.z80disasm import disasm_bytes, disasm_bytes_text`
   - Supports all Z80 prefixes: CB, DD, FD, ED, DD CB, FD CB (including undocumented)
+- `tools/sbc_tape_test.cpp` — does a tape signal survive Bluetooth A2DP (SBC)?
+  TAP pulse train -> 44.1 kHz -> bluedroid SBC encode/decode -> edges in T-states,
+  compared with the source over bitpool x level x speed (1x-4x); exits non-zero
+  when bitpool >= 41 stops loading at any level — for its reference receiver AND
+  for the firmware's `src/speccy/devices/tape/BtTapeEdges.h` (build with -Isrc;
+  re-run after any change to that header). Needs the bluedroid codec from
+  BTstack (`$PICO_SDK_PATH/lib/btstack`); build lines in the file header.
+  Findings and the plan: `docs/bt-tape-plan.md` (2026-11-18, NOT hw-tested).
 - [profi2png VGA detection fix](memory/profi2png_vga_detection.md) — max_byte>15 heuristic always fires for VGA std-mode (0xC0+ sync bits); fix: also require min_byte<0xC0.
 
 ## FPGA48_2026.tap border test — 48K ONLY, verified by host simulation (2026-08-21)

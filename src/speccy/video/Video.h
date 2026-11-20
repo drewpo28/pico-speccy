@@ -466,6 +466,7 @@ public:
   // LED indicator panel ("Solid background"): w fb bytes from the left edge of
   // the F8 stats box's 16 rows. Every renderer leaves the rect to LED::draw.
   static void setLedBar(int w);
+  static int  ledBarW();        // the LED panel's width, 0 = no panel (setLedBar)
   static bool osdBoxCarved();
   // Overlay rects on fb row `row` a whole-frame renderer must leave alone (stats /
   // volume box + LED panel, notify banner, LED/lamp carves): fills cx[i] = {x0, x1},
@@ -658,6 +659,12 @@ public:
   // renderer stages the rows they cross and copies them around the overlays.
   // Recomputed by osdGeomRecalc() at every Reset.
   static int  osd_bar_x, osd_bar_y, osd_led_x, osd_lamp_x, osd_lamp_y;
+  // The bottom OSD bar (F8 stats / F9-F10 volume / LED panel): its size. Both are
+  // multiples of 8 and osd_bar_x is 8-aligned: the border renderers carve whole
+  // 8-px columns (brdcol_step), and a box narrower than its carve left the
+  // columns in between frozen with an old border (hw 2026-11-19, 360x288 Profi).
+  // 20 rows = two 8-px text lines, 1 px of frame and 1 px of padding each side.
+  static constexpr int OSD_BAR_W = 152, OSD_BAR_H = 20;
   static int  osd_win_x0, osd_win_y0, osd_win_x1, osd_win_y1;
   static bool osd_in_paper;
   static void osdGeomRecalc();

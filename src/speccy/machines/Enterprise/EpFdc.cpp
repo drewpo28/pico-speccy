@@ -2,7 +2,6 @@
 #include "EpFdc.h"
 #include "app/SnapPack.h"
 #include "fs/FileUtils.h"
-#include "ui/LEDIndicators.h"
 #include "app/Debug.h"
 #include "speccy/z80/CPU.h"
 #include <string.h>
@@ -46,7 +45,6 @@ struct Drive {
         if (f_lseek(f, l * 512u) != FR_OK) return false;
         UINT br = 0;
         if (f_read(f, buf, 512, &br) != FR_OK || br != 512) { bufLba = -1; return false; }
-        LED::touchR(LED::SD);
         bufLba = (int32_t)l;
         return true;
     }
@@ -58,7 +56,6 @@ struct Drive {
         UINT bw = 0;
         if (f_write(f, buf, 512, &bw) != FR_OK || bw != 512) return false;
         f_sync(f);
-        LED::touchW(LED::SD);
         return true;
     }
     void endTransfer() { bufPos = -1; xfrLba = -1; }

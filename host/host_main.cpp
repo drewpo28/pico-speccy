@@ -36,6 +36,7 @@
 #include "speccy/video/Video.h"
 #include "speccy/devices/gs/GS.h"
 #include "speccy/devices/storage/IDE.h"
+#include "speccy/core/MemESP.h"
 
 extern "C" {
 #include "drivers/graphics/graphics.h"
@@ -477,6 +478,19 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
     static uint32_t presented = 0;
     ++presented;
     host_presented = presented;
+    // PICOSPECCY_MEMDUMP=file.bin:N writes the Z80's current 64K view (MemESP::readbyte,
+    // paging as it is at that presented frame) — code a ROM unpacks into RAM can then
+    // be disassembled with tools/z80disasm.py (--raw --org 0).
+    if (const char* md = getenv("PICOSPECCY_MEMDUMP")) {
+        const char* c = strrchr(md, ':');
+        if (c && presented == (uint32_t)atoi(c + 1)) {
+            std::string fn(md, (size_t)(c - md));
+            if (FILE* f = fopen(fn.c_str(), "wb")) {
+                for (uint32_t a = 0; a < 0x10000; a++) fputc(MemESP::readbyte((uint16_t)a), f);
+                fclose(f);
+            }
+        }
+    }
     auto save = [&](const std::string& fn) {
         SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(pix, w, h, 32, pitch, SDL_PIXELFORMAT_ARGB8888);
         if (s) { SDL_SaveBMP(s, fn.c_str()); SDL_FreeSurface(s); fprintf(stderr, "host: saved %s\n", fn.c_str()); }

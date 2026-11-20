@@ -616,11 +616,6 @@ void CPU::reset() {
     if (Config::isTimex()) {
         Config::timex_video = true;
         if (Config::SAA1099) Config::SAA1099 = false;
-        // TC2068 only: esxDOS/DivMMC automaps on Sinclair-ROM entry addresses
-        // (0x0000/0x0008/0x0038/0x0066/0x04C6/0x0562), which on this machine's own
-        // HOME ROM are unrelated code — and its page-0 window would fight the SCLD
-        // for the same 8 KB slots. Same three-place treatment as Beta on the +3.
-        if (Z80Ops::isTc2068 && Config::esxdos) Config::esxdos = 0;
     }
 
     // SAM Coupe: none of the Spectrum interfaces exist on its bus; the SAA1099 is
@@ -1382,10 +1377,19 @@ void CPU::loopRzx(uint64_t _loop_t0) {
 // than in MemESP::readbyte/writebyte, which are inlined into ~170 sites.
 // g_timex_mmu is zero on every other machine and on a TC2068 whose map is all
 // HOME, which is the normal state right up to the moment a cartridge starts.
+// A paged-in divMMC sits over the SCLD map at 0x0000-0x3FFF (esxDOS on the TC2068,
+// as ZEsarUX's diviface wraps the machine's peek) — tested here, off the hot path.
 static IRAM_ATTR __attribute__((noinline)) uint8_t timexPeek8(uint16_t address) {
+    if (address < 0x4000 && MemESP::divmmc_mapped)
+        return (address < 0x2000) ? MemESP::page0_lo[address] : MemESP::page0_hi[address & 0x1FFF];
     uint8_t* p = Timex::rd[address >> 13];
     return (p == Timex::kOpen) ? 0xFF          // nothing plugged into that chunk
                                : p[address & 0x1FFF];
+}
+static IRAM_ATTR __attribute__((noinline)) bool timexPoke8(uint16_t address, uint8_t value) {
+    if (address < 0x4000 && MemESP::divmmc_mapped) return false;
+    Timex::write8(address, value);
+    return true;
 }
 
 #if ATM_PAGE_TRACE
@@ -1479,13 +1483,12 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
         }
     }
 #endif
-    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[address >> 13]) {
-        // A mapped slot swallows the write: a ROM cartridge chunk and the EX-ROM
-        // drop it, a RAM chunk takes it. Either way it must NOT fall through to
-        // the HOME bank underneath — the SCLD has disconnected it.
-        Timex::write8(address, value);
+    // A mapped slot swallows the write: a ROM cartridge chunk and the EX-ROM
+    // drop it, a RAM chunk takes it. Either way it must NOT fall through to
+    // the HOME bank underneath — the SCLD has disconnected it (unless the divMMC
+    // is paged in over it: timexPoke8 then returns false).
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[address >> 13] && timexPoke8(address, value))
         return;
-    }
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
         GS::zxDmaWrite(value);
     // ATM-Turbo: a window showing ROM drops the write (its pages may be flattened
@@ -1646,6 +1649,8 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
         uint8_t opCode;
         if (pg <= 1 && MemESP::divmmc_mapped) {
             opCode = (pg == 0) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
+        } else if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[pc >> 13]) {
+            opCode = Timex::fetch8(pc);   // TC2068 + esxDOS: the SCLD window when unmapped
         } else {
             opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc);
         }

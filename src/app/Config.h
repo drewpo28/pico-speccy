@@ -171,6 +171,8 @@ public:
     static bool     slog_on;
     static bool     ledIndicators;
     static bool     rzx_loop;       // Snapshots > RZX loop: restart a recording when it ends
+    static uint8_t  led_style;      // Interface > LED indicators > Icons: 0 = Classic (1-bit glyphs), 1 = Colour
+    static bool     ide_led;        // Interface > HDD / CD icon: HDD/CD icon in the top-right corner (LED::drawCornerIcons)
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
     // Chip temperature calibration, whole °C added to the ADC sensor reading.
@@ -568,6 +570,10 @@ public:
     static string if2CartPath;
     static bool driveWP[4];   // TR-DOS per-slot write protect (Drive A..D)
     static uint8_t esxdos;   // 0=OFF 1=DivMMC 2=DivIDE 3=DivSD
+    // esxDOS ROM release: 0 = 0.9.0, 1 = 0.8.9. The two do not share a card: 0.9.0
+    // boots only from a /SYS of its own version. 0.8.9 lives in .psramroms, so
+    // DivMMC::init falls back to 0.9.0 when !FlashRoms::romsUsable().
+    static uint8_t esxdos_ver;
     // Unified hd0/hd1 image slots — [0]=hd0, [1]=hd1.
     // DivMMC uses hd0 only; DivIDE uses both.
     static string esxdos_hdf_image[2];

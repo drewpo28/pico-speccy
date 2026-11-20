@@ -146,6 +146,7 @@
 #define TXT_TAPE_BROWSER    "Tape browser"
 #define TXT_TAPE_PLAYER     "Player mode"
 #define TXT_TAPE_REALIN     "Real sound input"
+#define TXT_TAPE_BT         "Bluetooth (phone)"
 #define TXT_TAPE_FASTLOAD   "Fast tape load"
 #define TXT_TAPE_RG         "R.G. ROM timings"
 #define TXT_TAPE_AUTOSTART  "Auto-start"
@@ -192,12 +193,14 @@
 #define TXT_MB02_SNDLED     "Sound and LED"
 #define TXT_ESX_INTERFACE   "Interface"
 #define TXT_HW_ESX_IMAGES   "Disks hd0 / hd1"
+#define TXT_HW_ESX_ROM      "ROM version"
 #define TXT_ZC_CARD         "SD card / image"
 #define TXT_HW_ESXDOS       "esxDOS"
 #define TXT_HW_ZC           "Z-Controller"
 #define TXT_HW_IDE          "IDE / HDD"
 #define TXT_IDE_IMAGES      "Images hd0 / hd1"
 #define TXT_IDE_CREATE      "Create image"
+#define TXT_IDE_LED         "HDD / CD icon"
 // Enter on an IDE slot: its source, an image or the card's own sectors (the DivSD idea,
 // one level up). Picking the card lands on read-only; Write needs an explicit F6.
 #define TXT_IDE_SRC_TITLE   "Disk source"
@@ -222,6 +225,7 @@
 // Indicators on their own panel beside the F8 stats box instead of bare glyphs
 // over the border — readable in modes whose border is thin or absent (DS80,
 // GMX 640x200, TS-Conf).
+#define TXT_HW_LEDSTYLE     "Icons"
 #define TXT_HW_LEDPANEL     "Solid background"
 // The board's own LED (GPIO 25), blinking on real SD traffic — internal /tmp
 // files (swap, .idx) are deliberately not indicated. Not an on-screen indicator.
@@ -520,8 +524,9 @@
 #define TXT_NET_SYNC        "Sync time (SNTP)"
 #define TXT_NET_SYNC_AUTO   "Sync at boot"
 #define TXT_BLUETOOTH       "Bluetooth"
-#define TXT_BT_AUDIO        "Audio"
+#define TXT_BT_AUDIO        "Audio out"
 #define TXT_BT_INPUT        "Input"
+#define TXT_BT_TAPE         "Tape in"
 #define TXT_NET_TZ          "Time zone"
 #define TXT_NET_NIC_SUB     "ZiFi NIC"
 #define TXT_NET_TRANSPORT   "Transport"

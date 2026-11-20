@@ -73,6 +73,8 @@ bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::rzx_loop = false;
 bool     Config::led_panel = false;
+bool     Config::ide_led = true;
+uint8_t  Config::led_style = 0;
 bool     Config::sdLedBlink = false;
 int8_t   Config::temp_offset = 0;
 uint8_t  Config::gm_field = 0;      // Pico-Scwong options (see Config.h)
@@ -188,6 +190,7 @@ string   Config::dckCartPath = ""; // Timex DOCK cartridge in the TC2068 slot
 string   Config::if2CartPath = ""; // ZX Interface 2 cartridge in the 48K
 bool     Config::driveWP[4] = { true, true, true, true };
 uint8_t  Config::esxdos = 0;
+uint8_t  Config::esxdos_ver = 0;
 string   Config::esxdos_hdf_image[2] = {"", ""};
 uint8_t  Config::mb02 = 0;
 bool     Config::mb02WP[4] = { true, true, true, true };
@@ -1577,6 +1580,9 @@ void Config::load() {
         nvs_get_b("wasd", wasd, sts);
         nvs_get_b("ledIndicators", ledIndicators, sts);
         nvs_get_b("ledPanel", led_panel, sts);
+        nvs_get_b("ideLed", ide_led, sts);
+        nvs_get_u8("ledStyle", led_style, sts);
+        if (led_style > 1) led_style = 0;
         nvs_get_b("rzx_loop", rzx_loop, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
         nvs_get_i8("temp_offset", temp_offset, sts);
@@ -1713,6 +1719,8 @@ void Config::load() {
             nvs_get_b(k, driveWP[i], sts);
         }
         nvs_get_u8("esxdos", esxdos, sts);
+        nvs_get_u8("esxdos_ver", esxdos_ver, sts);
+        if (esxdos_ver > 1) esxdos_ver = 0;
         // Migrate old bool key
         { bool old_divmmc = false; nvs_get_b("divmmc", old_divmmc, sts); if (old_divmmc && esxdos == 0) esxdos = 1; }
         nvs_get_str("esxdos_hdf", esxdos_hdf_image[0], sts);
@@ -2154,6 +2162,8 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
     nvs_set_str(buf,"ledPanel", led_panel ? "true" : "false");
+    nvs_set_str(buf,"ideLed", ide_led ? "true" : "false");
+    nvs_set_u8(buf,"ledStyle", led_style);
     nvs_set_str(buf,"rzx_loop", rzx_loop ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
     nvs_set_i8(buf,"temp_offset", temp_offset);
@@ -2217,6 +2227,7 @@ void Config::writeKeys(NvsWriter& buf) {
         nvs_set_str(buf, k, driveWP[i] ? "true" : "false");
     }
     nvs_set_u8(buf,"esxdos", esxdos);
+    nvs_set_u8(buf,"esxdos_ver", esxdos_ver);
     nvs_set_str(buf,"esxdos_hdf", esxdos_hdf_image[0].c_str());
     nvs_set_str(buf,"esxdos_hd1", esxdos_hdf_image[1].c_str());
     nvs_set_u8(buf,"ide_scheme", ide_scheme);
@@ -2561,7 +2572,7 @@ static const char* const kSnapArchKeys[] = {
 static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",
     "Issue2", "timex_video", "ulaplus", "betadisk", "trdosBios", "mode16col_onoff",
-    "esxdos", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
+    "esxdos", "esxdos_ver", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
     "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
     "ide_raw0", "ide_raw1", "ide_rwin0", "ide_rwin1",
@@ -2599,6 +2610,7 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "timex_video", "Timex video" },   { "ulaplus", "ULA+" },
         { "betadisk", "Beta 128" },         { "trdosBios", "TR-DOS ROM" },
         { "mode16col_onoff", "16 colours" },{ "esxdos", "esxDOS" },
+        { "esxdos_ver", "esxDOS ROM" },
         { "esxdos_hdf", "esxDOS image" },   { "esxdos_hd1", "esxDOS image" },
         { "mb02", "MB-02+" },               { "zcontroller", "Z-Controller" },
         { "byte_cobmect_mode", "Byte COBMECT" }, { "AluTiming", "ULA timing" },

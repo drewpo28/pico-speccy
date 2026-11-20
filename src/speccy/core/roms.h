@@ -80,8 +80,9 @@ extern "C" const unsigned char gb_rom_Alf_ep[];
 extern "C" const unsigned char gb_rom_4_trdos_custom[];
 // gb_rom_pentagon_128k (32K blob) removed: Pentagon is a 101-byte overlay over the
 // Sinclair 128K base now (roms/pentagon/). Custom Pentagon uses the 128K custom slot.
-extern "C" unsigned char gb_rom_esxdos[];
-extern "C" unsigned char gb_rom_esxide[];
+// esxDOS: 0.9.0 in flash, 0.8.9 in .psramroms (Config::esxdos_ver, DivMMC::init).
+#include "speccy/roms/esxdos/esxdos_roms.h"
+#include "speccy/roms/esxdos/esxdos089_roms.h"
 extern "C" const unsigned char gb_rom_tbblue_loader[]; // Next FPGA bootrom, 8K (GPLv3)
 #include "speccy/roms/profi/romProfi.h"
 #include "speccy/roms/scorpion/romScorpion.h"

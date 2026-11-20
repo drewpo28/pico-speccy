@@ -11,7 +11,6 @@
 #include "app/Config.h"
 #include "speccy/z80/CPU.h"
 #include "app/Debug.h"
-#include "ui/LEDIndicators.h"
 #if FDD_PORT_TRACE
 #include "speccy/z80/z80.h"   // Z80::getRegPC() — the trace names the calling ROM routine
 #endif
@@ -42,15 +41,14 @@ struct Slot {
 static Slot* s_slot = nullptr;
 
 // ── FatFs backing store ────────────────────────────────────────────────────────
-// LED::SD is the card indicator, and these really are card accesses — the same
-// reasoning that lights it for NeoGS's own SD interface. The FLOPPY lamp is a separate
-// signal driven from Upd765::activity; see LEDIndicators.
+// No LED::SD here (2026-11-20): SD is the guest's SD interface (DivMMC, NeoGS), and
+// the image's card reads are the floppy's own activity — the FDD lamp/glyph shows
+// them from Upd765::activity (see ui/LEDIndicators.cpp).
 static bool fsRd(void* ctx, uint32_t off, void* dst, uint32_t n) {
     FIL* f = (FIL*)ctx;
     if (f_lseek(f, off) != FR_OK) return false;
     UINT br = 0;
     if (f_read(f, dst, n, &br) != FR_OK || br != n) return false;
-    LED::touchR(LED::SD);
     return true;
 }
 static bool fsWr(void* ctx, uint32_t off, const void* src, uint32_t n) {
@@ -58,7 +56,6 @@ static bool fsWr(void* ctx, uint32_t off, const void* src, uint32_t n) {
     if (f_lseek(f, off) != FR_OK) return false;
     UINT bw = 0;
     if (f_write(f, src, n, &bw) != FR_OK || bw != n) return false;
-    LED::touchW(LED::SD);
     return true;
 }
 static bool fsSync(void* ctx) { return f_sync((FIL*)ctx) == FR_OK; }

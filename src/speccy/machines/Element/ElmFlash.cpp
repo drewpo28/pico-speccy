@@ -16,7 +16,7 @@
 #include "speccy/roms/48k/romSinclair48K.h"
 #include "speccy/roms/plus3/romPlus3.h"
 #include "speccy/roms/plus3/plus3_overlays.h"
-#include "speccy/core/roms.h"           // gb_rom_esxdos
+#include "speccy/core/roms.h"           // gb_rom_esxdos090
 #include "speccy/roms/element/elm_roms.h"   // the SetUp + MB03+SD esxDOS, 16 MB images
 #endif
 
@@ -151,7 +151,7 @@ static void build() {
     put16k(1 * AREA + 2 * BLOCK, gb_rom_2_plus3, nullptr);
     put16k(1 * AREA + 3 * BLOCK, gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
     for (int b = 0; b < 4; b++) put16k(2 * AREA + b * BLOCK, gb_rom_0_sinclair_48k, nullptr);
-    for (int a = 0; a < 3; a++) memcpy(s_img + a * AREA + BLOCK_ESXDOS * BLOCK, gb_rom_esxdos, 8192);
+    for (int a = 0; a < 3; a++) memcpy(s_img + a * AREA + BLOCK_ESXDOS * BLOCK, gb_rom_esxdos090, 8192);
     installBuiltin(false);
 }
 
