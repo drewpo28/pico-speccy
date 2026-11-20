@@ -230,7 +230,9 @@ open(os.path.join(ROOT, 'src/speccy/z80/next_dispatch.inc'), 'w').write('\n'.joi
 elm = []
 for line in out:
     if line.startswith('case 0xED:'):
-        line = 'case 0xED: goto nx_slow;'
+        # ED: a hand-written body for PLANETOS's set (nx_ed, 2026-11-20: NEG, ADC / SBC
+        # HL,rr, LDI / LDD, IN A,(C) on the HGFX status); the rest goes on to nx_slow.
+        line = 'case 0xED: goto nx_ed;'
     # CB and DD / FD: hand-written bodies after the switch in Z80_JLS.cpp (nx_cb, nx_xy:
     # PLANETOS's IY maths, 2026-11-19); what they do not take goes on to nx_slow.
     elif line.startswith('case 0xCB:'):

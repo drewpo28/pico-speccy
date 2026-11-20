@@ -52,6 +52,7 @@ void    writeReg(uint8_t reg, uint8_t v);
 void    writeRegFast(uint8_t reg, uint8_t v);   // writeReg minus CMD's side effects, in .elmovl (the eLeMeNt loop's store only)
 void    writeColour(uint16_t off, uint8_t v);
 uint8_t status();             // g_zxi_02F
+extern uint64_t g_busyUntil;  // status() = 1 while CPU::global_tstates + CPU::tstates < this
 uint8_t reg(uint8_t r);
 // The raw 8 KB of a chunky window; lowSlot = the slot is below #4000 (the generic read
 // path serves it), split = the window lies across the SRAM half's edge: its reads must

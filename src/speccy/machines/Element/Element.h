@@ -64,6 +64,7 @@ bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
 bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM)
 enum { WK_VRAM = 1, WK_REG = 2, WK_LCU = 5, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / register / LCU / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
 extern volatile uint8_t g_elm_hgfxSlots;      // the chunky (HGFX Area) 8K slots
+extern uint8_t s_gIdx;                       // the g file index (#7C3B) behind #7D3B reads
 extern uint8_t* lcuRegs;                      // the LCU block (8K, registers at its start) once mapped
 void masksRefresh();                          // the eLeMeNt loop's slot masks again after a wrKind change (Hgfx's COW)
 extern const uint8_t* vramHi;                 // g_zxi_021: the VRAM window's high address byte

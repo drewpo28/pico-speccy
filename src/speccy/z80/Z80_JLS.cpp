@@ -2134,6 +2134,66 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
                 default: goto nx_alu7;
             }
         }
+        // ED: PLANETOS's set in the loop (hw 2026-11-20: 3 090 ED a frame through nx_slow -
+        // IN A,(C) 904, NEG 804, ADC HL,BC 804, LDI 576 - and the IN went decodeED ->
+        // Ports::input -> Elm::portIn -> gRead -> Hgfx::status, all flash, ~7 % of core0).
+        // Same T, R, WZ and flags as decodeOpcodeed / decodeED; the second M1 is a plain
+        // load like nx_cb's. IN A,(C) only for #7D3B with the g index at #2F (the HGFX busy
+        // poll): Ports::input's Draw(1) early cycle, the read, Draw(3). Everything else,
+        // LDIR / LDDR (nx_slow's batch) included, goes on to nx_slow with nothing consumed.
+        nx_ed: {
+            if (__builtin_expect(nx_pc < 0x4000, 0)) goto nx_slow;
+            const uint8_t op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
+            switch (op) {
+                case 0x44: case 0x4C: case 0x54: case 0x5C: case 0x64: case 0x6C: case 0x74: case 0x7C: {   // NEG
+                    nx_t += 4; nx_r++; nx_pc++;
+                    const uint8_t aux = regA;
+                    regA = 0;
+                    carryFlag = false;
+                    sbc(aux);
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                }
+                case 0x42: case 0x52: case 0x62: case 0x72:            // SBC HL,rr
+                case 0x4A: case 0x5A: case 0x6A: case 0x7A: {          // ADC HL,rr
+                    nx_t += 4; nx_r++; nx_pc++;
+                    ElmMemory::addressOnBusIR_elm(nx_t, 7);
+                    const uint16_t rr = (op & 0x30) == 0x00 ? REG_BC : (op & 0x30) == 0x10 ? REG_DE
+                                      : (op & 0x30) == 0x20 ? REG_HL : REG_SP;
+                    if (op & 8) adc16(rr); else sbc16(rr);
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                }
+                case 0xA0: case 0xA8: {                                // LDI / LDD (ldx)
+                    nx_t += 4; nx_r++; nx_pc++;
+                    uint8_t v = ElmMemory::peek8_elm(nx_t, REG_HL);
+                    ElmMemory::poke8_elm(nx_t, nx_pc, REG_DE, v);
+                    ElmMemory::addressOnBus_elm(nx_t, REG_DE, 2);
+                    const uint16_t d = op == 0xA0 ? 1 : 0xFFFF;
+                    REG_HL += d; REG_DE += d; REG_BC--;
+                    v += regA;
+                    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (v & BIT3_MASK);
+                    if ((v & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK;
+                    if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK;
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                }
+                case 0x78: {                                           // IN A,(C): #7D3B, g_zxi_02F
+                    if (REG_BC != 0x7D3B || Elm::s_gIdx != 0x2F || Config::numPortReadBP > 0
+                        || __builtin_expect(Rzx::mode != 0, 0)) goto nx_slow;
+                    nx_t += 4; nx_r++; nx_pc++;
+                    nx_t += 1;                                         // the early I/O cycle
+                    const uint8_t v = CPU::global_tstates + nx_t < Hgfx::g_busyUntil ? 1 : 0;
+                    nx_t += 3;                                         // the late one
+                    REG_WZ = REG_BC + 1;
+                    regA = v;
+                    sz5h3pnFlags = sz53pn_addTable[v];
+                    nx_qs = nx_r;
+                    goto nx_xydone;
+                }
+                default: goto nx_slow;
+            }
+        }
         // The CB operation for both: nx_cbo = op, nx_v = operand, nx_p = register (null =
         // memory at nx_cba), nx_cbcp = DDCB's register copy, nx_cb53 = BIT (mem)'s 5/3 source.
         nx_cbop: {

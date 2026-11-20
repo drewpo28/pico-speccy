@@ -75,7 +75,8 @@ void* tailAlloc(size_t n) {
     return tryMalloc(n);
 }
 
-static uint8_t s_gIdx, s_eIdx, s_uIdx;
+uint8_t s_gIdx;                       // Element.h: the eLeMeNt loop reads #7D3B / g_zxi_02F itself
+static uint8_t s_eIdx, s_uIdx;
 #if PERF_TRACE
 extern uint32_t g_elm_io_cnt[8], g_elm_io_us[5], g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];
 #endif
@@ -935,7 +936,9 @@ static uint16_t freePages() {
 
 static uint8_t* lcuBlock() {
     if (!s_lcu) {
-        s_lcu = (uint8_t*)Buffer::palloc(0x2000, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        // SRAM: PLANETOS stores to its registers ~1 900 times a frame through the loop
+        // (elmLcuStore 6.4 % of core0 with the block in PSRAM, hw 2026-11-20).
+        s_lcu = (uint8_t*)Buffer::palloc(0x2000, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
         if (s_lcu) { memset(s_lcu, 0, 0x2000); ElmLcu::reset(s_lcu); }
         lcuRegs = s_lcu;
     }

@@ -237,7 +237,7 @@ case 0xE9: { nx_pc = REG_HL; nxCheckTrdos(); } break;
 case 0xEA: nx_cc = (sz5h3pnFlags & PARITY_MASK) != 0; goto nx_decodeJPcc;
 case 0xEB: { uint16_t tmp = REG_HL; REG_HL = REG_DE; REG_DE = tmp; } break;
 case 0xEC: nx_cc = (sz5h3pnFlags & PARITY_MASK) != 0; goto nx_decodeCALLcc;
-case 0xED: goto nx_slow;
+case 0xED: goto nx_ed;
 case 0xEE: flagQ = false; do { { xor_(ElmMemory::peek8_elm(nx_t, nx_pc)); nx_pc++; } } while (0); if (flagQ) nx_qs = nx_r; break;
 case 0xEF: goto nx_slow;
 case 0xF0: nx_cc = (sz5h3pnFlags & SIGN_MASK) == 0; goto nx_decodeRETcc;

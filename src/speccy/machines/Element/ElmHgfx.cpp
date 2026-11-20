@@ -238,7 +238,7 @@ static bool s_live, s_palDirty, s_palAll;
 // anyway (a toast's carve going away, a video mode change).
 static bool s_fbDirty = true;
 static uint8_t s_cleanRun;
-static uint64_t s_busyUntil;
+uint64_t g_busyUntil;                 // ElmHgfx.h: status() inline in the eLeMeNt loop
 // The current mode's geometry: pixels, bits per pixel, the second buffer.
 static int s_w = WIDTH, s_h = HEIGHT, s_stride = WIDTH, s_bpp = 8;
 ELM_INL void dirtyRow(uint32_t rowA) { dirtyMark(rowA); }   // the row at rowA: its first unit
@@ -700,7 +700,7 @@ void reset() {
     memset(s_r, 0, sizeof(s_r));
     s_r[REG_MASK] = 0xFF;
     memcpy(s_e, s_r, sizeof(s_e));
-    s_busyUntil = 0;
+    g_busyUntil = 0;
     if (was) { s_live = false; VIDEO::paper_hold = false; VIDEO::applyPalette(); }
 }
 
@@ -983,7 +983,7 @@ void writeReg(uint8_t r, uint8_t v) {
     s_fbDirty = true;
     s_r[r] = v;
     if (r == REG_CMD && (v == 1 || v == 2))
-        s_busyUntil = now() + ((uint64_t)(v == 1 ? 6144 : 3500) << ESPectrum::multiplicator);
+        g_busyUntil = now() + ((uint64_t)(v == 1 ? 6144 : 3500) << ESPectrum::multiplicator);
     if (queued()) {
         push(Q_REG | (uint32_t)r << 8 | v);
         if (r == REG_CMD) push(Q_CMD | v);
@@ -1035,7 +1035,7 @@ void writeColour(uint16_t off, uint8_t v) {
     if (s_col && off < COLOURS && s_col[off] != v) { s_col[off] = v; s_palDirty = true; }
 }
 
-uint8_t status() { return now() < s_busyUntil ? 1 : 0; }
+uint8_t status() { return now() < g_busyUntil ? 1 : 0; }
 
 static inline uint32_t chunkyAbs(uint32_t off) {
     return srcOff() + ((off + (uint32_t)(uint16_t)s16(REG_OY) * s_stride) & (BUF_SIZE - 1));

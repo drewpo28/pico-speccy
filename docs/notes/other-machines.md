@@ -1203,6 +1203,21 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   KB; was 20.7 / 13.5 before the session: the tables pushed out of the pages57 tail). PROF: loop 71 %, `elmLcuStore`
   5.8 % (the block in PSRAM), `Elm::portIn` 4.8 % (#2F), `writeRegFast` 2.9 % (the PSRAM queue). **Session total:
   28.0 -> 19.4 ms, 34.6 -> 48.3 FPS.** Left if wanted: the LCU block / an SRAM shadow (~1 ms), #2F IN in RAM (~1 ms).
+- **Steady 48.8 (2026-11-20, hw-confirmed on DVp2w, log `...18.53.25.248`; `debug/DVp2w-elm-ed1-1.1.3` 18:49:16, PERF + PROF).** Profile of
+  `heap1` (log `...17.43.14.432`, 20 440 samples): loop 68.8 %, LCU stores ~11 % (`elmLcuStore` 6.4 + `elmLcuWrOk` 1.4 +
+  `elmPoke8Slow` 3.3; block in PSRAM), the #7D3B / g_zxi_02F busy poll ~7 % (`Elm::portIn` 4.2, `Hgfx::status` 1.2,
+  `Ports::input` 0.7, decodeED / decodeOpcodeed 1.1: 904 IN a frame through flash), `writeRegFast` 2.4 (its queue is 64 KB,
+  stays PSRAM). (1) The LCU block (`lcuBlock`, 8 KB) is `HOT_SRAM` now (heap 44 KB after the heap fixes). (2) `nx_ed` in the
+  loop (generator: `case 0xED: goto nx_ed`): NEG, ADC / SBC HL,rr, LDI / LDD, and IN A,(C) for BC = #7D3B with
+  `Elm::s_gIdx` = #2F (Draw(1) early cycle, `Hgfx::g_busyUntil` against global + T, Draw(3)); LDIR / LDDR and the rest go
+  on to nx_slow. `.elmovl` +848 B: content 17 176 / 17 408 (PERF 17 960 / 18 176); the pages57 tail ~9 960 B still takes
+  Hot + Regs in the non-PERF build. z80bench `elm` fuzz 3 seeds x 500 k: hashes and memcrc identical to HEAD; a mutation
+  (NEG +1 T) changes the hash, so the fuzz reaches nx_ed. Host: PLANETOS as a TAP (BAS + COD, the LOAD *"..." line made
+  LOAD "" CODE) draws frame for frame like the base binary (moons at the same places at 2000..7000).
+  **hw 18:53 (ed1): cpu 19.5 -> 13.8 ms (max 18.5-21.4), realFPS 48.84-48.87 every window, `[NEG2]` neg 1 of 60, aud
+  hold 0.** `elmLcuStore` and `Elm::portIn` are gone from the profile; core0 now spends its spare time in the idle
+  pumps (loop / BtHost / NgsSd / UART ~30 %). Heap under PLANETOS 35.7 KB, largest 21.9 KB (PERF build: Hot in the heap,
+  + the 8 KB LCU block).
 
 **PF2026 at 15-20 FPS on hw (2026-11-15/16, DVp2w, `debug/DVp2w-elm-pf2026perf{,2}-1.1.2`, PERF_TRACE + PERF_HIST; analysis done, no fix yet).**
 - The demo runs at **28 MHz** (`[PERF] clk: mult=3 T/fr=573440`). `[PERF] 60f: cpu=55-59 ms` a frame, realFPS 16.4-17.9,
