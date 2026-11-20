@@ -3,7 +3,7 @@
 // links), not a model of it.
 //
 //   gh api -H "Accept: application/vnd.github.raw" \
-//     "repos/mirror/newlib-cygwin/contents/newlib/libc/stdlib/_mallocr.c?ref=newlib-4.1.0" > /tmp/_mallocr.c
+//     "repos/mirror/newlib-cygwin/contents/newlib/libc/stdlib/mallocr.c?ref=newlib-4.1.0" > /tmp/_mallocr.c
 //   sed -E 's/^#define (mALLOc|fREe|rEALLOc|cALLOc|mEMALIGn|vALLOc|pvALLOc|mALLINFo|mALLOPt|mALLOC_USABLE_SIZe|mALLOC_STATs|cFREe)[[:space:]]+([A-Za-z_]+)/#define \1 t_\2/' \
 //     /tmp/_mallocr.c > /tmp/tm.c
 //   mkdir -p /tmp/hr_inc && printf '#define _NEWLIB_VERSION "4.1.0"\n' > /tmp/hr_inc/newlib.h
@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc > 1) return scenario(atoi(argv[1]));
     int bad = 0;
-    for (int i = 1; i <= 5; i++) {
+    for (int i = 1; i <= 6; i++) {
         pid_t pid = fork();
         if (pid == 0) { char n[4]; snprintf(n, sizeof n, "%d", i); execl("/proc/self/exe", argv[0], n, (char*)NULL); _exit(127); }
         int st = 0; waitpid(pid, &st, 0);
@@ -193,6 +193,55 @@ static int scenario(int which) {
     CHECK(window_clean(dmar_ws, 2688), "resident .dmarovl was written");
     CHECK(window_clean(dmal_ws, 3456), "resident .dmaovl was written");
     (void)keep;
+    }
+    if (which == 6) {
+    // ── a jump's leftover tail goes back to malloc (hr_left_chunk) ─────────────
+    // DVp2w eLeMeNt boot (hw 2026-11-20, heap walk over OpenOCD): region 0 ends
+    // at 0x...A60 under the resident .dmaovl (8448 B), region 1 = the released
+    // Next window (57344 B), then the resident .dmarovl. The HGFX arena (46080 B)
+    // jumped with 23 KB above the cursor in region 0; those bytes were never
+    // handed out and getFreeHeap did not count them.
+    base = ram + 0x870;
+    char* dmal_ws = base + 70128, *r1_lo = dmal_ws + 8448, *dmar_ws = r1_lo + 57344, *top = dmar_ws + 2688;
+    CHECK((size_t)(top - ram) <= sizeof ram, "scenario 6 layout exceeds the buffer");
+    HrWindow w[3] = { { dmal_ws, r1_lo, 1 }, { r1_lo, dmar_ws, 0 }, { dmar_ws, top, 1 } };
+    memset(&hr, 0, sizeof hr);
+    hr.reg[0].lo = base; hr.reg[0].hi = dmal_ws; hr.reg[0].hwm = base; hr.n = 1; hr.ceiling = dmal_ws;
+    hr_rebuild(&hr, base, w, 3, top);
+    memset(dmal_ws, 0xEE, 8448); memset(dmar_ws, 0xEE, 2688);
+    jumps = 0;
+    CHECK(hr.n == 2, "eLeMeNt layout: %u regions, want 2", hr.n);
+    void* keep[64]; int nk = 0;
+    while (nk < 64 && hr.cursor < dmal_ws - 24000) { void* p = t_malloc(1500); if (!p) break; memset(p, 7, 1500); keep[nk++] = p; }
+    char* cur0 = hr.cursor;
+    const size_t tail = (size_t)(dmal_ws - cur0);
+    struct t_mallinfo m0 = t_mallinfo();
+    void* arena = t_malloc(46080);
+    CHECK(arena && in(&hr.reg[1], arena, 46080), "the arena must jump to region 1 (%p)", arena);
+    CHECK(jumps == 1 && hr.nleft == 1, "one jump, one tail recorded (jumps %d, nleft %u)", jumps, hr.nleft);
+    CHECK(hr.left[0].lo == cur0 && hr.left[0].hi == dmal_ws, "the tail is cursor..region end");
+    CHECK(hr_window_touched(&hr, dmal_ws - 1) , "region 0 reads as fully handed out");
+    char* lo; char* hi;
+    CHECK(hr_take_left(&hr, &lo, &hi) && hr.nleft == 0, "take the tail once");
+    void* m = hr_left_chunk(lo, hi);
+    CHECK(m != NULL, "tail of %zu B makes a chunk", tail);
+    t_free(m);
+    struct t_mallinfo m1 = t_mallinfo();
+    printf("eLeMeNt: tail %zu B, fordblks %d -> %d\n", tail, m0.fordblks, m1.fordblks);
+    CHECK((size_t)(m1.fordblks - m0.fordblks) + 4096 >= tail, "fordblks grew by %d, tail %zu", m1.fordblks - m0.fordblks, tail);
+    void* big = t_malloc(tail - 256);
+    CHECK(big && in(&hr.reg[0], big, tail - 256) && (char*)big >= cur0, "a %zu B block from the reclaimed tail (%p)", tail - 256, big);
+    if (big) memset(big, 9, tail - 256);
+    for (int i = 0; i < nk; i++) CHECK(((unsigned char*)keep[i])[0] == 7 && ((unsigned char*)keep[i])[1499] == 7, "block %d corrupted", i);
+    // churn: free/realloc across the dlmalloc fenceposts at cur0 and ours at the region end
+    for (int i = 0; i < nk; i += 2) { t_free(keep[i]); keep[i] = NULL; }
+    t_free(big);
+    void* again = t_malloc(tail - 256);
+    CHECK(again && in(&hr.reg[0], again, tail - 256), "the tail block again after free");
+    for (int i = 0; i < 200; i++) { void* p = t_malloc(64 + (i * 37) % 3000); if (!p) break; memset(p, 1, 64 + (i * 37) % 3000); if (i & 1) t_free(p); }
+    CHECK(window_clean(dmal_ws, 8448), "resident .dmaovl was written");
+    CHECK(window_clean(dmar_ws, 2688), "resident .dmarovl was written");
+    t_free(again); t_free(arena);
     }
     printf("scenario %d: %s (fails=%d)\n", which, fails ? "FAILED" : "ok", fails);
     return fails != 0;

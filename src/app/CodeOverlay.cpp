@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
 #include "hardware/sync.h"
 #include "Debug.h"
 #include "HeapRegions.h"
@@ -49,8 +50,10 @@ extern char __end__[];          // heap start (the linker also aliases it as `en
 // dlmalloc 2.6.4 (_mallocr.c, malloc_extend_top) and it was written for exactly
 // this: a MORECORE that returns an address other than the old top end is the
 // "foreign sbrk" case — it fences the old top with two in-use fenceposts, frees
-// it into the bins, and starts a new top at the returned address. The bytes
-// left in the old region are therefore not lost. (Before this the heap ended
+// it into the bins, and starts a new top at the returned address. That covers
+// the old region up to the OLD brk only: the rest of it, cursor..region end,
+// dlmalloc never sees again — heap_reclaim_left() hands it back as a freed
+// block (23 KB on an eLeMeNt boot, hw 2026-11-20). (Before this the heap ended
 // at the LOWEST loaded window: on a TS-Conf boot the released Z80 DMA + GS
 // windows — 32 KB — sat above the ceiling and reached nobody.)
 //
@@ -107,6 +110,19 @@ extern "C" size_t heap_stranded_bytes()   { return hr_stranded_bytes(&s_hr); }
 extern "C" size_t heap_stranded_largest() { return hr_stranded_largest(&s_hr); }
 static bool windowTouched(char* ws)       { return hr_window_touched(&s_hr, ws) != 0; }
 
+// The tail a jump left above the cursor (hr_sbrk records it) goes to malloc as one
+// freed block. Not from _sbrk (that runs inside malloc): the heap probes call this
+// before they measure, so the bytes are back before anyone asks. hw 2026-11-20:
+// 23 144 B of an eLeMeNt boot sat there, never handed out and not counted.
+static size_t s_leftBack;
+extern "C" int heap_reclaim_left_pending() { return s_hr.nleft != 0; }
+extern "C" void heap_reclaim_left() {
+    if (__builtin_expect(s_hr.nleft == 0, 1)) return;
+    char *lo, *hi;
+    while (hr_take_left(&s_hr, &lo, &hi))
+        if (void* m = hr_left_chunk(lo, hi)) { free(m); s_leftBack += (size_t)(hi - lo); }
+}
+
 static void logRegions();
 void CodeOverlay::logHeapRegions() { logRegions(); }
 static void logRegions() {
@@ -114,6 +130,7 @@ static void logRegions() {
         Debug::log("[OVL] heap region %u: %08lX..%08lX (%u B)%s", i,
                    (unsigned long)(uintptr_t)s_hr.reg[i].lo, (unsigned long)(uintptr_t)s_hr.reg[i].hi,
                    (unsigned)(s_hr.reg[i].hi - s_hr.reg[i].lo), i == s_hr.cur ? " <- sbrk" : "");
+    if (s_leftBack) Debug::log("[OVL] heap: %u B left below a jump given back to malloc", (unsigned)s_leftBack);
 }
 
 static void loadWindow(char* dst, const char* src, size_t n) {
@@ -309,6 +326,8 @@ extern "C" char __HeapLimit[];
 extern "C" char* heap_ceiling_now() { return __HeapLimit; }
 extern "C" size_t heap_stranded_bytes()   { return 0; }
 extern "C" size_t heap_stranded_largest() { return 0; }
+extern "C" void heap_reclaim_left() {}
+extern "C" int heap_reclaim_left_pending() { return 0; }
 
 void CodeOverlay::apply(bool, bool, bool, bool, bool, bool, bool, bool) {}
 bool CodeOverlay::claimForNext()                  { return true; }

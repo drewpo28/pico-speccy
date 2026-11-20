@@ -6033,8 +6033,12 @@ extern "C" char* heap_ceiling_now(void);
 // here; the two probes read them through these (0 with the overlays compiled out).
 extern "C" size_t heap_stranded_bytes(void);
 extern "C" size_t heap_stranded_largest(void);
+// A jump's leftover tail back to malloc before anything measures (CodeOverlay.cpp).
+extern "C" void heap_reclaim_left(void);
+extern "C" int heap_reclaim_left_pending(void);
 
 size_t getFreeHeap(void) {
+    heap_reclaim_left();
     struct mallinfo mi = mallinfo();
     // fordblks = free blocks in free list + sbrk headroom (total really free memory)
     // Add remaining sbrk space that mallinfo doesn't account for
@@ -6049,6 +6053,7 @@ size_t getFreeHeap(void) {
 // trusts only sbrk headroom, which is always contiguous — either the gap under
 // the current ceiling or a whole stranded region _sbrk would jump into.
 size_t getContiguousHeap(void) {
+    heap_reclaim_left();
     char *brk = (char *)sbrk(0);
     char *lim = heap_ceiling_now();
     size_t gap = (brk < lim) ? (size_t)(lim - brk) : 0;
@@ -6076,6 +6081,9 @@ extern "C" size_t getLargestAllocatable(void) {
         if (p) { __real_free(p); lo = mid; } // fits → search higher
         else   { hi = mid - 1; }             // too big → search lower
     }
+    // A probe that made _sbrk jump left the old region's tail behind: give it
+    // back now (it may be a bigger piece than the one just measured).
+    if (__builtin_expect(heap_reclaim_left_pending(), 0)) { heap_reclaim_left(); return getLargestAllocatable(); }
     return lo;
 }
 
@@ -6083,7 +6091,9 @@ extern "C" size_t getLargestAllocatable(void) {
 extern "C" void* tryMalloc(size_t n) {
     if (n == 0) n = 1;
     if (getLargestAllocatable() < n) return nullptr;
-    return malloc(n);
+    void* p = malloc(n);
+    heap_reclaim_left();     // this malloc may have jumped a region
+    return p;
 }
 extern "C" void* tryCalloc(size_t n) {
     void* p = tryMalloc(n);

@@ -699,6 +699,15 @@ not the cursor: a window skipped by a jump is pristine even though the cursor is
 it. Memory Info gained an `above overlay` line; the boot log prints `[OVL] heap region N:
 lo..hi (B) <- sbrk` per region and `+N B stranded` on the ceiling line.
 
+**A jump strands the old region's tail (found 2026-11-20, fix hw-confirmed on the eLeMeNt 2026-11-20: heap 18.8 -> 45.6 KB after boot; other machines NOT hw-tested).** dlmalloc
+fences and frees its old top only up to the OLD brk; `cursor..region end` was never handed
+out and `getFreeHeap` did not count it: 23 144 B on an eLeMeNt boot (heap walk over OpenOCD,
+`docs/elm-sram-plan.md`). The jump there came from `getLargestAllocatable`'s real-malloc
+probes, which start at `getFreeHeap()` (stranded regions included). Fix: `hr_sbrk` records the
+tail, `heap_reclaim_left()` turns it into a freed chunk outside malloc (from the heap probes
+and `tryMalloc`); log `[OVL] heap: N B left below a jump given back to malloc`. Scenario 6
+of the test. The newlib 4.1.0 file is `mallocr.c` (the header recipe said `_mallocr.c`).
+
 **Test: `tools/heap_regions_test.c` drives NEWLIB'S OWN `_mallocr.c` (4.1.0, the
 toolchain's) through `HeapRegions.h`** — recipe in its header (`gh api` fetch + a sed
 that renames the entry points, one process per scenario because dlmalloc's arena is

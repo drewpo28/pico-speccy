@@ -25,12 +25,16 @@ extern "C" {
 typedef struct { char* lo; char* hi; char* hwm; } HrRegion;   // hwm = highest cursor while current
 typedef struct { char* ws; char* we; int loaded; } HrWindow;   // a code window, loaded = resident
 
+typedef struct { char* lo; char* hi; } HrLeft;                // a region's tail a jump left behind
+
 typedef struct {
     HrRegion reg[6];
     unsigned n;         // regions in address order
     unsigned cur;       // region the cursor is in
     char*    cursor;    // the sbrk cursor
     char*    ceiling;   // == reg[cur].hi
+    HrLeft   left[2];   // tails above the cursor at a jump, not yet given to malloc
+    unsigned nleft;
 } HeapRegions;
 
 // Region list from the heap base, the windows (address order, adjacent to each
@@ -86,6 +90,16 @@ static inline void* hr_sbrk(HeapRegions* h, char* base, long incr) {
     if ((size_t)incr < 4096u) return (void*)-1;
     for (unsigned r = h->cur + 1; r < h->n; r++) {
         if ((size_t)(h->reg[r].hi - h->reg[r].lo) < (size_t)incr) continue;
+        // dlmalloc fences its old top at the OLD brk (= the cursor) and frees it; the
+        // rest of this region, cursor..hi, it never sees again. Keep it for
+        // hr_left_chunk: hw 2026-11-20 (eLeMeNt boot) lost 23 144 B here, uncounted.
+        HrRegion* o = &h->reg[h->cur];
+        if (h->nleft < 2 && o->hi - h->cursor >= 256) {
+            h->left[h->nleft].lo = h->cursor;
+            h->left[h->nleft].hi = o->hi;
+            h->nleft++;
+            o->hwm = o->hi;          // handed to malloc (hr_window_touched)
+        }
         h->cur = r;
         h->ceiling = h->reg[r].hi;
         h->cursor = h->reg[r].lo + incr;
@@ -93,6 +107,31 @@ static inline void* hr_sbrk(HeapRegions* h, char* base, long incr) {
         return (void*)h->reg[r].lo;
     }
     return (void*)-1;
+}
+
+// A tail a jump left behind, taken once (0 when there is none).
+static inline int hr_take_left(HeapRegions* h, char** lo, char** hi) {
+    if (h->nleft == 0) return 0;
+    h->nleft--;
+    *lo = h->left[h->nleft].lo;
+    *hi = h->left[h->nleft].hi;
+    return 1;
+}
+
+// Lays [lo, hi) out as an in-use dlmalloc chunk the way malloc_extend_top lays out an
+// old top before freeing it: PREV_INUSE set (nothing to coalesce below), and two
+// SIZE_SZ fenceposts at the end so free() never looks past hi. Returns the pointer to
+// hand to free(), or 0 when the tail is too small. Call it OUTSIDE malloc (not from
+// _sbrk): free() then links it into the bins like any freed block.
+static inline void* hr_left_chunk(char* lo, char* hi) {
+    const uintptr_t SZ = sizeof(size_t), AL = 2 * sizeof(size_t);   // SIZE_SZ, MALLOC_ALIGNMENT
+    const uintptr_t p = ((uintptr_t)lo + AL - 1) & ~(AL - 1);       // chunk2mem(p) aligned
+    if ((uintptr_t)hi < p + 3 * SZ + 4 * SZ) return 0;              // fenceposts + MINSIZE
+    const uintptr_t s = ((uintptr_t)hi - p - 3 * SZ) & ~(AL - 1);
+    *(size_t*)(p + SZ)         = (size_t)s | 1;                     // size | PREV_INUSE
+    *(size_t*)(p + s + SZ)     = (size_t)SZ | 1;                    // fencepost 1
+    *(size_t*)(p + s + 2 * SZ) = (size_t)SZ | 1;                    // fencepost 2: fencepost 1 in use
+    return (void*)(p + 2 * SZ);
 }
 
 // What a region the cursor has not reached can really give malloc: the
