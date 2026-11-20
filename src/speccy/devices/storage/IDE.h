@@ -182,6 +182,11 @@ private:
     static bool     raw_ro[2];
     static uint32_t raw_start[2];    // card LBA of the guest's LBA 0
     static uint32_t raw_count[2];    // window length in sectors, after clamping
+    // A window that starts on a volume (a picked partition): the partition type of a
+    // synthetic MBR at the guest's LBA 0, guest LBA N+1 = window sector N (IdeMbr.h).
+    static uint8_t  raw_vmbr[2];
+    // The card sector behind guest LBA `l` of raw slot `d`; false = the virtual MBR.
+    static bool     rawCard(int d, uint32_t l, uint32_t* card);
 
     // Per-slot device type + post-reset signature validity (master/slave).
     static bool is_atapi[2];   // slot is an ATAPI CD-ROM (.iso)

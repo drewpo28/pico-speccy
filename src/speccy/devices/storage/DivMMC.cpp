@@ -31,6 +31,7 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "app/FlashRoms.h"
 #include "speccy/z80/z80.h"
 #include "app/Buffer.h"
+#include "speccy/devices/storage/IdeMbr.h"   // virtual MBR in front of a one-volume ZC window
 extern "C" {
     #include "fatfs/diskio.h"
 }
@@ -299,7 +300,7 @@ bool DivMMC::mediumImage(Medium& m, FIL* f, const char* path, const char* what) 
 // (sector-addressed) for every medium, sized by the window or the image.
 void DivMMC::spiIdentity() {
     sdhc_mode = true;
-    buildCSD_real(s_med[s_card].sectors);
+    buildCSD_real(s_med[s_card].sectors + (s_med[s_card].vmbr ? 1u : 0u));
     mmc_ocr[0] = 0xC0;  // bits 31:24 — power_up=1, CCS=1
     mmc_ocr[1] = 0xFF;  // bits 23:16 — all voltages
     mmc_ocr[2] = 0x80;  // bits 15:8
@@ -1170,7 +1171,7 @@ void DivMMC::loadSectorStream(uint32_t sector) {
     s_ra_run++;
     s_ra_next = sector + 1;
     const Medium& m = s_med[s_card];
-    if (!s_ra_buf || !m.present || sector == 0xFFFFFFFFu) { loadSector(sector); return; }
+    if (!s_ra_buf || !m.present || sector >= LBA_VMBR) { loadSector(sector); return; }
     const bool held = s_ra_n && s_ra_gen == g_disk_write_gen;
     ZS_T0();
     if (held && sector >= s_ra_first && sector - s_ra_first < s_ra_n) {
@@ -1744,6 +1745,8 @@ static int c17FromWindow(uint32_t sector) {
 }
 
 static bool c17Begin(uint32_t sector, bool stream) {
+    // Not a card sector (the virtual MBR, or past the medium): loadSector makes it.
+    if (sector >= 0xFFFFFFFEu) return false;      // = DivMMC::LBA_VMBR (private)
     // core1 must be pumping (sd_async_pump runs from its Next renderer loop): a
     // dead queue (nxQueueDead) would leave the request untaken for ever — the
     // 2 s storage probe used to cancel it as a side effect, and without that
@@ -2051,6 +2054,11 @@ void DivMMC::loadSector(uint32_t sector) {
     // `sector` is on the MEDIUM (lba()): a card sector for a raw window, a file
     // sector for an image, ~0 = the guest asked past the medium.
     const Medium& m = s_med[s_card];
+    if (sector == LBA_VMBR && m.present) {           // the synthetic MBR (zcMedium)
+        s1Drop();
+        ide_mbr::buildMbr(mmc_sector_buf, m.vmbr, m.sectors);
+        return;
+    }
     if (!m.present || sector == 0xFFFFFFFFu) {
         s1Drop();
         memset(mmc_sector_buf, m.raw ? 0xFF : 0x00, 512);
@@ -2175,8 +2183,9 @@ void DivMMC::loadSector(uint32_t sector) {
 void DivMMC::storeSector(uint32_t sector) {
     raDrop();
     const Medium& m = s_med[s_card];
-    if (!m.present || m.ro || sector == 0xFFFFFFFFu) {
+    if (!m.present || m.ro || sector >= LBA_VMBR) {
         if (sector == 0xFFFFFFFFu) Debug::log("SD wr: sector past the medium refused");
+        else if (sector == LBA_VMBR) Debug::log("SD wr: the virtual MBR is not stored");
         else if (m.ro) {
             static bool once = false;      // the driver sees 0x0D per block (mmcWriteResponse)
             if (!once) { once = true; Debug::log("SD wr: refused, the medium is write-protected"); }
@@ -3154,11 +3163,32 @@ void DivMMC::zcMedium() {
     if (!Config::zc_image.empty()) {
         if (zcFileEnsure()) mediumImage(s_med[CARD_ZC], zc_file, Config::zc_image.c_str(), "Z-Controller");
     } else {
-        mediumCard(s_med[CARD_ZC], Config::zc_raw_lba, Config::zc_raw_len, "Z-Controller");
+        if (mediumCard(s_med[CARD_ZC], Config::zc_raw_lba, Config::zc_raw_len, "Z-Controller"))
+            zcVirtualMbr();
         logShared();
     }
     if (Config::zc_wp) s_med[CARD_ZC].ro = true;                 // F2 on the row
     if (s_card == CARD_ZC) spiIdentity();
+}
+
+// A window that does not start at the card's sector 0 but on a volume (a partition
+// picked in the menu) shows the guest that volume's boot sector as sector 0. Guests
+// that want a partitioned card refuse it: Karabas ROMain's drive check needs an MBR
+// with a FAT32 entry (bench 2026-11-20, docs/notes/boards.md "Karabas ROMain").
+// Such a window gets a synthetic MBR in front (Medium::vmbr, IdeMbr.h); a window
+// that holds its own MBR, or the whole card, is served as it is.
+void DivMMC::zcVirtualMbr() {
+    Medium& m = s_med[CARD_ZC];
+    if (!m.present || !m.raw || m.base == 0) return;
+    uint8_t* sec = (uint8_t*)tryMalloc(512);
+    if (!sec) return;
+    if (disk_read(raw_pdrv(), sec, (LBA_t)m.base, 1) == RES_OK) {
+        m.vmbr = ide_mbr::vbrType(sec);
+        if (m.vmbr)
+            Debug::log("Z-Controller: window starts on a volume - virtual MBR, type %02X, LBA 1+%lu",
+                       m.vmbr, (unsigned long)m.sectors);
+    }
+    free(sec);
 }
 
 void DivMMC::zc_init() {

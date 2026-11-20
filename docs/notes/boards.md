@@ -451,6 +451,38 @@ even with a byte-copy of pqdos1.fdi in B:. Two separate findings:
    (A alone is fine); B alone + SD → "Non-System disk or disk error". Bench root with the images
    and the h2/0.41 host binaries (bank0 patched in a copy of the ELF): `~/pico-speccy/tmp/pqbench`.
 
+### Karabas ROMain "Drive: SD / CF" (key D) — not an emulation bug; partition windows fixed (2026-11-20, virtual MBR hw-confirmed 2026-11-20 on DVp2w)
+
+Owner report: the main screen's drive does not switch with D. D does not toggle: it opens a
+"Change drive" window (SD Card / Compact Flash; arrows + Enter; a second D closes it). The pick
+then goes through a check (unpacked menu RAM 0x3CDA → 0x3E4B) and silently falls back to the
+old drive when it fails. Same check for both: device init, then LBA 0 ends `55AA`, one of the
+4 MBR entries has type **#0B/#0C (FAT32)**, its boot sector has `55AA`, 512 B/sector and
+**2 FATs** (then SecPerClus, Rsvd, FATSz32 @+0x24, RootClus @+0x2C are taken). So a CF image
+must be a partitioned disk with a FAT32 partition: `!4TEST/Profi/CP_M_2GB_CF.hdd` (CP/M HiDD
+at the start + type 0B at LBA 1312768) switches to CF on the bench; a bare HiDD image or none
+falls back. SD needs the Z-Controller on (MachineSwitch auto-enables it only on a switch INTO
+Karabas, not at a boot that is already Karabas) and FAT32 in an MBR partition on the card. #C7
+bit 3 (SD/flash SPI gate) plays no part: we never gate #57/#77, which is only more lenient.
+Found with `PICOSPECCY_MEMDUMP` (host/README.md) + `tools/z80disasm.py`.
+
+**Partition windows failed the check (bench-confirmed 2026-11-20): virtual MBR added.** A ZC or
+IDE raw window picked onto ONE partition hands the guest that volume's boot sector as LBA 0 (no
+MBR): ZC window 2048/0 on the bench card → boot says "Drive: CF", picking SD falls back. Now a
+window with base != 0 whose first sector is a FAT/exFAT boot sector (`ide_mbr::vbrType`) gets a
+synthetic MBR in front (`ide_mbr::buildMbr`: one entry, type 0C/0E/01/07, LBA 1, length = window):
+guest LBA 0 = the MBR, guest LBA N+1 = window sector N, a write to LBA 0 is dropped (logged).
+ZC: `Medium::vmbr`, `DivMMC::lba()` answers `LBA_VMBR` for sector 0, c17/read-ahead paths decline
+it, `loadSector` builds it, CSD = window + 1; set in `zcVirtualMbr()` from `zcMedium`. IDE:
+`IDE::raw_vmbr[]` + `rawCard()`, set in `openRaw` (not for a HiDD volume). esxDOS/DivSD windows
+NOT changed (partition windows already hw-ok there). Whole-card windows and images unchanged.
+Bench: ZC window 2048/0 → "Drive: SD", Loading boot → FATALL lists the partition; IDE raw window
+2048/0 (PROFI, ZC off) → "Drive: CF", boot loads. `tools/ide_mbr_test.cpp` 41/0. RAM +22 B
+(bss 14, `spiRead` +4, `mmcWriteResponse` +4). Test build `debug/DVp2w-vmbr-1.1.3` (build: Nov 20
+11:37:18): **hw-confirmed 2026-11-20 on DVp2w** (owner: works). Images are deliberately left
+byte-for-byte (owner): an image is the user's whole disk, a window is our own cut. Open: a guest that
+reads BPB_HiddSec would see the card offset, not 1 (FatFs-style drivers ignore it).
+
 ## MURM_WS / MURM2_WS — Waveshare RP2350B-Plus-W (2026-09-06; m1p2ws hw-confirmed: picture, I2S sound, 8 MB QSPI PSRAM, CYW43 WiFi + FTP server)
 
 Two board targets = the Murmulator 1.x / 2.0 carriers with the Waveshare

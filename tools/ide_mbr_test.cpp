@@ -170,6 +170,37 @@ void ebrChain() {
     CHECK(p.sectors == 0 && next == 0);
 }
 
+// The virtual MBR: a FAT boot sector names its partition type, the built MBR
+// parses back to exactly one volume at LBA 1, and non-volumes get no MBR.
+void virtualMbr() {
+    std::vector<uint8_t> v; page(v);
+    v[0] = 0xEB; v[11] = 0x00; v[12] = 0x02; v[16] = 2;
+    memcpy(v.data() + 82, "FAT32   ", 8);
+    sig(v.data());
+    CHECK(ide_mbr::vbrType(v.data()) == 0x0C);
+    v[22] = 0x20;                                    // FATSz16 != 0: not FAT32
+    CHECK(ide_mbr::vbrType(v.data()) == 0);
+    v[22] = 0; memset(v.data() + 82, 0, 8);
+    memcpy(v.data() + 54, "FAT16   ", 8);
+    CHECK(ide_mbr::vbrType(v.data()) == 0x0E);
+    memcpy(v.data() + 54, "FAT12   ", 8);
+    CHECK(ide_mbr::vbrType(v.data()) == 0x01);
+    v[12] = 0x04;                                    // 1024-byte sectors
+    CHECK(ide_mbr::vbrType(v.data()) == 0);
+    // A real MBR is not a volume (no jump, no BPB).
+    std::vector<uint8_t> m; page(m);
+    entry(m.data(), 0, 0x00, 0x0C, 2048, 100000);
+    sig(m.data());
+    CHECK(ide_mbr::vbrType(m.data()) == 0);
+
+    std::vector<uint8_t> out(512, 0xAA);
+    ide_mbr::buildMbr(out.data(), 0x0C, 6018352);
+    Part p[ide_mbr::MAX_PARTS];
+    CHECK(ide_mbr::parse(out.data(), 6018353, p) == 1);
+    CHECK(p[0].type == 0x0C && p[0].lba == 1 && p[0].sectors == 6018352);
+    CHECK(p[1].type == 0 && p[2].type == 0 && p[3].type == 0);
+}
+
 } // namespace
 
 int main() {
@@ -178,6 +209,7 @@ int main() {
     refusals();
     twoVolumes();
     ebrChain();
+    virtualMbr();
     printf("ide_mbr: %d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

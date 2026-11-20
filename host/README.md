@@ -118,6 +118,9 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   `PICOSPECCY_PAD="frame:Btn[:N],..."` pad 1's buttons (Up Down Left Right A B X Y
   L1 R1 L2 R2 Start Select; X/Y/L1/R1/L2/R2 = VK_JOY_X/Y/Z/C/L2/R2), on the same
   presented-frame clock as the shots: menu and Joystick > Test runs without a pad.
+* `PICOSPECCY_MEMDUMP=file.bin:N` writes the Z80's 64K address space (current paging)
+  at the N-th presented frame, on the same clock: for code a ROM unpacks into RAM
+  (Karabas ROMain's menu), then `tools/z80disasm.py file.bin --raw --org 0`.
 
 ## Checked so far (Linux, Xvfb + `SDL_AUDIODRIVER=disk`)
 

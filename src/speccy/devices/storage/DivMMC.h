@@ -51,6 +51,9 @@ public:
         uint32_t base;      // raw: the first card sector of the window
         uint32_t sectors;   // window / image length
         FIL*     file;      // image: its handle
+        uint8_t  vmbr;      // raw window over one volume: the partition type of a
+                            // synthetic MBR the guest sees at sector 0 (0 = none;
+                            // then guest sector N+1 = window sector N, IdeMbr.h)
     };
     static const Medium& medium(uint8_t card) { return s_med[card]; }
     static uint8_t  currentCard() { return s_card; }
@@ -191,6 +194,8 @@ private:
     static bool    mediumImage(Medium& m, FIL* f, const char* path, const char* what);
     // One log line when esxDOS's card window and the Z-Controller's share sectors.
     static void    logShared();
+    // ZC window that starts on a volume: put a synthetic MBR in front (Medium::vmbr).
+    static void    zcVirtualMbr();
     static bool    ideWriteProtected(int d);
     // The SPI machine proper, on the current card (the public entries pick the card).
     static void     csEdge(uint8_t value);
@@ -201,8 +206,11 @@ private:
     // The guest's sector of the current card on the medium: raw media add the
     // window's base; anything past the medium answers ~0u (loadSector fills 0xFF,
     // storeSector drops the block).
+    // A medium with a virtual MBR answers LBA_VMBR for guest sector 0.
+    static constexpr uint32_t LBA_VMBR = 0xFFFFFFFEu;
     static inline uint32_t lba(uint32_t s) {
         const Medium& m = s_med[s_card];
+        if (m.vmbr) { if (s == 0) return LBA_VMBR; s--; }
         if (s >= m.sectors) return 0xFFFFFFFFu;
         return m.raw ? s + m.base : s;
     }

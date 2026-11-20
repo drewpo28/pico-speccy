@@ -111,6 +111,43 @@ inline uint32_t parseEbr(const uint8_t* sec, uint32_t ebr_lba, uint32_t ext_lba,
     return (uint32_t)next;
 }
 
+// ---- Virtual MBR for a window that starts on a volume (a picked partition) ----
+// A window over one partition hands the guest that partition's boot sector as
+// its sector 0. Guests that want a partitioned disk (Karabas ROMain's drive
+// check, FAT32 entry #0B/#0C at 0x1C2) refuse it. The fix is a synthetic MBR in
+// front: guest sector 0 = buildMbr(), guest sector N+1 = window sector N.
+
+// The partition type to announce for the volume whose boot sector is `sec`,
+// 0 = not a volume boot sector we recognise (then no MBR is put in front).
+inline uint8_t vbrType(const uint8_t* sec) {
+    if (!sec || sec[510] != 0x55 || sec[511] != 0xAA) return 0;
+    if (sec[0] != 0xEB && sec[0] != 0xE9) return 0;           // x86 jump of every VBR
+    if (sec[3] == 'E' && sec[4] == 'X' && sec[5] == 'F' && sec[6] == 'A' && sec[7] == 'T')
+        return 0x07;                                          // exFAT
+    if (sec[11] != 0x00 || sec[12] != 0x02) return 0;          // 512 bytes per sector
+    if (sec[16] < 1 || sec[16] > 2) return 0;                 // number of FATs
+    const bool fat32 = sec[82] == 'F' && sec[83] == 'A' && sec[84] == 'T' && sec[85] == '3' && sec[86] == '2';
+    if (fat32 && sec[22] == 0 && sec[23] == 0) return 0x0C;    // FATSz16 = 0: FAT32, LBA
+    if (sec[54] == 'F' && sec[55] == 'A' && sec[56] == 'T')
+        return (sec[57] == '1' && sec[58] == '2') ? 0x01 : 0x0E;   // FAT12 / FAT16 LBA
+    return 0;
+}
+
+// The synthetic LBA-0 sector: one entry, `type`, from LBA 1 for `sectors`.
+// CHS fields say "use LBA" (FE FF FF), as for any partition past 8 GB.
+inline void buildMbr(uint8_t* sec, uint8_t type, uint32_t sectors) {
+    for (int i = 0; i < 512; i++) sec[i] = 0;
+    sec[440] = 'P'; sec[441] = 'S'; sec[442] = 'V'; sec[443] = 'M';   // disk signature
+    uint8_t* e = sec + 446;
+    e[1] = 0x00; e[2] = 0x02; e[3] = 0x00;                    // CHS start = LBA 1
+    e[4] = type;
+    e[5] = 0xFE; e[6] = 0xFF; e[7] = 0xFF;
+    e[8] = 1;
+    e[12] = (uint8_t)sectors; e[13] = (uint8_t)(sectors >> 8);
+    e[14] = (uint8_t)(sectors >> 16); e[15] = (uint8_t)(sectors >> 24);
+    sec[510] = 0x55; sec[511] = 0xAA;
+}
+
 } // namespace ide_mbr
 
 #endif // IDE_MBR_H
