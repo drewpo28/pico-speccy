@@ -4055,7 +4055,13 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         // only in ROM14=0 & CPM=1 (the BOOTFDD scheme). When ROM14=1 the address
         // #BF is reassigned to extended periphery, and the SYS register moves to
         // #3F (the ROM14=1 & CPM=1 / MBOOTHDD scheme, handled before this switch).
-        if (!PROFI || MemESP::romLatch)
+        // DOS=1 & ROM14=0 & CPM=0 (PQDOS / the SYS-ROM state): #BF/#FF are the
+        // RTC AS register there (karabas_pro.vhd cs_rtc_as; RT_F2_2 needs
+        // DOS=0), the SYS register is #3F only. PQDOS's clock driver writes
+        // RTC indexes 0A/09/08/07/04/02/00 to #BF every few frames — routed
+        // here they flipped the drive select and pulsed the WD reset (bench
+        // 2026-11-19, docs/notes/boards.md "Karabas PQDOS").
+        if (!PROFI || MemESP::romLatch || (ESPectrum::trdos && !(portDFFD & 0x20)))
           break;
         // SYS register write — housekeeping, not counted as disk access.
         FDDStep(true);
@@ -4071,7 +4077,9 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         // (SYS bit2=0 → rvmWD1793Reset → track=0xFF), which corrupted the floppy
         // track register mid-boot and made MBOOTHDD mis-seek (530.pro hang).
         // So gate out CP/M mode: only the standard TR-DOS scheme uses #FF as SYS.
-        if (PROFI && (portDFFD & 0x20))
+        // Nor with DOS=1 & ROM14=0: RT_F2_3 (#FF -> SYS) needs ROM14=1; in the
+        // PQDOS state #FF is RTC AS (see case 0xa3).
+        if (PROFI && ((portDFFD & 0x20) || (ESPectrum::trdos && !MemESP::romLatch)))
           break;
         // SYS register write (#FF: drive/side/motor select) — housekeeping,
         // recurs continuously while TR-DOS is paged in; not counted as access.

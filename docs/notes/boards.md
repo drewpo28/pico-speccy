@@ -412,6 +412,45 @@ on real hardware — the SMUC clock at #DFBA versus the Pentagon/Karabas one at
 - `RTC_PORT_TRACE` CMake option (default OFF) logs every `..F7` IN/OUT for debugging.
 - **Toggle**: Devices → **"CMOS + NVRAM"** (renamed from "RTC + NVRAM" 2026-09-07; Yes/No → `Config::rtc_enabled`, NVS key still `rtc_enabled`, default **off**). It governs **every battery-backed chip in the firmware**: the Pentagon/Profi **Mr Gluk** MC146818 (`#DFF7`/`#BFF7`), the **Karabas-Pro native** DS1307 path (`#FF`/`#BF` under CPM+ROM14), and — since 2026-09-07 — whether the Scorpion's **SMUC** card is fitted at all (its MC146818 + 24LC16; see the SMUC section). Two deliberate non-members: **TS-Conf**, where those same Gluk ports are the ZX-Evo AVR and MUST stay live or TS-BIOS sits in an invisible Setup, and SNTP (Network → Sync time / the boot auto-sync), which only *writes* the clock when the option is on. Machines with no clock (48K/128K/+2/+3/+3e/Byte) show the row and ignore it. When off, the Gluk/Karabas ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
 
+### Karabas PQDOS: #BF/#FF are the clock, not the FDC SYS register (2026-11-19, host bench only, NOT hw-tested)
+
+Owner report: Karabas + PQDOS romset, pqdos1.fdi in A:, DN — any disk in B: is "not seen".
+Reproduced on the host bench (DN Alt+F1 → B: → "Physical error / Can't read the disk in drive B:"),
+even with a byte-copy of pqdos1.fdi in B:. Two separate findings:
+
+1. **Emulation bug, fixed (Ports::output `case 0xa3` / `case 0xe3`):** in the PQDOS state
+   (DOS=1, ROM14=0, CPM=0) the RTL (`karabas_pro.vhd`: `cs_rtc_as`, `RT_F2_1/2/3`) makes #BF/#FF the
+   RTC AS register; the WD SYS register is #3F only (#BF→SYS needs CPM=1 & DOS=0, #FF→SYS needs
+   DOS=1 & ROM14=1). We routed #BF/#FF to `profiFdcSysWrite`, so the BIOS clock driver (bank0
+   0x2618..0x2699, register indexes 0A 09 08 07 04 02 00 every few frames) flipped the drive select
+   and pulsed the WD reset (07/04 have bit2=0). The CPM=1 schemes (BOOTFDD #BF, MBOOTHDD #3F) are
+   unchanged. Found with `FDD_PORT_TRACE` on the bench: `[FDC SYS] ... pc=261A..2699`.
+2. **Not emulation — the BIOS 0.41h1 serves one floppy.** After the fix B: still fails, and the trace
+   shows NO FDC access at all when DN opens B:. Our bank0 is byte-identical to karabas-pro
+   `firmware/src/fpga/profi/rom/bios_pqdos.rom`. Its disk entry (bank0 0x010E): physical drive A=0 →
+   descriptor 0x4021; A≠0 → `LD IX,0x402B : CP 1 : JR NC,0x0150` = error FE for drive 1 as well; the
+   logical path (A bit7) looks up 0x40F5+n, where POST only writes HDD partitions (0x041F) and
+   floppy 0 (0x03AD → 0x40F9 = 0). Drive 1 is detected by POST ("FDD1: 80 cylinders Ok", descriptor
+   0x402B) but never reachable from DOS. Re-check on a real Karabas-Pro with two drives before
+   calling it final.
+3. **Other BIOS builds (2026-11-20, host bench, NOT hw-tested).** The karabas-pro release folder
+   `releases/profi/rom/PQDOS_041h1` (both .rom files) == `src/fpga/.../bios_pqdos.rom` == ours,
+   all 4 banks. The owner's archive `~/Downloads/zx/Profi/PQ-DOS releases` has three more; all of
+   them differ from ours in bank0 only (banks 1-3 identical):
+   - `BIOS/PROFI0501.rar` = **0.41h2** (2026-01-04, header "Karabas Pro"): same disk entry
+     (0x0108, `CP 1 : JR NC` → FE), logical table moved to 0x40F6. Bench, PQ-DOS 08.01.2024 in A:
+     and B:, `dir b:` from AUTOEXEC → "FE / Drive failure error on drive B" (same with h1).
+   - `pqdos_13122023_BIOS41.rar` PROFI.ROM = **0.41** (2023): physical path takes drive 1
+     (`CP 2 : JR NC`), but PQ-DOS 08.01.2024 still never asks for it — `dir /w b:` lists A:
+     (B.FDI tagged with a different AUTOEXEC.BAT size proved it), no error, no FDC access to B:.
+   - `PQDOS_18.01_256M.zip` profi64k.rom = **0.3F2 beta** (2022): `AND 1` → drives 0/1.
+   So a working B: needs both a BIOS that passes drive 1 and a QDOS.SYS that maps B: to it; no
+   pair in hand does. QDOS.SYS 2025-10-03 from `512mb_sd_active_fixboot_fixmbr.img` (Z-Controller
+   `zc_img`, h2 boots it to DN on C:) with no floppies maps both A: and B: to C: (no error).
+   Bench oddities left open: both floppies mounted and no SD → POST stops at the "SD Card:" line
+   (A alone is fine); B alone + SD → "Non-System disk or disk error". Bench root with the images
+   and the h2/0.41 host binaries (bank0 patched in a copy of the ELF): `~/pico-speccy/tmp/pqbench`.
+
 ## MURM_WS / MURM2_WS — Waveshare RP2350B-Plus-W (2026-09-06; m1p2ws hw-confirmed: picture, I2S sound, 8 MB QSPI PSRAM, CYW43 WiFi + FTP server)
 
 Two board targets = the Murmulator 1.x / 2.0 carriers with the Waveshare
