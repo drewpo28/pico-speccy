@@ -5,6 +5,7 @@
 #include "WifiNet.h"
 #include "app/Debug.h"
 #include "app/Buffer.h"
+#include "app/TryAlloc.h"
 #include "fs/FileUtils.h"
 #include "fatfs/ff.h"
 
@@ -67,7 +68,12 @@ uint32_t nowMs() { return to_ms_since_boot(get_absolute_time()); }
 
 // ── Discovery ────────────────────────────────────────────────────────────────
 constexpr int MAX_DEV = 24;
-Dev       s_dev[MAX_DEV];
+// s_dev and the SDP / HID descriptor stores below live in ONE heap block taken at
+// the first power-up (powerOnAsync), not in .bss: a session that never touches
+// Bluetooth keeps the ~2.5 KB (2026-11-21). Before it, s_ndev == 0 guards s_dev.
+constexpr int SDP_REC_SIZE    = 150;
+constexpr int DESC_STORE_SIZE = 512;
+Dev*      s_dev     = nullptr;
 int       s_ndev    = 0;
 bool      s_busy    = false;
 bool      s_inquiry = false;   // classic inquiry still running
@@ -196,7 +202,7 @@ uint8_t s_sbcCaps[] = {
     2, 53,
 };
 uint8_t s_sbcConfig[4];
-uint8_t s_sdpA2dp[150];
+uint8_t* s_sdpA2dp = nullptr;      // SDP_REC_SIZE, see s_dev
 
 AudioState s_audio = A_IDLE;
 char       s_audioName[32] = "";
@@ -649,7 +655,7 @@ uint8_t s_sinkCaps[] = {
     (uint8_t)BT_TAPE_MIN_BITPOOL, 53,
 };
 uint8_t s_sinkConfig[4];
-uint8_t s_sdpSink[150];
+uint8_t* s_sdpSink = nullptr;      // SDP_REC_SIZE, see s_dev
 // The local CoD while listening: Rendering + Audio services, Audio/Video major,
 // Loudspeaker minor — what phones list as a speaker. Restored afterwards.
 constexpr uint32_t COD_SPEAKER = 0x240414;
@@ -1012,8 +1018,8 @@ hci_con_handle_t s_leHandle = HCI_CON_HANDLE_INVALID;
 uint16_t   s_hidsCid = 0;           // BLE hids_host
 btstack_packet_callback_registration_t s_sm_reg;
 // Descriptor storage the two hosts keep the devices' HID descriptors in.
-uint8_t    s_hidDescStore[512];
-uint8_t    s_hidsDescStore[512];
+uint8_t*   s_hidDescStore  = nullptr;   // DESC_STORE_SIZE each, see s_dev
+uint8_t*   s_hidsDescStore = nullptr;
 
 // What the menu shows about the connected input device (Bluetooth > Input, the
 // right pane). Battery and the Device Information strings are BLE-only: read
@@ -1513,7 +1519,7 @@ void hidsHandler(uint8_t, uint16_t, uint8_t* p, uint16_t) {
             const uint8_t* dd = hids_host_descriptor_storage_get_descriptor_data(s_hidsCid, 0);
             const uint16_t dl = hids_host_descriptor_storage_get_descriptor_len(s_hidsCid, 0);
             blog("HID descriptor %u B%s, report IDs %s", (unsigned)dl,
-                 dl >= sizeof(s_hidsDescStore) ? " (TRUNCATED)" : "",
+                 dl >= DESC_STORE_SIZE ? " (TRUNCATED)" : "",
                  dl && btstack_hid_report_id_declared(dd, dl) ? "yes" : "no");
             axesScan(dd, dl);
             descKind(dd, dl);
@@ -1642,7 +1648,7 @@ void servicesInit() {
     } else {
         blog("no A2DP stream endpoint (MAX_NR_AVDTP_STREAM_ENDPOINTS)");
     }
-    memset(s_sdpA2dp, 0, sizeof(s_sdpA2dp));
+    memset(s_sdpA2dp, 0, SDP_REC_SIZE);
     a2dp_source_create_sdp_record(s_sdpA2dp, sdp_create_service_record_handle(),
                                   AVDTP_SOURCE_FEATURE_MASK_PLAYER, NULL, NULL);
     sdp_register_service(s_sdpA2dp);
@@ -1656,12 +1662,12 @@ void servicesInit() {
         AVDTP_AUDIO, AVDTP_CODEC_SBC, s_sinkCaps, sizeof(s_sinkCaps), s_sinkConfig, sizeof(s_sinkConfig));
     if (sep) s_tseid = avdtp_local_seid(sep);
     else blog("no A2DP sink endpoint (MAX_NR_AVDTP_STREAM_ENDPOINTS)");
-    memset(s_sdpSink, 0, sizeof(s_sdpSink));
+    memset(s_sdpSink, 0, SDP_REC_SIZE);
     a2dp_sink_create_sdp_record(s_sdpSink, sdp_create_service_record_handle(),
                                 AVDTP_SINK_FEATURE_MASK_SPEAKER, NULL, NULL);
     sdp_register_service(s_sdpSink);
     // Input: classic HID host + BLE HID-over-GATT host.
-    hid_host_init(s_hidDescStore, sizeof(s_hidDescStore));
+    hid_host_init(s_hidDescStore, DESC_STORE_SIZE);
     hid_host_register_packet_handler(&hidHandler);
     sm_init();
     // BTstack defaults to Secure Connections ONLY when ENABLE_LE_SECURE_CONNECTIONS
@@ -1674,7 +1680,7 @@ void servicesInit() {
     s_sm_reg.callback = &smHandler;
     sm_add_event_handler(&s_sm_reg);
     gatt_client_init();
-    hids_host_init(s_hidsDescStore, sizeof(s_hidsDescStore));
+    hids_host_init(s_hidsDescStore, DESC_STORE_SIZE);
     battery_service_client_init();
     device_information_service_client_init();
     infoReset();
@@ -1838,6 +1844,21 @@ bool powerOnAsync() {
         s_state = S_FAILED;
         blog("radio not available");
         return false;
+    }
+    // Once per session, never freed: SDP records and descriptor stores stay
+    // registered with BTstack. Zeroed (tryCalloc) as the .bss arrays were.
+    if (!s_dev) {
+        uint8_t* m = (uint8_t*)tryCalloc(sizeof(Dev) * MAX_DEV + 2 * SDP_REC_SIZE + 2 * DESC_STORE_SIZE);
+        if (!m) {
+            s_state = S_FAILED;
+            blog("no heap for the Bluetooth state");
+            return false;
+        }
+        s_dev = (Dev*)m;                m += sizeof(Dev) * MAX_DEV;
+        s_hidDescStore  = m;            m += DESC_STORE_SIZE;
+        s_hidsDescStore = m;            m += DESC_STORE_SIZE;
+        s_sdpA2dp = m;                  m += SDP_REC_SIZE;
+        s_sdpSink = m;
     }
     hci_dump_init(&s_dump);
     s_hci_reg.callback = &packetHandler;

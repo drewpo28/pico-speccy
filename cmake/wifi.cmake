@@ -49,6 +49,11 @@ if (PICOSPECCY_WIFI)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder
         pico_btstack_sbc_decoder)
+    # HAVE_MALLOC (btstack_config.h): the per-object allocator must not panic on a thin
+    # heap — tryMalloc returns NULL and BTstack refuses that connection, as a full
+    # static pool did. Only btstack_memory.c: hci.c's one hci_stack malloc runs at boot.
+    set_source_files_properties("${PICO_BTSTACK_PATH}/src/btstack_memory.c"
+        PROPERTIES COMPILE_DEFINITIONS "malloc=tryMalloc")
     # BTstack's link-key bank writes flash through flash_safe_execute from code that
     # lives in flash; the wrappers (end of BtHost.cpp) restore the overclocked QMI
     # timing before returning into it. Pairing hung the board at 504 MHz without them.

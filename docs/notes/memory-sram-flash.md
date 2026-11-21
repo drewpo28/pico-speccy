@@ -1742,3 +1742,41 @@ its post-Config claim has only the chunker, and `VIDEO::Init`'s last fallback is
 Side note from the same round: `.dmaovl` already reaches 384 B below `__ftovl_win_start`, so growing it
 lowers `__ovl_low_start` (the pre-apply heap ceiling of every machine) byte for byte - a +1.5 KB attempt
 made this panic certain and was reverted (other-machines.md, "HGFX render, stage 0").
+
+## Bluetooth state on the heap, not in .bss (2026-11-21, hw-confirmed DVp2w: heap + BT use)
+
+BTstack powers up only on demand (`BtHost::powerOnAsync`), but its pools, `hci_stack_static`,
+BtHost's discovery list / SDP records / HID descriptor stores and the UI's BT list caches
+sat in .bss on every W-board session: 11 556 B. Now:
+- `btstack_config.h`: `HAVE_MALLOC`; `btstack_memory.c` takes the heap path for every object
+  type whose `MAX_NR_*` is NOT defined (the `#ifdef MAX_NR_X` pool branch wins otherwise).
+  Kept as pools: AVDTP connections / stream endpoints (BtHost relies on ONE A2DP link: the
+  switch and tape-listen paths wait for the old link to close) and the types pinned at 0.
+  `btstack_memory.c` is compiled with `malloc=tryMalloc` (cmake/wifi.cmake): a thin heap
+  refuses a connection with NULL, as a full pool did, instead of the pico_malloc panic.
+  `hci.c` mallocs `hci_stack` (1.3 KB) once in `cyw43_arch_init`: net 0 there.
+- `BtHost`: `s_dev`, `s_sdpA2dp/Sink`, `s_hid(s)DescStore` = one tryCalloc block at the first
+  power-up, never freed (no heap -> `S_FAILED`, "no heap for the Bluetooth state").
+- `UiActions`: `s_btKnown` + `s_btTape` = one tryCalloc block at the first BT list build.
+Measured on build-all/DVp2w (`nm -S` diff): .bss -11 556 B, .data and RAM code unchanged;
+expected boot heap +~10.2 KB on a session that never touches BT, the same as before once
+it does (plus 8 B of tracking header per object). Test ELF `debug/DVp2w-btheap-1.1.3`.
+**hw 2026-11-21, DVp2w** (log `devttyACM0_2026_11_21.11.53.50.468`, build 00:26:40, BT not
+touched): P1024 + NeoGS `page cache 2 x 16 KB, freeHeap=80816` (gssw2 had 69 256) and
+`COMPLETE, freeHeap=44416` (was 32 856): **+11 560 B** = the .bss delta; `hci_stack` is taken
+later, in cyw43_arch_init (COMPLETE 44 416 -> loop entry 42 944, -1 472). A Next boot in the
+same log ran clean (COMPLETE 28 552). BT use hw-confirmed by the owner the same day
+("всё работает"): headphones, input devices, tape from a phone.
+
+What else is cold .bss (same build): `EpFdc::s_drv` + `s_none` 1 716 B (Enterprise only;
+`Drive` holds a std::string and a sector buffer, 81 uses), `fopen2_pool` 1 216, `fs` (FATFS)
+1 024, `DirBuf`/`LfnBuf` 1 120, `sdp_response_buffer` 1 021 + `a2dp_config_..._seps` 920 +
+`the_setup` 524 (BTstack file statics), nm:: UI statics ~3.9 KB, `FileUtils::fileTypes` 540.
+
+RAM code that serves ONE machine or feature (same build, 98.8 KB of functions in .data):
+Snow renderers 3.4 KB (48K/128K ULA snow), SAA 2.0 KB, Gigascreen borders 1.6 KB, FM/Covox
+1.0 KB, TS-Conf ticks 1.0 KB, Enterprise peek/poke 0.8 KB, SAM 0.8 KB, Profi DS80 0.7 KB,
+plus veneers. ~11 KB in 15+ pieces, each on a hot path (renderer, bus accessor, mixer);
+the big shared ones (`Ports::output` 7.8 KB, `EndFrame` 6.0, `MainScreen` 5.5, `Ports::input`
+5.2) are dispatchers every machine runs. Moving a piece out means another overlay window or
+a flash call: per piece 0.3-3 KB for a hot-path risk each - not pursued.

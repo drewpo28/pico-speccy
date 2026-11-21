@@ -30,6 +30,7 @@
 #include "speccy/devices/disk/DiskSlots.h"
 #include "speccy/devices/sound/MidiSynth.h"
 #include "app/Debug.h"
+#include "app/TryAlloc.h"
 #include "speccy/devices/zifi/ZiFi.h"
 #include "net/ZiFiAT.h"
 #include "drivers/board/BoardPins.h"
@@ -2685,7 +2686,18 @@ static void btUseKnown(bool input, const BtHost::Known& kn) {
 
 // The lists as the level last built them: the right pane's details read these
 // (once a second) instead of the card.
-static BtHost::Known s_btKnown[2][BtHost::KNOWN_MAX];
+// They and s_btTape (Tape in) live in one heap block taken the first time a
+// Bluetooth list is built, not in .bss (2026-11-21: ~1 KB a session that never
+// opens these menus). No heap -> the lists show only their "Add" rows.
+struct BtUiLists {
+    BtHost::Known known[2][BtHost::KNOWN_MAX];
+    BtHost::Known tape[BtHost::KNOWN_MAX];
+};
+static BtUiLists* s_btLists = nullptr;
+static BtUiLists* btLists() {
+    if (!s_btLists) s_btLists = (BtUiLists*)tryCalloc(sizeof(BtUiLists));
+    return s_btLists;
+}
 static int s_btN[2];
 
 // Right-pane details of the row under the cursor (DynRows::info).
@@ -2706,7 +2718,7 @@ static uint8_t btInfo(bool input, int32_t tag, int line, char* label, char* valu
     }
     const int k = input ? 1 : 0;
     if (tag < 0 || tag >= s_btN[k]) return DYN_INFO_END;
-    const BtHost::Known& d = s_btKnown[k][tag];
+    const BtHost::Known& d = s_btLists->known[k][tag];   // s_btN > 0: built
     const bool conn = BtHost::connectedTo(input, d.addr);
     const BtHost::InputInfo* ii = (input && conn) ? BtHost::inputInfo() : nullptr;
     BtHost::AudioInfo ai;
@@ -2756,8 +2768,9 @@ static uint8_t btInfoAudio(int32_t t, int l, char* a, char* v) { return btInfo(f
 static uint8_t btInfoInput(int32_t t, int l, char* a, char* v) { return btInfo(true, t, l, a, v); }
 
 static void btBuild(DynRows& r, bool input) {
-    BtHost::Known* l = s_btKnown[input ? 1 : 0];
-    const int n = BtHost::known(input, l, BtHost::KNOWN_MAX);
+    BtUiLists* bl = btLists();
+    BtHost::Known* l = bl ? bl->known[input ? 1 : 0] : nullptr;
+    const int n = l ? BtHost::known(input, l, BtHost::KNOWN_MAX) : 0;
     s_btN[input ? 1 : 0] = n;
     r.info = input ? btInfoInput : btInfoAudio;
     for (int i = 0; i < n; i++) {
@@ -2802,7 +2815,6 @@ void bt_keyInput(int32_t tag, uint8_t key)  { btKey(true, tag, key); }
 // the board visible until Esc. While listening with no phone, a "Stop listening"
 // row heads the list. Listening goes on in the background: Esc, LOAD "", Play.
 static const int32_t BT_TAG_STOP = 101;
-static BtHost::Known s_btTape[BtHost::KNOWN_MAX];
 static int s_btTapeN = 0;
 
 static const char* btTapeStateStr(const uint8_t* addr) {
@@ -2841,7 +2853,7 @@ static uint8_t btTapeInfo(int32_t tag, int line, char* label, char* value) {
         return add ? kStA[line] : kStS[line];
     }
     if (tag < 0 || tag >= s_btTapeN) return DYN_INFO_END;
-    const BtHost::Known& d = s_btTape[tag];
+    const BtHost::Known& d = s_btLists->tape[tag];   // s_btTapeN > 0: built
     const bool conn = BtHost::tapeConnectedTo(d.addr);
     BtHost::TapeInfo ti;
     const bool cfg = conn && BtHost::tapeInfo(ti);
@@ -2878,7 +2890,9 @@ static uint8_t btTapeInfo(int32_t tag, int line, char* label, char* value) {
 }
 
 void bt_buildTape(DynRows& r) {
-    s_btTapeN = BtHost::tapeKnown(s_btTape, BtHost::KNOWN_MAX);
+    BtUiLists* bl = btLists();
+    BtHost::Known* s_btTape = bl ? bl->tape : nullptr;
+    s_btTapeN = s_btTape ? BtHost::tapeKnown(s_btTape, BtHost::KNOWN_MAX) : 0;
     r.info = btTapeInfo;
     if (BtHost::tapeState() == BtHost::T_LISTEN)
         r.add("Stop listening", vl_btTape(), BT_TAG_STOP, false);

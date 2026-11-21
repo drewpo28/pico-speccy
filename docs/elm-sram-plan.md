@@ -137,3 +137,12 @@ Other machines with two heap regions (TS-Conf, Pentagon + DMA) NOT hw-tested yet
 2. **Hot first in the pages57 tail.** `Hgfx::hotEnsure()` (the s_hot half of `ensure()`) runs
    in `Elm::reset` right after Regs: Hot + Regs = 9 488 B in the 10 216 B tail, SoundDMA + SID
    (4.4 KB) to the heap. Expected +3.8 KB. `.elmovl` unchanged (17 128 / 17 152 PERF).
+
+## Item 4, first round 2026-11-21: the Bluetooth statics (heap +11 560 B and BT use hw-confirmed DVp2w, committed)
+
+BTstack pools (HAVE_MALLOC + `malloc=tryMalloc` in btstack_memory.c, AVDTP pools kept),
+BtHost's discovery/SDP/HID-descriptor arrays and the UI's BT lists moved to the heap, taken
+on first use: .bss -11 556 B, expected boot heap +~10.2 KB on every machine of a W board
+until Bluetooth is used. Details and the rest of the cold .bss / one-machine RAM code
+ledger: `docs/notes/memory-sram-flash.md`, "Bluetooth state on the heap". Test ELF
+`debug/DVp2w-btheap-1.1.3`.

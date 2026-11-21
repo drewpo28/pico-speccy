@@ -1,10 +1,18 @@
 // BTstack configuration for the on-chip Bluetooth (PICOSPECCY_WIFI, W boards).
 //
 // Sized for discovery + one A2DP source stream (headphones) + later one HID
-// keyboard/mouse. No HAVE_MALLOC: BTstack's pools are
-// static and fixed here — pico_malloc panics on NULL, a static pool fails a
-// connection instead. ENABLE_CLASSIC / ENABLE_BLE come from pico_btstack_classic /
+// keyboard/mouse. ENABLE_CLASSIC / ENABLE_BLE come from pico_btstack_classic /
 // pico_btstack_ble (cmake/wifi.cmake).
+//
+// HAVE_MALLOC (2026-11-21): BTstack is powered up only on demand, but its static
+// pools cost every session ~6.8 KB of SRAM .bss. btstack_memory.c takes the heap
+// path for each object type whose MAX_NR_* is NOT defined; it is compiled with
+// malloc=tryMalloc (cmake/wifi.cmake), so a thin heap fails a connection (NULL, as
+// an exhausted pool did) instead of the pico_malloc panic. The types whose cap the
+// code relies on keep their static pool: AVDTP (BtHost holds ONE A2DP link, see
+// MAX_NR_AVDTP_CONNECTIONS there) and the unused ones pinned at 0. hci.c mallocs
+// hci_stack (1.3 KB) once at cyw43_arch_init instead of hci_stack_static: net 0.
+#define HAVE_MALLOC
 #ifndef PICOSPECCY_BTSTACK_CONFIG_H
 #define PICOSPECCY_BTSTACK_CONFIG_H
 
@@ -20,17 +28,12 @@
 #define HCI_ACL_PAYLOAD_SIZE (1021 + 4)
 #define HCI_ACL_CHUNK_SIZE_ALIGNMENT 4
 
-#define MAX_NR_HCI_CONNECTIONS 2          // headphones + an input device
-#define MAX_NR_L2CAP_CHANNELS 7           // AVDTP 2 + HID 2 + SDP + ATT/SM
-#define MAX_NR_L2CAP_SERVICES 5
-#define MAX_NR_GATT_CLIENTS 1
-#define MAX_NR_HID_HOST_CONNECTIONS 1
-#define MAX_NR_HIDS_HOSTS 1
-#define MAX_NR_BATTERY_SERVICE_CLIENTS 1  // battery of the connected BLE input device
-#define MAX_NR_SM_LOOKUP_ENTRIES 3
-#define MAX_NR_WHITELIST_ENTRIES 8         // every added BLE input device auto-reconnects
-#define MAX_NR_LE_DEVICE_DB_ENTRIES 8
-#define MAX_NR_BTSTACK_LINK_KEY_DB_MEMORY_ENTRIES 1
+// Heap (HAVE_MALLOC), sized by use; the old pool sizes for reference:
+// HCI connections 2 (headphones + an input device, 4.7 KB), L2CAP channels 7
+// (AVDTP 2 + HID 2 + SDP + ATT/SM), L2CAP services 5, GATT clients 1, HID host 1,
+// HIDS hosts 1, battery clients 1, SM lookup 3, whitelist 8, link-key db 1,
+// service records 2.
+#define MAX_NR_LE_DEVICE_DB_ENTRIES 8      // le_device_db_memory.c (not linked: TLV db)
 #define MAX_NR_RFCOMM_CHANNELS 0
 #define MAX_NR_RFCOMM_MULTIPLEXERS 0
 #define MAX_NR_RFCOMM_SERVICES 0
@@ -40,7 +43,6 @@
 #define MAX_NR_AVDTP_STREAM_ENDPOINTS 2   // SBC source (headphones) + SBC sink (tape from a phone)
 #define MAX_NR_AVRCP_CONNECTIONS 0
 #define MAX_NR_HFP_CONNECTIONS 0
-#define MAX_NR_SERVICE_RECORD_ITEMS 2
 #define MAX_ATT_DB_SIZE 64
 
 // The cyw43 shared bus overruns with more in flight (SDK kitchen_sink notes).
