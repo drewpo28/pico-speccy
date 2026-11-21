@@ -2155,7 +2155,12 @@ void NEXTVID::Reset() {
         // F5 and 720x576 out of reach of a Next session.
         // HOT_SRAM again (2026-10-13): read per sprite row. The hot-page pool
         // takes the heap only ~3 s later (MemESP s_hotWait), after this block.
-        uint8_t* cold = (uint8_t*)Buffer::palloc(coldSz, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+        // PREFER_PSRAM again (2026-11-21): HOT_SRAM's rule had kept it in butter on
+        // every Next boot since mid-November (heap ~58 KB here); the sound devices'
+        // SRAM trim (+8 KB) let it into SRAM, the game heap fell 23 -> 12.7 KB and the
+        // hot pool never got its frame - Fluid's code page ran from PSRAM (hw log
+        // 2026-11-21 19:50: `hot=-`). Core0's Z80 is the Next's scarce side.
+        uint8_t* cold = (uint8_t*)Buffer::palloc(coldSz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         const unsigned sprSz = (sizeof(SprRender) + 3) & ~3u;
         // Two blocks, not one: the renderer state is read per sprite per line
         // (core1), the log only for the bytes written since the last line. As
