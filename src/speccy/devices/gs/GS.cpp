@@ -2603,7 +2603,10 @@ bool GS::init(uint32_t ram_size_bytes) {
         // cache in its place HGFXAGON fell back to the all-PSRAM speed (2026-11-05).
         // The eLeMeNt gets its pages LENT from the HGFX arena instead (GS::shLend, below):
         // 57 KB of SRAM nothing uses while a program stays out of the 8 bpp modes.
-        #define NGS_SH_RESERVE (64u * 1024u)
+        // 64 -> 56 KB (2026-11-20): the GS-Z80 switch loop grew .gsovl by 8 KB, and a
+        // Pentagon 1024 + NeoGS boot fell 104 B short of one page (hw: TheLink's dragon
+        // without the cache, core0 IDL -2 400 against -1 400 with it).
+        #define NGS_SH_RESERVE (56u * 1024u)
         const bool shNext = Config::arch == A_NEXT || Config::arch == A_ELM;   // final here: setup's requestMachine ran
         memset(s_sh_page, 0, sizeof s_sh_page);
         memset(s_hot_pg, 0, sizeof s_hot_pg);

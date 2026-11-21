@@ -1235,3 +1235,22 @@ or the limit. Built on the same day's memory fast path (`GS_Z80_INLINE_MEM`, Z80
   Not measured (plain build, no GS_PERF_TRACE): the card's MHz. Still owed: TheLink dragon (was GS 21.0 of
   24 MHz), LIMSHOWM, a classic GS MOD player, NeoGS MP3, the boot log's `GS::init: NeoGS SRAM
   page cache` line (64 KB free-heap gate - the window took 8 KB more).
+- **TheLink A/B, hw 2026-11-20** (PERF + GS_PERF twins `debug/DVp2w-gsp{on,off}-1.1.3`, cold
+  P1024 + NeoGS boots, logs `...22.56.16.257` on / `...23.00.32.185` off): in the dragon's
+  last ~18 s the card held **24.0 MHz with the switch loop, 21.0 without** (the 2026-11-04
+  figure), FPS 49-50 vs 49. But the `on` boot got **0** page-cache pages (freeHeap 81 816, 104 B
+  under the 16 KB + 64 KB gate; `off` got 1) and core0's IDL there was -1 300..-2 400 against
+  -1 200..-1 400: the card's pages back on the shared XIP cache. Fix: `NGS_SH_RESERVE` 64 ->
+  56 KB (= the window's growth), `debug/DVp2w-gssw2-1.1.3` (build 23:06:22). **hw-confirmed
+  DVp2w 2026-11-20** (log `...23.09.52.048`): `page cache 2 x 16 KB, freeHeap=69256`, COMPLETE
+  32 856 B; owner on the dragon: IDL -100..-500 (was -1 200..-1 400 on the old core with one page).
+- **TheLink dragon, what core0 does (hw 2026-11-21, `debug/DVp2w-tlprof-1.1.3`, PERF_HIST, log
+  `...00.00.54.795`):** the card is not the limit any more (24 MHz); core0 is, and in the
+  dragon's window it runs the **TR-DOS disk loop** - the demo loads its next part while the
+  dragon plays: `[PERF] z80:` 16 752 instr/frame at 1 122 ns each, top JR NZ / DEC C / AND n /
+  IN A,(n) / JR Z, and `[PERF] ports: iFF 2.54 ms/f for 1 588 reads (1.6 us each), i7F 0.55
+  ms/f for 414`, `fdd_step` 0.5-1.2 ms. WD1793 is in flash (`WD1793_IN_RAM=OFF`, 2026-09-30) and
+  this is the case memory-sram-flash.md warned about (butter NeoGS churning XIP during disk
+  I/O). A/B twins `debug/DVp2w-wd{off,on}-1.1.3` (PERF + PERF_HIST + GS_PERF, builds
+  00:09:18 / 00:09:19), awaiting hw. If RAM wins but 6.8 KB on every machine is too dear,
+  the other lever is a TR-DOS status-poll fast-forward (keyWaitSkip-style) for this loop.
