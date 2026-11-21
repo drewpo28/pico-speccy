@@ -169,7 +169,7 @@ public:
     static uint8_t  led_style;      // Interface > LED indicators > Icons: 0 = Classic (1-bit glyphs), 1 = Colour
     static bool     ide_led;        // Interface > HDD / CD icon: HDD/CD icon in the top-right corner (LED::drawCornerIcons)
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
-    static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
+    static bool     sdLedBlink;     // blink onboard GPIO LED on physical SD card access (no-op on *_W: LED is on the radio)
     // Chip temperature calibration, whole °C added to the ADC sensor reading.
     // The RP2350 sensor is uncalibrated and per-chip offsets are real: one z0p2
     // unit reads ~55-60 C low (Vbe 0.78 V vs the typical 0.706 @27 C) with a

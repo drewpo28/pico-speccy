@@ -929,6 +929,17 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   (`__psramrom_start` 0x1027F000). A Pico 2 W build would need a slimmer firmware.
 - `BUTTER_PSRAM_GPIO` = the carrier's plain value (probed only on an RP2350A; the
   Plus 2 W is B → GPIO47).
+- **User LED (checked 2026-11-21 against the SDK's pimoroni_pico_plus2_w_rp2350.h;
+  the Pimoroni schematic PDF host is blocked from the cloud session): the only user
+  LED is the radio's WL_GPIO0** (`CYW43_WL_GPIO_LED_PIN 0`), GP25 is WL_CS, user
+  switch GPIO45, PSRAM CS GPIO47. So `PICO_DEFAULT_LED_PIN=255` and no GPIO LED code
+  runs — correct, driving GP25 would break the radio bus. Consequences: on `*p2w`
+  the LED stays DARK for good — no boot blinks, no flash-write / SD-access blink
+  (Settings "SD LED" is a no-op), and the boot radio-LED blink + "WiFi radio not
+  found" notice are `*_WS` only (guarded by `PICO_DEFAULT_LED_PIN != 255`).
+  Bug fixed: `sdcard.c` guarded with a bare `#ifdef PICO_DEFAULT_LED_PIN`, so with
+  SD LED on every SD read did `gpio_put(255, x)` (also on ZERO2, LED=255); now
+  `!= 255` like every other consumer. NOT hw-tested.
 - Hw check owed (owner has a Pico Plus 2 W): boot + picture, `WiFi: cyw43_arch_init
   pins REG_ON=23 DATA=24 CLK=29 CS=25` and a join, sound on GP26-28, PSRAM 8 MB found.
 - **"No picture on m1p2w" (review, 2026-10-13): the PUBLISHED v1.0.9 `m1p2w` is the
