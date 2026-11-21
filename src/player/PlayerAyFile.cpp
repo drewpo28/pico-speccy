@@ -51,7 +51,7 @@ namespace {
 #endif
 constexpr int32_t  FRAME_T = PP_AY_FRAME_T;
 constexpr int      FRAME = RATE / 50;                    // 625 samples
-static_assert(FRAME <= ESP_AUDIO_SAMPLES_PENTAGON, "a frame is rendered into AySound's buffer");
+static_assert(FRAME <= ESP_AUDIO_SAMPLES_PENTAGON, "a frame is rendered into AySoundBuf's buffer");
 constexpr uint32_t DEFAULT_MS = 3 * 60 * 1000;
 constexpr uint32_t MAX_FILE = 512 * 1024;
 constexpr int      SILENCE_FRAMES = 150;                 // 3 s
@@ -76,7 +76,7 @@ public:
     // touched by the Z80 callbacks
     uint8_t* ram_ = nullptr;
     Z80      cpu_;
-    AySound* ay_ = nullptr;
+    AySoundBuf* ay_ = nullptr;
     uint8_t  sel_ = 0, reg_[16] = {};
     int32_t  frameBase_ = 0;        // frame T at the start of the current z80_run
     uint8_t  beepLvl_ = 0;
@@ -267,10 +267,10 @@ bool AyFileDecoder::open(const char* path) {
 
     ram_ = (uint8_t*)Buffer::palloc(0x10000, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     ev_ = (Ev*)Buffer::palloc(EV_MAX * sizeof(Ev), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
-    void* a = tryMalloc(sizeof(AySound));
-    if (!a) a = Buffer::palloc(sizeof(AySound), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    void* a = tryMalloc(sizeof(AySoundBuf));
+    if (!a) a = Buffer::palloc(sizeof(AySoundBuf), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     if (!ram_ || !a) { if (a) Buffer::pfree(a); err = "Out of memory"; return false; }
-    ay_ = new (a) AySound(10);
+    ay_ = new (a) AySoundBuf(10);
     ay_->init();
     ay_->set_sound_format(RATE, 1, 8);
     ay_->set_stereo(AYEMU_ABC, nullptr);
@@ -353,7 +353,7 @@ bool AyFileDecoder::startSong(int k) {
 }
 
 void AyFileDecoder::close() {
-    if (ay_) { ay_->~AySound(); Buffer::pfree(ay_); ay_ = nullptr; }
+    if (ay_) { ay_->~AySoundBuf(); Buffer::pfree(ay_); ay_ = nullptr; }
     if (ram_) { Buffer::pfree(ram_); ram_ = nullptr; }
     if (ev_) { Buffer::pfree(ev_); ev_ = nullptr; }
     if (file_) { Buffer::pfree(file_); file_ = nullptr; }

@@ -117,12 +117,12 @@ private:
     int32_t  dc_L = 0, dc_R = 0;   // Q16 DC estimate (unipolar chips ride a pedestal)
 
     // chips
-    AySound* ay_[2] = {}; bool ayPs_[2] = {};
-    SAASound* saa_[2] = {}; bool saaPs_[2] = {};
+    AySoundBuf* ay_[2] = {}; bool ayPs_[2] = {};
+    SAASoundBuf* saa_[2] = {}; bool saaPs_[2] = {};
     SnSound* sn_ = nullptr; bool snPs_ = false; bool sn2_ = false;
     OpllFm*  opll_ = nullptr; bool opllPs_ = false;
     OpnFm*   opn_[2] = {}; bool opnPs_[2] = {};
-    AySound* ssg_[2] = {}; bool ssgPs_[2] = {};
+    AySoundBuf* ssg_[2] = {}; bool ssgPs_[2] = {};
     OplFm*   opl_ = nullptr; bool oplPs_ = false; bool opl3_ = false;
     MoonPcm* pcm_ = nullptr; bool pcmPs_ = false;  // YMF278B wave half
     uint8_t* pcmRam_ = nullptr;                    // its 1 MB sample RAM (butter PSRAM)
@@ -303,7 +303,7 @@ bool VgmDecoder::open(const char* path) {
     if (const uint32_t c = hdr(0x74) & M) {
         const bool dual = hdr(0x74) & 0x40000000;
         for (int i = 0; i < (dual ? 2 : 1); i++) {
-            ay_[i] = mk<AySound>(ayPs_[i], (uint8_t)(2 + i));
+            ay_[i] = mk<AySoundBuf>(ayPs_[i], (uint8_t)(2 + i));
             if (!ay_[i]) { err = "Out of memory"; return false; }
             ay_[i]->init();
             ay_[i]->set_sound_format(RATE, 1, 8);
@@ -332,7 +332,7 @@ bool VgmDecoder::open(const char* path) {
     if (const uint32_t c = hdr(0xC8) & M) {
         const bool dual = hdr(0xC8) & 0x40000000;
         for (int i = 0; i < (dual ? 2 : 1); i++) {
-            saa_[i] = mk<SAASound>(saaPs_[i]);
+            saa_[i] = mk<SAASoundBuf>(saaPs_[i]);
             if (!saa_[i]) { err = "Out of memory"; return false; }
             saa_[i]->init();
             saa_[i]->set_clock((int)c);
@@ -358,7 +358,7 @@ bool VgmDecoder::open(const char* path) {
         const bool dual = hdr(0x44) & 0x40000000;
         for (int i = 0; i < (dual ? 2 : 1); i++) {
             opn_[i] = mk<OpnFm>(opnPs_[i]);
-            ssg_[i] = mk<AySound>(ssgPs_[i], (uint8_t)(4 + i));
+            ssg_[i] = mk<AySoundBuf>(ssgPs_[i], (uint8_t)(4 + i));
             if (!opn_[i] || !ssg_[i] || !OpnFm::tablesReady()) { err = "Out of memory"; return false; }
             opn_[i]->setRates((int)c, RATE);
             opn_[i]->reset();

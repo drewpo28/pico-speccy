@@ -744,7 +744,8 @@ on hardware (Memory Info with each option on).
   saturated at 0x7FFF so it can only apply late, never reorder): the block 6.7 → 4.6 KB,
   **−2 KB while MoonSound is on.** Compiled only — no test links MoonSplit.cpp. Hw owed:
   an OPL4 track (moonsound_14.trd / "05 encounter") sounds as before.
-- **Plain Covox gets one 640 B buffer** (`audioBufferCovoxR == audioBufferCovoxL`): **−640 B
+- ~~**Plain Covox gets one 640 B buffer**~~ — superseded the same day by the frame
+  accumulator below (Covox has no buffer at all now). What it said: (`audioBufferCovoxR == audioBufferCovoxL`): **−640 B
   of heap.** Two rails only where a right side differs: `CovoxSubsys::needStereo()` =
   SounDrive enabled || Next || SAM. A shape change re-allocates in `apply()`; `request()`
   marks dirty on it, and the nm:: reconcile uses `CovoxSubsys::ready()` (on AND right
@@ -795,12 +796,68 @@ on hardware (Memory Info with each option on).
     32 vibrato voices. Hw owed for the two changes above: SAA music on Karabas/CMS
     (pitch, envelopes), TSFM demo (TheLink) with the AY catch-up.
 
-**What the audit left (not done):** the per-chip 640-sample buffers of the unipolar
-sources (AY ×3, SAA, CMS ×2, SN, Covox, PIT, MIDI, beeper) could accumulate straight into
-one uint16 frame accumulator — −7…9 KB on a multi-chip TS-Conf set, the big remaining
-lever, but it moves the gating decisions (Next pan, `selected_chip`, SAA tape mute) from
-the frame end to generation time and touches the AY slot bodies and the players that
-read `SamplebufAY/SAA`. **Rejected by the owner (2026-11-21), do not redo:** the MIDI
+### The unipolar sources add straight into the frame mix (2026-11-21, NOT hw-tested; host byte-exact)
+
+**No 640-sample buffer per chip any more.** The AYs (chip0/1/2), the single SAA, the CMS
+pair, 2x SN76489, Covox / SounDrive / the Next and SAM DACs, the Pentagon Byte PIT and the
+MIDI synth ADD — saturating at 255 — into `ESPectrum::audioBuffer_L/R` while the frame
+runs. That array is the frame's output too: `pwm_audio_write` copies it out at the loop
+top, the counter-reset block right after clears it (`memset`, unconditional, paired with
+the counter resets — never move one without the other), and the frame-end mixer adds the
+beeper (`overSamplebuf` stays: its smoothing / DC fade needs the whole frame), the FDD
+clicks, the FT812 and Enterprise PCM and the bipolar chips (TSFM, OPL3, OPLL — their int16
+buffers stay, per-chip DC blocker + quiet gate are hw-confirmed) in place, then clamps.
+**Why saturating early is exact:** every term added later is >= 0 except a rare TSFM dip
+(64 + fm < 0) and the OPL/OPLL bias ramp, so clamp(sat(a) + b) == clamp(a + b) whenever
+b >= 0. No uint16 accumulator was needed.
+
+- **The gates moved from the frame end to generation.** `AySound` carries `sinkL/sinkR` +
+  `mixL/mixR` (0xFF/0), the four slot bodies take the masks as a 4th argument and
+  `AY_ADD` (they swap with the buffers in CBA mode). `ayGate()` (ESPectrum.cpp, RAM, `-Os`,
+  236 B) sets them before every generation with the mixer's old rules: not a Next =
+  chip0/chip1 under TurboSound or the selected one, chip1 only with TurboSubsys, all off
+  without `AY_emu`; Next = TurboSound / NR 0x06 PSG-hold / `ay_next_pan` bits. SAA and the
+  CMS pair have one `mix` gate = the tape-loading mute (the frame end used to memset their
+  buffers; now the catch-up mutes and the frame end skips generation, as before). A gate
+  change mid-frame now applies from that sample on instead of to the whole frame.
+- **Players keep buffers of their own**: `AySoundBuf` / `SAASoundBuf` (same
+  `SamplebufAY_L/R` / `SamplebufSAA_L/R` names, `gen_sound` clears the range first), the
+  only types src/player/ uses now. The emulator's chips get their sink in the constructor
+  (`AySound(n < 3)`, `SAASound` default). `SnSound::genLR` adds the mono chip into both
+  sides; `Ports::pitGenSound(L, R, n)` and `MidiSynth::gen_sound` add too.
+- **Covox / PIT subsystems are flags now** (no allocation; the mono/stereo Covox shape
+  above is gone), `SnSubsys`/`MidiSubsys` allocate only their chip/synth. Feature budgets:
+  Covox 0, SAA 512, MIDI 6 KB.
+- **Deliberate change: the DAC tail.** The frame-end Covox fill (hold the last level) now
+  runs for every DAC user; the Next and SAM DACs used to skip it and replay the previous
+  frame's buffer tail after their last write.
+- **A skipped mixer** (`Config::throtling`, or maxSpeed while a tape loads) now hands
+  `pwm_audio_write` the raw accumulated sources of that frame instead of the previous
+  mixed frame again.
+
+**Measured (DVp2 MinSizeRel, gcc 13.2):** `.bss` 54640 → 53348 (chip0 1616 → 348 B),
+`.data` 94080 → 94248 (`ayGate` 236, the slot bodies +8, SAA/PIT/Covox adds) — **−1124 B
+static on every build.** Heap while on: TurboSound −1280, Next chip2 −1280, SAA −1280,
+CMS −2560, SN −640, Covox −1280, PIT −640, MIDI −1280 (TS-Conf with 2 AY + CMS + Covox:
+−5 KB, plus the static). No new flash call from a RAM path (checked per function in the
+disassembly); the AY / SAA silent paths lost their `memset` calls.
+
+**Gate: a byte-exact host comparison of the final mix** (`PICOSPECCY_WAV`, the host's
+frame recorder) against the previous binary, on a generated `.sna` (session scratch,
+`mksna.py`: a DI loop writing AY with TurboSound chip select, SAA or the CMS pair, SN #C3,
+Covox #FB, SounDrive #0F/#4F and the beeper, loaded with `ram=/T.SNA` in storage.nvs):
+7 configs — ABC / ACB / mono / CBA, single AY, SounDrive, CMS — **0 differing bytes of
+565 344 each**; every source was first checked to change the stream, and a mutation (R
+DAC = L) is caught (12 683 bytes). Also: `ay_quietspan` 4.1M samples 0 mismatches (masks
+added to its harness), `saa_clock_test` PASS (recipe: SAASoundBuf + an ESPectrum stub
+with the frame arrays), `snsound_test`, `opl4vgm_test` (stubs gained the Buf types).
+**Not covered on the host:** the Next gates (no Next ROMs in the repo — the snapshot fell
+back to 48K), the Byte PIT, the MIDI synth (no GM bank), the players (types only).
+Hw owed: TurboSound (both chips, ABC/ACB/mono), a Next TurboSound tune with NR 0x08 pans
+and NR 0x06 hold, SAA on Karabas + CMS, SN, Covox/SounDrive on Profi, Next DAC (NXModPlayer),
+SAM, Byte PIT, GM.DLS MIDI, a tape load with SAA on, the AY / VGM / TFM players.
+
+**Rejected by the owner (2026-11-21), do not redo:** the MIDI
 render at -O2 (−348 B; the `wt_pitch_step` flash call above stays a known speed note
 only), `AySound` field widths, and fewer MIDI voices. The PI-CARD ring could go
 4096 → 2048 frames (−8 KB while playing) only after underruns are counted (`C0_MIDI_AHEAD`

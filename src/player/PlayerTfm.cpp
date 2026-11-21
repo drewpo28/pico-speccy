@@ -158,7 +158,7 @@ private:
     uint32_t pending_ = 0;
     uint32_t outFrames_ = 0, lenMs_ = 0;
     // chips
-    OpnFm*   opn_[2] = {}; AySound* ssg_[2] = {};
+    OpnFm*   opn_[2] = {}; AySoundBuf* ssg_[2] = {};
     int16_t* fm_ = nullptr;
     int32_t  dcL_ = 0, dcR_ = 0;
     // meter
@@ -288,8 +288,8 @@ bool TfmDecoder::open(const char* path) {
     for (int k = 0; k < 2; k++) {
         void* p = tryMalloc(sizeof(OpnFm));
         opn_[k] = p ? new (p) OpnFm() : nullptr;
-        p = tryMalloc(sizeof(AySound));
-        ssg_[k] = p ? new (p) AySound((uint8_t)(6 + k)) : nullptr;
+        p = tryMalloc(sizeof(AySoundBuf));
+        ssg_[k] = p ? new (p) AySoundBuf((uint8_t)(6 + k)) : nullptr;
         if (!opn_[k] || !ssg_[k]) break;
         opn_[k]->setRates(TSFM_YM2203_CLOCK, RATE);
         opn_[k]->reset();
@@ -339,7 +339,7 @@ bool TfmDecoder::open(const char* path) {
 void TfmDecoder::close() {
     for (int k = 0; k < 2; k++) {
         if (opn_[k]) { opn_[k]->~OpnFm(); Buffer::pfree(opn_[k]); opn_[k] = nullptr; }
-        if (ssg_[k]) { ssg_[k]->~AySound(); Buffer::pfree(ssg_[k]); ssg_[k] = nullptr; }
+        if (ssg_[k]) { ssg_[k]->~AySoundBuf(); Buffer::pfree(ssg_[k]); ssg_[k] = nullptr; }
     }
     if (tfe_) { tfe_->~TfeEngine(); Buffer::pfree(tfe_); tfe_ = nullptr; }
     for (auto& c : ch_) { if (c.off) Buffer::pfree(c.off); if (c.regs) Buffer::pfree(c.regs); c.off = nullptr; c.regs = nullptr; }
