@@ -316,6 +316,16 @@ static void nxCtxRefresh() {
     if (!s_c0Blk) nxCtxShared(s_nxc[0]);
 }
 static_assert(sizeof(NextLineState) % 4 == 0, "compared a word at a time");
+// The per-line path (ScanlineWork -> emitRow -> captureLine, nxMapSnapPost) must not leave
+// SRAM: GCC turned its zeroing loops into memset and the NextLineState assignments into
+// memcpy - libc, in FLASH - and every raster line paid 4-5 XIP calls while core1 streams
+// PSRAM through the same cache (per-part timers: the tick 2.4 ms of a Fluid level change,
+// ~7.7 us a line, hw 2026-11-21). NX_NOLIB keeps the loops as loops; nxStCopy is the copy.
+#define NX_NOLIB __attribute__((optimize("no-tree-loop-distribute-patterns")))
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR static void nxStCopy(NextLineState& d, const NextLineState& s) {
+    uint32_t* x = (uint32_t*)&d; const uint32_t* y = (const uint32_t*)&s;
+    for (unsigned i = 0; i < sizeof(NextLineState) / 4; i++) x[i] = y[i];
+}
 // memcmp is libc in FLASH; 12 words compared inline instead, once per line.
 static inline __attribute__((always_inline)) bool nxSameState(const NextLineState& a, const NextLineState& b) {
     const uint32_t* x = (const uint32_t*)&a; const uint32_t* y = (const uint32_t*)&b;
@@ -324,10 +334,10 @@ static inline __attribute__((always_inline)) bool nxSameState(const NextLineStat
     return d == 0;
 }   // the line being rendered (one renderer at a time)
 
-IRAM_ATTR void NEXTVID::captureLine(NextLineState& st) {
+NX_NOLIB IRAM_ATTR void NEXTVID::captureLine(NextLineState& st) {
     const uint8_t* r = NextReg::reg;
     st.grmem = VIDEO::grmem;
-    memcpy(st.clip, clip, sizeof st.clip);
+    for (unsigned i = 0; i < sizeof st.clip; i++) (&st.clip[0][0])[i] = (&clip[0][0])[i];
     st.r12 = r[0x12];
     st.r14 = r[0x14];
     st.r15 = r[0x15];
@@ -682,7 +692,14 @@ __attribute__((noinline)) static void nxRowFixups(NextLineState& st, int row, in
 #define NEXT_C1_STATES 64
 static uint32_t*      nx_ring = nullptr;     // [NEXT_C1_RING]  row | slot << 16
 static NextLineState* nx_st = nullptr;       // [NEXT_C1_STATES]
-static uint32_t*      nx_st_job = nullptr;   // [NEXT_C1_STATES] nx_w after the last job naming the slot
+static uint32_t*      nx_st_job = nullptr;   // [NEXT_C1_STATES] nx_w after the last job naming the slot (hot SRAM)
+// core0's SRAM mirrors (the hot block, Reset): the queue itself is butter PSRAM, and
+// emitRow compared every line against nx_st[nx_cur] there, stamped nx_st_job there and
+// nxMapSnapPost compared the tilemap row against its PSRAM copy - ~15 XIP misses a line
+// with core1 streaming PSRAM (timed: post 0.8 ms + map 0.4 ms of a Fluid level change;
+// a new state is posted ~once a frame there, host count). Core1 still reads the PSRAM slots.
+static NextLineState* s_c0St = nullptr;       // == nx_st[nx_cur] while nx_have
+static uint8_t*       s_mapPostMir = nullptr; // [NX_MAP_SH_ROW] == s_mapShData[s_mapPostK]
 static uint32_t       nx_cur = 0;
 static bool           nx_have = false;
 // nx_w / nx_c are read by render_core (main.cpp) to put queued rows ahead of an
@@ -1066,7 +1083,7 @@ struct NxMapShadow {           // 8 B: 192 of them in the hot SRAM block
     uint8_t  n;                   // row bytes (<= 160)
 };
 static_assert(sizeof(NxMapShadow) == 8, "map shadow header packs to 8 bytes");
-static inline uint16_t nxMapKey(uint8_t bank, uint32_t off) {
+static inline __attribute__((always_inline)) uint16_t nxMapKey(uint8_t bank, uint32_t off) {
     return (uint16_t)(((uint32_t)(bank & 2) << 14) | (off & 0x3FFF));   // bank 5 -> 0, 7 -> 0x8000
 }
 static constexpr int NX_MAP_SH = 192;
@@ -1080,7 +1097,7 @@ static volatile uint8_t s_mapShLive = 0;          // any entry possibly live (re
 static volatile int     s_mapShTop = 0;           // entries ever used (Take fills from the bottom): scan bound
 
 // the tilemap map row a posted line reads: false = none (tilemap off / out of range)
-static bool nxLineMapRow(const NextLineState& st, int row, int paperTop, uint8_t& bank, uint32_t& m0, int& rowBytes) {
+static inline __attribute__((always_inline)) bool nxLineMapRow(const NextLineState& st, int row, int paperTop, uint8_t& bank, uint32_t& m0, int& rowBytes) {
     if (!(st.r6B & 0x80)) return false;
     const int ty = row - (paperTop - 32);
     if (ty < 0 || ty >= 256) return false;
@@ -1165,9 +1182,14 @@ static bool nxLineUsesTiles(const NextLineState& st, int row, int paperTop, uint
 
 // core0: copy map row (bank, m0) for the posted jobs up to `until`. false = no
 // free entry (the caller waits instead).
-static int nxMapShadowAlloc(uint8_t bank, uint32_t m0, int n, uint32_t until, uint16_t key) {
+// RAM since 2026-11-21 (nxMapSnapPost calls it per posted line while a tilemap changes): the
+// scan stops at s_mapShTop + 1 - nothing above it was ever live, so the lowest free entry
+// is the same one the full 192-entry scan found - and the row is copied by words (libc
+// memcpy is flash).
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR static int nxMapShadowAlloc(uint8_t bank, uint32_t m0, int n, uint32_t until, uint16_t key) {
     int freeK = -1;
-    for (int k = 0; k < NX_MAP_SH; k++) {
+    const int lim = s_mapShTop < NX_MAP_SH ? s_mapShTop + 1 : NX_MAP_SH;
+    for (int k = 0; k < lim; k++) {
         NxMapShadow& e = s_mapSh[k];
         if (e.live && (int32_t)(nx_r - e.until) > 0) e.live = 0;       // all its lines rendered
         if (e.live && e.key == key && e.until == until) return k;      // already copied for them
@@ -1179,7 +1201,10 @@ static int nxMapShadowAlloc(uint8_t bank, uint32_t m0, int n, uint32_t until, ui
     e.live = 0;
     __dmb();
     e.key = key; e.until = until; e.n = (uint8_t)n;
-    memcpy(s_mapShData[freeK], MemESP::ram[bank].direct() + m0, n);
+    {   // n = 40 / 80 / 160, the row and the copy word-aligned
+        uint32_t* d = (uint32_t*)s_mapShData[freeK]; const uint32_t* src = (const uint32_t*)(MemESP::ram[bank].direct() + m0);
+        for (int i = 0; i < n / 4; i++) d[i] = src[i];
+    }
     __dmb();
     e.live = 1;
     s_mapShLive = 1;
@@ -1198,7 +1223,7 @@ static bool nxMapShadowTake(uint8_t bank, uint32_t m0, int n, uint32_t until) {
 // row is unchanged (its `until` bumped), so a tile row costs one copy a frame.
 static int      s_mapPostK = -1;
 static uint32_t s_mapPostUntil = 0;
-__attribute__((noinline)) static void nxMapSnapPost(const NextLineState& st, int row, int paperTop, uint32_t job) {
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR static void nxMapSnapPost(const NextLineState& st, int row, int paperTop, uint32_t job) {
     uint8_t& of = nx_mapOf[job % NEXT_C1_RING];
     of = 0xFF;
     uint8_t bank; uint32_t m0; int n;
@@ -1207,8 +1232,14 @@ __attribute__((noinline)) static void nxMapSnapPost(const NextLineState& st, int
     const uint8_t* live = MemESP::ram[bank].direct() + m0;
     if (s_mapPostK >= 0) {
         NxMapShadow& e = s_mapSh[s_mapPostK];
-        if (e.live && e.key == key && e.until == s_mapPostUntil && e.n == n
-            && !memcmp(s_mapShData[s_mapPostK], live, n)) {
+        bool same = e.live && e.key == key && e.until == s_mapPostUntil && e.n == n;
+        if (same) {   // by words (libc memcmp is flash), against core0's SRAM mirror of the copy
+            const uint32_t* a = (const uint32_t*)s_mapPostMir; const uint32_t* b = (const uint32_t*)live;
+            uint32_t d = 0;
+            for (int i = 0; i < n / 4; i++) d |= a[i] ^ b[i];
+            same = d == 0;
+        }
+        if (same) {
             e.until = job;                    // core0 only; a reader of `until` is fine either way
             s_mapPostUntil = job;
             of = (uint8_t)s_mapPostK;
@@ -1218,6 +1249,10 @@ __attribute__((noinline)) static void nxMapSnapPost(const NextLineState& st, int
     const int k = nxMapShadowAlloc(bank, m0, n, job, key);
     s_mapPostK = k;
     s_mapPostUntil = job;
+    if (k >= 0) {   // the mirror of the copy just taken
+        uint32_t* d = (uint32_t*)s_mapPostMir; const uint32_t* src = (const uint32_t*)live;
+        for (int i = 0; i < n / 4; i++) d[i] = src[i];
+    }
     if (k >= 0) of = (uint8_t)k;              // none free: the line reads guest RAM, as before
 }
 
@@ -2139,7 +2174,9 @@ void NEXTVID::Reset() {
         static_assert(sizeof(SprRes) == 10, "SprRender packs 128 x 10");
         const unsigned hotSz0 = 8*256*2 + 8*256 + 384 + 512 + 512 + 4 * 768;
         // + the tilemap map-row shadow headers (scanned per tilemap line on core1)
-        const unsigned hotSz  = hotSz0 + sizeof(NxMapShadow) * NX_MAP_SH;
+        // + core0's mirrors (s_c0St, nx_st_job, s_mapPostMir): ~540 B
+        const unsigned hotSz  = hotSz0 + sizeof(NxMapShadow) * NX_MAP_SH
+                              + sizeof(NextLineState) + 4 * NEXT_C1_STATES + NX_MAP_SH_ROW;
         const unsigned coldSz = 16384 + 2048 + 128*5;
         uint8_t* hot  = (uint8_t*)Buffer::palloc(hotSz,  Buffer::NEED_POINTER | Buffer::HOT_SRAM);
         // The 640-wide pair tables and the Layer 2 column band (~6 KB, read per
@@ -2204,6 +2241,12 @@ void NEXTVID::Reset() {
         remap       = hiresRow + 256;
         nxUb = (uint16_t*)(remap + 512);
         s_mapSh = (NxMapShadow*)(hot + hotSz0);
+        {
+            uint8_t* m = hot + hotSz0 + sizeof(NxMapShadow) * NX_MAP_SH;
+            s_c0St = (NextLineState*)m;             m += sizeof(NextLineState);
+            nx_st_job = (uint32_t*)m;                m += 4 * NEXT_C1_STATES;
+            s_mapPostMir = m;
+        }
         nxCtxRefresh();
     }
     // After the video state: that block is read per pixel, this one per line, so
@@ -2241,8 +2284,7 @@ void NEXTVID::Reset() {
         if (q) {
             nx_ring = (uint32_t*)q;
             nx_st = (NextLineState*)(q + 4 * NEXT_C1_RING);
-            nx_st_job = (uint32_t*)(q + 4 * NEXT_C1_RING + sizeof(NextLineState) * NEXT_C1_STATES);
-            memset(nx_st_job, 0, 4 * NEXT_C1_STATES);
+            memset(nx_st_job, 0, 4 * NEXT_C1_STATES);   // (hot SRAM; its old place in q is unused)
             s_segQ    = (NxSegRec*)(q + base);
             s_segPool = (NxPalDelta*)(q + base + sizeof(NxSegRec) * NX_SEG_Q);
             nx_segOf  = (uint16_t*)(q + base + sizeof(NxSegRec) * NX_SEG_Q + sizeof(NxPalDelta) * NX_SEG_POOL);
@@ -2386,8 +2428,8 @@ void NEXTVID::onClockChange() {
 // advances by the same count (mod 256 is enough, R is 7-bit), and
 // ScanlineWork runs at the same crossings.
 #if HOST_BUILD
-uint32_t g_host_haltT, g_host_idleT;
-uint32_t g_host_linepg[256];   // host bench: the 8K page of the PC at every line end (PICOSPECCY_PCLOG)   // host bench: T skipped in HALT / NextIdle loops (PICOSPECCY_PCLOG)
+uint32_t g_host_haltT, g_host_idleT;   // host bench: T skipped in HALT / NextIdle loops (PICOSPECCY_PCLOG)
+uint32_t g_host_linepg[256];   // host bench: the 8K page of the PC at every line end (PICOSPECCY_PCLOG)
 #endif
 IRAM_ATTR void NEXTVID::haltAdvanceTo(uint32_t stEnd) {
 #if HOST_BUILD
@@ -2642,7 +2684,7 @@ volatile uint32_t g_nx_rows = 0;            // rows composed (all, not only samp
 volatile uint16_t* g_nx_pcs = nullptr;    // [2048]
 volatile uint16_t* g_nx_pcpg = nullptr;   // [256]
 #endif
-__attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
     // Phases 0..15 = the attribute capture points inside line lineIdx's paper
     // (flash; phase 0 alone unless a racing writer is on), then the line end.
     if (s_capPhase < NX_CAP_GROUPS) { nxPaperStart(); return; }
@@ -2701,7 +2743,7 @@ __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
             if (draw) {
                 if (s_pdn) {
                     if (!segPost(row, st)) {
-                        nx_sync = st;
+                        nxStCopy(nx_sync, st);
                         renderRowSegments(row);
                     }
                 } else {
@@ -2735,7 +2777,7 @@ __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
 volatile uint32_t g_nx_emit_us = 0;          // core0: emitRow (capture + post) per second
 volatile uint32_t g_nx_rowprobe[2][8];
 #endif
-__attribute__((noinline)) IRAM_ATTR void NEXTVID::emitRow(int row) {
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::emitRow(int row) {
 #if NEXT_TRACE
     const uint32_t _em0 = timer_hw->timerawl;
     emitRowBody(row);
@@ -2747,15 +2789,16 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
         // Post the line: capture, and open a new state slot only when
         // something the renderer reads has moved since the last line.
         NextLineState st;
-        if (s_preCap) st = *s_preCap;
+        if (s_preCap) nxStCopy(st, *s_preCap);
         else {
             captureLine(st);
             nxRowFixups(st, row, firstVisibleLine, paperTopRow);
         }
-        if (!nx_have || !nxSameState(st, nx_st[nx_cur])) {
+        if (!nx_have || !nxSameState(st, *s_c0St)) {
             const uint32_t k = (nx_cur + 1) % NEXT_C1_STATES;
             nxWaitUntil(nx_st_job[k]);
-            nx_st[k] = st;
+            nxStCopy(nx_st[k], st);
+            nxStCopy(*s_c0St, st);
             nx_cur = k;
             nx_have = true;
         }
@@ -2764,7 +2807,7 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
     if (g_next_c1_live) {
         nx_ring[nx_w % NEXT_C1_RING] = (uint32_t)row | (nx_cur << 16);
         nx_segOf[nx_w % NEXT_C1_RING] = s_segPost;
-        if (s_mapSh && (nx_st[nx_cur].r6B & 0x80)) nxMapSnapPost(nx_st[nx_cur], row, paperTopRow, nx_w);
+        if (s_mapSh && (s_c0St->r6B & 0x80)) nxMapSnapPost(*s_c0St, row, paperTopRow, nx_w);
         else nx_mapOf[nx_w % NEXT_C1_RING] = 0xFF;
         __dmb();                    // job + state visible before the index
         nx_w = nx_w + 1;
@@ -2775,7 +2818,7 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
         g_nx_ring_now = occ;
 #endif
     } else {
-        if (s_preCap) nx_sync = *s_preCap;
+        if (s_preCap) nxStCopy(nx_sync, *s_preCap);
         else {
             captureLine(nx_sync);
             nxRowFixups(nx_sync, row, firstVisibleLine, paperTopRow);

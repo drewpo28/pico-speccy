@@ -302,7 +302,11 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # 2026-11-21: LDI / LDD inline in the Next loop's ED switch, a run of them in
     # one go (Alien Neoplasma's LDI x16 room blitters) — +480 B, content 50 976 B
     # (DVp2w): 50560 -> 51072.
-    set(NXOVL_WIN_SIZE_EFFECTIVE 51072)
+    # Same day: the raster tick's per-line path without flash calls (captureLine /
+    # emitRow / ScanlineWork NX_NOLIB + nxStCopy, nxMapSnapPost + nxMapShadowAlloc in
+    # RAM) and core0's SRAM mirrors of the PSRAM line queue — +1 024 B, content
+    # 52 008 B (DVp2w): 51072 -> 52096.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 52096)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -329,7 +333,9 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # The inline AY register write of the plain term: 51 488 B -> 51584.
         # The inline LDI / LDD (+480 B plain): 51584 -> 52096; PERF_TRACE + PERF_HIST
         # content 51 480 B (DVp2w-nxprof, 2026-11-21), NEXT_TRACE not linked.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 52096)
+        # The tick's RAM-only line path + SRAM mirrors (+1 024 B plain): 52096 -> 53120,
+        # not linked.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 53120)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

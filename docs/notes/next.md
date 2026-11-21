@@ -1506,3 +1506,25 @@ changes the room picture. Two different causes, both found on the host bench.
   hold A (left) -> the room changes ~frame 1880. `PICOSPECCY_DISKLOG=1` logs card accesses per frame.
   Host-only (`PICOSPECCY_PCLOG`): acks/outs/top ports, haltT/idleT, ack-PC buckets, `lpg` = the PC's
   page at line ends; `PICOSPECCY_HOTLOG=1` prints the pool, mmu[] and the hottest pages every tick.
+
+## The raster tick: no flash calls, core0's SRAM mirrors of the line queue (2026-11-21, hw-run DVp2w 504 MHz: Fluid's level change)
+
+A test build with per-part timers (owner's Fluid, level change, ~21 ms of core0 a frame) put the
+raster tick at 1.2-2.5 ms a frame (~7.7 us a line, 310 calls, no racing phases, no copper):
+tilemap row snapshot ~1.0 ms, the post (state compare / copy, ring) ~0.9, capture ~0.5. The
+tick's code is in .nxovl, but per line it called into FLASH 4-5 times: GCC had turned the
+"no libc" zeroing loops of captureLine into memset and the NextLineState assignments of emitRow
+into memcpy; nxMapSnapPost (memcmp, its 192-entry nxMapShadowAlloc scan, memcpy) was flash; and
+the line queue (state slots, nx_st_job, map-row copies) is butter PSRAM, read every line - all
+through the XIP cache core1 streams PSRAM through.
+- `NX_NOLIB` (no-tree-loop-distribute-patterns) on captureLine / emitRow / ScanlineWork and the
+  map path; `nxStCopy` (one RAM word copy) for the state; nxMapSnapPost + nxMapShadowAlloc in
+  RAM, word compare / copy, the scan bounded by `s_mapShTop + 1` (same entry found);
+  nxMapKey / nxLineMapRow always_inline (their veneers were flash).
+- core0 compares against SRAM mirrors in the hot block (`s_c0St`, `nx_st_job`, `s_mapPostMir`,
+  ~540 B); core1 still reads the PSRAM slots. A new state is posted ~once a frame in normal
+  play, ~200 a frame while Fluid draws a level (host count).
+- hw: tick 2.4 -> 1.55-1.8 ms in the heavy frames (map 1.0 -> 0.38, post 0.9 -> 0.7, cap
+  ~0.45), ~0.6 ms in light ones; Fluid's level change: 1-9 negative frames per 50 (was 9-16),
+  worst -0.2..-2.3 ms (was -1.6..-5.6). `.nxovl` +1 024 B. Left: nxRowFixups (one flash call
+  a line), the state written to PSRAM per line while it changes.
