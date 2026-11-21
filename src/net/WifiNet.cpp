@@ -361,6 +361,14 @@ bool busUp() {
 
 bool radioDead() { return s_dead; }
 
+void powerDown() {
+    if (!s_ready || !cyw43_poll) return;         // never up (or dead): already off
+    cyw43_deinit(&cyw43_state);                  // REG_ON low + cyw43_spi_deinit + cyw43_init
+    Debug::log("WiFi: radio powered down (cyw43_poll=%p); next use brings it up again",
+               (void*)cyw43_poll);
+    logPioDmaClaims("off");
+}
+
 void poll() {
     if (s_ready) cyw43_arch_poll();
 }

@@ -942,6 +942,17 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   W image**, the GPIO half only where a GPIO LED exists. Cost on `*p2w`: the radio
   bus comes up at every boot (~0.35 s + ~230 KB firmware download) even with WiFi
   unused. Expect 6 blinks of the LED right after the picture appears.
+  **Then, unless a boot join is due (`wifi_enabled` && SSID saved — the autoBegin
+  test), `WifiNet::powerDown()` switches the radio off again** (2026-11-21, NOT
+  hw-tested): `cyw43_deinit` (SDK 2.3.1 / cyw43-driver 055d642 read) = netifs
+  removed, `cyw43_spi_deinit` (PIO SM + program + both DMA channels unclaimed),
+  `cyw43_init` (WL_REG_ON low, `cyw43_poll = NULL`, `bt_loaded = false`). The next
+  `busUp()` (scan/connect/ZiFi) or BT `cyw43_ensure_bt_up` therefore re-runs the full
+  power-on + firmware download. Log: `WiFi: radio powered down` + `WiFi[off]` PIO/DMA
+  claims. Watch on hw: a later bring-up must still find a PIO block with room for
+  the 6-instruction gSPI program (anything loaded into the freed space between boot
+  and the first WiFi/BT use could take it; on `*_WS` the block must also be the
+  gpio_base-16 one). A remembered BT device (BtHost::bootTick) pays the download twice.
   Bug fixed: `sdcard.c` guarded with a bare `#ifdef PICO_DEFAULT_LED_PIN`, so with
   SD LED on every SD read did `gpio_put(255, x)` (also on ZERO2, LED=255); now
   `!= 255` like every other consumer. NOT hw-tested.

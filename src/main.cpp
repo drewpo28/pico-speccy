@@ -2322,6 +2322,10 @@ int main() {
         sleep_ms(33);
     }
     #undef W_BOOT_GPIO_LED
+    // The blink left the radio powered. With no boot join coming (the same test
+    // ESPectrum::loop uses for autoBegin) switch it off again: scan / connect /
+    // ZiFi / Bluetooth bring it up on demand (busUp / cyw43_ensure_up).
+    if (!(Config::wifi_enabled && !Config::wifi_ssid.empty())) WifiNet::powerDown();
     // Shown on the first emulator frame (flushBootNotices).
     if (WifiNet::radioDead()) osd_boot_notice("WiFi radio not found: wrong W image?");
 #endif
