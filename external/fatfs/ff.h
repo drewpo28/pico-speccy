@@ -373,6 +373,8 @@ FIL* fopen2 (
 	BYTE mode			/* Access mode and open mode flags */
 );
 void fclose2 (FIL* f);
+int ff_lfn_to_cold (void);	/* PICO-SPEC: LFN scratch to butter PSRAM once its pool is up; 0 = moved */
+const void* ff_lfn_buf (void);	/* PICO-SPEC: where the LFN scratch is (diagnostics) */
 
 /*--------------------------------------------------------------*/
 /* Additional Functions                                         */

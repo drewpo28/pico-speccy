@@ -740,6 +740,13 @@ static void runInternal(const Node* openAt, bool enterSaves = false) {
     }
     computeLayout();
     if (!layoutFits()) { if (ownDyn) dynFree(); gfxEnd(); return; }
+    // The staged-value store (1 KB, Buffer::pcold) - no memory left, no menu.
+    if (!Stage::begin()) {
+        Debug::log("UI: no memory for the settings store, menu not opened");
+        if (ownDyn) dynFree();
+        gfxEnd();
+        return;
+    }
 
     // Classic text pages (ChipInfo, ...) render in the new style while we are up,
     // and long operations (Speed test, ZIP extract, DLS convert) report in the
@@ -755,7 +762,7 @@ static void runInternal(const Node* openAt, bool enterSaves = false) {
     // whole-struct memset would drop the block: 3 256 B leaked per menu open (hw
     // 2026-09-14, F3/Esc x3 read heap 26152 -> 22896 -> 19640). Keep it across.
     { DynRows* keep = S.dyn; memset(&S, 0, sizeof(S)); S.dyn = keep; }
-    Stage::begin();
+    // Stage::begin() ran above, before the OSD hooks were installed.
     netStatusInvalidate();      // WiFi state may have changed since the last session
     profilesSessionBegin();     // ...and so may the profiles on the card
     joyProfilesSessionBegin();  // ...and the joystick profiles

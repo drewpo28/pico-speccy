@@ -435,6 +435,15 @@ bool Buffer::load(uint32_t size, bool force, LoadReader reader, void* ctx, bool 
 
 // ─── Pointer alloc / free (heap or butter) ──────────────────────────────────────
 bool Buffer::butterPoolReady() { return g_butter.ready(); }
+
+void* Buffer::pcold(size_t bytes) {
+    void* p = palloc(bytes, PREFER_PSRAM | NEED_POINTER);
+    if (p) memset(p, 0, bytes);
+    return p;
+}
+extern "C" void* buffer_pcold(size_t bytes) { return Buffer::pcold(bytes); }
+extern "C" void  buffer_pfree(void* p)      { Buffer::pfree(p); }
+extern "C" int   buffer_butter_ready(void)  { return Buffer::butterPoolReady() ? 1 : 0; }
 size_t Buffer::butterArenaBytes() { return g_butter.ready() ? g_butter.total() : 0; }
 
 void* Buffer::palloc(size_t bytes, uint32_t flags) {

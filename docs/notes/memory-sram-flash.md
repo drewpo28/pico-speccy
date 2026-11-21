@@ -1780,3 +1780,47 @@ plus veneers. ~11 KB in 15+ pieces, each on a hot path (renderer, bus accessor, 
 the big shared ones (`Ports::output` 7.8 KB, `EndFrame` 6.0, `MainScreen` 5.5, `Ports::input`
 5.2) are dispatchers every machine runs. Moving a piece out means another overlay window or
 a flash call: per piece 0.3-3 KB for a hot-path risk each - not pursued.
+
+## FatFs scratch and nm:: UI tables out of SRAM .bss (2026-11-21, hw-confirmed DVp2w)
+
+`Buffer::pcold(n)` (Buffer.h): a zeroed, session-lived block, butter PSRAM when its pool is
+up, else heap through palloc (never the panicking malloc); C wrappers `buffer_pcold` /
+`buffer_pfree` / `buffer_butter_ready`. Users:
+- FatFs (`external/fatfs/ff.c`, PICO-SPEC PATCH): `LfnBuf` + `DirBuf` (1 112 B) are ONE block
+  taken at the first mount (tryMalloc: the butter pool is not up at initFileSystem) and moved
+  to PSRAM by `ff_lfn_to_cold()` right after `Buffer::initPools()` (ESPectrum::setup); it
+  re-points `lfnbuf`/`dirbuf` of every `FatFs[]` volume. Scratch only, so a move between
+  calls is safe. `fopen2_pool` (2 x FIL, 1 212 B) is taken at the first `fopen2()` once the
+  butter pool is up; before that (and on boards without PSRAM) a FIL is tryMalloc'd. The
+  SD driver fills `fp->buf` by CPU (`rcvr_datablock`, no DMA), so PSRAM is safe there.
+  Host: `ff_lfn_to_cold` is a no-op in host_fatfs.cpp (no ff.c on the host).
+- UiStage `g_val`/`g_base` (1 000 B): pcold at the first `Stage::begin()`, kept. Every read is
+  gated by a `g_dirty` bit; `set()`/`force()` make sure the block exists. `begin()` returns
+  false without it and `nm::run` does not open the menu (log "UI: no memory for the settings
+  store").
+- `zifi_transportOpts` table (756 B): pcold on first build ("Off" only without memory);
+  `rawSourcePick` rows (256 B): ScopedHeap for the call.
+Measured (`nm -S` diff, build-all/DVp2w): .bss -4 332 B, RAM code unchanged. Host bench:
+menu opens, a Scanlines pick stages ("1 pending", Apply dialog), the F5 browser lists LFN names.
+Test ELF `debug/DVp2w-coldbss-1.1.3`. To check on hw: boot heap (vs btheap 44 416 at P1024
+COMPLETE: expect ~+2.3 KB there, +2 KB more after the first menu / fopen2), the browser
+(long names, exFAT card if there is one), a TRD/SCL mount + load, a settings change + Apply.
+**hw 2026-11-21, DVp2w, `debug/DVp2w-coldbss-1.1.3`** (log `...12.28.54.164`, Next boot, the
+log starts after Config load): +3 200 B against btheap at every stage (ext_ram_exist 63 000 ->
+66 200, COMPLETE 28 552 -> 31 752), i.e. 1.1 KB short of the .bss delta. OpenOCD on the live
+board: `fopen2_pool` = 0x1148C000 (PSRAM, works), but `LfnBuf` = 0x2004CE48, a 0x468 heap
+chunk holding "fram.bin": `ff_lfn_to_cold()` ran (bl right after initPools) but did NOT move
+it, cause unknown. Diagnostic: `ff_lfn_to_cold` returns why (0 moved, 1 not mounted, 2 PSRAM
+already, 3 no butter pool, 4 no memory, 5 PSRAM full) and the boot logs
+`setup: FatFs LFN scratch A -> B (r)` + the pointer on the COMPLETE line:
+`debug/DVp2w-coldbss2-1.1.3` (build 12:34:48).
+Its log (`...12.42.07.780`, eLeMeNt boot): `FatFs LFN scratch 2004BE40 -> 2004BE40 (2)` =
+"in PSRAM already" on a heap pointer: the test was `addr >= 0x11000000`, true for SRAM too
+(0x20000000 is above PSRAM). Fixed with a range test `in_psram()` (0x11000000..0x1FFFFFFF);
+`debug/DVp2w-coldbss3-1.1.3` (build: 12:45:24). Lesson: test PSRAM by range, never by `>=`.
+**hw-confirmed 2026-11-21 DVp2w** (log `...12.46.18.171`, eLeMeNt + NeoGS): `FatFs LFN scratch
+2004BE40 -> 1128A000 (0)`, freeHeap 82 976 -> 84 104 at that line (+1 128); COMPLETE line
+`@1128A000`; F5 browser (LFN, cached index), UNREAL!.SCL mounted into A: and B:, ejected,
+remounted; the menu opened (Stage::begin). A settings Apply is not in this log.
+Bench trap from this round: `PICOSPECCY_NOPSRAM=1` with an eLeMeNt card makes Config fall
+back to Pentagon AND SAVE it to the bench card's storage.nvs (fixed back by hand).

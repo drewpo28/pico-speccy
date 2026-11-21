@@ -33,6 +33,7 @@
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/core/Ports.h"
 #include "app/Debug.h"
+#include "app/Buffer.h"   // Buffer::pcold: the staged-value store
 #include "speccy/devices/gs/GS.h"
 #if PICOSPECCY_WIFI
 #include "net/BtHost.h"
@@ -854,10 +855,22 @@ static const SettingDesc kDesc[SET_COUNT] = {
 };
 #undef NM_X_DESC
 
-// ── the store: static BSS, zero heap ───────────────────────────────────────────
+// ── the store ──────────────────────────────────────────────────────────────────
+// g_val / g_base (1 KB) are one Buffer::pcold block (butter PSRAM, else heap) taken
+// at the first menu open and kept, not SRAM .bss (2026-11-21). Every read of them is
+// gated by a g_dirty bit, and only set() / force() / begin() write them — those make
+// sure the block exists. The bitmaps stay static: they are the gate.
 
-static int32_t g_val [SET_COUNT];
-static int32_t g_base[SET_COUNT];                  // value at first touch (3-way merge)
+static int32_t* g_val  = nullptr;                  // [SET_COUNT]
+static int32_t* g_base = nullptr;                  // [SET_COUNT] value at first touch (3-way merge)
+static bool storeReady() {
+    if (g_val) return true;
+    int32_t* m = (int32_t*)Buffer::pcold(2 * SET_COUNT * sizeof(int32_t));
+    if (!m) return false;
+    g_val = m;
+    g_base = m + SET_COUNT;
+    return true;
+}
 static uint8_t g_dirty[(SET_COUNT + 7) / 8];
 static uint8_t g_seq  [SET_COUNT];                 // touch order: breaks mutual-exclusion ties
 static uint8_t g_seqNext;
@@ -882,14 +895,16 @@ const char* takeNote() {
     return n;
 }
 
-void begin() {
+bool begin() {
     s_liveNote = nullptr;
     memset(g_dirty, 0, sizeof(g_dirty));
-    memset(g_val, 0, sizeof(g_val));
-    memset(g_base, 0, sizeof(g_base));
+    if (!storeReady()) return false;
+    memset(g_val, 0, SET_COUNT * sizeof(int32_t));
+    memset(g_base, 0, SET_COUNT * sizeof(int32_t));
     memset(g_seq, 0, sizeof(g_seq));
     g_seqNext = 1;
     s_machinePick = -1;
+    return true;
 }
 
 int32_t get(uint16_t id) {
@@ -898,7 +913,7 @@ int32_t get(uint16_t id) {
 }
 
 void set(uint16_t id, int32_t v) {
-    if (!valid(id)) return;
+    if (!valid(id) || !storeReady()) return;
     const SettingDesc& d = kDesc[id];
     const int32_t live = d.get();
     if (!bmGet(g_dirty, id)) g_base[id] = live;
@@ -1001,7 +1016,7 @@ void discard() {
 
 // Force `id` to `v` and account for it. Returns true if anything changed.
 static bool force(uint16_t id, int32_t v, CommitReport& rep, const char* note) {
-    if (!valid(id)) return false;
+    if (!valid(id) || !storeReady()) return false;
     const int32_t cur = bmGet(g_dirty, id) ? g_val[id] : kDesc[id].get();
     if (cur == v) return false;
     if (!bmGet(g_dirty, id)) g_base[id] = kDesc[id].get();

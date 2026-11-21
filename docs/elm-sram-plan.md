@@ -146,3 +146,10 @@ on first use: .bss -11 556 B, expected boot heap +~10.2 KB on every machine of a
 until Bluetooth is used. Details and the rest of the cold .bss / one-machine RAM code
 ledger: `docs/notes/memory-sram-flash.md`, "Bluetooth state on the heap". Test ELF
 `debug/DVp2w-btheap-1.1.3`.
+
+## Item 4, second round 2026-11-21: FatFs scratch + nm:: UI tables (hw-confirmed DVp2w, uncommitted)
+
+`Buffer::pcold` (PSRAM first) for FatFs LFN scratch + the fopen2 pool, UiStage's staged
+values, the ZiFi transport table; rawSourcePick rows per call. .bss -4 332 B. Details:
+`docs/notes/memory-sram-flash.md`, "FatFs scratch and nm:: UI tables". Test ELF
+`debug/DVp2w-coldbss3-1.1.3` (the first cut tested PSRAM with `>=` and left the LFN block on the heap).

@@ -31,6 +31,7 @@
 #include "speccy/devices/sound/MidiSynth.h"
 #include "app/Debug.h"
 #include "app/TryAlloc.h"
+#include "app/Buffer.h"      // Buffer::pcold: cold UI tables
 #include "speccy/devices/zifi/ZiFi.h"
 #include "net/ZiFiAT.h"
 #include "drivers/board/BoardPins.h"
@@ -1271,7 +1272,11 @@ static int rawSourcePick(bool imageOpt, bool curIsImage, CardWin& w) {
     IDE::MbrPart p[IDE::MBR_PARTS];
     const int n = IDE::mbrParts(p);
     if (n < 0) return imageOpt ? PICK_IMAGE : PICK_CANCEL;   // no card: an image is the only source
-    static char rows[IDE::MBR_PARTS][32];   // "SD card: part 8  FAT16 1023 MB"
+    // "SD card: part 8  FAT16 1023 MB": for this call only (was 256 B of .bss).
+    typedef char Row[32];
+    ScopedHeap rowsMem(IDE::MBR_PARTS * sizeof(Row));
+    if (!rowsMem) return PICK_CANCEL;
+    Row* rows = rowsMem.as<Row>();
     const char* items[IDE::MBR_PARTS + 3];
     int tags[IDE::MBR_PARTS + 3], m = 0, np = 0, initial = 0;
     const int cur = curIsImage ? -2 : rawPartOf(w, p, n);
@@ -1919,12 +1924,28 @@ const char* vl_wifi() {
 // per-board, so no static array can spell it out. Values match get_/put_
 // zifiTransport in UiStage.cpp: 0 = Off, 1 = USB, 10+i = GPIO pair i. Long rows
 // ("GPIO 20/21  off: WAV+MIDI") carry a short slabel ("20/21") for the left
-// column. Built once — the board's pins never change at runtime.
+// column. Built once — the board's pins never change at runtime — in a Buffer::pcold
+// block (butter PSRAM, else heap), not 756 B of SRAM .bss (2026-11-21). No memory:
+// "Off" alone, from a const row.
 const Option* zifi_transportOpts(uint8_t& cnt) {
-    static Option opts[3 + BoardPins::ZIFI_MAX_PAIRS];
-    static char lbl[BoardPins::ZIFI_MAX_PAIRS][40];
-    static char slbl[BoardPins::ZIFI_MAX_PAIRS][8];
+    struct Tab {
+        Option opts[3 + BoardPins::ZIFI_MAX_PAIRS];
+        char lbl[BoardPins::ZIFI_MAX_PAIRS][40];
+        char slbl[BoardPins::ZIFI_MAX_PAIRS][8];
+    };
+    static Tab* t = nullptr;
     static uint8_t n = 0;
+    if (!t) {
+        t = (Tab*)Buffer::pcold(sizeof(Tab));
+        if (!t) {
+            static const Option kOff[] = { { "Off", 0, nullptr } };
+            cnt = 1;
+            return kOff;
+        }
+    }
+    Option* opts = t->opts;
+    auto& lbl = t->lbl;
+    auto& slbl = t->slbl;
     if (!n) {
         opts[n++] = { "Off", 0, nullptr };
 #if PICOSPECCY_WIFI

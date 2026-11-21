@@ -567,5 +567,8 @@ extern "C" void fclose2(FIL* f) {
     f_close(f);
     free(f);
 }
+// No LFN scratch block on the host (the shim keeps no FatFs working buffers).
+extern "C" int ff_lfn_to_cold(void) { return 1; }
+extern "C" const void* ff_lfn_buf(void) { return nullptr; }
 // A guest wrote the raw card: nothing cached here (the raw card is a separate image).
 extern "C" void ff_raw_write_notify(BYTE, LBA_t, const BYTE*) {}

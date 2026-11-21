@@ -417,7 +417,7 @@ enum SettingId : uint16_t {
 
 namespace Stage {
 
-void    begin();                    // called when the menu opens
+bool    begin();                    // called when the menu opens; false = no memory for the store
 int32_t get(uint16_t id);           // staged value if touched, else the live value
 void    set(uint16_t id, int32_t v);
 bool    isDirty(uint16_t id);

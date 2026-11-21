@@ -70,6 +70,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/core/MemESP.h"
 #include "Buffer.h"
+#include "fatfs/ff.h"          // ff_lfn_to_cold
 #include "TryAlloc.h"
 #include "ui/LEDIndicators.h"
 #include "ui/OSDMain.h"
@@ -1725,6 +1726,12 @@ void ESPectrum::setup() {
   // boundaries are final, and BEFORE GS::init so GS's work/ring buffers can draw
   // from the butter arena. See Buffer.cpp.
   Buffer::initPools();
+  {                             // FatFs LFN scratch (1.1 KB) from the boot heap to butter PSRAM
+    const void* was = ff_lfn_buf();
+    const int r = ff_lfn_to_cold();
+    Debug::log("setup: FatFs LFN scratch %p -> %p (%d), freeHeap=%u", was, ff_lfn_buf(), r,
+               (unsigned)getFreeHeap());
+  }
   Elm::bootSettings();          // eLeMeNt ZX: the SetUp's FRAM settings (butter PSRAM holds the FRAM) before the video / audio come up
 
   // AFTER initPools: GS::init allocates its work RAM + DAC rings from the butter
@@ -2111,7 +2118,7 @@ void ESPectrum::setup() {
   // Gigascreen prev-FB may now move from butter to the heap if there is room.
   VIDEO::gigascreenPreferSram();
 
-  Debug::log("setup: COMPLETE, freeHeap=%u", getFreeHeap());
+  Debug::log("setup: COMPLETE, freeHeap=%u (LFN scratch @%p)", getFreeHeap(), ff_lfn_buf());
   CodeOverlay::logHeapRegions();
 #if PERF_TRACE && PERF_HIST
   { extern void pcprof_start(); pcprof_start(); }   // PcProf.cpp: core0 PC sampling

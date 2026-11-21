@@ -138,6 +138,11 @@ public:
     // True once initPools() has carved the butter arena — before that a
     // PSRAM-tier palloc can only land on the heap (or fail).
     static bool  butterPoolReady();
+    // Cold state that used to sit in SRAM .bss (UI tables, FatFs scratch): a ZEROED
+    // block, butter PSRAM when its pool is up, else the heap (never the panicking
+    // malloc). nullptr = no memory; the caller degrades. Main loop only. Usually
+    // kept for the session; pfree() releases it.
+    static void* pcold(size_t bytes);
 
     // ── Tier-agnostic block load ───────────────────────────────────────────────
     // Source reader: fill `dst` with `n` bytes starting at source byte `off`. Return

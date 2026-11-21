@@ -536,10 +536,29 @@ static const BYTE LfnOfs[] = {1,3,5,7,9,14,16,18,20,22,24,28,30};	/* FAT: Offset
 #define MAXDIRB(nc)	((nc + 44U) / 15 * SZDIRE)	/* exFAT: Size of directory entry block scratchpad buffer needed for the name length */
 
 #if FF_USE_LFN == 1		/* LFN enabled with static working buffer */
+/* PICO-SPEC PATCH (2026-11-21): the two scratch buffers are ONE block taken at the
+   first mount (heap: the butter PSRAM pool is not up yet), moved to PSRAM by
+   ff_lfn_to_cold() once it is, not 1.1 KB of SRAM .bss. Scratch only: nothing in
+   them lives across FatFs calls, so they can move between calls. */
 #if FF_FS_EXFAT
-static BYTE	DirBuf[MAXDIRB(FF_MAX_LFN)];	/* Directory entry block scratchpad buffer */
+static BYTE*	DirBuf;		/* Directory entry block scratchpad buffer, MAXDIRB(FF_MAX_LFN) */
 #endif
-static WCHAR LfnBuf[FF_MAX_LFN + 1];		/* LFN working buffer */
+static WCHAR*	LfnBuf;		/* LFN working buffer, FF_MAX_LFN + 1 */
+#if FF_FS_EXFAT
+#define LFN_SCRATCH_SIZE	((FF_MAX_LFN + 1) * sizeof (WCHAR) + MAXDIRB(FF_MAX_LFN))
+#else
+#define LFN_SCRATCH_SIZE	((FF_MAX_LFN + 1) * sizeof (WCHAR))
+#endif
+#include "app/TryAlloc.h"
+extern void* buffer_pcold (size_t bytes);
+extern void  buffer_pfree (void* p);
+extern int   buffer_butter_ready (void);
+static void lfn_set (BYTE* m) {
+	LfnBuf = (WCHAR*)m;
+#if FF_FS_EXFAT
+	DirBuf = m + (FF_MAX_LFN + 1) * sizeof (WCHAR);
+#endif
+}
 #define DEF_NAMEBUFF
 #define INIT_NAMEBUFF(fs)
 #define FREE_NAMEBUFF()
@@ -3700,6 +3719,14 @@ static FRESULT mount_volume (	/* FR_OK(0): successful, !=0: an error occurred */
 #endif	/* !FF_FS_READONLY */
 	}
 
+#if FF_USE_LFN == 1
+	if (!LfnBuf) {			/* PICO-SPEC PATCH: the scratch block, once per session */
+		BYTE* m = buffer_butter_ready() ? (BYTE*)buffer_pcold(LFN_SCRATCH_SIZE)
+		                                : (BYTE*)tryMalloc(LFN_SCRATCH_SIZE);
+		if (!m) return FR_NOT_ENOUGH_CORE;
+		lfn_set(m);
+	}
+#endif
 	fs->fs_type = (BYTE)fmt;/* FAT sub-type (the filesystem object gets valid) */
 	fs->id = ++Fsid;		/* Volume mount ID */
 
@@ -7296,8 +7323,56 @@ FRESULT f_setcp (
 
 
 
+/* PICO-SPEC PATCH (2026-11-21): ff_lfn_to_cold() - the LFN scratch block from the
+   heap to butter PSRAM. Call once the butter pool is up (after Buffer::initPools);
+   a no-op without PSRAM, before the first mount, or when it is there already.
+   Returns 0 moved, 1 not mounted, 2 in PSRAM already, 3 no butter pool, 4 no
+   memory, 5 PSRAM full (stays on the heap). */
+/* XIP-mapped butter PSRAM: 0x11000000.. (cached) / 0x15000000.. (uncached alias). NOT
+   "addr >= 0x11000000": SRAM at 0x20000000 is above it (the first cut's bug, hw
+   2026-11-21: code 2 on a heap pointer). */
+static int in_psram (const void* p) {
+	const uintptr_t a = (uintptr_t)p;
+	return a >= 0x11000000u && a < 0x20000000u;
+}
+
+int ff_lfn_to_cold (void) {
+#if FF_USE_LFN == 1
+	if (!LfnBuf) return 1;									/* not mounted yet */
+	if (in_psram(LfnBuf)) return 2;			/* in PSRAM already */
+	if (!buffer_butter_ready()) return 3;
+	BYTE* m = (BYTE*)buffer_pcold(LFN_SCRATCH_SIZE);
+	if (!m) return 4;
+	if (!in_psram(m)) { buffer_pfree(m); return 5; }	/* PSRAM full: stay */
+	BYTE* old = (BYTE*)LfnBuf;
+	lfn_set(m);
+	for (int v = 0; v < FF_VOLUMES; v++) {
+		if (!FatFs[v]) continue;
+		FatFs[v]->lfnbuf = LfnBuf;
+#if FF_FS_EXFAT
+		FatFs[v]->dirbuf = DirBuf;
+#endif
+	}
+	free(old);
+	return 0;
+#else
+	return 1;
+#endif
+}
+const void* ff_lfn_buf (void) {	/* PICO-SPEC: where the LFN scratch is (diagnostics) */
+#if FF_USE_LFN == 1
+	return LfnBuf;
+#else
+	return 0;
+#endif
+}
+
+/* PICO-SPEC PATCH (2026-11-21): the pool of two FILs (1.2 KB with their sector
+   buffers) is taken at the first fopen2() after the butter pool is up, in PSRAM,
+   not .bss. Before that, and on a board without PSRAM until then, a FIL comes
+   from tryMalloc. The SD driver fills fp->buf by CPU (no DMA), so PSRAM is fine. */
 #define FOPEN2_POOL_SIZE 2
-static FIL fopen2_pool[FOPEN2_POOL_SIZE];
+static FIL* fopen2_pool;
 static BYTE fopen2_used[FOPEN2_POOL_SIZE];
 
 FIL* fopen2 (
@@ -7305,7 +7380,9 @@ FIL* fopen2 (
 	BYTE mode			/* Access mode and open mode flags */
 ) {
 	FIL* res = 0;
-	for (int i = 0; i < FOPEN2_POOL_SIZE; i++) {
+	if (!fopen2_pool && buffer_butter_ready())
+		fopen2_pool = (FIL*)buffer_pcold(sizeof (FIL) * FOPEN2_POOL_SIZE);
+	for (int i = 0; fopen2_pool && i < FOPEN2_POOL_SIZE; i++) {
 		if (!fopen2_used[i]) {
 			fopen2_used[i] = 1;
 			res = &fopen2_pool[i];
@@ -7313,7 +7390,7 @@ FIL* fopen2 (
 		}
 	}
 	if (!res) {
-		res = (FIL*)malloc(sizeof(FIL));
+		res = (FIL*)tryMalloc(sizeof(FIL));
 		if (!res) return 0;
 	}
 	if (f_open(res, path, mode) != FR_OK) {
@@ -7326,7 +7403,7 @@ FIL* fopen2 (
 void fclose2 (FIL* f) {
 	if (f) {
 		f_close(f);
-		for (int i = 0; i < FOPEN2_POOL_SIZE; i++) {
+		for (int i = 0; fopen2_pool && i < FOPEN2_POOL_SIZE; i++) {
 			if (f == &fopen2_pool[i]) {
 				fopen2_used[i] = 0;
 				return;
