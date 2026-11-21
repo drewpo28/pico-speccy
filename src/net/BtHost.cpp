@@ -213,6 +213,21 @@ uint8_t* s_sdpA2dp = nullptr;      // SDP_REC_SIZE, see s_dev
 AudioState s_audio = A_IDLE;
 char       s_audioName[32] = "";
 bool     s_audioPending = false;   // a switch waits for the old connection to close
+// Tape in pages a phone only once the headphones' A2DP link is gone: the stack holds
+// ONE A2DP connection (MAX_NR_AVDTP_CONNECTIONS), and paging while the old one is
+// still closing failed with 0x56 (hw 2026-11-21). Same wait as s_audioPending.
+// The release event comes BEFORE avdtp.c frees the connection (avdtp_finalize_
+// connection), so the page right inside it still got 0x56 (hw 2026-11-21, tapewait):
+// a busy answer retries on s_tapeRetryT, as audioEstablish does.
+bool     s_tapePagePending = false;
+btstack_timer_source_t s_tapeRetryT;
+uint8_t  s_tapeRetries = 0;
+void     tapePage();                // defined with tapeConnect
+void     tapePageStop() {           // no page waiting or retrying any more
+    s_tapePagePending = false;
+    btstack_run_loop_remove_timer(&s_tapeRetryT);
+    s_tapeRetries = 0;
+}
 btstack_timer_source_t s_audioRetryT;   // busy-connect retries (audioEstablish)
 uint8_t  s_audioRetries = 0;
 bd_addr_t  s_audioAddr;
@@ -638,6 +653,10 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             streamFree();
             s_cid = 0;
             s_audioHandle = HCI_CON_HANDLE_INVALID;
+            if (s_tapePagePending) {               // Tape in waited for this slot
+                s_tapePagePending = false;
+                tapePage();
+            }
             if (s_audioPending) {                  // switching: now the new device
                 s_audioPending = false;
                 audioEstablish();
@@ -930,6 +949,7 @@ void sinkHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 break;
             }
             s_tOutgoing = false;
+            tapePageStop();                          // the phone came by itself
             s_tcid = a2dp_subevent_signaling_connection_established_get_a2dp_cid(p);
             a2dp_subevent_signaling_connection_established_get_bd_addr(p, s_tAddr);
             tapeNameFor(s_tAddr);
@@ -1838,6 +1858,9 @@ void dumpMessage(int level, const char* fmt, va_list ap) {
     // each Create Connection meanwhile ("Command packet sent failed, error = 86")
     // — expected, and already said once by "waiting for the previous connection".
     if (s_audioRetries && strstr(line, "Command packet sent failed")) return;
+    // Tape in's page retries while the headphones' AVDTP connection is still being freed
+    // (tapePage): avdtp.c says so on every busy try.
+    if (s_tOutgoing && strstr(line, "Not enough memory to create connection")) return;
     blog("btstack: %s", line);
 }
 const hci_dump_t s_dump = { nullptr, dumpPacket, dumpMessage };
@@ -2180,6 +2203,7 @@ bool tapeListen(bool on) {
     }
     s_tapeOn = false;
     s_tOutgoing = false;
+    tapePageStop();
     if (s_tcid) a2dp_sink_disconnect(s_tcid);   // the release event clears s_tcid
     s_tape = T_OFF;
     s_tiValid = false;
@@ -2214,16 +2238,44 @@ bool tapeConnect(const uint8_t addr[6], const char* name) {
     }
     memcpy(s_tAddr, addr, 6);
     snprintf(s_tName, sizeof(s_tName), "%s", name && name[0] ? name : bd_addr_to_str(s_tAddr));
+    if (s_cid) {                                         // the headphones are still closing
+        s_tapePagePending = true;
+        s_tOutgoing = true;                              // the menu shows "calling" meanwhile
+        blog("tape: calling %s once the headphones let go...", s_tName);
+        return true;
+    }
+    tapePage();
+    return true;
+}
+
+// Page s_tAddr for the sink role (tapeConnect, or the release of the headphones'
+// link it waited for). Declared in the anonymous namespace above.
+namespace {
+void tapeRetryTick(btstack_timer_source_t*) { tapePage(); }
+void tapePage() {
+    if (!s_tapeOn || s_tcid) { s_tOutgoing = false; s_tapeRetries = 0; return; }
     uint16_t cid = 0;
     const uint8_t rc = a2dp_sink_establish_stream(s_tAddr, &cid);
     if (rc != ERROR_CODE_SUCCESS) {
+        const bool busy = rc == BTSTACK_MEMORY_ALLOC_FAILED || rc == ERROR_CODE_UNSPECIFIED_ERROR;
+        if (busy && s_tapeRetries < 16) {                // the old link is still being freed
+            s_tapeRetries++;
+            s_tOutgoing = true;
+            btstack_run_loop_set_timer_handler(&s_tapeRetryT, tapeRetryTick);
+            btstack_run_loop_set_timer(&s_tapeRetryT, 200);
+            btstack_run_loop_add_timer(&s_tapeRetryT);
+            return;
+        }
+        s_tapeRetries = 0;
+        s_tOutgoing = false;
         blog("tape: cannot call %s (0x%02x) - play from the phone instead", s_tName, rc);
-        return true;
+        return;
     }
     s_tOutgoing = true;
-    blog("tape: calling %s...", s_tName);
-    return true;
-}
+    if (s_tapeRetries) blog("tape: calling %s... (after %u x 200 ms)", s_tName, (unsigned)s_tapeRetries);
+    else blog("tape: calling %s...", s_tName);
+    s_tapeRetries = 0;
+} }  // namespace
 bool tapeConnecting() { return s_tOutgoing; }
 
 bool tapeConnectedTo(const uint8_t addr[6]) {

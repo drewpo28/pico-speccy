@@ -2963,10 +2963,19 @@ static void btTapeUse(const BtHost::Known& kn) {
     paneFooter("Esc Back");
     auto kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem k;
+    // Wait for the PHONE, not only for our call: when the call cannot be placed (or the
+    // phone ignores it) the phone may still connect by itself, and the page used to say
+    // "Listening" and freeze while it did (owner 2026-11-21: with a speaker on, the
+    // connect was not visible). The BtHost log keeps feeding the pane meanwhile.
     const uint64_t t0 = time_us_64();
-    while (BtHost::tapeConnecting() && BtHost::tapeState() == BtHost::T_LISTEN) {
+    bool hinted = false;
+    while (BtHost::tapeState() == BtHost::T_LISTEN) {
         uiIdle(2);
-        if (time_us_64() - t0 > 20000000ull) break;
+        if (!hinted && !BtHost::tapeConnecting()) {
+            wlogAdd("Waiting: or play from the phone to \"Pico-Speccy\". Esc leaves it listening.", C_TEXT_DIM);
+            hinted = true;
+        }
+        if (time_us_64() - t0 > 30000000ull) break;
         if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
             (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1))
             break;

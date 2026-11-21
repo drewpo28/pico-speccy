@@ -1856,3 +1856,25 @@ waits out (`s_audioPending`); the phone then connected by itself. `hci.c.1274: A
 but no first fragment for handle 0x0b` x2 around that overlap, no stream loss. First phone-tape
 log on record, so no older baseline. If wanted: make tapeConnect wait for the release like
 audioConnect does.
+Done 2026-11-21 (NOT hw-tested): `tapeConnect` with the headphones' link still up (`s_cid`)
+sets `s_tapePagePending` ("tape: calling X once the headphones let go...", the menu shows
+"calling"); the source handler's SIGNALING_CONNECTION_RELEASED calls `tapePage()`; a phone
+that connects by itself, or Stop listening, clears it. `debug/DVp2w-tapewait-1.1.3`
+(build: 13:17:03).
+hw 2026-11-21 (log `...13.19.06.180`): the wait fired ("calling ... once the headphones let
+go", then "disconnected") but the page from INSIDE the release event still got 0x56: BTstack
+sends SIGNALING_CONNECTION_RELEASED before `avdtp_finalize_connection` frees the slot. So
+`tapePage()` now retries a busy answer (0x56 / unspecified) every 200 ms, up to 16 times
+(`s_tapeRetryT`, as audioEstablish's 500 ms), the avdtp "Not enough memory" line is muted while
+`s_tOutgoing`, and the success line says how many tries it took. `tapePageStop()` clears
+pending + timer (phone came by itself, Stop listening). .bss +32 B.
+`debug/DVp2w-tapewait2-1.1.3` (build: 13:23:36), NOT hw-tested.
+Owner on tapewait: all works, but with a speaker on the phone's connect was not visible at
+once. UI cause: `btTapeUse` waited only while `tapeConnecting()`, so a failed call printed
+"Listening" and froze the page (btDone drops the log) while the phone connected by itself.
+Now it waits for `tapeState() != T_LISTEN` (30 s, Esc), with a one-time hint once our own call
+is over; the BtHost log keeps feeding the pane. `debug/DVp2w-tapewait3-1.1.3` (tapewait2 +
+this; build: 13:24:59). **hw-confirmed 2026-11-21 DVp2w** (log `...13.29.26.819`, owner "все
+хорошо"): "calling ... once the headphones let go" -> disconnected -> "calling Drew Xiaomi 17...
+(after 1 x 200 ms)" -> connected -> playing; no 0x56. One `ACL Cont Fragment` (handle 0x0c) still
+at the overlap, harmless.
