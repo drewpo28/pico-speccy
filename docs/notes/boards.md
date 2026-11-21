@@ -936,7 +936,12 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   runs — correct, driving GP25 would break the radio bus. Consequences: on `*p2w`
   the LED stays DARK for good — no boot blinks, no flash-write / SD-access blink
   (Settings "SD LED" is a no-op), and the boot radio-LED blink + "WiFi radio not
-  found" notice are `*_WS` only (guarded by `PICO_DEFAULT_LED_PIN != 255`).
+  found" notice were `*_WS` only (guarded by `PICO_DEFAULT_LED_PIN != 255`).
+  **Changed 2026-11-21 (owner's OK, NOT hw-tested): the boot radio-LED blink (6x,
+  after vga_start_semaphore) and the "WiFi radio not found" notice now run on every
+  W image**, the GPIO half only where a GPIO LED exists. Cost on `*p2w`: the radio
+  bus comes up at every boot (~0.35 s + ~230 KB firmware download) even with WiFi
+  unused. Expect 6 blinks of the LED right after the picture appears.
   Bug fixed: `sdcard.c` guarded with a bare `#ifdef PICO_DEFAULT_LED_PIN`, so with
   SD LED on every SD read did `gpio_put(255, x)` (also on ZERO2, LED=255); now
   `!= 255` like every other consumer. NOT hw-tested.
@@ -947,7 +952,7 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   Pimoroni Pico Plus 2 W it is the wrong firmware; the new `*_W` image is the one for
   that module. Two robustness fixes came out of reading the bring-up path (NOT
   hw-tested, `debug/m1p2w-radiofix-1.0.9.uf2` / `m1p2ws-radiofix-`): (1) the boot
-  radio-LED blink (WS boards only — it powers the radio up, ~0.35 s + firmware load)
+  radio-LED blink (WS boards only until 2026-11-21, now every W image — it powers the radio up, ~0.35 s + firmware load)
   ran BEFORE `vga_start_semaphore`, i.e. with the screen dark; it now runs after video
   starts. (2) **The SDK leaks on a failed CYW43 bring-up**: `cyw43_ll_bus_init` never
   undoes `cyw43_spi_init`, so each retry claimed a fresh PIO SM + program + 2 DMA
