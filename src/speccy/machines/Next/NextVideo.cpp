@@ -316,6 +316,7 @@ static void nxCtxRefresh() {
     if (!s_c0Blk) nxCtxShared(s_nxc[0]);
 }
 static_assert(sizeof(NextLineState) % 4 == 0, "compared a word at a time");
+static_assert(offsetof(NextLineState, sprSeq) % 4 == 0 && offsetof(NextLineState, palSeq) % 4 == 0, "log positions are words");
 // The per-line path (ScanlineWork -> emitRow -> captureLine, nxMapSnapPost) must not leave
 // SRAM: GCC turned its zeroing loops into memset and the NextLineState assignments into
 // memcpy - libc, in FLASH - and every raster line paid 4-5 XIP calls while core1 streams
@@ -327,10 +328,14 @@ NX_NOLIB __attribute__((noinline)) IRAM_ATTR static void nxStCopy(NextLineState&
     for (unsigned i = 0; i < sizeof(NextLineState) / 4; i++) x[i] = y[i];
 }
 // memcmp is libc in FLASH; 12 words compared inline instead, once per line.
+// sprSeq / palSeq are left out: they travel per JOB (nx_seqOf), so a palette or sprite
+// log that moves every line (Fluid's palette writes: ~250 a frame) no longer makes every
+// line a new 120-byte state in the PSRAM queue (host count, 2026-11-21).
 static inline __attribute__((always_inline)) bool nxSameState(const NextLineState& a, const NextLineState& b) {
     const uint32_t* x = (const uint32_t*)&a; const uint32_t* y = (const uint32_t*)&b;
+    constexpr unsigned iS = offsetof(NextLineState, sprSeq) / 4, iP = offsetof(NextLineState, palSeq) / 4;
     uint32_t d = 0;
-    for (unsigned i = 0; i < sizeof(NextLineState) / 4; i++) d |= x[i] ^ y[i];
+    for (unsigned i = 0; i < sizeof(NextLineState) / 4; i++) if (i != iS && i != iP) d |= x[i] ^ y[i];
     return d == 0;
 }   // the line being rendered (one renderer at a time)
 
@@ -649,7 +654,7 @@ __attribute__((noinline)) void NEXTVID::nxPaperStart() {
 }
 
 // At the row's post: the attribute bytes the beam read, when a writer is racing it.
-static void nxAttrBeam(NextLineState& st, int row, int paperTop) {
+NX_NOLIB __attribute__((noinline)) IRAM_ATTR static void nxAttrBeam(NextLineState& st, int row, int paperTop) {
     if (st.attOvr || (st.r69 & 0x07)) { s_postY = -1; return; }   // DMA shadow first; Timex modes: other bytes
     const int y = row - paperTop;
     if (y < 0 || y >= 192) return;
@@ -669,7 +674,7 @@ static void nxAttrBeam(NextLineState& st, int row, int paperTop) {
     } else {
         if (ev) nxMcEvent(y);
         if (!nxRacing()) return;         // no capture for this row (racing began mid-row, or the page flipped): the post-time bytes
-        memcpy(st.attr, live, sizeof st.attr);
+        { uint32_t* d = (uint32_t*)st.attr; const uint32_t* s = (const uint32_t*)live; for (int i = 0; i < 8; i++) d[i] = s[i]; }
     }
     st.attOvr = 1;
 }
@@ -682,6 +687,13 @@ __attribute__((noinline)) static void nxRowFixups(NextLineState& st, int row, in
     if (s_brdCnt) nxBorderSegs(st, row, fv);
     if (Z80DMA::dma_attr_valid) nxAttrShadow(st, row, pt);
     nxAttrBeam(st, row, pt);
+}
+// The per-line call: nxAttrBeam (every paper line) in RAM, the flash nxRowFixups only
+// when a flip, a #FE change or a DMA attribute shadow needs it (the last per-line flash
+// call of the raster tick, 2026-11-21).
+static inline __attribute__((always_inline)) void nxRowFixupsHot(NextLineState& st, int row, int fv, int pt) {
+    if (__builtin_expect(s_flipCnt || s_brdCnt || Z80DMA::dma_attr_valid, 0)) nxRowFixups(st, row, fv, pt);
+    else nxAttrBeam(st, row, pt);
 }
 
 // ---- the core1 line queue (NEXT_C1_*) ----
@@ -741,6 +753,9 @@ static_assert(NX_SEG_POOL <= 1024 && (NX_SEG_POOL & (NX_SEG_POOL - 1)) == 0, "nx
 struct NxSegRec { uint32_t job, end; };
 static NxPalDelta* s_segPool = nullptr;           // [NX_SEG_POOL]  (queue heap block)
 static uint16_t*   nx_segOf  = nullptr;           // [NEXT_C1_RING]
+static uint32_t*   nx_seqOf  = nullptr;           // [2 * NEXT_C1_RING] the job's sprSeq, palSeq (see nxSameState)
+// the log positions of the row each core renders: the job's (rowClaim) or nx_sync's
+static volatile uint32_t s_rowSpr[2], s_rowPal[2];
 static uint8_t*    nx_mapOf  = nullptr;           // [NEXT_C1_RING] post-time map-row copy, 0xFF none
 static NxSegRec*   s_segQ    = nullptr;           // [NX_SEG_Q]
 static uint32_t    s_segW = 0, s_segRel = 0, s_segQh = 0, s_segQt = 0;
@@ -792,19 +807,20 @@ __attribute__((noinline)) IRAM_ATTR bool NEXTVID::rowClaim(unsigned core, uint32
         const uint32_t j = nx_ring[c % NEXT_C1_RING];
         const NextLineState& st = nx_st[j >> 16];
         const uint16_t seg = nx_segOf ? nx_segOf[c % NEXT_C1_RING] : 0;
+        const uint32_t jSpr = nx_seqOf[2 * (c % NEXT_C1_RING)], jPal = nx_seqOf[2 * (c % NEXT_C1_RING) + 1];
         if (nx_segRun) {
             ok = false;                       // the other core rolls the palette back right now
         } else if (core == 0 && st.hires == 1) {
             ok = false;                       // Timex hi-res: one shared row scratch (hiresRow)
         } else if (!nx_busy[core ^ 1]) {
-            sprApply(st.sprSeq);              // nobody renders: move the logs on
-            palApply(st.palSeq);
+            sprApply(jSpr);                   // nobody renders: move the logs on
+            palApply(jPal);
             if (sprCur()->dirty) resolveSprites();
             ok = true;
         } else {
             // the sprite ATTRIBUTES are per core (core0's copy must exist), the
             // palette and the sprite PATTERNS are shared: see nxSprPatClear
-            ok = !seg && (int32_t)(st.palSeq - pal_app) <= 0 && (core == 1 || s_sprR0Valid) &&
+            ok = !seg && (int32_t)(jPal - pal_app) <= 0 && (core == 1 || s_sprR0Valid) &&
                  nxSprPatClear(core == 0 ? spr_app : spr_app0, st.sprPatW);
         }
         if (ok) {
@@ -812,6 +828,7 @@ __attribute__((noinline)) IRAM_ATTR bool NEXTVID::rowClaim(unsigned core, uint32
             if (seg) nx_segRun = 1;
             job = j;
             nx_jobAt[core] = c;
+            s_rowSpr[core] = jSpr; s_rowPal[core] = jPal;
             nx_busy[core] = 1;
             nx_c = c + 1;
         }
@@ -2280,7 +2297,8 @@ void NEXTVID::Reset() {
         // PSRAM (2026-10-14): read a few bytes a line, the 24 KB of SRAM bought ~nothing
         // (TX-1696 at 576p) and cost the core0 row helper its place after a menu visit.
         static_assert(NX_MAP_SH < 0xFF, "nx_mapOf: 0xFF = no copy");
-        uint8_t* q = (uint8_t*)Buffer::palloc(base + segB + shB + 4 + NEXT_C1_RING, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        const unsigned seqOff = (((base + segB + 3) & ~3u) + shB + NEXT_C1_RING + 3) & ~3u;
+        uint8_t* q = (uint8_t*)Buffer::palloc(seqOff + 8 * NEXT_C1_RING, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (q) {
             nx_ring = (uint32_t*)q;
             nx_st = (NextLineState*)(q + 4 * NEXT_C1_RING);
@@ -2292,6 +2310,7 @@ void NEXTVID::Reset() {
             s_mapShData = (uint8_t (*)[NX_MAP_SH_ROW])(q + ((base + segB + 3) & ~3u));
             nx_mapOf = q + ((base + segB + 3) & ~3u) + shB;
             memset(nx_mapOf, 0xFF, NEXT_C1_RING);
+            nx_seqOf = (uint32_t*)(q + seqOff);
         }
         Debug::log("[NXC1] core1 line renderer %s @%08X", q ? "ON" : "unavailable (no RAM)", (unsigned)(uintptr_t)q);
     }
@@ -2736,7 +2755,7 @@ NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
             NextLineState st;
             if (draw) {
                 captureLine(st);
-                nxRowFixups(st, row, firstVisibleLine, paperTopRow);
+                nxRowFixupsHot(st, row, firstVisibleLine, paperTopRow);
             }
             copperRun(cur, 140, (uint16_t)uL);
             s_pdRec = false;
@@ -2785,6 +2804,7 @@ NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::emitRow(int row) {
 }
 __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
 #endif
+    uint32_t rowSpr = 0, rowPal = 0;   // this line's log positions (nx_seqOf)
     if (g_next_c1_live) {
         // Post the line: capture, and open a new state slot only when
         // something the renderer reads has moved since the last line.
@@ -2792,8 +2812,9 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
         if (s_preCap) nxStCopy(st, *s_preCap);
         else {
             captureLine(st);
-            nxRowFixups(st, row, firstVisibleLine, paperTopRow);
+            nxRowFixupsHot(st, row, firstVisibleLine, paperTopRow);
         }
+        rowSpr = st.sprSeq; rowPal = st.palSeq;
         if (!nx_have || !nxSameState(st, *s_c0St)) {
             const uint32_t k = (nx_cur + 1) % NEXT_C1_STATES;
             nxWaitUntil(nx_st_job[k]);
@@ -2807,6 +2828,8 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
     if (g_next_c1_live) {
         nx_ring[nx_w % NEXT_C1_RING] = (uint32_t)row | (nx_cur << 16);
         nx_segOf[nx_w % NEXT_C1_RING] = s_segPost;
+        nx_seqOf[2 * (nx_w % NEXT_C1_RING)] = rowSpr;           // this line's, not the slot's
+        nx_seqOf[2 * (nx_w % NEXT_C1_RING) + 1] = rowPal;
         if (s_mapSh && (s_c0St->r6B & 0x80)) nxMapSnapPost(*s_c0St, row, paperTopRow, nx_w);
         else nx_mapOf[nx_w % NEXT_C1_RING] = 0xFF;
         __dmb();                    // job + state visible before the index
@@ -2821,7 +2844,7 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
         if (s_preCap) nxStCopy(nx_sync, *s_preCap);
         else {
             captureLine(nx_sync);
-            nxRowFixups(nx_sync, row, firstVisibleLine, paperTopRow);
+            nxRowFixupsHot(nx_sync, row, firstVisibleLine, paperTopRow);
         }
         LS = &nx_sync;
 #if NEXT_TRACE
@@ -3838,8 +3861,9 @@ IRAM_ATTR void NEXTVID::RenderLayers(uint8_t* fb, int row) {
     s_rowDiff = false;
     if (LS->hires == 1) { s_hrMix.fb9 = rgb332_to_333(LS->r4A); s_hrMix.layers = false; }
     NX_LT_BEGIN();
-    sprApply(LS->sprSeq);               // keep the attribute log moving on every line
-    palApply(LS->palSeq);
+    // keep the logs moving on every line: the job's positions (nx_seqOf), or nx_sync's
+    if (LS == &nx_sync) { sprApply(LS->sprSeq); palApply(LS->palSeq); }
+    else { const unsigned core = *(const uint32_t*)SIO_BASE & 1; sprApply(s_rowSpr[core]); palApply(s_rowPal[core]); }
     NX_LT_END(6);
     // NR 0x68 bit 7: ULA (and LoRes) output off — the mixer then never looks at
     // the ULA layer (ula_final takes the tilemap or transparent), so do not

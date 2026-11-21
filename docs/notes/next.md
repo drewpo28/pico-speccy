@@ -1528,3 +1528,18 @@ through the XIP cache core1 streams PSRAM through.
   ~0.45), ~0.6 ms in light ones; Fluid's level change: 1-9 negative frames per 50 (was 9-16),
   worst -0.2..-2.3 ms (was -1.6..-5.6). `.nxovl` +1 024 B. Left: nxRowFixups (one flash call
   a line), the state written to PSRAM per line while it changes.
+
+### The log positions per job, nxAttrBeam in RAM (2026-11-21, hw-run DVp2w 504 MHz, owner: "очень неплохо")
+
+While Fluid draws a level the line state changed on ~every line (host: 177-212 new states a
+heavy frame) because of ONE field: palSeq, the palette log position (Fluid writes the palette
+~250 times a frame); sprSeq now and then. Each was a new 120-byte state in the PSRAM queue.
+- sprSeq / palSeq travel per JOB (`nx_seqOf`, 8 B a line, the queue block); nxSameState skips
+  them; rowClaim and RenderLayers take the job's (`s_rowSpr` / `s_rowPal` per core), the
+  queue-off path (`nx_sync`) its own. Host: 0-4 new states a heavy frame.
+- nxRowFixupsHot: nxAttrBeam (every paper line) in RAM, the flash nxRowFixups only for a
+  flip / #FE segments / a DMA attribute shadow. Last per-line flash call of the tick gone.
+- hw: tick ~1.0 ms in the heavy frame (post 0.7 -> 0.24, cap ~0.45 -> 0.17, map 0.37);
+  Fluid's level change: 1 negative frame per 50, worst -1.0 ms (tick3: 1-9 / -2.3).
+  `.nxovl` +824 B (nxAttrBeam alone 684 B - the one to move back if the heap needs it).
+  Left: the save frames (`slow` 5.8-7 ms of SD port handlers while NextZXOS writes the save).

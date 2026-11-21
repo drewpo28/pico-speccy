@@ -306,7 +306,10 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # emitRow / ScanlineWork NX_NOLIB + nxStCopy, nxMapSnapPost + nxMapShadowAlloc in
     # RAM) and core0's SRAM mirrors of the PSRAM line queue — +1 024 B, content
     # 52 008 B (DVp2w): 51072 -> 52096.
-    set(NXOVL_WIN_SIZE_EFFECTIVE 52096)
+    # Same day: the palette / sprite log positions per job (nx_seqOf) and nxAttrBeam in
+    # RAM (the per-line nxRowFixups flash call only for flips / #FE / DMA shadows) —
+    # +824 B, content 52 832 B: 52096 -> 52864.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 52864)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -334,8 +337,8 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # The inline LDI / LDD (+480 B plain): 51584 -> 52096; PERF_TRACE + PERF_HIST
         # content 51 480 B (DVp2w-nxprof, 2026-11-21), NEXT_TRACE not linked.
         # The tick's RAM-only line path + SRAM mirrors (+1 024 B plain): 52096 -> 53120,
-        # not linked.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 53120)
+        # not linked. Per-job log positions + nxAttrBeam in RAM (+824 B): -> 53888.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 53888)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})
