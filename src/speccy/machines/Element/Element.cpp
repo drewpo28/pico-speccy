@@ -175,21 +175,32 @@ uint16_t slotPage[8];                 // HGFX Area: its 8K step in the Zone
 volatile uint8_t g_elm_split;         // chunky windows across the SRAM half's edge + the ROM wait slots (Element.h)
 static uint8_t s_chunkSplit;          // the chunky half of it (remap)
 volatile uint8_t g_elm_chunkSplit;    // s_chunkSplit for the eLeMeNt loop's LCU read (Z80_JLS.cpp elmLcuRd)
-static uint8_t s_romWaitSlots;        // the ROM wait half (cpuSpeed)
-uint8_t  g_elm_romWait;
+static uint8_t s_romWaitSlots;        // the ROM wait half (romWaitUpdate)
+static uint8_t s_romWaitMode;         // e_030 05 / 07 asks for the ROM wait (cpuSpeed)
+uint8_t  g_elm_romWait;               // ... AND the ROM is under #0000 now (romWaitUpdate)
 uint32_t g_elm_stretchK, g_elm_stretchFrac, g_elm_stretchDebt, g_elm_shT;
-uint8_t splitRead(uint16_t a) {
-    if (!((s_chunkSplit >> (a >> 13)) & 1)) {
-        // The OverClock ROM wait: the funnel's own tail after this gate (CPU.cpp gsDmaPeek8).
-        VIDEO::Draw(1, false);
-        if (g_ngs_zxdma && a < 0x4000 && !MemESP::page0ram && !MemESP::newSRAM && !MemESP::divmmc_mapped)
-            return GS::zxDmaRead();
-        return MemESP::readbyte(a);
-    }
+static __attribute__((noinline)) uint8_t splitReadCold(uint16_t a) {
+    if (!((s_chunkSplit >> (a >> 13)) & 1)) return MemESP::readbyte(a);   // after the wait: BP / divMMC / overlay / accessor
 #if HOST_BUILD
     static uint32_t n; if (++n == 1 || n == 1000 || n == 100000) Debug::log("[ELM] split window reads: %u", (unsigned)n);
 #endif
     return Hgfx::chunkyReadByte(slotPage[a >> 13] * 0x2000u + (a & 0x1FFF));
+}
+// RAM (.elmovl): with the OverClock ROM wait on (05 / 07) EVERY read below #4000 lands here -
+// HGFXZOOM reads its texture from slot 0 once a pixel (~9 000 a frame at 28 MHz); in flash
+// (with MemESP::readbyte emitted out of line, also flash) that was a cold call a pixel (hw 2026-11-22).
+ELM_OVL_CODE uint8_t splitRead(uint16_t a) {
+    const uint32_t slot = a >> 13;
+    if ((s_chunkSplit >> slot) & 1) return splitReadCold(a);
+    // The OverClock ROM wait: the funnel's own tail after this gate (CPU.cpp gsDmaPeek8).
+    VIDEO::Draw(1, false);
+    if (g_ngs_zxdma && a < 0x4000 && !MemESP::page0ram && !MemESP::newSRAM && !MemESP::divmmc_mapped)
+        return GS::zxDmaRead();
+    const uint8_t* p = MemESP::ramCurrent[slot];
+    if (__builtin_expect(Config::numMemReadBP != 0 || (slot <= 1 && MemESP::divmmc_mapped)
+                         || (MemESP::overlayCount != 0 && slot <= 1) || p == nullptr, 0))
+        return splitReadCold(a);
+    return p[a & 0x1FFF];
 }
 static inline bool isSplit(uint16_t a) { return (s_chunkSplit >> (a >> 13)) & 1; }
 uint8_t* wrKind;
@@ -206,6 +217,26 @@ static void elmMasksUpdate() {
     if (g_elm_vram_rd) rd |= s_vramSlots;
     g_elm_rdmask = rd; g_elm_wrmask = wr;
     ::elmFastSlotsUpdate();   // the loop's / the decoders' per-slot twins (Video.cpp)
+}
+// The OverClock 1T delay (05 / 07) only while the ROM is under #0000 (owner 2026-11-22; the
+// Reference gives the internal FLASH as the reason): URAM Zone 0 over the legacy map waits
+// only as the FlashRAM layout; the legacy map waits unless RAM is at #0000 (#1FFD bit 0:
+// Scorpion / P4096, the +2A/+3 all-RAM modes). The divMMC ROM page counts as ROM.
+// HGFXZOOM reads its texture from a URAM page in Zone 0: no wait, the fast read path.
+static void romWaitUpdate(bool masks) {
+    bool rom = s_romWaitMode != 0;
+    if (rom) rom = (s_active & 1) ? (s_z[0].par >> 4) == LAYOUT_FLASH : !MemESP::page0ram;
+    const uint8_t slots = rom ? 0x03 : 0;
+    g_elm_romWait = rom ? 1 : 0;
+    if (slots == s_romWaitSlots) return;
+    s_romWaitSlots = slots;
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_ELMLOG")) Debug::log("[ELM] ROM wait %s (zone0 %s, page0ram %u)", rom ? "on" : "off",
+        (s_active & 1) ? "URAM" : "legacy", (unsigned)MemESP::page0ram);
+#endif
+    if (!masks) return;
+    g_elm_split = s_chunkSplit | s_romWaitSlots;
+    elmMasksUpdate();
 }
 static const uint8_t s_vramHi0 = 0x40;
 const uint8_t* vramHi = &s_vramHi0;
@@ -988,7 +1019,7 @@ static bool p4kOut(uint8_t hi, uint8_t v) {
     else return false;
     p4kExtra();
     const uint32_t ram0 = s_p4k1FFD & 1;
-    if (MemESP::page0ram != ram0) { MemESP::page0ram = ram0; MemESP::recoverPage0(); }
+    if (MemESP::page0ram != ram0) { MemESP::page0ram = ram0; MemESP::recoverPage0(); romWaitUpdate(true); }
     return true;
 }
 
@@ -1069,6 +1100,7 @@ void remap() {
     s_framSlots = fr;
     s_chunkSplit = split;
     g_elm_chunkSplit = split;
+    romWaitUpdate(false);
     g_elm_split = split | s_romWaitSlots;
     if (Hgfx::g_cowOn) Hgfx::cowMark();  // the pair frame's captured screen in its new slots (the rebuild wiped the marks)
     elmMasksUpdate();
@@ -1099,6 +1131,7 @@ static void hrxcLatch() {
 // colour. g_zxi_002 bit 0 puts the first screen in page 6 instead of 5.
 void frameEnd() {
     s_running = true;
+    romWaitUpdate(true);   // a +2A/+3 all-RAM switch (#1FFD bit 0, shared plus3Remap) shows here, a frame late at most
     const uint8_t* a = MemESP::ram[(s_r->g[0x002] & 1) ? 6 : 5].direct();
     const uint8_t* b = MemESP::ram[7].direct();
     if (s_r->g[0x002] & 1) VIDEO::grmem = MemESP::videoLatch ? (uint8_t*)b : (uint8_t*)a;
@@ -1865,15 +1898,11 @@ static void cpuSpeed(uint8_t sel, bool quiet) {
     const uint32_t k = sel == 3 ? 26214u : sel == 4 ? 17873u : 0u;   // 28/20 - 1, 28/22 - 1 in 16.16
     const uint8_t wait = (sel == 5 || sel == 7) ? 1 : 0;
     const uint8_t old = ESPectrum::multiplicator;
-    const bool same = want == old && k == g_elm_stretchK && wait == g_elm_romWait;
+    const bool same = want == old && k == g_elm_stretchK && wait == s_romWaitMode;
     if (k != g_elm_stretchK) { g_elm_stretchFrac = 0; g_elm_stretchDebt = 0; g_elm_shT = CPU::tstates; }
     g_elm_stretchK = k;
-    if (wait != g_elm_romWait) {
-        g_elm_romWait = wait;
-        s_romWaitSlots = wait ? 0x03 : 0;
-        g_elm_split = s_chunkSplit | s_romWaitSlots;
-        elmMasksUpdate();
-    }
+    s_romWaitMode = wait;
+    romWaitUpdate(true);
     if (same) return;
     if (want != old) {
         CPU::tstates = want > old ? CPU::tstates << (want - old) : CPU::tstates >> (old - want);
@@ -1890,7 +1919,7 @@ void leave() {
     Hgfx::arenaFree();
     g_elm_split = s_chunkSplit = s_romWaitSlots = 0;
     g_elm_chunkSplit = 0;
-    g_elm_romWait = 0;
+    g_elm_romWait = s_romWaitMode = 0;
     g_elm_stretchK = g_elm_stretchFrac = g_elm_stretchDebt = 0;
 }
 

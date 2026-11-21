@@ -1750,6 +1750,24 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   (digit = e_030), F11 in the Spectrum menu steps them too; `Elm::setSpeed` writes the register + FRAM and keeps
   `Config::turbo` = the multiplicator. They used to set the multiplicator directly (28 -> e_030 05 afterwards), which
   left the stretch / ROM wait of the previous clock in place. `Elm::syncTurbo` is gone.
+- **HGFXZOOM slower than on 2026-11-13 = 28 MHz + the ROM wait read in flash (2026-11-22, hw-confirmed DVp2w 2026-11-22 with the next item;
+  `debug/DVp2w-elmwait1-1.1.3`, build Nov 22 00:18:43).** hw log `logs/devttyACM0_2026_11_22.00.03.45.156.txt`
+  (DVp2w, non-PERF): cpu 23.5-23.8 ms, el ~25 ms, `neg=60` every frame (zoom3/5 were "отлично" on 14 MHz). The demo
+  writes e_030 03 then 05 itself (bench ELMLOG), so since the 11-14/11-18 clock work it runs at 28 MHz with the ROM wait;
+  frame-end PC is the pixel loop #9E1B in 180 of 200 frames (real work, no status poll). With 05 every read below #4000
+  goes `peek8_generic` -> `Elm::splitRead`, and the fox texture sits in slot 0: one read a pixel - and `splitRead` was
+  in FLASH (#1007EF90 via veneer) calling an out-of-line `MemESP::readbyte` (also flash). Now `splitRead` is in
+  `.elmovl` with the plain-RAM read inline (BP / divMMC / ROM overlay / accessor / split chunky -> `splitReadCold`,
+  flash); `.elmovl` content 17 344 of 17 408. Bench: ROM wait costs host core0 ~12 % on ZOOM (median 2330 vs 2048 us
+  with the wait forced off), picture unchanged.
+- **ROM wait only with the ROM under #0000 (owner's call 2026-11-22: "ждать только когда под #0000 ПЗУ";
+  hw-confirmed DVp2w 2026-11-22, owner "работает" on HGFXZOOM, no numbers; `debug/DVp2w-elmwait2-1.1.3`, build Nov 22 2026 00:24:27, includes the RAM `splitRead`).** The Reference
+  gives the internal FLASH as the reason for the 1T. `romWaitUpdate` (Element.cpp): e_030 05/07 AND (URAM Zone 0 on
+  top ? its layout is the FlashRAM (6) : `!page0ram`). page0ram covers #1FFD bit 0 (Scorpion / P4096, `p4kOut`) and
+  the +2A/+3 all-RAM modes (shared `plus3Remap`, picked up in `Elm::frameEnd`, a frame late at most). The divMMC ROM
+  page still counts as ROM (assumption: built-in esxDOS from the flash). It sets `g_elm_romWait` (the M1 +1 T in
+  Z80_JLS) and the split slots; called from remap, p4kOut, cpuSpeed, frameEnd. Bench (ELMLOG prints `[ELM] ROM wait
+  on/off`): ZOOM writes 05 on the legacy map (on), then maps URAM into Zone 0 (off), picture as before.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
