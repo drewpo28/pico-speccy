@@ -149,7 +149,25 @@ for op in range(256):
                   'NextMemory::addressOnBusIR_nx(6); nxSync(NextReg::writeHot(r, regA)); '
                   'if (__builtin_expect(!g_next_fastrd, 0)) { lastFlagQ = flagQ; return; } }',
         }
-        inner = ' '.join('case 0x%02X: %s break;' % (k, v) for k, v in sorted(ED.items()))
+        # LDI / LDD: ldx's body (16 T: the two M1s, read 3, write 3, 2 on DE), and a run of
+        # them (ED A0 ED A0 ..., the unrolled row blitters) goes on here instruction by
+        # instruction while each one would also start under nx_lim, as the loop head
+        # demands: Alien Neoplasma redraws a room with ~50 LDI x16 runs for several busy
+        # frames at 28 MHz, each LDI was decodeED -> ldx -> the generic accessors (2026-11-21).
+        # Only after a write at 0x4000+ (the plain store; below it poke8_nx's slow path).
+        ED[0xA0] = ('{ const uint16_t nx_d_ = nx_op == 0xA0 ? 1 : 0xFFFF; uint8_t work8; '
+                    'for (;;) { const uint16_t nx_de_ = REG_DE; work8 = NextMemory::peek8_nx(REG_HL); '
+                    'NextMemory::poke8_nx(nx_de_, work8); NextMemory::addressOnBus_nx(nx_de_, 2); '
+                    'REG_HL += nx_d_; REG_DE += nx_d_; REG_BC--; '
+                    'if (nx_de_ < 0x4000 || nx_t + 4 >= nx_lim || REG_PC < 0x4000 || (REG_PC & 0x1FFF) == 0x1FFF) break; '
+                    'const uint8_t* const nx_q_ = MemESP::ramCurrent[REG_PC >> 13] + (REG_PC & 0x1FFF); '
+                    'if (nx_q_[0] != 0xED || nx_q_[1] != nx_op) break; '
+                    'nx_t += 8; nx_r += 2; REG_PC += 2; } '
+                    'work8 += regA; sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (work8 & BIT3_MASK); '
+                    'if ((work8 & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK; '
+                    'if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK; flagQ = true; }')
+        inner = ' '.join('case 0x%02X: %s break;' % (k, v) for k, v in sorted(ED.items()) if k != 0xA0)
+        inner += ' case 0xA0: case 0xA8: %s break;' % ED[0xA0]
         inner += (' case 0x34: case 0x35: case 0x36: { '
                   'uint16_t nn = NextMemory::peek8_nx(REG_PC); REG_PC++; '
                   'nn |= NextMemory::peek8_nx(REG_PC) << 8; REG_PC++; '

@@ -1175,6 +1175,29 @@ void MemESP::nextHotTick() {
         s_hotPromos++;
     }
     memcpy(s_hotPrev, mmu, sizeof(s_hotPrev));
+#if HOST_BUILD
+    {   // PICOSPECCY_HOTLOG=1: one line per tick (pool, mapping, the hottest pages)
+        static const bool hl = getenv("PICOSPECCY_HOTLOG") != nullptr;
+        if (hl) {
+            char b[256]; int o = snprintf(b, sizeof b, "hot t=%u pool=", (unsigned)s_hotTick);
+            for (int i = 0; i < s_hotN; i++) o += snprintf(b + o, sizeof b - o, "%02X,", s_hotPage[i]);
+            o += snprintf(b + o, sizeof b - o, " mmu=");
+            for (int s = 0; s < 8; s++) o += snprintf(b + o, sizeof b - o, "%02X", mmu[s]);
+            uint8_t tp[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+            for (int k = 0; k < 5; k++) {
+                int bi = -1;
+                for (int i = 0; i < NEXT_PAGES; i++) {
+                    bool used = false; for (int q = 0; q < k; q++) if (tp[q] == i) used = true;
+                    if (!used && hits[i] && (bi < 0 || hits[i] > hits[bi])) bi = i;
+                }
+                if (bi < 0) break;
+                tp[k] = (uint8_t)bi;
+                o += snprintf(b + o, sizeof b - o, " %02X:%u", bi, (unsigned)hits[bi]);
+            }
+            fprintf(stderr, "%s\n", b);
+        }
+    }
+#endif
     // One line every ~10 s while the pool is moving, so churn shows in the log.
     if (s_hotTick - s_hotLogTick >= 500 && (s_hotPromos || s_hotEvicts)) {
         int used = 0;
@@ -1184,6 +1207,11 @@ void MemESP::nextHotTick() {
         s_hotPromos = s_hotEvicts = 0;
         s_hotLogTick = s_hotTick;
     }
+}
+
+int MemESP::nextHotPages(uint8_t* out) {
+    for (int f = 0; f < s_hotN; f++) out[f] = s_hotPage[f];
+    return s_hotN;
 }
 
 void MemESP::nextHotFlush() {

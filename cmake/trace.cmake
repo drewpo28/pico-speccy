@@ -59,6 +59,9 @@ option(OPL_PERF_TRACE "Enable the ~6 s 'OPL: gen us/fr' YMF262 cost line (ESPect
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
 option(NGS_SD_TRACE "Also log every guest SD command (NGS_TRACE level 2; thousands of lines per directory scan)" OFF)
+# [NXNEG] + the worst frame's core0 PC samples (NxFrameProf without the rest of
+# NEXT_TRACE: a 100 us alarm on core0, 4 KB of heap, no 1 Hz dump). 2026-11-21, Fluid.
+option(NXNEG_PROF "Next: core0 PC samples of the worst frame of each second on the [NXNEG] line" OFF)
 option(NEXT_TRACE "Enable ZX Next 1 Hz health line (MMU/automap/PC/FPS state + nextreg event ring; ~7 KB of static SRAM on every board)" OFF)
 option(NEXT_LINE_DIAG "ZX Next: log every line-interrupt pulse that was never acknowledged (line, IFF1/PC/stack when the loop saw it, lateness) — Pogie parallax glitch" OFF)
 option(ZC_PORT_TRACE "Enable Z-Controller/DivSD SPI-SD command tracing (CS edges + command frames)" OFF)

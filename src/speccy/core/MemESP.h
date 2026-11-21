@@ -485,6 +485,7 @@ public:
     static void nextHotTick();     // once per frame (VIDEO::EndFrame, Next branch)
     static void nextHotFlush();    // write every frame back home and empty the pool
     static void nextHotRelease();  // ...and free the frames (UI entry); re-taken by nextHotTick
+    static int  nextHotPages(uint8_t* out);   // frames in the pool, out[i] = page held (0xFF free); flash
     // First byte after the RAM pages: the ROM/Multiface/Alt-ROM region.
     __attribute__((always_inline)) static inline uint8_t* nextRomRegion() {
         return nextStrip + ((size_t)(NEXT_PAGES - 16) << 13);

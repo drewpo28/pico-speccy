@@ -43,6 +43,10 @@ extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
 // Raw-passthrough target: physical SD (pdrv 0) normally, the USB stick
 // (pdrv 1) when it took over as the root volume (no SD card at boot).
 static BYTE raw_pdrv() { return FileUtils::usbRoot ? 1 : 0; }
+// A sector write's card busy, followed by the guest's busy poll (mmcWriteResponse).
+static bool s_wr_busy = false;
+static uint32_t s_wr_t0, s_wr_probe;
+extern "C" int sd_card_busy(void);   // sdcard.c (host: host_disk.cpp)
 static void raDrop();   // CMD18 read-ahead (see loadSectorStream)
 static inline void s1Drop();   // the mmc_sector_buf content tag (see loadSectorStream)
 
@@ -695,7 +699,13 @@ void DivMMC::nextRetn() {
 uint8_t DivMMC::s_romKey = 0;
 bool DivMMC::romSync() {
     if (!enabled) return true;
-    if (Config::arch == A_NEXT && MemESP::nextDivRomBase) return true;   // init() binds enNxtmmc
+    if (Config::arch == A_NEXT && MemESP::nextDivRomBase) {
+        // enNxtmmc (init() re-applies it at its end). Bound here too: init()'s
+        // ROM verify log reads esxdos_rom right after this, null on a cold boot.
+        esxdos_rom = MemESP::nextDivRomBase;
+        rom_loaded = true;
+        return true;
+    }
     if (Config::arch == A_ELM && g_elm_divrom) {
         if (s_romKey == 0x80 && rom_loaded && esxdos_rom == g_elm_divrom) return true;
         esxdos_rom = (uint8_t*)g_elm_divrom;
@@ -2238,7 +2248,12 @@ void DivMMC::storeSector(uint32_t sector) {
         else
             s_s1_sec = 0xFFFFFFFFu;      // mmc_sector_buf may not be this sector any more
         uint64_t t0 = time_us_64();
+        s_wr_busy = false;
         DRESULT r = disk_write(raw_pdrv(), mmc_sector_buf, sector, 1);
+        if (r == RES_OK && raw_pdrv() == 0) {   // the card programs it now (mmcWriteResponse)
+            s_wr_busy = true;
+            s_wr_t0 = s_wr_probe = time_us_32();
+        }
         // The firmware's FatFs has this volume mounted too: drop its cached copy
         // of the sector and adopt the guest's FSInfo (ff.c, PICO-SPEC PATCH).
         if (r == RES_OK) ff_raw_write_notify(raw_pdrv(), sector, mmc_sector_buf);
@@ -2323,7 +2338,24 @@ void DivMMC::csEdge(uint8_t value) {
 // so the sequence has to end, and end at 0xFF.
 // A write-protected medium (F2 on the row) answers 0x0D, "data rejected, write error":
 // the block was not stored (storeSector), and the driver is told so.
+// The busy phase follows the REAL card (raw SD, drive 0): storeSector's disk_write
+// returns as soon as the card has taken the block, and the card then programs it
+// for 1..10+ ms. That wait used to happen in the next write's _select() on core0,
+// the frame stopped — Fluid's save after each level is 11 writes back to back
+// (negative IDL, hw 2026-11-21). Now the guest's busy poll reads 0x00 while
+// sd_card_busy() says so: the guest spins in emulated time, as on a real Next.
+// The card is probed at most every 20 us (one SPI byte); 0.5 s cap, wait_ready's.
+static bool __attribute__((noinline)) wrBusyHold() {
+    const uint32_t now = time_us_32();
+    if (now - s_wr_probe < 20u) return true;
+    s_wr_probe = now;
+    if (now - s_wr_t0 < 500000u && sd_card_busy()) return true;
+    s_wr_busy = false;
+    return false;
+}
+
 DIVMMC_HOT uint8_t DivMMC::mmcWriteResponse() {
+    if (mmc_wr_resp == 1 && __builtin_expect(s_wr_busy, 0) && wrBusyHold()) return 0x00;
     const uint8_t v = (mmc_wr_resp == 0) ? (s_med[s_card].ro ? 0x0D : 0x05) : (mmc_wr_resp == 1) ? 0x00 : 0xFF;
     if (mmc_wr_resp < 2) mmc_wr_resp++;
     return v;

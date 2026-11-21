@@ -177,6 +177,7 @@ void joyPushData(fabgl::VirtualKey virtualKey, bool down) {
 volatile uint32_t g_aud_write_us = 0;
 volatile uint32_t g_kbd_us = 0;        // processKeyboard() per frame ([NEG2])
 volatile uint32_t g_mix_us = 0;        // audio synth+mix block per frame ([NEG2])
+namespace NextNeg { void frame(int32_t idle, uint32_t el, uint32_t aud, uint32_t mix, uint32_t kbd); }   // machines/Next/NextNeg.cpp
 volatile uint32_t g_aud_flat_frames = 0; // frames whose mixed L buffer was one constant (silence/DC) — [PERF] aud:
 
 // Software typematic (repeat_handler below). PC standard: 250..1000 ms delay
@@ -4908,11 +4909,17 @@ void ESPectrum::loop() {
     const uint32_t wf_sd = g_sd_stall_us, wf_dr = g_nx_drain_us, wf_q = g_nx_qwait_us, wf_w = g_sd_as_c0wait_us;
     if (Z80Ops::isNext) { NxFrameProf::init(); NxFrameProf::frameBegin(); }
 #endif
+#if NXNEG_PROF && !NEXT_TRACE
+    if (Z80Ops::isNext) { NxFrameProf::init(); NxFrameProf::frameBegin(); }   // [NXNEG]'s worst-frame samples
+#endif
     NexLaunch::poll();
 #if PERF_TRACE || NEXT_TRACE
     DivMMC::sdStatTick();
 #endif
     CPU::loop();
+#if NXNEG_PROF && !NEXT_TRACE
+    NxFrameProf::frameEnd();
+#endif
     if (__builtin_expect(Quorum::rasterPending, 0)) quorumRasterApply();
 #if NEXT_TRACE
     const uint32_t wf_c1 = time_us_32();
@@ -5636,6 +5643,10 @@ void ESPectrum::loop() {
 
     elapsed = time_us_64() - ts_start;
     idle = target - elapsed;
+    // [NXNEG] (machines/Next/NextNeg.cpp, flash): the worst overrun frame of each second
+    if (__builtin_expect(Z80Ops::isNext, 0)) {
+      NextNeg::frame((int32_t)idle, (uint32_t)elapsed, g_aud_write_us, g_mix_us, g_kbd_us);
+    }
 #if NEXT_TRACE
     {
       extern volatile int32_t g_nx_idle_min; extern volatile uint32_t g_nx_idle_neg;

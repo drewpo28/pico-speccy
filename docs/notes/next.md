@@ -1453,3 +1453,56 @@ every `NextInt::ack` (a CTC player = ~300 random samples a frame) and at every t
 ticks; the victim is the least-executed frame, evicted only for a page with > 2x its hits + 4.
 Bench: 04 ~10-15x hotter than 56, held for the whole run, 0 evictions; audio byte-identical (the pool
 only moves pages). `.nxovl` trace term 54528 -> 54656.
+
+## Level / room transitions: Fluid's save, Alien Neoplasma's LDI blits (2026-11-21, hw-run DVp2w 504 MHz: Alien Neoplasma better, Fluid unchanged)
+
+Owner: IDL drops (sometimes negative) when Fluid goes to the next level and when Alien Neoplasma
+changes the room picture. Two different causes, both found on the host bench.
+
+- **Fluid: the save was a suspect, not the cause** (the card-busy fix below stays: correct, cheap). hw
+  `[NXNEG]` (2026-11-21): the save frame costs sd=212 us / 11 ops. The negative frames are the ~20-27
+  busy frames at level start and WELL DONE: no HALT, 150-1000 CTC IM2 a frame (the DAC sample player,
+  ~1 `OUT #DF` + 1 AY + 2 NEXTREG per ack), Z80 time 19.4-22 ms on core0 -> 0.3-3 ms over, for about
+  half a second: the two-frame audio ring (sound.md) cannot cover it -> the audible glitch (owner: "на
+  секунду"). Already at 504 MHz. What it is NOT (all measured, hw unless said):
+  * NOT the interrupt path: NXNEG_PROF (core0 PC every 100 us, the worst frame of each second) gives
+    ack/reti/CTC ~2%, `Ports::output` 3-4%, AY 2%, the rest the interpreter itself (the two loop-head
+    buckets alone 11%, diffuse beyond).
+  * NOT PSRAM execution: by a line-end PC sampler (host) the busy frames run 04 ~60%, 01 ~20% (in SRAM:
+    Next keeps pages 00-03 there, ESPectrum.cpp ZX_PSRAM_PAGES), 56 ~12%, 55 ~6%. With the pool at 2
+    frames holding 04+56 (test `debug/DVp2w-hot3-1.1.3`) still neg=12/50, worst -3.0 ms. 2 frames left
+    the in-game heap at 6 KB (largest 2.5 KB): default stays 1.
+  * Left: the interpreter's per-instruction cost (`docs/z80-regcore-plan.md`), owner's next step.
+- **The hot pool ranks pages by a line-end PC sample** (NEXTVID::ScanlineWork, skipped while HALTed),
+  not the IM2 ack: an ack never lands in DI code, and Fluid's player runs DI. hw with 2 frames: 04+56,
+  as the host predicted. NOT hw-checked with the default 1 frame (host: 04 held, 0 evictions).
+- **`[NXNEG]`** (machines/Next/NextNeg.cpp, plain builds): the worst Next frame of every 50, when one
+  overran — el/cpu/qw/sd/c0w/aud/mix/kbd, guest PC/IFF/HALT, plus `hot=` (pool pages) and heap. CMake
+  `-DNXNEG_PROF=ON` adds NxFrameProf's 100 us core0 sampler without NEXT_TRACE (+4 KB heap) and two
+  `[NXNEG] prof` lines (64-byte buckets; resolve `.nxovl` ones against that section only). A PERF_HIST
+  build is useless for this: ~40% of core0 went to its own UART busy-wait.
+- **The save, for the record.** `#99CC` marks the level done, `#99D8` shows WELL DONE, waits
+  20 frames, calls `#9932` = `DI`, esxDOS `F_OPEN "fluid.sav"` mode #0E (create/truncate), `F_WRITE`
+  65 B from #9893, `F_CLOSE`, `EI`, then waits 35 frames. One save = **11 guest sector writes**
+  (directory sector x4, FAT1+FAT2 for the truncate, FSInfo x2, FAT1+FAT2 for the new cluster, data).
+  Our SD driver (ChaN style) does not wait for the card's programming after `disk_write`; the NEXT
+  access's `_select()` -> `wait_ready()` does — so every write stood core0 still for the previous
+  one's programming (1-10+ ms) with the frame stopped. Fix: `mmcWriteResponse` holds the busy phase
+  (0x00) while `sd_card_busy()` (sdcard.c: CS low, one byte, 20 us probe interval, 0.5 s cap) says the
+  card is still programming the block `storeSector` just wrote (raw SD, drive 0 only). NextZXOS's driver
+  polls busy with no timeout (enNxtmmc `1FB9`), so the guest spins in emulated time as on a real Next.
+  Host A/B with `PICOSPECCY_SDBUSY_US=4000` on a Fluid copy patched to save at start (`#800B` CALL
+  #98DF -> #9932): core0 wait-ready stalls 4 / 13.4 ms -> 0, the same 11 writes.
+- **Alien Neoplasma = unrolled `LDI x16` row blitters** (#8A49-#8C65, #E2A4-#E5xx, ~50 runs) for ~15
+  busy frames at 28 MHz with no HALT, plus `NEXTREG #12` (Layer 2 bank flip). No card access at all.
+  LDI went `decodeED -> ldx -> generic accessors` per instruction. Now LDI / LDD are inline in the Next
+  loop's ED switch (tools/gen_next_dispatch.py) and a run of them continues in place while each next
+  one would start under `nx_lim` (a write below #4000 or PC on a slot edge ends the run). z80bench Next
+  mode: an LDI/LDD test .com (runs with BC hitting 0, DE across slots and from below #4000, flags
+  pushed) 189.8 M -> 92.1 M ARM insns (-51%), end state identical; `lock` on it and on game.com (30 M T)
+  and `fuzz` 300k identical to HEAD. `.nxovl` +480 B (plain term 51072; trace term 52096 NOT linked).
+- Bench recipe: a `.nex` whose path has a space or a long name does not launch from `.launch` on the
+  host (no 8.3 alias in the folder FatFs) — copy it to a short name. Alien Neoplasma: Space, M (play),
+  hold A (left) -> the room changes ~frame 1880. `PICOSPECCY_DISKLOG=1` logs card accesses per frame.
+  Host-only (`PICOSPECCY_PCLOG`): acks/outs/top ports, haltT/idleT, ack-PC buckets, `lpg` = the PC's
+  page at line ends; `PICOSPECCY_HOTLOG=1` prints the pool, mmu[] and the hottest pages every tick.

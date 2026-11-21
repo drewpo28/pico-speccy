@@ -135,8 +135,17 @@ static std::atomic<bool> s_quit{false};
 
 volatile uint64_t host_gs_busy_us = 0;   // core1 time inside GS::pump that ran the GS-Z80
 
+#if !defined(_WIN32)
+static clockid_t s_c0clk = CLOCK_THREAD_CPUTIME_ID, s_c1clk = CLOCK_THREAD_CPUTIME_ID;   // pclog c0/c1
+static bool s_c1clkSet = false;
+static uint64_t thread_us(clockid_t c) { timespec t; clock_gettime(c, &t); return (uint64_t)t.tv_sec * 1000000u + t.tv_nsec / 1000; }
+#endif
 static void core1_loop() {
     host_cpuid = 1;
+#if !defined(_WIN32)
+    pthread_getcpuclockid(pthread_self(), &s_c1clk);
+    s_c1clkSet = true;
+#endif
     while (!s_quit) {
         bool idle = true;
         if (g_ts_c1_live) { ts_render_core1_pump(); idle = false; }
@@ -151,8 +160,12 @@ static void core1_loop() {
     }
 }
 
+namespace NextInt { extern uint32_t g_host_acks, g_host_ackpc[1024]; }   // NextInt.cpp (HOST_BUILD)
 static void core0_main() {
     host_cpuid = 0;
+#if !defined(_WIN32)
+    pthread_getcpuclockid(pthread_self(), &s_c0clk);
+#endif
     // PICOSPECCY_EP_LAUNCH=/EP/GAME.COM (a card path): the Enterprise .COM launch
     // as it resumes after a machine-switch reboot (Ep::launchResume reads
     // /tmp/ep_launch.txt under the watchdog tag) — the typed LOAD without a browser.
@@ -543,7 +556,47 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         const uint32_t from = (uint32_t)atoi(pclog), cnt = strchr(pclog, ':') ? (uint32_t)atoi(strchr(pclog, ':') + 1) : 16;
         if (presented >= from && presented < from + cnt) {
             const uint16_t pc = Z80::getRegPC(), sp = Z80::getRegSP();
-            fprintf(stderr, "host: pclog f=%u PC=%04X SP=%04X [%02X %02X %02X %02X %02X %02X] (SP)=%04X\n", presented, pc, sp,
+            // dt = host wall time since the previous pclog line: with PICOSPECCY_NO_RT
+            // it is the emulation cost of that frame (the expensive frames stand out).
+            static auto prev = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            const unsigned dt = (unsigned)std::chrono::duration_cast<std::chrono::microseconds>(now - prev).count();
+            prev = now;
+            unsigned c0 = 0, c1 = 0;
+#if !defined(_WIN32)
+            // c0/c1 = CPU time of the core0 / core1 threads in this frame (us): the
+            // emulation cost even when the frame is paced to 20 ms.
+            static uint64_t p0 = 0, p1 = 0;
+            const uint64_t t0 = thread_us(s_c0clk), t1 = s_c1clkSet ? thread_us(s_c1clk) : 0;
+            c0 = (unsigned)(t0 - p0); c1 = (unsigned)(t1 - p1); p0 = t0; p1 = t1;
+#endif
+            // acks / outs: the frame's IM2 acknowledges and OUTs, with the top three ports
+            extern uint32_t g_host_outs[256], g_host_out_n;
+            using NextInt::g_host_acks;
+            static uint32_t pa = 0, po = 0, ph[256];
+            const uint32_t acks = g_host_acks - pa, outs = g_host_out_n - po; pa = g_host_acks; po = g_host_out_n;
+            uint32_t fh[256]; for (int i = 0; i < 256; i++) { fh[i] = g_host_outs[i] - ph[i]; ph[i] = g_host_outs[i]; }
+            char top[64]; int tl = 0; top[0] = 0;
+            for (int k = 0; k < 3; k++) { int b = 0; for (int i = 1; i < 256; i++) if (fh[i] > fh[b]) b = i;
+                if (!fh[b]) break; tl += snprintf(top + tl, sizeof top - tl, " %02X:%u", b, fh[b]); fh[b] = 0; }
+            extern uint32_t g_host_haltT, g_host_idleT;
+            static uint32_t pht = 0, pit = 0;
+            const uint32_t hT = g_host_haltT - pht, iT = g_host_idleT - pit; pht = g_host_haltT; pit = g_host_idleT;
+            // the frame's top interrupted-PC buckets (64 B) with the 8K page mapped there
+            static uint32_t pk[1024];
+            char tp[96]; int tq = 0; tp[0] = 0;
+            uint32_t fk[1024]; for (int i = 0; i < 1024; i++) { fk[i] = NextInt::g_host_ackpc[i] - pk[i]; pk[i] = NextInt::g_host_ackpc[i]; }
+            for (int k = 0; k < 4; k++) { int b = 0; for (int i = 1; i < 1024; i++) if (fk[i] > fk[b]) b = i;
+                if (!fk[b]) break; tq += snprintf(tp + tq, sizeof tp - tq, " %04X@%02X:%u", b << 6, MemESP::mmu[b >> 7], fk[b]); fk[b] = 0; }
+            // the PC's page at every line end (iff-blind, unlike the ack PCs)
+            extern uint32_t g_host_linepg[256];
+            static uint32_t plp[256];
+            uint32_t fl[256]; for (int i = 0; i < 256; i++) { fl[i] = g_host_linepg[i] - plp[i]; plp[i] = g_host_linepg[i]; }
+            char lp[64]; int ll = 0; lp[0] = 0;
+            for (int k = 0; k < 4; k++) { int b = 0; for (int i = 1; i < 256; i++) if (fl[i] > fl[b]) b = i;
+                if (!fl[b]) break; ll += snprintf(lp + ll, sizeof lp - ll, " %02X:%u", b, fl[b]); fl[b] = 0; }
+            fprintf(stderr, "host: pclog acks=%u outs=%u haltT=%u idleT=%u%s |%s | lpg%s\n", acks, outs, hT, iT, top, tp, lp);
+            fprintf(stderr, "host: pclog f=%u dt=%u c0=%u c1=%u PC=%04X SP=%04X [%02X %02X %02X %02X %02X %02X] (SP)=%04X\n", presented, dt, c0, c1, pc, sp,
                     MemESP::readbyte(pc), MemESP::readbyte(pc + 1), MemESP::readbyte(pc + 2), MemESP::readbyte(pc + 3),
                     MemESP::readbyte(pc + 4), MemESP::readbyte(pc + 5), MemESP::readword(sp));
             // PICOSPECCY_PEEK=addr:len[,addr:len] (hex) dumps memory with each pclog line

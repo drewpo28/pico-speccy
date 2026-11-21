@@ -1028,6 +1028,24 @@ DRESULT disk_write (
 	io_done(count == 0);
 	return count ? RES_ERROR : RES_OK;	/* Return result */
 }
+
+/* 1 while the card is still programming the last block it took: selected, it
+   holds DO low until done (what wait_ready() polls). disk_write() does not wait
+   for that; the NEXT access's _select() does. DivMMC answers the guest's own
+   post-write busy poll with this, so the guest spins in emulated time while the
+   card programs, instead of core0 standing in the next write's wait_ready() with
+   the frame stopped (Fluid's save after every level: 11 sector writes back to
+   back, negative IDL on hw, 2026-11-21). */
+int sd_card_busy(void)
+{
+	if (Stat & STA_NOINIT) return 0;
+	sd_async_quiesce();
+	CS_LOW();
+	xchg_spi(0xFF);		/* the dummy frame, as _select() */
+	const BYTE d = xchg_spi(0xFF);
+	deselect();
+	return d != 0xFF;
+}
 #endif
 
 

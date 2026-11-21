@@ -299,7 +299,10 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
     # fallbacks — content 50 144 B: 54016 -> 50240.
     # Same day: NextPorts::ayWrite writes registers 0-13 inline (AySound.h,
     # no flash excursion per write) — +352 B, content 50 496 B: 50240 -> 50560.
-    set(NXOVL_WIN_SIZE_EFFECTIVE 50560)
+    # 2026-11-21: LDI / LDD inline in the Next loop's ED switch, a run of them in
+    # one go (Alien Neoplasma's LDI x16 room blitters) — +480 B, content 50 976 B
+    # (DVp2w): 50560 -> 51072.
+    set(NXOVL_WIN_SIZE_EFFECTIVE 51072)
     # NEXT_TRACE adds timing forks inside NextVideo.cpp, i.e. inside this window
     # (NextReg.cpp's trace lives in .text), so a trace build needs its own term —
     # same rule as the .ngsovl one above.
@@ -324,7 +327,9 @@ if (NXOVL_WIN_SIZE STREQUAL "AUTO")
         # The Z80 loop round of the plain term: NEXT_TRACE content 51 144 B
         # (DVp2w) -> 51264. A PERF_TRACE / PERF_HIST build was not linked.
         # The inline AY register write of the plain term: 51 488 B -> 51584.
-        set(NXOVL_WIN_SIZE_EFFECTIVE 51584)
+        # The inline LDI / LDD (+480 B plain): 51584 -> 52096; PERF_TRACE + PERF_HIST
+        # content 51 480 B (DVp2w-nxprof, 2026-11-21), NEXT_TRACE not linked.
+        set(NXOVL_WIN_SIZE_EFFECTIVE 52096)
     endif()
 else()
     set(NXOVL_WIN_SIZE_EFFECTIVE ${NXOVL_WIN_SIZE})

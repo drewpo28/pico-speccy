@@ -128,6 +128,15 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   `PICOSPECCY_PAD="frame:Btn[:N],..."` pad 1's buttons (Up Down Left Right A B X Y
   L1 R1 L2 R2 Start Select; X/Y/L1/R1/L2/R2 = VK_JOY_X/Y/Z/C/L2/R2), on the same
   presented-frame clock as the shots: menu and Joystick > Test runs without a pad.
+* `PICOSPECCY_PCLOG=from:count` also prints `dt` (wall us since the previous frame) and `c0`/`c1`
+  (CPU us of the core0 / core1 threads in that frame). `PICOSPECCY_DISKLOG=1` logs every card
+  access with its frame; `PICOSPECCY_SDBUSY_US=N` models a card that programs each written block
+  for N us (the next access waits, as the board's `wait_ready`; `PICOSPECCY_SDBUSY_NOPOLL=1` hides
+  that busy from DivMMC's post-write poll = the pre-2026-11-21 behaviour).
+  On the Next the same line carries the frame's IM2 acks, OUTs and top ports, the T skipped in HALT /
+  idle loops, the top interrupted-PC buckets (`PC@page`) and `lpg` (the PC's 8K page at every line
+  end, IFF-blind). `PICOSPECCY_HOTLOG=1`: one line per frame with the hot-page pool, mmu[] and the
+  hottest pages by its ranking.
 * `PICOSPECCY_MEMDUMP=file.bin:N` writes the Z80's 64K address space (current paging)
   at the N-th presented frame, on the same clock: for code a ROM unpacks into RAM
   (Karabas ROMain's menu), then `tools/z80disasm.py file.bin --raw --org 0`.

@@ -4406,7 +4406,13 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
 
 __attribute__((noinline)) void Ports::outputProfi(uint16_t address, uint8_t data) { outputImpl<true>(address, data); }
 
+#if HOST_BUILD
+uint32_t g_host_outs[256], g_host_out_n;   // host bench: OUTs per low port byte (PICOSPECCY_PCLOG)
+#endif
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
+#if HOST_BUILD
+  g_host_outs[address & 0xFF]++; g_host_out_n++;
+#endif
   if (__builtin_expect(Z80Ops::isProfi, 0)) { outputProfi(address, data); return; }
   if (__builtin_expect(Z80Ops::isSam, 0)) { Sam::portOut(address, data); return; }
   if (__builtin_expect(Z80Ops::isEnt, 0)) { Ep::portOut(address, data); return; }

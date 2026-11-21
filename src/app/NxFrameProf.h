@@ -1,7 +1,7 @@
 // Per-frame host PC profiler for core0 (NEXT_TRACE builds) — see NxFrameProf.cpp.
 #pragma once
 #include <stdint.h>
-#if NEXT_TRACE
+#if NEXT_TRACE || NXNEG_PROF
 namespace NxFrameProf {
     void init();                  // core0, once (heap 4 KB + one hardware alarm)
     void frameBegin();

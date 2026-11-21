@@ -109,8 +109,33 @@ void host_sd_flush(void) {
     std::lock_guard<std::mutex> lk(s_mx);
     vfat_sync();
 }
+// PICOSPECCY_DISKLOG=1: one line per card access with the presented frame (who reads
+// or writes the card, and when: guest SD traffic against picture changes).
+extern uint32_t host_presented;
+static bool disk_log() { static const bool v = getenv("PICOSPECCY_DISKLOG") != nullptr; return v; }
+// PICOSPECCY_SDBUSY_US=N: a card that programs every written block for N us, as a
+// real one does after disk_write() returns. The next access waits it out, as the
+// board's _select() -> wait_ready() does; sd_card_busy() reports it (DivMMC's
+// post-write busy poll, sdcard.c on the board).
+static uint32_t sd_busy_us() { static const uint32_t v = getenv("PICOSPECCY_SDBUSY_US") ? (uint32_t)atoi(getenv("PICOSPECCY_SDBUSY_US")) : 0; return v; }
+static std::chrono::steady_clock::time_point s_busyUntil;
+static void sd_wait_ready() {
+    if (!sd_busy_us()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= s_busyUntil) return;
+    if (disk_log()) fprintf(stderr, "host: disk f=%u wait-ready %u us\n", host_presented,
+        (unsigned)std::chrono::duration_cast<std::chrono::microseconds>(s_busyUntil - now).count());
+    std::this_thread::sleep_until(s_busyUntil);
+}
+extern "C" int sd_card_busy(void) {
+    // PICOSPECCY_SDBUSY_NOPOLL=1: the guest never sees the busy (the old behaviour, A/B)
+    static const bool nopoll = getenv("PICOSPECCY_SDBUSY_NOPOLL") != nullptr;
+    return !nopoll && sd_busy_us() && std::chrono::steady_clock::now() < s_busyUntil;
+}
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_NOTRDY;
+    sd_wait_ready();
+    if (disk_log()) fprintf(stderr, "host: disk f=%u rd %u+%u\n", host_presented, (unsigned)sector, count);
     std::lock_guard<std::mutex> lk(s_mx);
     if (!host_sd_path) {
         if (!ensureVfat()) return RES_NOTRDY;
@@ -125,6 +150,9 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 }
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_NOTRDY;
+    if (disk_log()) fprintf(stderr, "host: disk f=%u wr %u+%u\n", host_presented, (unsigned)sector, count);
+    sd_wait_ready();
+    if (sd_busy_us()) s_busyUntil = std::chrono::steady_clock::now() + std::chrono::microseconds(sd_busy_us() * count);
     std::lock_guard<std::mutex> lk(s_mx);
     g_disk_write_gen++;
     if (!host_sd_path) {

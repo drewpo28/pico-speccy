@@ -2380,7 +2380,14 @@ void NEXTVID::onClockChange() {
 // a whole number of 4T HALT cycles, so tstates ends on the same value, R
 // advances by the same count (mod 256 is enough, R is 7-bit), and
 // ScanlineWork runs at the same crossings.
+#if HOST_BUILD
+uint32_t g_host_haltT, g_host_idleT;
+uint32_t g_host_linepg[256];   // host bench: the 8K page of the PC at every line end (PICOSPECCY_PCLOG)   // host bench: T skipped in HALT / NextIdle loops (PICOSPECCY_PCLOG)
+#endif
 IRAM_ATTR void NEXTVID::haltAdvanceTo(uint32_t stEnd) {
+#if HOST_BUILD
+    if (stEnd > CPU::tstates) g_host_haltT += stEnd - CPU::tstates;
+#endif
     // A HALTed Z80 keeps fetching; in contended memory every fetch waits
     // (halt2int's HALT column). Step it one M1 at a time then, exactly like
     // CPU::FlushOnHaltTo does for the classic 48K/128K.
@@ -2404,6 +2411,9 @@ IRAM_ATTR void NEXTVID::haltAdvanceTo(uint32_t stEnd) {
 // every pass has its own length: false, nothing done. Flash: a few calls a frame.
 __attribute__((noinline)) bool NEXTVID::idleAdvanceTo(uint32_t stEnd) {
     if (contend) return false;
+#if HOST_BUILD
+    if (stEnd > CPU::tstates) g_host_idleT += stEnd - CPU::tstates;
+#endif
     while (CPU::tstates < stEnd) {
         const uint32_t t = nextLineTstate < stEnd ? nextLineTstate : stEnd;
         if (t > CPU::tstates) CPU::tstates = t;
@@ -2631,6 +2641,18 @@ __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
     // Phases 0..15 = the attribute capture points inside line lineIdx's paper
     // (flash; phase 0 alone unless a racing writer is on), then the line end.
     if (s_capPhase < NX_CAP_GROUPS) { nxPaperStart(); return; }
+#if HOST_BUILD
+    { extern uint32_t g_host_linepg[256]; g_host_linepg[MemESP::mmu[Z80::getRegPC() >> 13] & 0xFF]++; }
+#endif
+    // The hot-page pool's ranking (MemESP::nextHotTick): the PC's page once a line,
+    // a time sampler blind to IFF (the acks it replaced never saw DI code: Fluid's
+    // player), not while HALTed (a HALT costs nothing wherever it sits).
+    if (uint16_t* const h = MemESP::nextHotHits) {
+        if (!Z80::isHalted()) {
+            const uint8_t pp = MemESP::mmu[Z80::getRegPC() >> 13];
+            if (pp < MemESP::NEXT_PAGES && h[pp] < 0xFFFF) h[pp]++;
+        }
+    }
 #if NEXT_TRACE
     if (g_nx_pcs) { const uint16_t pc = Z80::getRegPC();
       g_nx_pcs[pc >> 5] = g_nx_pcs[pc >> 5] + 1;

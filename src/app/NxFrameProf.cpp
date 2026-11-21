@@ -5,7 +5,7 @@
 // Found by the XIP counter being shared by both cores: it could not say what core0
 // was doing in TX-1696's 25-35 ms frames (2026-10-09).
 #include "NxFrameProf.h"
-#if NEXT_TRACE
+#if NEXT_TRACE || NXNEG_PROF
 #include "hardware/timer.h"
 #include "hardware/irq.h"
 #include "hardware/structs/timer.h"

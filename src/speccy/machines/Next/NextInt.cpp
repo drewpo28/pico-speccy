@@ -551,12 +551,19 @@ NXI_HOT uint32_t nextEventTSynced(uint32_t limit) {
     return (uint32_t)T > lo ? (uint32_t)T : lo;
 }
 
+#if HOST_BUILD
+uint32_t g_host_acks;   // host bench: IM2 acknowledges (PICOSPECCY_PCLOG)
+uint32_t g_host_ackpc[1024];   // host bench: interrupted PC per 64-byte bucket (a CTC-timed sampler)
+#endif
 NXI_HOT uint8_t ack() {
+#if HOST_BUILD
+    g_host_acks++;
+    g_host_ackpc[Z80::getRegPC() >> 6]++;
+#endif
     sync();
-    if (uint16_t* const h = MemESP::nextHotHits) {   // where the CPU was: the hot pool's ranking
-        const uint8_t pp = MemESP::mmu[Z80::getRegPC() >> 13];
-        if (pp < MemESP::NEXT_PAGES && h[pp] < 0xFFFF) h[pp]++;
-    }
+    // (the hot pool's ranking sample moved to NEXTVID::ScanlineWork: an ack never
+    // lands in DI code, and Fluid's player runs DI — 20-40% of a busy frame in
+    // pages the pool never saw, host 2026-11-21)
 #if NEXT_TRACE
     g_int_ack++;
 #endif
