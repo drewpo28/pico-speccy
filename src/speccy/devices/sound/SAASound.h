@@ -38,10 +38,15 @@ public:
     // counter increment by clock/8MHz in Q16. Default 8000000 = bit-identical
     // to the pre-clock-aware code.
     void set_clock(int hz);
+    // ADDS (saturating at 255) into sinkL/sinkR[bufpos ..], gated by mix (0xFF
+    // heard / 0 not; the generators step either way). The emulator's chips
+    // (saaChip, cmsChip) add straight into the frame mix, ESPectrum::audioBuffer_
+    // L/R — no buffers of their own since 2026-11-21; the players use SAASoundBuf.
     void gen_sound(int bufsize, int bufpos);
-
-    uint8_t SamplebufSAA_L[ESP_AUDIO_SAMPLES_PENTAGON];
-    uint8_t SamplebufSAA_R[ESP_AUDIO_SAMPLES_PENTAGON];
+    void setSink(uint8_t* L, uint8_t* R) { sinkL = L; sinkR = R; }
+    uint8_t* sinkL = ESPectrum::audioBuffer_L;
+    uint8_t* sinkR = ESPectrum::audioBuffer_R;
+    uint8_t  mix = 0xFF;
 
 private:
     uint32_t tick_q16 = 1u << 16;   // clock / 8 MHz, Q16 (see set_clock)
@@ -118,6 +123,23 @@ private:
     // PDM effective amplitude table (from stripwax SAAAmp)
     // pdm_x4[amp/2][env_level] = EffectiveAmplitude * 4
     static const uint16_t pdm_x4[8][16];
+};
+
+// A chip with buffers of its own, for the players: gen_sound clears the range
+// first, so the frame reads as it always did from SamplebufSAA_L/R.
+struct SAASoundBuf : public SAASound {
+    uint8_t SamplebufSAA_L[ESP_AUDIO_SAMPLES_PENTAGON];
+    uint8_t SamplebufSAA_R[ESP_AUDIO_SAMPLES_PENTAGON];
+    SAASoundBuf() { setSink(SamplebufSAA_L, SamplebufSAA_R); }
+    SAASoundBuf(const SAASoundBuf&) = delete;           // the sink points into *this
+    SAASoundBuf& operator=(const SAASoundBuf&) = delete;
+    void gen_sound(int bufsize, int bufpos) {
+        if (bufsize > 0 && bufpos >= 0 && bufpos + bufsize <= ESP_AUDIO_SAMPLES_PENTAGON) {
+            memset(SamplebufSAA_L + bufpos, 0, (size_t)bufsize);
+            memset(SamplebufSAA_R + bufpos, 0, (size_t)bufsize);
+        }
+        SAASound::gen_sound(bufsize, bufpos);
+    }
 };
 
 // saaChip is heap-allocated by SaaSubsys when Config::SAA1099 is true; nullptr otherwise.

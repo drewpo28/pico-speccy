@@ -79,27 +79,16 @@ namespace Subsystems {
     }
 
 SUBSYSTEM_DECL(TurboSubsys);   // AY chip1 (second AY for TurboSound)
-// Covox: 640 B (mono: plain Covox, R aliases L) or 1280 B (stereo: SounDrive,
-// the Next DACs, SAM's SAA-side DACs). Declared by hand for the stereo shape.
-struct CovoxSubsys {
-    static volatile bool enabled;
-    static bool wanted;
-    static bool dirty;
-    static void request(bool on);
-    static bool apply();
-    static bool needStereo();            // the current Config wants two rails
-    static bool stereo;                  // what the live buffer holds
-    static bool ready() { return enabled && stereo == needStereo(); }
-};
-SUBSYSTEM_DECL(PitSubsys);     // 640 B audioBufferPIT (Pentagon Byte 8253)
+SUBSYSTEM_DECL(CovoxSubsys);   // flag only: the DACs add into the frame mix
+SUBSYSTEM_DECL(PitSubsys);     // flag only: the Pentagon Byte 8253 adds into the frame mix
 
-SUBSYSTEM_DECL(SaaSubsys);     // SAASound saaChip + sample buffers
+SUBSYSTEM_DECL(SaaSubsys);     // SAASound saaChip (adds into the frame mix)
 SUBSYSTEM_DECL(CmsSubsys);     // Creative Music System: 2x SAA1099 @7.159 MHz (VGM card)
-SUBSYSTEM_DECL(SnSubsys);      // 2x SN76489 (VGM card) + 640 B mix buffer
+SUBSYSTEM_DECL(SnSubsys);      // 2x SN76489 (VGM card), adds into the frame mix
 SUBSYSTEM_DECL(TsfmSubsys);    // TurboSound FM: 2x OpnFm + 1280 B mix buffer
 SUBSYSTEM_DECL(OplSubsys);     // YMF262/OPL3 (VGM-player card): ~9 KB chip + 2x1280 B L/R
 SUBSYSTEM_DECL(OpllSubsys);    // YM2413/OPLL (VGM-player card): ~5 KB chip + 1280 B mono
-SUBSYSTEM_DECL(MidiSubsys);    // MIDI synth + 2x640 B L/R buffers
+SUBSYSTEM_DECL(MidiSubsys);    // MIDI synth (adds into the frame mix)
 SUBSYSTEM_DECL(DmaSubsys);     // Z80/zxnDMA per-scanline attr shadow (~7 KB heap)
 #ifdef VGA_HDMI
 SUBSYSTEM_DECL(HdmiAudioSubsys); // ~36.9 KB HDMI audio packet queue + sample rings

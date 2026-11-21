@@ -1577,11 +1577,7 @@ static bool want_mb02()  { return Config::mb02 != 0; }
     static bool app_##tag() { return type::apply(); }
 
 NM_SUBSYS_THUNKS(turbo, TurboSubsys)
-// Covox by hand: "on" for the reconcile = on AND in the right shape, so switching
-// SounDrive on under a live mono Covox buffer re-runs apply() for the second rail.
-static bool on_covox()  { return CovoxSubsys::ready(); }
-static void req_covox(bool v) { CovoxSubsys::request(v); }
-static bool app_covox() { return CovoxSubsys::apply(); }
+NM_SUBSYS_THUNKS(covox, CovoxSubsys)
 NM_SUBSYS_THUNKS(saa,   SaaSubsys)
 NM_SUBSYS_THUNKS(tsfm,  TsfmSubsys)
 NM_SUBSYS_THUNKS(opl3,  OplSubsys)

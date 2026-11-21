@@ -537,8 +537,6 @@ void MidiSynth::processMessage(uint8_t status, uint8_t d0, uint8_t d1) {
 
 void __not_in_flash("midi") MidiSynth::gen_sound(uint8_t *buf_L, uint8_t *buf_R, int count) {
     if (!bank_ready) {                          // no bank: contribute nothing (bus silence = 0)
-        memset(buf_L, 0, count);
-        memset(buf_R, 0, count);
         g_gate = 0;
         return;
     }
@@ -552,8 +550,10 @@ void __not_in_flash("midi") MidiSynth::gen_sound(uint8_t *buf_L, uint8_t *buf_R,
         int32_t acr = softsat127(((int32_t)r * MIDI_OUT_GAIN256) >> 16);
         int32_t vl = ((128 + acl) * g_gate) >> 8;  // fixed center, gated; always in 0..255
         int32_t vr = ((128 + acr) * g_gate) >> 8;
-        buf_L[i] = (uint8_t)(vl < 0 ? 0 : (vl > 255 ? 255 : vl));
-        buf_R[i] = (uint8_t)(vr < 0 ? 0 : (vr > 255 ? 255 : vr));
+        vl = buf_L[i] + (vl < 0 ? 0 : (vl > 255 ? 255 : vl));
+        vr = buf_R[i] + (vr < 0 ? 0 : (vr > 255 ? 255 : vr));
+        buf_L[i] = (uint8_t)(vl > 255 ? 255 : vl);
+        buf_R[i] = (uint8_t)(vr > 255 ? 255 : vr);
     }
 }
 

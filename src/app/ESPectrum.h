@@ -187,15 +187,16 @@ public:
     static void PITGetSample();
     static void FDDGenSound();
     static bool __not_in_flash_func(AY_timer_callback)(repeating_timer_t *rt);
+    // The frame mix, and since 2026-11-21 also its ACCUMULATOR: every unipolar
+    // source (the AYs, SAA, the CMS pair, 2x SN76489, Covox / SounDrive / the
+    // Next and SAM DACs, the PIT, the MIDI synth) ADDS into it, saturating at
+    // 255, while the frame runs — none has a 640-sample buffer of its own any
+    // more. Cleared at the frame start, right after pwm_audio_write has copied the
+    // previous frame out; the frame end adds the beeper and the bipolar chips in
+    // place and clamps. Saturating early is exact as long as everything added
+    // later is >= 0, which all of it is but a rare FM dip (see the mixer).
     static uint8_t audioBuffer_L[ESP_AUDIO_SAMPLES_PENTAGON];
     static uint8_t audioBuffer_R[ESP_AUDIO_SAMPLES_PENTAGON];
-    // Dynamically allocated by CovoxSubsys when Config::covox != 0; nullptr otherwise.
-    // Stereo (SounDrive / Next / SAM): one 2x allocation, R at
-    // audioBufferCovoxL + ESP_AUDIO_SAMPLES_PENTAGON; SounDrive splits by port
-    // (#0F/#1F/#3F=L, #4F/#5F=R). Plain Covox writes the same value to both, so
-    // it gets ONE 640 B buffer and audioBufferCovoxR == audioBufferCovoxL.
-    static uint8_t* audioBufferCovoxL;
-    static uint8_t* audioBufferCovoxR;
     static uint8_t overSamplebuf[ESP_AUDIO_SAMPLES_PENTAGON];
     static unsigned char audioSampleDivider;
     static unsigned char audioAYDivider;
@@ -212,8 +213,6 @@ public:
     static uint32_t faudbufcntAY;
     static uint32_t faudbufcntSAA;
     static uint32_t faudbufcntCovox;
-    // Dynamically allocated by PitSubsys when Pentagon Byte arch is active.
-    static uint8_t* audioBufferPIT;
     // Compact FDD sound description (~22 bytes instead of 640-byte buffer)
     struct FDDSound {
         uint16_t click_pos[8]; // sample positions of clicks
@@ -250,9 +249,6 @@ public:
         }
         return 0;
     }
-    // Dynamically allocated by MidiSubsys when Config::midi != 0.
-    static uint8_t* audioBufferMIDI_L;
-    static uint8_t* audioBufferMIDI_R;
     // TurboSound FM: both YM2203 FM halves sum into this one signed buffer
     // (allocated by TsfmSubsys when Config::tsfm is on). Signed because FM is
     // bipolar; the mixer re-centres it on 128.
@@ -264,9 +260,7 @@ public:
     static int16_t* audioBufferOPL_R;
     static uint32_t audbufcntOPL;
     static uint32_t faudbufcntOPL;
-    // 2x SN76489 (SnSubsys): both chips box-filtered into one unipolar mono
-    // buffer, mixed like the beeper. The CMS pair needs no buffer here — each
-    // SAASound instance carries its own SamplebufSAA_L/R.
+    // 2x SN76489 (SnSubsys) and the CMS pair add into audioBuffer_L/R directly.
     // OPL3 register-write queue: a heavy VGM writes hundreds of registers per
     // frame, and generating the elapsed samples inside EVERY OUT re-faulted
     // gen()'s flash code through the XIP cache each time (the Z80 core evicts
@@ -285,7 +279,6 @@ public:
     static uint32_t faudbufcntOPLL;
     static uint32_t* opllWriteQueue;
     static uint16_t  opllQHead, opllQTail;
-    static uint8_t* audioBufferSN;
     static uint32_t audbufcntSN;
     static uint32_t faudbufcntSN;
     static uint32_t audbufcntCMS;

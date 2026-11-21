@@ -88,67 +88,28 @@ bool TurboSubsys::apply() {
 }
 
 // ----------------------------------------------------------------------------
-// CovoxSubsys — 2x640 B stereo sample buffer used only when Covox DAC is
-// selected. Single allocation: L = first half, R = second half.
+// CovoxSubsys — the Covox / SounDrive / Next / SAM DACs are on.
 // ----------------------------------------------------------------------------
 volatile bool CovoxSubsys::enabled = false;
 bool CovoxSubsys::wanted = false;
 bool CovoxSubsys::dirty = false;
 
-bool CovoxSubsys::stereo = false;
-
-// Two rails only where something writes a different right side: SounDrive
-// (Ports.cpp), the Next's four DACs (NextPorts.cpp) and SAM's DACs (Sam.cpp).
-// Plain Covox (#FB / #DD) writes one value to both, so its R aliases L.
-bool CovoxSubsys::needStereo() {
-    return Config::soundriveEnabled() || Config::arch == A_NEXT || Config::arch == A_SAM;
-}
-
+// No allocation since 2026-11-21: the DAC levels add straight into the frame mix
+// (ESPectrum::covoxAdd). The subsystem is the "Covox is on" flag the port paths
+// and the mix test.
 void CovoxSubsys::request(bool on) {
     wanted = on;
-    if (wanted != enabled || (enabled && stereo != needStereo())) dirty = true;
+    if (wanted != enabled) dirty = true;
 }
 
 bool CovoxSubsys::apply() {
     dirty = false;
-    const bool st = needStereo();
-    if (wanted == enabled && (!enabled || st == stereo)) return true;
-
-    if (wanted) {
-        // Shape change (mono <-> stereo) under a live buffer: a fresh one. Runs at
-        // a frame boundary / reset like every apply, so the zeroed tail is the
-        // same as a fresh enable.
-        if (ESPectrum::audioBufferCovoxL && st != stereo) {
-            free(ESPectrum::audioBufferCovoxL);
-            ESPectrum::audioBufferCovoxL = nullptr;
-            ESPectrum::audioBufferCovoxR = nullptr;
-        }
-        if (!ESPectrum::audioBufferCovoxL) {
-            ESPectrum::audioBufferCovoxL = (uint8_t*)tryCalloc((st ? 2 : 1) * ESP_AUDIO_SAMPLES_PENTAGON);
-            if (!ESPectrum::audioBufferCovoxL) {
-                Debug::log("CovoxSubsys: OOM");
-                enabled = false;
-                wanted = false;
-                Config::covox = 0;
-                Config::soundrive = 0;
-                return false;
-            }
-            ESPectrum::audioBufferCovoxR = st ? ESPectrum::audioBufferCovoxL + ESP_AUDIO_SAMPLES_PENTAGON
-                                              : ESPectrum::audioBufferCovoxL;
-            stereo = st;
-        }
-        enabled = true;
-    } else {
-        enabled = false;
-        free(ESPectrum::audioBufferCovoxL);
-        ESPectrum::audioBufferCovoxL = nullptr;
-        ESPectrum::audioBufferCovoxR = nullptr;
-    }
+    enabled = wanted;
     return true;
 }
 
 // ----------------------------------------------------------------------------
-// PitSubsys — 640 B sample buffer for the 8253 PIT (Pentagon Byte only).
+// PitSubsys — the 8253 PIT (Pentagon Byte only) is on; no buffer of its own.
 // ----------------------------------------------------------------------------
 volatile bool PitSubsys::enabled = false;
 bool PitSubsys::wanted = false;
@@ -160,24 +121,9 @@ void PitSubsys::request(bool on) {
 }
 
 bool PitSubsys::apply() {
+    // A flag only since 2026-11-21: the PIT adds into the frame mix.
     dirty = false;
-    if (wanted == enabled) return true;
-
-    if (wanted) {
-        if (!ESPectrum::audioBufferPIT) {
-            ESPectrum::audioBufferPIT = (uint8_t*)tryCalloc(ESP_AUDIO_SAMPLES_PENTAGON);
-            if (!ESPectrum::audioBufferPIT) {
-                Debug::log("PitSubsys: OOM");
-                wanted = false;
-                return false;
-            }
-        }
-        enabled = true;
-    } else {
-        enabled = false;
-        free(ESPectrum::audioBufferPIT);
-        ESPectrum::audioBufferPIT = nullptr;
-    }
+    enabled = wanted;
     return true;
 }
 
@@ -397,13 +343,9 @@ bool SnSubsys::apply() {
     if (wanted == enabled) return true;
 
     if (wanted) {
-        if (!ESPectrum::audioBufferSN)
-            ESPectrum::audioBufferSN = (uint8_t*)tryCalloc(ESP_AUDIO_SAMPLES_PENTAGON);
         if (!snChip) snChip = new (std::nothrow) SnSound();
-        if (!ESPectrum::audioBufferSN || !snChip) {
+        if (!snChip) {
             Debug::log("SnSubsys: OOM, free=%u", (unsigned)getFreeHeap());
-            delete snChip; snChip = nullptr;
-            free(ESPectrum::audioBufferSN); ESPectrum::audioBufferSN = nullptr;
             wanted = false;
             Config::sn76489 = 0;
             return false;
@@ -414,7 +356,6 @@ bool SnSubsys::apply() {
     } else {
         enabled = false;
         delete snChip; snChip = nullptr;
-        free(ESPectrum::audioBufferSN); ESPectrum::audioBufferSN = nullptr;
     }
     return true;
 }
@@ -512,21 +453,7 @@ bool MidiSubsys::apply() {
     if (wanted == enabled) return true;
 
     if (wanted) {
-        if (!ESPectrum::audioBufferMIDI_L) {
-            ESPectrum::audioBufferMIDI_L = (uint8_t*)tryCalloc(ESP_AUDIO_SAMPLES_PENTAGON);
-        }
-        if (!ESPectrum::audioBufferMIDI_R) {
-            ESPectrum::audioBufferMIDI_R = (uint8_t*)tryCalloc(ESP_AUDIO_SAMPLES_PENTAGON);
-        }
-        if (!ESPectrum::audioBufferMIDI_L || !ESPectrum::audioBufferMIDI_R) {
-            Debug::log("MidiSubsys: OOM");
-            free(ESPectrum::audioBufferMIDI_L); ESPectrum::audioBufferMIDI_L = nullptr;
-            free(ESPectrum::audioBufferMIDI_R); ESPectrum::audioBufferMIDI_R = nullptr;
-            wanted = false;
-            Config::midi = 0;
-            Midi::enabled = 0;
-            return false;
-        }
+        // No L/R buffers since 2026-11-21: the synth adds into the frame mix.
         Midi::enabled = Config::midi;
         Midi::init();
         enabled = true;
@@ -534,8 +461,6 @@ bool MidiSubsys::apply() {
         enabled = false;
         Midi::deinit();
         Midi::enabled = 0;
-        free(ESPectrum::audioBufferMIDI_L); ESPectrum::audioBufferMIDI_L = nullptr;
-        free(ESPectrum::audioBufferMIDI_R); ESPectrum::audioBufferMIDI_R = nullptr;
     }
     return true;
 }
@@ -814,7 +739,7 @@ size_t featureCost(FeatureId f) {
         // popup (and freeing GS yields comfortable headroom) rather than a false DENY.
         case FEAT_PROFI:         return spi ? 64 * 1024 : 0;
         case FEAT_ZIFI:          return 5 * 1024;    // 4K NIC RX ring + 256B TX + 512B stage (session rings are separate)
-        case FEAT_MIDI:          return 7 * 1024;    // GM.DLS: ~5K voice array + 2x ~640B L/R buffers
+        case FEAT_MIDI:          return 6 * 1024;    // GM.DLS: ~5K voice array + channels + µ-law LUT
         // ── Additional features (heap-when-enabled; all 0 SRAM when disabled) ──
         case FEAT_ZCONTROLLER:   return 512;         // mmc_sector_buf (shared with DivMMC)
         // 2K sector buf + 212B identity + 2x FIL (~1.1K), plus the SMUC card's
@@ -823,8 +748,8 @@ size_t featureCost(FeatureId f) {
         // 24LC16 is NOT counted here any more: it belongs to the card (CMOS +
         // NVRAM), not to the disk, and is allocated with the machine.
         case FEAT_IDE:           return 4 * 1024;
-        case FEAT_SAA:           return 2 * 1024;    // SAASound object (~1.5K: state + 2x640B buffers)
-        case FEAT_COVOX:         return 2 * 1024;    // 2x640B stereo sample buffer (~1.25K)
+        case FEAT_SAA:           return 512;         // SAASound object (~230 B; it adds into the frame mix)
+        case FEAT_COVOX:         return 0;           // no buffer: the DACs add into the frame mix
 #ifdef VGA_HDMI
         // 128x16 B sample queue + 2x256x2 B sample rings = 3072 B (blobs shared with
         // HDMI video). Rings were 1024 deep until the ~0.5 KB Gigascreen shortfall

@@ -63,7 +63,7 @@ public:
     bool     done_ = false;
     bool     looped_ = false;
     bool     etracker_ = false;
-    SAASound* saa_ = nullptr;
+    SAASoundBuf* saa_ = nullptr;
     uint8_t  saaSel_ = 0;
     uint8_t  saaReg_[32] = {};
 
@@ -157,10 +157,10 @@ bool EtcDecoder::open(const char* path) {
     if (f) free(f);
     if (!ok) return false;
 
-    saa_ = (SAASound*)tryMalloc(sizeof(SAASound));
-    if (!saa_) saa_ = (SAASound*)Buffer::palloc(sizeof(SAASound), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    saa_ = (SAASoundBuf*)tryMalloc(sizeof(SAASoundBuf));
+    if (!saa_) saa_ = (SAASoundBuf*)Buffer::palloc(sizeof(SAASoundBuf), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     if (!saa_) { err = "Out of memory"; return false; }
-    new (saa_) SAASound();
+    new (saa_) SAASoundBuf();
     saa_->init();
     saa_->set_sound_format(RATE, 1, 8);                 // 8 MHz = SAM Coupe clock (default)
     saa_->reset();
@@ -187,7 +187,7 @@ bool EtcDecoder::open(const char* path) {
 }
 
 void EtcDecoder::close() {
-    if (saa_) { saa_->~SAASound(); Buffer::pfree(saa_); saa_ = nullptr; }
+    if (saa_) { saa_->~SAASoundBuf(); Buffer::pfree(saa_); saa_ = nullptr; }
     if (ram_) { Buffer::pfree(ram_); ram_ = nullptr; }
 }
 

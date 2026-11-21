@@ -4477,7 +4477,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
 // PIT clock = CPU clock = 3.5 MHz (verified: divisor 5602 → 624.7 Hz)
 // Mode 3: output toggles every count_value/2 PIT clock ticks
 // Optimized: analytical high_count instead of tick-by-tick simulation
-IRAM_ATTR void Ports::pitGenSound(uint8_t *buf, int bufsize) {
+IRAM_ATTR void Ports::pitGenSound(uint8_t *bufL, uint8_t *bufR, int bufsize) {
   const int TICKS = ESPectrum::audioAYDivider; // ~112 (3.5 MHz / 31.25 kHz)
   const int AMP = 28;
 
@@ -4513,7 +4513,8 @@ IRAM_ATTR void Ports::pitGenSound(uint8_t *buf, int bufsize) {
       }
       mix += high * AMP / TICKS;
     }
-    *buf++ = mix;
+    uint32_t t = (uint32_t)*bufL + (uint8_t)mix; *bufL++ = t > 255u ? 255u : (uint8_t)t;
+    t = (uint32_t)*bufR + (uint8_t)mix;          *bufR++ = t > 255u ? 255u : (uint8_t)t;
   }
 }
 

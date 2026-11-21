@@ -50,6 +50,9 @@ public:
     // Accumulates `count` mono samples (sum of both chips, unipolar,
     // saturated to 255) into buf[bufpos..]; the caller clears the range.
     void gen(uint8_t* buf, int count, int bufpos);
+    // The same, adding the (mono) output into BOTH sides — the emulator's SnSubsys
+    // adds straight into the frame mix (ESPectrum::audioBuffer_L/R) since 2026-11-21.
+    void genLR(uint8_t* bufL, uint8_t* bufR, int count, int bufpos);
 
 private:
     struct Chip {
@@ -66,6 +69,7 @@ private:
     void     noisePeriodReload(Chip& c);
     int32_t  noisePeriod(const Chip& c) const;
     void     tick(Chip& c);       // one clock/16 step
+    uint8_t  step();              // one output sample (box-averaged ticks)
     int32_t  chipOut(const Chip& c) const;
 
     Chip     m_chip[2];

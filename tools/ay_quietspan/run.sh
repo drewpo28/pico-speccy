@@ -11,6 +11,6 @@ s = open('../../src/speccy/devices/sound/AySound.cpp').read()
 snip = s[s.index('#define AY_TICK_COUNTERS()'):s.index('// Cold path of the bounds check below')]
 for m in ('AY_MIX_ABC ', 'AY_MIX_BAC ', 'AY_MIX_ACB ', 'AY_MIX_MONO '): snip = snip.replace(m, '')
 snip = snip.replace('AySound::', 'T::')
-open('/tmp/ay_snip.inc', 'w').write(snip + '\n#undef AY_TICK_COUNTERS\n#undef AY_HOIST_LOCALS\n#undef AY_WRITEBACK\n#undef AY_CHVOL\n#undef AY_SAMPLE\n')
+open('/tmp/ay_snip.inc', 'w').write(snip + '\n#undef AY_TICK_COUNTERS\n#undef AY_HOIST_LOCALS\n#undef AY_WRITEBACK\n#undef AY_CHVOL\n#undef AY_ADD\n#undef AY_SAMPLE\n')
 PY
 g++ -O2 -w -I/tmp -o /tmp/ay_quietspan_test ay_test.cpp && /tmp/ay_quietspan_test

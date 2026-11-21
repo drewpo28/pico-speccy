@@ -73,6 +73,8 @@ public:
     static void feedByte(uint8_t b);
 
     // Render `count` frames into the L/R buffers (called once per audio frame).
+    // ADDS (saturating) into buf_L/buf_R — the frame mix, ESPectrum::audioBuffer_
+    // L/R, since 2026-11-21 (no MIDI buffers of its own any more).
     static void gen_sound(uint8_t *buf_L, uint8_t *buf_R, int count);
 
     static bool bankReady() { return bank_ready; }

@@ -6,7 +6,7 @@ static uint8_t Envelope[16][128];
 static const uint8_t Rampa_AY_table[16] = {0,1,2,3,4,5,6,8,10,12,16,19,23,27,31,31};
 struct Regs { int tone_a,tone_b,tone_c,noise,env_freq,env_style,R7_tone_a,R7_tone_b,R7_tone_c,R7_noise_a,R7_noise_b,R7_noise_c,vol_a,vol_b,vol_c,env_a,env_b,env_c; };
 #define DEF(NS) namespace NS { struct T { Regs ayregs; int cnt_a,cnt_b,cnt_c,cnt_n,cnt_e,bit_a,bit_b,bit_c,bit_n,env_pos,Cur_Seed,ChipTacts_per_outcount,inv_Amp_Global; int table[32]; \
-  void gen_sound_ABC(int, uint8_t*, uint8_t*); void gen_sound_BAC(int, uint8_t*, uint8_t*); void gen_sound_ACB(int, uint8_t*, uint8_t*); void gen_sound_MONO(int, uint8_t*, uint8_t*); };
+  void gen_sound_ABC(int, uint8_t*, uint8_t*, uint32_t); void gen_sound_BAC(int, uint8_t*, uint8_t*, uint32_t); void gen_sound_ACB(int, uint8_t*, uint8_t*, uint32_t); void gen_sound_MONO(int, uint8_t*, uint8_t*, uint32_t); };
 DEF(F)
 #include "ay_snip.inc"
 }
@@ -38,12 +38,14 @@ int main() {
         else if (k == 8) r.env_freq = (rnd() & 1) ? (int)(rnd() % 40) : (int)(rnd() % 65536);
         else if (k == 9) { r.env_style = rnd() % 16; f.env_pos = 0; f.cnt_e = 0; }
         if (scen % 50 == 0) g = *(Sl::T*)(void*)&f; else g.ayregs = f.ayregs, g.env_pos = f.env_pos, g.cnt_e = f.cnt_e;
-        uint8_t l1[64], r1[64], l2[64], r2[64];
+        // The mixers ADD into the sink (since 2026-11-21): start both from zero,
+        // both sides heard (masks 0xFFFF).
+        uint8_t l1[64] = {}, r1[64] = {}, l2[64] = {}, r2[64] = {};
         const int n = 1 + rnd() % 40, mode = scen % 4;
-        if (mode == 0) { f.gen_sound_ABC(n, l1, r1); g.gen_sound_ABC(n, l2, r2); }
-        if (mode == 1) { f.gen_sound_BAC(n, l1, r1); g.gen_sound_BAC(n, l2, r2); }
-        if (mode == 2) { f.gen_sound_ACB(n, l1, r1); g.gen_sound_ACB(n, l2, r2); }
-        if (mode == 3) { f.gen_sound_MONO(n, l1, r1); g.gen_sound_MONO(n, l2, r2); }
+        if (mode == 0) { f.gen_sound_ABC(n, l1, r1, 0xFFFF); g.gen_sound_ABC(n, l2, r2, 0xFFFF); }
+        if (mode == 1) { f.gen_sound_BAC(n, l1, r1, 0xFFFF); g.gen_sound_BAC(n, l2, r2, 0xFFFF); }
+        if (mode == 2) { f.gen_sound_ACB(n, l1, r1, 0xFFFF); g.gen_sound_ACB(n, l2, r2, 0xFFFF); }
+        if (mode == 3) { f.gen_sound_MONO(n, l1, r1, 0xFFFF); g.gen_sound_MONO(n, l2, r2, 0xFFFF); }
         total += n;
         if (memcmp(l1, l2, n) || memcmp(r1, r2, n) || memcmp(&f, &g, sizeof f)) { if (bad++ < 5) printf("MISMATCH scen %d mode %d n %d\n", scen, mode, n); g = *(Sl::T*)(void*)&f; }
     }

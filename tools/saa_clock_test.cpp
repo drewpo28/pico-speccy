@@ -12,8 +12,8 @@
  *   mkdir -p "$D"/app
  *   printf '#pragma once\n' > "$D"/app/hardconfig.h
  *   printf '#pragma once\n' > "$D"/app/Config.h
- *   printf '#pragma once\n#define ESP_AUDIO_SAMPLES_PENTAGON 640\n' > "$D"/app/ESPectrum.h
- *   g++ -O2 -DIRAM_ATTR= -I"$D" -o /tmp/saa_clock_test "$D"/saa_clock_test.cpp "$D"/SAASound.cpp
+ *   printf '#pragma once\n#include <stdint.h>\n#define ESP_AUDIO_SAMPLES_PENTAGON 640\nstruct ESPectrum { inline static uint8_t audioBuffer_L[640]{}, audioBuffer_R[640]{}; };\n' > "$D"/app/ESPectrum.h
+ *   g++ -O2 -std=gnu++17 -DIRAM_ATTR= -I"$D" -o /tmp/saa_clock_test "$D"/saa_clock_test.cpp "$D"/SAASound.cpp
  *   /tmp/saa_clock_test
  *
  * Re-run after any change to the SAASound tone/noise tick or set_clock.
@@ -27,7 +27,7 @@
 
 #define RATE 31250
 
-static SAASound saa;
+static SAASoundBuf saa;   // its own buffers (the emulator's chips add into the frame mix)
 
 static void wr(int reg, int val) { saa.selectRegister(reg); saa.setRegisterData(val); }
 

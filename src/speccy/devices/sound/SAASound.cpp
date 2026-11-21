@@ -123,9 +123,6 @@ void SAASound::init() {
         envs[i].left_level = 0;
         envs[i].right_level = 0;
     }
-
-    memset(SamplebufSAA_L, 0, sizeof(SamplebufSAA_L));
-    memset(SamplebufSAA_R, 0, sizeof(SamplebufSAA_R));
 }
 
 void SAASound::reset() {
@@ -482,9 +479,14 @@ void SAASound::envSetNewData(int env, uint8_t data) {
 //      Tone tick may trigger noise (source 3) or envelope (internal clock)
 //////////////////////////////////////////////////////////////////////
 IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
-    uint8_t *buf_L = SamplebufSAA_L + bufpos;
-    uint8_t *buf_R = SamplebufSAA_R + bufpos;
-    if (bufsize <= 0) return;   // see AySound::gen_sound: memset((size_t)negative)
+    if (bufsize <= 0 || !sinkL || !sinkR) return;
+    // The sink is the static frame mix: a position past it is a caller's clock
+    // mismatch — clamp rather than write over whatever follows it in .bss.
+    if (bufpos < 0 || bufpos >= ESP_AUDIO_SAMPLES_PENTAGON) return;
+    if (bufpos + bufsize > ESP_AUDIO_SAMPLES_PENTAGON) bufsize = ESP_AUDIO_SAMPLES_PENTAGON - bufpos;
+    uint8_t *buf_L = sinkL + bufpos;
+    uint8_t *buf_R = sinkR + bufpos;
+    const uint32_t m = mix;
 
     // Muted fast path (reg 28 bit0 = 0, the power-on state): the per-sample
     // loop below ticks 2 noise LFSRs + 6 channel counters only to accumulate
@@ -493,17 +495,13 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
     // Generator phases freeze while muted and resume on re-enable; the real
     // chip keeps counting, but the difference is a phase offset of silent
     // oscillators — inaudible (same trade the syncState path makes).
-    if (!outputEnabled) {
-        memset(buf_L, 0, (size_t)bufsize);
-        memset(buf_R, 0, (size_t)bufsize);
-        return;
-    }
+    if (!outputEnabled) return;   // silence adds nothing
 
     while (bufsize-- > 0) {
         // During sync: output silence, don't advance generators
         if (syncState) {
-            *buf_L++ = 0;
-            *buf_R++ = 0;
+            buf_L++;
+            buf_R++;
             continue;
         }
 
@@ -665,7 +663,9 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
         // 6 channels max: ~2880. >>4 = 180.
         int out_l = (output_l + 8) >> 4;
         int out_r = (output_r + 8) >> 4;
-        *buf_L++ = (uint8_t)(out_l > 255 ? 255 : out_l);
-        *buf_R++ = (uint8_t)(out_r > 255 ? 255 : out_r);
+        const uint32_t tl = (uint32_t)*buf_L + ((uint32_t)(out_l > 255 ? 255 : out_l) & m);
+        const uint32_t tr = (uint32_t)*buf_R + ((uint32_t)(out_r > 255 ? 255 : out_r) & m);
+        *buf_L++ = tl > 255u ? 255u : (uint8_t)tl;
+        *buf_R++ = tr > 255u ? 255u : (uint8_t)tr;
     }
 }

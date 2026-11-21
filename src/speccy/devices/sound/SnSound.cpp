@@ -136,25 +136,38 @@ inline int32_t SnSound::chipOut(const Chip& c) const {
     return out;
 }
 
+inline uint8_t SnSound::step() {
+    m_acc_q16 += m_step_q16;
+    int n = (int)(m_acc_q16 >> 16);
+    m_acc_q16 &= 0xFFFF;
+
+    if (n > 0) {
+        // box-average the ~7 chip ticks inside this output sample
+        int32_t sum = 0;
+        for (int t = 0; t < n; t++) {
+            tick(m_chip[0]);
+            tick(m_chip[1]);
+            sum += chipOut(m_chip[0]) + chipOut(m_chip[1]);
+        }
+        sum /= n;
+        m_last_out = sum > 255 ? 255 : (uint8_t)sum;
+    }
+    return m_last_out;
+}
+
+void SnSound::genLR(uint8_t* bufL, uint8_t* bufR, int count, int bufpos) {
+    bufL += bufpos; bufR += bufpos;
+    for (int i = 0; i < count; i++) {
+        const int o = step();
+        int v = bufL[i] + o; bufL[i] = v > 255 ? 255 : (uint8_t)v;
+        v = bufR[i] + o;     bufR[i] = v > 255 ? 255 : (uint8_t)v;
+    }
+}
+
 void SnSound::gen(uint8_t* buf, int count, int bufpos) {
     buf += bufpos;
     for (int i = 0; i < count; i++) {
-        m_acc_q16 += m_step_q16;
-        int n = (int)(m_acc_q16 >> 16);
-        m_acc_q16 &= 0xFFFF;
-
-        if (n > 0) {
-            // box-average the ~7 chip ticks inside this output sample
-            int32_t sum = 0;
-            for (int t = 0; t < n; t++) {
-                tick(m_chip[0]);
-                tick(m_chip[1]);
-                sum += chipOut(m_chip[0]) + chipOut(m_chip[1]);
-            }
-            sum /= n;
-            m_last_out = sum > 255 ? 255 : (uint8_t)sum;
-        }
-        int v = buf[i] + m_last_out;
+        int v = buf[i] + step();
         buf[i] = v > 255 ? 255 : (uint8_t)v;
     }
 }

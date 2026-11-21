@@ -290,8 +290,6 @@ void repeat_handler(void) {
 //=======================================================================================
 uint8_t ESPectrum::audioBuffer_L[ESP_AUDIO_SAMPLES_PENTAGON] = {0};
 uint8_t ESPectrum::audioBuffer_R[ESP_AUDIO_SAMPLES_PENTAGON] = {0};
-uint8_t* ESPectrum::audioBufferCovoxL = nullptr;
-uint8_t* ESPectrum::audioBufferCovoxR = nullptr;
 uint8_t ESPectrum::overSamplebuf[ESP_AUDIO_SAMPLES_PENTAGON] = {0};
 signed char ESPectrum::aud_volume = ESP_VOLUME_DEFAULT;
 bool ESPectrum::vol_changed = false;
@@ -305,9 +303,6 @@ uint32_t ESPectrum::faudbufcntAY = 0;
 uint32_t ESPectrum::audbufcntCovox = 0;
 uint32_t ESPectrum::faudbufcntCovox = 0;
 
-uint8_t* ESPectrum::audioBufferPIT = nullptr;
-uint8_t* ESPectrum::audioBufferMIDI_L = nullptr;
-uint8_t* ESPectrum::audioBufferMIDI_R = nullptr;
 int16_t* ESPectrum::audioBufferFM = nullptr;
 int16_t* ESPectrum::audioBufferOPL_L = nullptr;
 int16_t* ESPectrum::audioBufferOPL_R = nullptr;
@@ -322,7 +317,6 @@ uint32_t ESPectrum::faudbufcntOPLL = 0;
 uint32_t* ESPectrum::opllWriteQueue = nullptr;
 uint16_t  ESPectrum::opllQHead = 0;
 uint16_t  ESPectrum::opllQTail = 0;
-uint8_t* ESPectrum::audioBufferSN = nullptr;
 uint32_t ESPectrum::audbufcntSN = 0;
 uint32_t ESPectrum::faudbufcntSN = 0;
 uint32_t ESPectrum::audbufcntCMS = 0;
@@ -1926,8 +1920,7 @@ void ESPectrum::setup() {
   VIDEO::Reset(); // Re-run after CPU::reset() so Z80Ops flags are correct
 
   // KR580VI53 (8253 PIT) — reset to silent state
-  if (Z80Ops::isByte && audioBufferPIT) {
-    memset(audioBufferPIT, 0, ESP_AUDIO_SAMPLES_PENTAGON);
+  if (Z80Ops::isByte && PitSubsys::enabled) {
     memset(Ports::pitChannels, 0, sizeof(Ports::pitChannels));
   }
 
@@ -2537,13 +2530,6 @@ void ESPectrum::reset(uint8_t romInUse) {
   memset(overSamplebuf, 0, sizeof(overSamplebuf));
   memset(audioBuffer_L, 0, sizeof(audioBuffer_L));
   memset(audioBuffer_R, 0, sizeof(audioBuffer_R));
-  if (audioBufferCovoxL) memset(audioBufferCovoxL, 0, 2 * ESP_AUDIO_SAMPLES_PENTAGON); // L+R halves
-  memset(chip0.SamplebufAY_L, 0, sizeof(chip0.SamplebufAY_L));
-  if (chip1) memset(chip1->SamplebufAY_R, 0, sizeof(chip1->SamplebufAY_R));
-  if (saaChip) {
-    memset(saaChip->SamplebufSAA_L, 0, sizeof(saaChip->SamplebufSAA_L));
-    memset(saaChip->SamplebufSAA_R, 0, sizeof(saaChip->SamplebufSAA_R));
-  }
   lastCovoxVal = lastCovoxValR = lastaudioBit = 0;
   memset(Ports::sndriveLatch, 0, sizeof(Ports::sndriveLatch));
   Ports::sndriveUsed = 0;
@@ -2730,8 +2716,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   VIDEO::Reset();
 
   // KR580VI53 (8253 PIT) — reset to silent state
-  if (Z80Ops::isByte && audioBufferPIT) {
-    memset(audioBufferPIT, 0, ESP_AUDIO_SAMPLES_PENTAGON);
+  if (Z80Ops::isByte && PitSubsys::enabled) {
     memset(Ports::pitChannels, 0, sizeof(Ports::pitChannels));
   }
 
@@ -3854,10 +3839,24 @@ __not_in_flash("audio") void ESPectrum::BeeperGetSample() {
 // it is a no-op without the division. A CTC sample player writes 4 DAC ports
 // per interrupt, ~2500 calls a frame, and nearly all of them land inside one
 // sample (NXModPlayer, 1.7% of core0, 2026-10-14).
+// The held DAC levels into the frame mix over [pos, pos + n): Covox, SounDrive
+// and the Next / SAM DACs (lastCovoxVal = left, lastCovoxValR = right).
+static inline __attribute__((always_inline)) void covoxAdd(int pos, int n) {
+  if (n <= 0 || pos < 0 || pos >= ESP_AUDIO_SAMPLES_PENTAGON) return;
+  if (pos + n > ESP_AUDIO_SAMPLES_PENTAGON) n = ESP_AUDIO_SAMPLES_PENTAGON - pos;
+  const uint32_t vl = (uint8_t)ESPectrum::lastCovoxVal, vr = (uint8_t)ESPectrum::lastCovoxValR;
+  uint8_t* l = ESPectrum::audioBuffer_L + pos;
+  uint8_t* r = ESPectrum::audioBuffer_R + pos;
+  while (n-- > 0) {
+    uint32_t t = *l + vl; *l++ = t > 255u ? 255u : (uint8_t)t;
+    t = *r + vr;          *r++ = t > 255u ? 255u : (uint8_t)t;
+  }
+}
+
 static uint32_t s_cvNextT = 0, s_cvKeyCnt = 0xFFFFFFFFu;
 static uint8_t  s_cvKeyD = 0, s_cvKeyM = 0xFF;
 __not_in_flash("audio") void ESPectrum::CovoxGetSample() {
-  if (!audioBufferCovoxL) return;
+  if (!CovoxSubsys::enabled) return;
   if (audbufcntCovox == s_cvKeyCnt && audioCOVOXDivider == s_cvKeyD && multiplicator == s_cvKeyM &&
       CPU::tstates < s_cvNextT)
     return;
@@ -3865,15 +3864,8 @@ __not_in_flash("audio") void ESPectrum::CovoxGetSample() {
   if (multiplicator)
     audbufpos >>= multiplicator;
   if (audbufpos > audbufcntCovox) {
-    uint8_t *sound_buf_l = audioBufferCovoxL + audbufcntCovox;
-    int sound_bufsize = audbufpos - audbufcntCovox;
-    // Mono Covox (CovoxSubsys::stereo false): R is the same buffer as L.
-    if (audioBufferCovoxR != audioBufferCovoxL) {
-      uint8_t *sound_buf_r = audioBufferCovoxR + audbufcntCovox;
-      for (int n = sound_bufsize; n > 0; n--) *sound_buf_r++ = lastCovoxValR;
-    }
-    while (sound_bufsize-- > 0)
-      *sound_buf_l++ = lastCovoxVal;
+    if (audbufpos > ESP_AUDIO_SAMPLES_PENTAGON) audbufpos = ESP_AUDIO_SAMPLES_PENTAGON;
+    covoxAdd(audbufcntCovox, (int)audbufpos - (int)audbufcntCovox);
     audbufcntCovox = audbufpos;
   }
   s_cvKeyCnt = audbufcntCovox; s_cvKeyD = audioCOVOXDivider; s_cvKeyM = multiplicator;
@@ -4163,11 +4155,11 @@ void ESPectrum::OPLLGetSample() {
   }
 }
 
-// Both SN76489s into audioBufferSN[bufpos..]; cleared first, gen accumulates.
+// Both SN76489s added into the frame mix [bufpos..] (both sides).
 void ESPectrum::SNGenSound(int count, int bufpos) {
-  if (!SnSubsys::enabled || !audioBufferSN || !snChip) return;
-  memset(audioBufferSN + bufpos, 0, count);
-  snChip->gen(audioBufferSN, count, bufpos);
+  if (!SnSubsys::enabled || !snChip) return;
+  if (bufpos < 0 || count <= 0 || bufpos + count > ESP_AUDIO_SAMPLES_PENTAGON) return;
+  snChip->genLR(audioBuffer_L, audioBuffer_R, count, bufpos);
 }
 
 void ESPectrum::SNGetSample() {
@@ -4179,14 +4171,46 @@ void ESPectrum::SNGetSample() {
   }
 }
 
-// Catch the CMS pair up; each SAASound writes its own member buffers.
+// Catch the CMS pair up; both SAASounds add into the frame mix (silent while a
+// tape loads — the frame end used to clear their buffers then).
 void ESPectrum::CMSGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntCMS && cmsChip[0] && cmsChip[1]) {
+    cmsChip[0]->mix = cmsChip[1]->mix = (Tape::tapeStatus == TAPE_LOADING) ? 0 : 0xFF;
     cmsChip[0]->gen_sound(audbufpos - audbufcntCMS, audbufcntCMS);
     cmsChip[1]->gen_sound(audbufpos - audbufcntCMS, audbufcntCMS);
     audbufcntCMS = audbufpos;
+  }
+}
+
+// Which AY sides are heard — the gates the frame-end mixer used to apply to the
+// chips' own buffers (mix_chipN / pNL / pNR), now set on the chips before every
+// generation, since they add straight into the frame mix. Same rules:
+//  - not a Next: chip0 and chip1 under TurboSound (or the selected one alone),
+//    chip1 only with TurboSubsys up; everything silent without AY_emu;
+//  - Next (turbosound.vhd): with TurboSound off only the AY last selected is
+//    heard; NR 0x06 PSG mode 11 holds all three (silent); each side by its pan
+//    bits (ay_next_pan: bit1 = left, bit0 = right).
+// A gate change mid-frame now lands on the sample it happens at, not on the
+// whole frame.
+static __attribute__((noinline, optimize("Os"))) __not_in_flash("audio") void ayGate() {
+  const bool emu = ESPectrum::AY_emu;
+  const int sel = AySound::selected_chip;
+  if (Z80Ops::isNext) {
+    const bool ts   = NextReg::reg[0x08] & 0x02;
+    const bool held = (NextReg::reg[0x06] & 3) == 3;
+    for (int n = 0; n < 3; n++) {
+      AySound* c = chips[n];
+      if (!c) continue;
+      const bool on = emu && !held && (ts || sel == n);
+      c->mixL = (on && (ay_next_pan[n] & 2)) ? 0xFF : 0;
+      c->mixR = (on && (ay_next_pan[n] & 1)) ? 0xFF : 0;
+    }
+  } else {
+    const bool two = Config::twoAyChips();
+    chip0.mixL = chip0.mixR = (emu && (two || sel == 0)) ? 0xFF : 0;
+    if (chip1) chip1->mixL = chip1->mixR = (emu && (two || sel == 1) && TurboSubsys::enabled) ? 0xFF : 0;
   }
 }
 
@@ -4194,6 +4218,7 @@ __not_in_flash("audio") void ESPectrum::AYGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
     if (multiplicator) audbufpos >>= multiplicator;
     if (audbufpos > audbufcntAY) {
+        ayGate();
         chip0.gen_sound(audbufpos - audbufcntAY, audbufcntAY);
         // chip1 only present when TurboSubsys::enabled
     if ((Config::twoAyChips() || Z80Ops::isNext) && chip1)   // Next: TurboSound AY 1
@@ -4213,6 +4238,7 @@ __not_in_flash("audio") void ESPectrum::SAAGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider; // SAA counter = 8MHz/256 = 31.25kHz, same rate as AY
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntSAA && saaChip) {
+    saaChip->mix = (Tape::tapeStatus == TAPE_LOADING) ? 0 : 0xFF;   // the frame end used to clear it
     saaChip->gen_sound(audbufpos - audbufcntSAA, audbufcntSAA);
     audbufcntSAA = audbufpos;
   }
@@ -4222,8 +4248,9 @@ __not_in_flash("audio") void ESPectrum::PITGetSample() {
   uint32_t audbufpos = CPU::tstates >> 7; // /128 instead of /112 — fast shift for PIT buffer position
   if (multiplicator)
     audbufpos >>= multiplicator;
-  if (audbufpos > audbufcntPIT && audioBufferPIT) {
-    Ports::pitGenSound(audioBufferPIT + audbufcntPIT, audbufpos - audbufcntPIT);
+  if (audbufpos > ESP_AUDIO_SAMPLES_PENTAGON) audbufpos = ESP_AUDIO_SAMPLES_PENTAGON;
+  if (audbufpos > audbufcntPIT && PitSubsys::enabled) {
+    Ports::pitGenSound(audioBuffer_L + audbufcntPIT, audioBuffer_R + audbufcntPIT, audbufpos - audbufcntPIT);
     audbufcntPIT = audbufpos;
   }
 }
@@ -4610,6 +4637,12 @@ void ESPectrum::loop() {
 
     audbufcntSAA = 0;
     audbufcntPIT = 0;
+    // The frame mix is also the unipolar sources' accumulator (see ESPectrum.h):
+    // pwm_audio_write has copied the last frame out above, so it starts empty.
+    // Unconditional, like the counter resets it pairs with — a source that
+    // added past here with its counter at 0 would otherwise be counted twice.
+    memset(audioBuffer_L, 0, sizeof(audioBuffer_L));
+    memset(audioBuffer_R, 0, sizeof(audioBuffer_R));
 #if MOONSOUND
     // ZXM-MoonSound budget: an OPL4 track keys the FM half AND up to 24 wave
     // channels — measured 8.5-10.5 ms a frame at full rate (FM ~5.2, wave
@@ -5064,19 +5097,14 @@ void ESPectrum::loop() {
             dc_fade_q8 = 256u;
           }
         }
-        if (CovoxSubsys::enabled && (Config::covox || Config::soundriveEnabled()) && faudbufcntCovox < samplesPerFrame) {
-          uint8_t *sound_buf_l = audioBufferCovoxL + faudbufcntCovox;
-          int sound_bufsize = samplesPerFrame - faudbufcntCovox;
-          if (audioBufferCovoxR != audioBufferCovoxL) {   // stereo (SounDrive / Next / SAM)
-            uint8_t *sound_buf_r = audioBufferCovoxR + faudbufcntCovox;
-            for (int n = sound_bufsize; n > 0; n--) *sound_buf_r++ = lastCovoxValR;
-          }
-          while (sound_bufsize-- > 0)
-            *sound_buf_l++ = lastCovoxVal;
-        }
-        // KR580VI53 (8253 PIT) — complete buffer for remaining frame
+        // The DACs hold their level to the end of the frame. For every DAC user
+        // now (Covox / SounDrive AND the Next and SAM DACs): those two used to
+        // skip this fill and replay the previous frame's tail from their buffer.
+        if (CovoxSubsys::enabled && faudbufcntCovox < samplesPerFrame)
+          covoxAdd(faudbufcntCovox, samplesPerFrame - faudbufcntCovox);
+        // KR580VI53 (8253 PIT) — the rest of the frame
         if (PitSubsys::enabled && Z80Ops::isByte && faudbufcntPIT < samplesPerFrame) {
-          Ports::pitGenSound(audioBufferPIT + faudbufcntPIT,
+          Ports::pitGenSound(audioBuffer_L + faudbufcntPIT, audioBuffer_R + faudbufcntPIT,
                              samplesPerFrame - faudbufcntPIT);
         }
         {
@@ -5085,6 +5113,7 @@ void ESPectrum::loop() {
             if (fddSndEnabled) FDDGenSound();
         }
         if (AY_emu && faudbufcntAY < samplesPerFrame) {
+            ayGate();
             if(Config::twoAyChips() || Z80Ops::isNext || AySound::selected_chip == 0) chip0.gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
             if((Config::twoAyChips() || Z80Ops::isNext || AySound::selected_chip == 1) && chip1) chip1->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
             if(Z80Ops::isNext && chip2) chip2->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
@@ -5106,41 +5135,34 @@ void ESPectrum::loop() {
 #endif
         if (OpllSubsys::enabled && audioBufferOPLL && faudbufcntOPLL < samplesPerFrame)
             OPLLGenSound(samplesPerFrame - faudbufcntOPLL, faudbufcntOPLL);
-        if (SnSubsys::enabled && audioBufferSN && faudbufcntSN < samplesPerFrame)
+        if (SnSubsys::enabled && faudbufcntSN < samplesPerFrame)
             SNGenSound(samplesPerFrame - faudbufcntSN, faudbufcntSN);
         if (CmsSubsys::enabled && cmsChip[0] && cmsChip[1] && faudbufcntCMS < samplesPerFrame) {
-          if (Tape::tapeStatus == TAPE_LOADING) {
-            memset(cmsChip[0]->SamplebufSAA_L, 0, sizeof(cmsChip[0]->SamplebufSAA_L));
-            memset(cmsChip[0]->SamplebufSAA_R, 0, sizeof(cmsChip[0]->SamplebufSAA_R));
-            memset(cmsChip[1]->SamplebufSAA_L, 0, sizeof(cmsChip[1]->SamplebufSAA_L));
-            memset(cmsChip[1]->SamplebufSAA_R, 0, sizeof(cmsChip[1]->SamplebufSAA_R));
-          } else {
+          // Silent while a tape loads (the mid-frame catch-up mutes them the same way).
+          if (Tape::tapeStatus != TAPE_LOADING) {
+            cmsChip[0]->mix = cmsChip[1]->mix = 0xFF;
             cmsChip[0]->gen_sound(samplesPerFrame - faudbufcntCMS, faudbufcntCMS);
             cmsChip[1]->gen_sound(samplesPerFrame - faudbufcntCMS, faudbufcntCMS);
           }
         }
         if (SaaSubsys::enabled && saaChip && faudbufcntSAA < samplesPerFrame)
         {
-          if (Tape::tapeStatus == TAPE_LOADING) {
-            memset(saaChip->SamplebufSAA_L, 0, sizeof(saaChip->SamplebufSAA_L));
-            memset(saaChip->SamplebufSAA_R, 0, sizeof(saaChip->SamplebufSAA_R));
-          } else {
+          if (Tape::tapeStatus != TAPE_LOADING) {
+            saaChip->mix = 0xFF;
             saaChip->gen_sound(samplesPerFrame - faudbufcntSAA, faudbufcntSAA);
           }
         }
-        if (MidiSubsys::enabled && audioBufferMIDI_L && audioBufferMIDI_R)
-        {
-          if (Midi::enabled == 4) {
-            // A PI-CARD MUSICA .mid owns midi_wt (its render goes to the card
-            // ring); rendering it here too would advance every voice twice.
-            if (!(g_pimus_on && PiMusica::ownsMidiSynth()))
-              MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
-            else { memset(audioBufferMIDI_L, 0, samplesPerFrame); memset(audioBufferMIDI_R, 0, samplesPerFrame); }
-          }
+        if (MidiSubsys::enabled && Midi::enabled == 4) {
+          // A PI-CARD MUSICA .mid owns midi_wt (its render goes to the card
+          // ring); rendering it here too would advance every voice twice.
+          if (!(g_pimus_on && PiMusica::ownsMidiSynth()))
+            MidiSynth::gen_sound(audioBuffer_L, audioBuffer_R, samplesPerFrame);   // adds into the mix
         }
-        // Hoist frame-invariant source flags outside the mix loop
-        bool mix_chip0 = AY_emu && (Config::twoAyChips() || AySound::selected_chip == 0);
-        bool mix_chip1 = AY_emu && (Config::twoAyChips() || AySound::selected_chip == 1) && TurboSubsys::enabled && chip1;
+        // The unipolar sources (AYs, SAA, CMS, SN, Covox/DACs, PIT, MIDI) are
+        // already IN audioBuffer_L/R: they added themselves in while the frame
+        // ran, gated at generation (ayGate, the SAA/CMS tape mute). What is left
+        // for here is the beeper, the FDD clicks, the FT812 / Enterprise PCM and
+        // the bipolar chips, added in place.
         // FM is audible only while the CPLD's FM_DIS flip-flop is clear, i.e. after
         // a %11111 0 r c select. Generation still runs (timers and envelopes keep
         // going on a real card too) — only the DAC path is gated, as in the CPLD.
@@ -5152,24 +5174,9 @@ void ESPectrum::loop() {
         // by slots frozen mid-release (RR=0) after a player's mute sequence.
         bool mix_opl = OplSubsys::enabled && audioBufferOPL_L && s_oplOutQuiet < 2048;
         bool mix_opll = OpllSubsys::enabled && audioBufferOPLL && s_opllOutQuiet < 2048;
-        bool mix_sn  = SnSubsys::enabled && audioBufferSN;
-        bool mix_cms = CmsSubsys::enabled && cmsChip[0] && cmsChip[1];
-        // TurboSound Next: all three AYs mix, each with its own pan bits
-        bool mix_chip2 = AY_emu && Z80Ops::isNext && chip2;
-        bool p0L = true, p0R = true, p1L = true, p1R = true;
-        bool p2L = ay_next_pan[2] & 2, p2R = ay_next_pan[2] & 1;
         bool nx_beep_off = false, nx_mute = false;
         if (Z80Ops::isNext) {
-          // turbosound.vhd: with TurboSound off only the AY last selected is
-          // heard; NR 0x06 PSG mode 11 holds all three in reset (silent).
-          const bool ts   = NextReg::reg[0x08] & 0x02;
-          const bool held = (NextReg::reg[0x06] & 3) == 3;
-          const int  sel  = AySound::selected_chip;
-          mix_chip0 = AY_emu && !held && (ts || sel == 0);
-          mix_chip1 = AY_emu && chip1 && !held && (ts || sel == 1);
-          mix_chip2 = mix_chip2 && !held && (ts || sel == 2);
-          p0L = ay_next_pan[0] & 2; p0R = ay_next_pan[0] & 1;
-          p1L = ay_next_pan[1] & 2; p1R = ay_next_pan[1] & 1;
+          // The three AYs' TurboSound / PSG-hold / pan gates: ayGate().
           // zxnext.vhd 6504 + audio_mixer.vhd: NR 06 bit 6 AND NR 08 bit 4 send the
           // beeper (EAR/MIC) to the internal speaker ONLY; it leaves the mixed PCM.
           // We have no internal speaker, so it is simply not heard.
@@ -5178,10 +5185,6 @@ void ESPectrum::loop() {
           // on the board; here that is our output when the audio driver is HDMI.
           nx_mute = (NextReg::reg[0x09] & 0x04) && Config::audio_driver == 4;
         }
-        bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
-        bool mix_saa = SaaSubsys::enabled && saaChip;
-        bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
-        bool mix_pit = PitSubsys::enabled && audioBufferPIT;
         // VDAC2 (FT812) MJPEG player: the AVI's 8-bit PCM track, resampled to our rate,
         // mixed unipolar like the beeper/Covox (it is unsigned 8-bit already).
         const uint8_t* ftv = Ft812::enabled ? Ft812::videoAudioFrame(samplesPerFrame, ESP_AUDIO_FREQ_PENTAGON) : nullptr;
@@ -5195,31 +5198,12 @@ void ESPectrum::loop() {
         for (int i = 0; i < samplesPerFrame; i++)
         {
           int beeper_L = nx_beep_off ? 0 : overSamplebuf[i];
-          if (mix_pit) beeper_L += audioBufferPIT[i];
           if (mix_fdd) beeper_L += getFDDSample(i);
           if (ftv) beeper_L += ftv[i] >> 1;
           int beeper_R = beeper_L;
+          beeper_L += audioBuffer_L[i];   // the accumulated unipolar mix
+          beeper_R += audioBuffer_R[i];
           if (epL) { beeper_L += epL[i]; beeper_R += epR[i]; }
-          if (mix_covox) {
-            beeper_L += audioBufferCovoxL[i];
-            beeper_R += audioBufferCovoxR[i];
-          }
-          if (mix_chip0) {
-            if (p0L) beeper_L += chip0.SamplebufAY_L[i];
-            if (p0R) beeper_R += chip0.SamplebufAY_R[i];
-          }
-          if (mix_chip1) {
-            if (p1L) beeper_L += chip1->SamplebufAY_L[i];
-            if (p1R) beeper_R += chip1->SamplebufAY_R[i];
-          }
-          if (mix_chip2) {
-            if (p2L) beeper_L += chip2->SamplebufAY_L[i];
-            if (p2R) beeper_R += chip2->SamplebufAY_R[i];
-          }
-          if (mix_saa) {
-            beeper_L += saaChip->SamplebufSAA_L[i];
-            beeper_R += saaChip->SamplebufSAA_R[i];
-          }
           if (mix_fm) {
             // Bipolar, so it needs a mid-scale offset or the negative half
             // would clip against 0 when FM plays alone — but the offset is a
@@ -5260,21 +5244,6 @@ void ESPectrum::loop() {
               beeper_L += opllBias + opll;
               beeper_R += opllBias + opll;
             }
-          }
-          if (mix_sn) {
-            // unipolar like the beeper/AY, no re-centre needed
-            beeper_L += audioBufferSN[i];
-            beeper_R += audioBufferSN[i];
-          }
-          if (mix_cms) {
-            beeper_L += cmsChip[0]->SamplebufSAA_L[i] + cmsChip[1]->SamplebufSAA_L[i];
-            beeper_R += cmsChip[0]->SamplebufSAA_R[i] + cmsChip[1]->SamplebufSAA_R[i];
-          }
-          if (mix_midi) {
-            // Wavetable synth output is unipolar, centered at 128 (see MidiSynth::gen_sound);
-            // summed like the beeper/AY, its DC is removed downstream by pwm_audio.
-            beeper_L += audioBufferMIDI_L[i];
-            beeper_R += audioBufferMIDI_R[i];
           }
           // GS is mixed live in the audio timer IRQ (pcm_call_inner),
           // not here — burst-sampling on core0 would time-compress it.

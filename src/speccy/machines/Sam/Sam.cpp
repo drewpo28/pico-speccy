@@ -14,6 +14,7 @@
 
 #include "app/Config.h"
 #include "app/ESPectrum.h"
+#include "app/Subsystem.h"
 #include "app/Buffer.h"
 #include "app/Debug.h"
 #include "app/SnapPack.h"
@@ -442,7 +443,7 @@ static uint8_t keyRows(uint8_t hi, uint8_t mask) {
 static uint8_t s_vox[4] = {0x80, 0x80, 0x80, 0x80};
 static uint8_t s_voxUsed;
 static void samVox(uint8_t ch, uint8_t v) {
-    if (!ESPectrum::audioBufferCovoxL) return;
+    if (!CovoxSubsys::enabled) return;   // Audio > Covox off: the DACs are not fitted
     s_vox[ch] = v; s_voxUsed |= (uint8_t)(1u << ch);
     const int rn = ((s_voxUsed & 1) ? 1 : 0) + ((s_voxUsed & 4) ? 1 : 0);
     const int ln = ((s_voxUsed & 2) ? 1 : 0) + ((s_voxUsed & 8) ? 1 : 0);

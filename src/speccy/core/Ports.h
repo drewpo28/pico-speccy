@@ -213,7 +213,9 @@ public:
     };
     static PIT8253Channel pitChannels[3];
     static void pitWrite(uint8_t a8, uint8_t data);
-    static void pitGenSound(uint8_t* buf, int bufsize);
+    // ADDS the PIT's mono output into both sides (saturating): the frame mix,
+    // ESPectrum::audioBuffer_L/R, since 2026-11-21.
+    static void pitGenSound(uint8_t* bufL, uint8_t* bufR, int bufsize);
 
 public:
     static uint8_t speaker_values[8];   // (public: the SAM Coupe beeper uses it)

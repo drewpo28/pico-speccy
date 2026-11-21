@@ -43,6 +43,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "app/ESPectrum.h"
 #include <inttypes.h>
 #include <stddef.h>
+#include <string.h>
 
 // typedef unsigned char ayemu_ay_reg_frame_t[14];
 
@@ -147,7 +148,11 @@ public:
     // never make FM noise, and why "select %11111111 when the music ends" (the
     // manual's §5.1 advice) mutes the FM half.
     static bool ts_fm_enabled;
-    AySound(uint8_t my_num): my_num(my_num) {}
+    // The emulator's chips (0-2) add into the frame mix, ESPectrum::audioBuffer_L/R;
+    // anyone else (the players) gives a sink of its own (AySoundBuf below).
+    AySound(uint8_t my_num): my_num(my_num) {
+        if (my_num < 3) setSink(ESPectrum::audioBuffer_L, ESPectrum::audioBuffer_R);
+    }
     // Registers 0-13 -> the parsed ayregs. Inline, and with them the software
     // half of the register write below: selectRegister / setRegisterData are in
     // flash (they also drive the hardware-AY shift register), and a caller in
@@ -211,20 +216,25 @@ public:
     int set_stereo(ayemu_stereo_t stereo, int *custom_eq);
     int set_sound_format(int freq, int chans, int bits);
     void prepare_generation();
+    // ADDS (saturating at 255) the chip's output into sinkL/sinkR[bufpos ..],
+    // each side gated by mixL/mixR (0xFF = heard, 0 = not): the generators step
+    // either way. Since 2026-11-21 the emulator's chips have no buffers of their
+    // own (2 x 640 B each) — they add straight into the frame mix, and the pan /
+    // TurboSound gates the frame-end mixer used to apply are set here, by the
+    // caller, before each call (ESPectrum::ayGate). Saturating early is exact:
+    // every other term of the mix is >= 0 (see the mixer in ESPectrum::loop).
     void gen_sound(int bufsize, int bufpos);
-    uint8_t* gen_sound();
+    void setSink(uint8_t* L, uint8_t* R) { sinkL = L; sinkR = R; }
+    uint8_t* sinkL = nullptr;
+    uint8_t* sinkR = nullptr;
+    uint8_t  mixL = 0xFF, mixR = 0xFF;
 
 private:
-    void gen_sound_ABC(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
-    void gen_sound_ACB(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
-    void gen_sound_BAC(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
-    void gen_sound_MONO(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
-
-public:
-
-    uint8_t SamplebufAY_L[ESP_AUDIO_SAMPLES_PENTAGON];
-    uint8_t SamplebufAY_R[ESP_AUDIO_SAMPLES_PENTAGON];
-    uint8_t SamplebufAY[2];
+    // masks: bits 0-7 = the gate of buf_L, bits 8-15 = the gate of buf_R.
+    void gen_sound_ABC(int bufsize, uint8_t *buf_L, uint8_t *buf_R, uint32_t masks);
+    void gen_sound_ACB(int bufsize, uint8_t *buf_L, uint8_t *buf_R, uint32_t masks);
+    void gen_sound_BAC(int bufsize, uint8_t *buf_L, uint8_t *buf_R, uint32_t masks);
+    void gen_sound_MONO(int bufsize, uint8_t *buf_L, uint8_t *buf_R, uint32_t masks);
 
 private:
 
@@ -270,6 +280,24 @@ private:
     int8_t midi_bitbang_pos;   // -1=idle, 0=start received, 1-8=data bits, 9=stop
     uint8_t midi_bitbang_byte; // accumulated data byte
     bool midi_bitbang_prev;    // previous line state (bit 2)
+};
+
+// A chip with buffers of its own, for the players (src/player/): gen_sound clears
+// the range first, so the add above becomes a plain store and the frame reads
+// as it always did from SamplebufAY_L/R.
+struct AySoundBuf : public AySound {
+    uint8_t SamplebufAY_L[ESP_AUDIO_SAMPLES_PENTAGON];
+    uint8_t SamplebufAY_R[ESP_AUDIO_SAMPLES_PENTAGON];
+    explicit AySoundBuf(uint8_t num) : AySound(num) { setSink(SamplebufAY_L, SamplebufAY_R); }
+    AySoundBuf(const AySoundBuf&) = delete;             // the sink points into *this
+    AySoundBuf& operator=(const AySoundBuf&) = delete;
+    void gen_sound(int bufsize, int bufpos) {
+        if (bufsize > 0 && bufpos >= 0 && bufpos + bufsize <= ESP_AUDIO_SAMPLES_PENTAGON) {
+            memset(SamplebufAY_L + bufpos, 0, (size_t)bufsize);
+            memset(SamplebufAY_R + bufpos, 0, (size_t)bufsize);
+        }
+        AySound::gen_sound(bufsize, bufpos);
+    }
 };
 
 extern AySound chip0;

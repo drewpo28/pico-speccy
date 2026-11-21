@@ -435,7 +435,7 @@ private:
     uint8_t  tempMixer_ = 0;
     jmp_buf  bad_;
 #ifndef PP_BULBA_HOST
-    AySound* ay_ = nullptr;
+    AySoundBuf* ay_ = nullptr;
 #endif
     uint32_t outFrames_ = 0;
     int      left_ = 0;
@@ -2630,10 +2630,10 @@ bool BulbaDecoder::open(const char* path) {
     if (f) free(f);
     if (file) Buffer::pfree(file);
     if (!ok) return false;
-    void* a = tryMalloc(sizeof(AySound));
-    if (!a) a = Buffer::palloc(sizeof(AySound), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    void* a = tryMalloc(sizeof(AySoundBuf));
+    if (!a) a = Buffer::palloc(sizeof(AySoundBuf), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     if (!a) { err = "Out of memory"; return false; }
-    ay_ = new (a) AySound((uint8_t)8);
+    ay_ = new (a) AySoundBuf((uint8_t)8);
     ay_->init();
     ay_->set_sound_format(RATE, 1, 8);
     // VTX carries its chip, clock and channel layout; AySound renders only
@@ -2649,7 +2649,7 @@ bool BulbaDecoder::open(const char* path) {
 }
 
 void BulbaDecoder::close() {
-    if (ay_) { ay_->~AySound(); Buffer::pfree(ay_); ay_ = nullptr; }
+    if (ay_) { ay_->~AySoundBuf(); Buffer::pfree(ay_); ay_ = nullptr; }
     if (M) { Buffer::pfree(M); M = nullptr; }
     if (vtx_) { Buffer::pfree(vtx_); vtx_ = nullptr; }
 }

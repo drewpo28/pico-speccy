@@ -206,7 +206,6 @@ void AySound::init()
     cnt_a = cnt_b = cnt_c = cnt_n = cnt_e = 0;
     bit_a = bit_b = bit_c = bit_n = 0;
     env_pos = EnvNum = 0;
-    SamplebufAY[0] = SamplebufAY[1] = 0;
 
     midi_bitbang_pos = -1;
     midi_bitbang_byte = 0;
@@ -435,9 +434,15 @@ void AySound::prepare_generation()
 #define AY_CHVOL(env_flag, vol_reg) \
     (l_table[(env_flag) ? l_env_row[l_env_pos] : Rampa_AY_table[vol_reg]])
 
+// Add one side's sample into the sink, saturating at 255, gated by its mask
+// (0xFF heard / 0 not). See AySound::gen_sound in AySound.h.
+#define AY_ADD(p, v, m) do { const uint32_t t_ = (uint32_t)*(p) + ((uint32_t)(v) & (m)); \
+    *(p)++ = t_ > 255u ? 255u : (uint8_t)t_; } while (0)
+
 // ABC stereo: A→L, B→L/2+R/2, C→R
-AY_MIX_ABC void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+AY_MIX_ABC void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R, uint32_t masks) {
     AY_HOIST_LOCALS()
+    const uint32_t l_mL = masks & 0xFF, l_mR = (masks >> 8) & 0xFF;
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
         AY_SAMPLE(
@@ -453,15 +458,16 @@ AY_MIX_ABC void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, 
             mix_r += AY_CHVOL(l_env_c, l_vol_c);
         },
             mix_l *= l_tacts; mix_r *= l_tacts;)
-        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
-        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+        AY_ADD(sound_buf_L, (mix_l * l_inv_amp) >> 16, l_mL);
+        AY_ADD(sound_buf_R, (mix_r * l_inv_amp) >> 16, l_mR);
     }
     AY_WRITEBACK()
 }
 
 // BAC stereo: B→L, A→L/2+R/2, C→R
-AY_MIX_BAC void AySound::gen_sound_BAC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+AY_MIX_BAC void AySound::gen_sound_BAC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R, uint32_t masks) {
     AY_HOIST_LOCALS()
+    const uint32_t l_mL = masks & 0xFF, l_mR = (masks >> 8) & 0xFF;
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
         AY_SAMPLE(
@@ -477,15 +483,16 @@ AY_MIX_BAC void AySound::gen_sound_BAC(int sound_bufsize, uint8_t *sound_buf_L, 
             mix_r += AY_CHVOL(l_env_c, l_vol_c);
         },
             mix_l *= l_tacts; mix_r *= l_tacts;)
-        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
-        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+        AY_ADD(sound_buf_L, (mix_l * l_inv_amp) >> 16, l_mL);
+        AY_ADD(sound_buf_R, (mix_r * l_inv_amp) >> 16, l_mR);
     }
     AY_WRITEBACK()
 }
 
 // ACB stereo: A→L, B→R, C→L/2+R/2
-AY_MIX_ACB void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+AY_MIX_ACB void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R, uint32_t masks) {
     AY_HOIST_LOCALS()
+    const uint32_t l_mL = masks & 0xFF, l_mR = (masks >> 8) & 0xFF;
     while (sound_bufsize-- > 0) {
         int mix_l = 0, mix_r = 0;
         AY_SAMPLE(
@@ -501,15 +508,16 @@ AY_MIX_ACB void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, 
             mix_r += v;
         },
             mix_l *= l_tacts; mix_r *= l_tacts;)
-        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
-        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+        AY_ADD(sound_buf_L, (mix_l * l_inv_amp) >> 16, l_mL);
+        AY_ADD(sound_buf_R, (mix_r * l_inv_amp) >> 16, l_mR);
     }
     AY_WRITEBACK()
 }
 
 // Mono: all channels → both L and R equally
-AY_MIX_MONO void AySound::gen_sound_MONO(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+AY_MIX_MONO void AySound::gen_sound_MONO(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R, uint32_t masks) {
     AY_HOIST_LOCALS()
+    const uint32_t l_mL = masks & 0xFF, l_mR = (masks >> 8) & 0xFF;
     while (sound_bufsize-- > 0) {
         int mix = 0;
         AY_SAMPLE(
@@ -523,9 +531,9 @@ AY_MIX_MONO void AySound::gen_sound_MONO(int sound_bufsize, uint8_t *sound_buf_L
             mix += AY_CHVOL(l_env_c, l_vol_c);
         },
             mix *= l_tacts;)
-        uint8_t out = (mix * l_inv_amp) >> 16;
-        *sound_buf_L++ = out;
-        *sound_buf_R++ = out;
+        const uint32_t out = (uint8_t)((mix * l_inv_amp) >> 16);
+        AY_ADD(sound_buf_L, out, l_mL);
+        AY_ADD(sound_buf_R, out, l_mR);
     }
     AY_WRITEBACK()
 }
@@ -542,12 +550,14 @@ static void __attribute__((noinline)) aySpill(unsigned num, int pos, int n) {
 
 IRAM_ATTR void AySound::gen_sound(int sound_bufsize, int bufpos)
 {
-    uint8_t *sound_buf_L = SamplebufAY_L + bufpos;
-    uint8_t *sound_buf_R = SamplebufAY_R + bufpos;
-    // A position past the buffer is a caller's sample-clock mismatch. chip0 is a
-    // static object and right after it in .bss lie the USB host's endpoint pool
-    // and hdmi_isr_mode (hw 2026-10-08, Spectrum Next Pogie: USB dead even after
-    // a re-plug and the monitor frozen) — clamp, and say who did it, once.
+    if (__builtin_expect(!sinkL || !sinkR, 0)) return;
+    uint8_t *sound_buf_L = sinkL + bufpos;
+    uint8_t *sound_buf_R = sinkR + bufpos;
+    // A position past the buffer is a caller's sample-clock mismatch. The sink is
+    // a static array (the frame mix) and what lies after it in .bss is not ours
+    // (hw 2026-10-08, Spectrum Next Pogie, back when chip0 carried its own
+    // buffers: USB dead even after a re-plug and the monitor frozen) — clamp, and
+    // say who did it, once.
     if (__builtin_expect(bufpos < 0 || bufpos + sound_bufsize > ESP_AUDIO_SAMPLES_PENTAGON, 0)) {
         aySpill(my_num, bufpos, sound_bufsize);
         if (bufpos < 0 || bufpos >= ESP_AUDIO_SAMPLES_PENTAGON) return;
@@ -564,20 +574,21 @@ IRAM_ATTR void AySound::gen_sound(int sound_bufsize, int bufpos)
     // frame on Profi): CP/M and other non-AY software never touch the chip
     // yet paid ~1 ms/frame per chip.  Tone/noise/envelope phases freeze
     // while silent and resume on the next register write — inaudible, the
-    // output was zero throughout.
+    // output was zero throughout — which adds nothing to the sink.
     if (!ayregs.env_a && !ayregs.env_b && !ayregs.env_c &&
         ayregs.vol_a == 0 && ayregs.vol_b == 0 && ayregs.vol_c == 0) {
-        memset(sound_buf_L, 0, (size_t)sound_bufsize);
-        memset(sound_buf_R, 0, (size_t)sound_bufsize);
         return;
     }
+    uint32_t masks = (uint32_t)mixL | ((uint32_t)mixR << 8);
     uint8_t mode = Config::ayConfig;
     if (my_num < 3 && ay_next_mode[my_num] >= 0) mode = (uint8_t)ay_next_mode[my_num];
     // CBA mirrors ABC; reuse its mixer with the output buffers exchanged.
+    // The gates belong to the output sides, so they swap with the buffers.
     if (mode == 4) {
         uint8_t *tmp = sound_buf_L;
         sound_buf_L = sound_buf_R;
         sound_buf_R = tmp;
+        masks = ((masks & 0xFF) << 8) | (masks >> 8);
         mode = 0;
     }
 #if AY_STEREO_SLOT
@@ -587,30 +598,22 @@ IRAM_ATTR void AySound::gen_sound(int sound_bufsize, int bufpos)
     // signatures are identical. Hence "load, then call one name" instead of a
     // switch over four call sites — the switch is inside aySlotLoad().
     aySlotLoad(mode);
-    gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R);
+    gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R, masks);
 #else
     switch (mode) {
-    case 0:  gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R); break;
-    case 1:  gen_sound_ACB(sound_bufsize, sound_buf_L, sound_buf_R); break;
-    case 3:  gen_sound_BAC(sound_bufsize, sound_buf_L, sound_buf_R); break;
-    default: gen_sound_MONO(sound_bufsize, sound_buf_L, sound_buf_R); break;
+    case 0:  gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R, masks); break;
+    case 1:  gen_sound_ACB(sound_bufsize, sound_buf_L, sound_buf_R, masks); break;
+    case 3:  gen_sound_BAC(sound_bufsize, sound_buf_L, sound_buf_R, masks); break;
+    default: gen_sound_MONO(sound_bufsize, sound_buf_L, sound_buf_R, masks); break;
     }
 #endif
-}
-
-IRAM_ATTR uint8_t* AySound::gen_sound()
-{
-    // Single-sample variant — delegates to batch with bufsize=1
-    gen_sound(1, 0);
-    SamplebufAY[0] = SamplebufAY_L[0];
-    SamplebufAY[1] = SamplebufAY_R[0];
-    return SamplebufAY;
 }
 
 #undef AY_TICK_COUNTERS
 #undef AY_HOIST_LOCALS
 #undef AY_WRITEBACK
 #undef AY_CHVOL
+#undef AY_ADD
 #undef ENVVOL
 
 // updToneA .. updEnvType are inline in AySound.h (a RAM-resident caller pastes them).

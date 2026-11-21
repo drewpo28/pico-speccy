@@ -93,7 +93,7 @@ public:
     uint8_t* ram_ = nullptr;
     Z80      cpu_;
     bool     done_ = false;
-    AySound* ay_[2] = {};
+    AySoundBuf* ay_[2] = {};
     int      chip_ = 0;                // TurboSound select (#FF = chip 0, #FE = chip 1)
     uint8_t  sel_ = 0, reg_[2][16] = {};
     bool     ts_ = false;
@@ -223,10 +223,10 @@ bool AyZ80Decoder::open(const char* path) {
     }
     memcpy(ram_ + p_->org, p_->bin, p_->size);
     for (int k = 0; k < 2 && !silent_; k++) {
-        void* a = tryMalloc(sizeof(AySound));
-        if (!a) a = Buffer::palloc(sizeof(AySound), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        void* a = tryMalloc(sizeof(AySoundBuf));
+        if (!a) a = Buffer::palloc(sizeof(AySoundBuf), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (!a) { err = "Out of memory"; return false; }
-        ay_[k] = new (a) AySound((uint8_t)(8 + k));
+        ay_[k] = new (a) AySoundBuf((uint8_t)(8 + k));
         ay_[k]->init();
         ay_[k]->set_sound_format(RATE, 1, 8);
         ay_[k]->set_stereo(AYEMU_ABC, nullptr);
@@ -296,7 +296,7 @@ void AyZ80Decoder::scanAdvance() {
 
 void AyZ80Decoder::close() {
     if (scan_) { delete scan_; scan_ = nullptr; }
-    for (auto& a : ay_) if (a) { a->~AySound(); Buffer::pfree(a); a = nullptr; }
+    for (auto& a : ay_) if (a) { a->~AySoundBuf(); Buffer::pfree(a); a = nullptr; }
     if (ram_) { Buffer::pfree(ram_); ram_ = nullptr; }
 }
 
