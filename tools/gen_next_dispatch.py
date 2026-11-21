@@ -12,7 +12,7 @@
 #   - calls its handler DIRECTLY (the handler is marked NX_DISP_INL, so GCC
 #     inlines it here while dcOpcode[] keeps its out-of-line copy), or
 #   - goes to the loop's shared slow route (`goto nx_slow`: dcOpcode[] against
-#     the published globals) — prefixes other than ED, HALT, the tape trap, RST,
+#     the published globals) — HALT, the tape trap, RST,
 #     IN/OUT, EI/DI: rare, or with hooks that read opCode / the slice. The loop
 #     leaves if the handler dropped g_next_fastrd or left a prefix pending.
 # The handlers' semantics are therefore the core's own; only the dispatch moves.
@@ -183,6 +183,12 @@ for op in range(256):
                 'switch (nx_op) { ' + inner +
                 ' default: opCode = nx_op; nxSyncHot(decodeED()); if (__builtin_expect(!g_next_fastrd, 0)) { lastFlagQ = flagQ; return; } break; '
                 '} nx_edq: if (flagQ) nx_qs = nx_r; }')
+    elif op == 0xCB:
+        # CB, DD / FD: the hand-written bodies of xy_cb_loop.inc behind the switch
+        # (exec_nocheck_next / exec_nocheck_elm); what they do not take goes on to nx_slow.
+        body = 'goto nx_cb;'
+    elif op in (0xDD, 0xFD):
+        body = 'nx_xyp = &%s; goto nx_xy;' % ('regIX' if op == 0xDD else 'regIY')
     elif op in TABLE or n == 'decodeRST':
         # the shared handler, behind the switch (exec_nocheck_next)
         body = 'goto nx_slow;'
@@ -251,14 +257,6 @@ for line in out:
         # ED: a hand-written body for PLANETOS's set (nx_ed, 2026-11-20: NEG, ADC / SBC
         # HL,rr, LDI / LDD, IN A,(C) on the HGFX status); the rest goes on to nx_slow.
         line = 'case 0xED: goto nx_ed;'
-    # CB and DD / FD: hand-written bodies after the switch in Z80_JLS.cpp (nx_cb, nx_xy:
-    # PLANETOS's IY maths, 2026-11-19); what they do not take goes on to nx_slow.
-    elif line.startswith('case 0xCB:'):
-        line = 'case 0xCB: goto nx_cb;'
-    elif line.startswith('case 0xDD:'):
-        line = 'case 0xDD: nx_xyp = &regIX; goto nx_xy;'
-    elif line.startswith('case 0xFD:'):
-        line = 'case 0xFD: nx_xyp = &regIY; goto nx_xy;'
     line = re.sub(r'NextMemory::(addressOnBus|addressOnBusIR|peek8|peek16|poke8|poke16)_nx\(', r'ElmMemory::\1_elm(', line)
     line = line.replace('nxPush(', 'elmPush(').replace('nxPop()', 'elmPop()').replace('nxIdleNote()', 'nxCheckTrdos()')
     line = line.replace('g_next_fastrd', 'g_elm_fastrd')

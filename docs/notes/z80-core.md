@@ -619,3 +619,14 @@ a single block longer than what is left of the frame finishes early by that much
 Re-run on the bench: all 46 eLeMeNt Demos/Games. Other DMA machines (Pentagon + DMA card, MB-02+, TS-Conf has its
 own) NOT re-run.
 
+
+## CB, DD CB / FD CB and the hot DD / FD set in the Next loop (2026-11-21, hw-run DVp2w)
+
+`src/speccy/z80/xy_cb_loop.inc`: the eLeMeNt loop's hand-written nx_cb / nx_xy / nx_cbop (PLANETOS,
+2026-11-19) moved out into one include with accessor macros (XY_PEEK8 / XY_PEEK16 / XY_POKE8) and
+included by both loops; the Next one also takes INC / DEC / LD n of XYh / XYl (`XY_UNDOC`, Next only -
+the .elmovl window is full, its code is byte-identical). Fluid's busy level-change frames ran DD 6.4 % +
+CB 2.6 % of their instructions through nx_slow (host opcode mix; DEC IXL alone 2.8 %). z80bench Next:
+`game` 165.1 -> 157.3 M ARM insns, `high` (IX/IY) 240.9 -> 175.1 M; lock, fuzz 2 x 300k and full
+ZEXALL bit-identical. On hw the frame gain in Fluid was not separable (z80bench ARM-instruction counts
+do not predict hw cycles: see z80-regcore-plan.md section 9). `.nxovl` +2 024 B.

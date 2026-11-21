@@ -1805,9 +1805,24 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
             if (sp) nx_pfx_hist[nx_op == 0xCB ? 0 : nx_op == 0xDD ? 1 : nx_op == 0xED ? 2 : 3][sp[q & 0x1fff]]++;
         }
 #endif
-        uint8_t nx_v; uint8_t* nx_p; bool nx_cc;   // next_dispatch.inc: shared ALU / INC / DEC / cc tails
+        uint8_t nx_v; uint8_t* nx_p; bool nx_cc; RegisterPair* nx_xyp;   // next_dispatch.inc: shared ALU / INC / DEC / cc tails
+        uint8_t nx_cbo, nx_cb53; uint16_t nx_cba; uint8_t* nx_cbcp;   // nx_cbop's operands (CB / DD CB / FD CB)
         switch (nx_op) {
 #include "next_dispatch.inc"
+        // CB, DD CB / FD CB and the hot DD / FD set (xy_cb_loop.inc, shared with the eLeMeNt
+        // loop): Fluid's busy level-change frames ran DD 6.4 % + CB 2.6 % of their
+        // instructions through nx_slow (host 2026-11-21). The CB operation falls through.
+#define XY_PEEK8(t, a) NextMemory::peek8_nx(t, a)
+#define XY_PEEK16(t, a) NextMemory::peek16_nx(t, a)
+#define XY_POKE8(t, pc, a, v) NextMemory::poke8_nx(t, pc, a, v)
+#define XY_UNDOC 1
+#include "xy_cb_loop.inc"
+#undef XY_UNDOC
+#undef XY_PEEK8
+#undef XY_PEEK16
+#undef XY_POKE8
+        nx_xydone:
+            break;
         }
         continue;
         // The shared handler of this opcode, against the globals: the prefixes
@@ -2042,98 +2057,6 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
         uint8_t nx_cbo, nx_cb53; uint16_t nx_cba; uint8_t* nx_cbcp;   // nx_cbop's operands (CB / DD CB / FD CB)
         switch (nx_op) {
 #include "elm_dispatch.inc"
-        // CB and the hot DD / FD set in the loop (PLANETOS, hw 2026-11-19: 13 270 FD + 4 032
-        // CB a frame through dcOpcode[] and the generic accessors = ~30 % of core0 at 28 MHz).
-        // Same order of T-states, R, WZ and flags as decodeOpcodecb / decodeCB and decodeDDFD /
-        // decodeDDFDLD8 / decodeDDFDALU8 / decodeDDFDCB; the second M1 is a plain load like
-        // elmFetchM1 (>= 0x4000 here). Longest body after the first M1: SET b,(IY+d), 19 T
-        // (NX_WIN 20). Anything else - and a prefix byte at #FFFF - goes on to nx_slow
-        // untouched (nothing consumed yet).
-        nx_cb: {
-            if (__builtin_expect(nx_pc < 0x4000, 0)) goto nx_slow;
-            nx_t += 4;
-            nx_cbo = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
-            nx_r++; nx_pc++;
-            nx_p = reg8[nx_cbo & 7];                  // null = (HL)
-            nx_cbcp = nullptr;
-            nx_cba = REG_HL;
-            nx_cb53 = REG_W;
-            nx_v = nx_p ? *nx_p : ElmMemory::peek8_elm(nx_t, nx_cba);
-            goto nx_cbop;
-        }
-        nx_xy: {
-            if (__builtin_expect(nx_pc < 0x4000, 0)) goto nx_slow;
-            const uint8_t op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff];
-            RegisterPair& xy = *nx_xyp;
-            switch (op) {
-                case 0x09: case 0x19: case 0x29: case 0x39:   // ADD XY,rr
-                    nx_t += 4 + 7; nx_r++; nx_pc++;
-                    add16(xy, op == 0x09 ? REG_BC : op == 0x19 ? REG_DE : op == 0x29 ? xy.word : REG_SP);
-                    nx_qs = nx_r;
-                    goto nx_xydone;
-                case 0x21:                                    // LD XY,nn
-                    nx_t += 4; nx_r++; nx_pc++;
-                    xy.word = ElmMemory::peek16_elm(nx_t, nx_pc);
-                    nx_pc += 2;
-                    goto nx_xydone;
-                case 0x23: case 0x2B:                         // INC / DEC XY
-                    nx_t += 4 + 2; nx_r++; nx_pc++;
-                    xy.word += op == 0x23 ? 1 : 0xFFFF;
-                    goto nx_xydone;
-                case 0x34: case 0x35: case 0x36:
-                case 0x46: case 0x4E: case 0x56: case 0x5E: case 0x66: case 0x6E: case 0x7E:
-                case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x77:
-                case 0x86: case 0x8E: case 0x96: case 0x9E: case 0xA6: case 0xAE: case 0xB6: case 0xBE:
-                case 0xCB:
-                    break;
-                default: goto nx_slow;
-            }
-            // (XY+d): M1, d, WZ = XY + d.
-            nx_t += 4; nx_r++; nx_pc++;
-            const uint16_t a = (uint16_t)(xy.word + (int8_t)ElmMemory::peek8_elm(nx_t, nx_pc));
-            REG_WZ = a;
-            nx_pc++;
-            if (op == 0x36) {                             // LD (XY+d),n
-                const uint8_t v = ElmMemory::peek8_elm(nx_t, nx_pc);
-                nx_t += 2; nx_pc++;
-                ElmMemory::poke8_elm(nx_t, nx_pc, a, v);
-                goto nx_xydone;
-            }
-            if (op == 0xCB) {                             // DD CB d op / FD CB d op
-                nx_cbo = ElmMemory::peek8_elm(nx_t, nx_pc);   // not an M1: no R
-                nx_t += 2; nx_pc++;
-                nx_p = nullptr;
-                nx_cbcp = reg8[nx_cbo & 7];               // the undocumented copy (real H / L), null for 6
-                nx_cba = a;
-                nx_cb53 = (uint8_t)(a >> 8);
-                nx_v = ElmMemory::peek8_elm(nx_t, a);
-                goto nx_cbop;
-            }
-            nx_t += 5;
-            if ((op & 0xF8) == 0x70) {                    // LD (XY+d),r
-                ElmMemory::poke8_elm(nx_t, nx_pc, a, *reg8[op & 7]);
-                goto nx_xydone;
-            }
-            nx_v = ElmMemory::peek8_elm(nx_t, a);
-            if (op < 0x40) {                              // INC / DEC (XY+d)
-                nx_t += 1;
-                if (op == 0x34) inc8(nx_v); else dec8(nx_v);
-                nx_qs = nx_r;
-                ElmMemory::poke8_elm(nx_t, nx_pc, a, nx_v);
-                goto nx_xydone;
-            }
-            if (op < 0x80) { *reg8[(op >> 3) & 7] = nx_v; goto nx_xydone; }   // LD r,(XY+d)
-            switch ((op >> 3) & 7) {                      // ALU A,(XY+d)
-                case 0: goto nx_alu0;
-                case 1: goto nx_alu1;
-                case 2: goto nx_alu2;
-                case 3: goto nx_alu3;
-                case 4: goto nx_alu4;
-                case 5: goto nx_alu5;
-                case 6: goto nx_alu6;
-                default: goto nx_alu7;
-            }
-        }
         // ED: PLANETOS's set in the loop (hw 2026-11-20: 3 090 ED a frame through nx_slow -
         // IN A,(C) 904, NEG 804, ADC HL,BC 804, LDI 576 - and the IN went decodeED ->
         // Ports::input -> Elm::portIn -> gRead -> Hgfx::status, all flash, ~7 % of core0).
@@ -2194,39 +2117,15 @@ ELM_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_elm(bool div
                 default: goto nx_slow;
             }
         }
-        // The CB operation for both: nx_cbo = op, nx_v = operand, nx_p = register (null =
-        // memory at nx_cba), nx_cbcp = DDCB's register copy, nx_cb53 = BIT (mem)'s 5/3 source.
-        nx_cbop: {
-            const uint8_t n = (nx_cbo >> 3) & 7, mask = (uint8_t)(1u << n);
-            switch (nx_cbo >> 6) {
-                case 0:
-                    switch (n) {
-                        case 0: rlc(nx_v); break;
-                        case 1: rrc(nx_v); break;
-                        case 2: rl(nx_v);  break;
-                        case 3: rr(nx_v);  break;
-                        case 4: sla(nx_v); break;
-                        case 5: sra(nx_v); break;
-                        case 6: sll(nx_v); break;
-                        default: srl(nx_v); break;
-                    }
-                    nx_qs = nx_r;
-                    break;
-                case 1:
-                    bitTest(mask, nx_v);
-                    if (!nx_p) { sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (nx_cb53 & FLAG_53_MASK); nx_t += 1; }
-                    nx_qs = nx_r;
-                    goto nx_xydone;
-                case 2: nx_v &= (uint8_t)~mask; break;
-                default: nx_v |= mask; break;
-            }
-            if (nx_p) *nx_p = nx_v;
-            else {
-                nx_t += 1;
-                ElmMemory::poke8_elm(nx_t, nx_pc, nx_cba, nx_v);
-                if (nx_cbcp) *nx_cbcp = nx_v;
-            }
-        }
+        // (the CB operation falls through to nx_xydone)
+        // CB, DD CB / FD CB and the hot DD / FD set: xy_cb_loop.inc (shared with the Next loop).
+#define XY_PEEK8(t, a) ElmMemory::peek8_elm(t, a)
+#define XY_PEEK16(t, a) ElmMemory::peek16_elm(t, a)
+#define XY_POKE8(t, pc, a, v) ElmMemory::poke8_elm(t, pc, a, v)
+#include "xy_cb_loop.inc"
+#undef XY_PEEK8
+#undef XY_PEEK16
+#undef XY_POKE8
         nx_xydone:
             break;
         }
