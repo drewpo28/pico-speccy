@@ -800,9 +800,9 @@ sources (AY ×3, SAA, CMS ×2, SN, Covox, PIT, MIDI, beeper) could accumulate st
 one uint16 frame accumulator — −7…9 KB on a multi-chip TS-Conf set, the big remaining
 lever, but it moves the gating decisions (Next pan, `selected_chip`, SAA tape mute) from
 the frame end to generation time and touches the AY slot bodies and the players that
-read `SamplebufAY/SAA`. The MIDI render's -O2 (−348 B) and its `wt_pitch_step` flash
-call are above. The PI-CARD ring could go
+read `SamplebufAY/SAA`. **Rejected by the owner (2026-11-21), do not redo:** the MIDI
+render at -O2 (−348 B; the `wt_pitch_step` flash call above stays a known speed note
+only), `AySound` field widths, and fewer MIDI voices. The PI-CARD ring could go
 4096 → 2048 frames (−8 KB while playing) only after underruns are counted (`C0_MIDI_AHEAD`
-1600 + FEED 256 is close). Micro: `AySound` field widths (~150-200 B a chip), 24 MIDI
-voices instead of 32 (~1.2 KB).
+1600 + FEED 256 is close).
 
