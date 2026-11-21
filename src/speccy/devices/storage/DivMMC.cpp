@@ -24,7 +24,8 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "speccy/devices/disk/MB02.h"   // page 0 goes back to MB-02+'s mapping when the divMMC window drops
 #include "app/Debug.h"
 #include "speccy/devices/storage/IDE.h"   // IDE::noteActivity: DivIDE lights the IDE icons
-#include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line
+#include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line, multiplicator (wrBusyHold)
+#include "speccy/video/Video.h"   // VIDEO::Draw: a busy poll's probe interval (wrBusyHold)
 #include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
 #include "hardware/timer.h"
 #include "fs/FileUtils.h"
@@ -46,6 +47,7 @@ static BYTE raw_pdrv() { return FileUtils::usbRoot ? 1 : 0; }
 // A sector write's card busy, followed by the guest's busy poll (mmcWriteResponse).
 static bool s_wr_busy = false;
 static uint32_t s_wr_t0, s_wr_probe;
+static uint32_t s_wr_poll;   // time_us_32 of the previous busy answer (wrBusyHold), the write's at first
 extern "C" int sd_card_busy(void);   // sdcard.c (host: host_disk.cpp)
 static void raDrop();   // CMD18 read-ahead (see loadSectorStream)
 static inline void s1Drop();   // the mmc_sector_buf content tag (see loadSectorStream)
@@ -2252,7 +2254,7 @@ void DivMMC::storeSector(uint32_t sector) {
         DRESULT r = disk_write(raw_pdrv(), mmc_sector_buf, sector, 1);
         if (r == RES_OK && raw_pdrv() == 0) {   // the card programs it now (mmcWriteResponse)
             s_wr_busy = true;
-            s_wr_t0 = s_wr_probe = time_us_32();
+            s_wr_t0 = s_wr_probe = s_wr_poll = time_us_32();
         }
         // The firmware's FatFs has this volume mounted too: drop its cached copy
         // of the sector and adopt the guest's FSInfo (ff.c, PICO-SPEC PATCH).
@@ -2345,11 +2347,26 @@ void DivMMC::csEdge(uint8_t value) {
 // (negative IDL, hw 2026-11-21). Now the guest's busy poll reads 0x00 while
 // sd_card_busy() says so: the guest spins in emulated time, as on a real Next.
 // The card is probed at most every 20 us (one SPI byte); 0.5 s cap, wait_ready's.
+// A busy answer also costs the guest the probe interval (20 us of its time, through
+// VIDEO::Draw so every machine's raster keeps up): between two probes a poll cannot learn
+// anything new, and NextZXOS polled port #EB ~7000 times a frame through the C port path
+// while the card programmed Fluid's save - 6-7 ms of core0 a frame (hw [NXNEG] hb: slow;
+// host count with PICOSPECCY_SDBUSY_US, 2026-11-21). The wait the guest sees still follows
+// the card; a poll loop just runs ~1/30 as many rounds.
+// Not a fixed 20 us: the guest is given the REAL time since its previous busy poll (20 us
+// at least, 2 ms at most). A probe on core0 can take longer than 20 us (the SPI bytes, an
+// async read on core1 to wait out), and with a fixed step the guest's clock fell behind the
+// card's - a card busy for ~35 ms stretched a frame to 39 ms (hw 2026-11-21, save1).
 static bool __attribute__((noinline)) wrBusyHold() {
     const uint32_t now = time_us_32();
-    if (now - s_wr_probe < 20u) return true;
+    if (now - s_wr_probe < 20u || (now - s_wr_t0 < 500000u && (s_wr_probe = now, sd_card_busy()))) {
+        uint32_t dt = now - s_wr_poll;
+        s_wr_poll = now;
+        if (dt < 20u) dt = 20u; else if (dt > 2000u) dt = 2000u;
+        VIDEO::Draw((dt * 7 / 2) << ESPectrum::multiplicator, false);   // 3.5 T a us at 1x
+        return true;
+    }
     s_wr_probe = now;
-    if (now - s_wr_t0 < 500000u && sd_card_busy()) return true;
     s_wr_busy = false;
     return false;
 }

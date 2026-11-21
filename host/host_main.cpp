@@ -595,6 +595,15 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
             char lp[64]; int ll = 0; lp[0] = 0;
             for (int k = 0; k < 4; k++) { int b = 0; for (int i = 1; i < 256; i++) if (fl[i] > fl[b]) b = i;
                 if (!fl[b]) break; ll += snprintf(lp + ll, sizeof lp - ll, " %02X:%u", b, fl[b]); fl[b] = 0; }
+            // INs: the frame's count and top three ports
+            extern uint32_t g_host_ins[256], g_host_in_n;
+            static uint32_t pin = 0, pih[256];
+            const uint32_t ins = g_host_in_n - pin; pin = g_host_in_n;
+            uint32_t ih[256]; for (int i = 0; i < 256; i++) { ih[i] = g_host_ins[i] - pih[i]; pih[i] = g_host_ins[i]; }
+            char itop[64]; int il = 0; itop[0] = 0;
+            for (int k = 0; k < 3; k++) { int b = 0; for (int i = 1; i < 256; i++) if (ih[i] > ih[b]) b = i;
+                if (!ih[b]) break; il += snprintf(itop + il, sizeof itop - il, " %02X:%u", b, ih[b]); ih[b] = 0; }
+            fprintf(stderr, "host: pclog ins=%u%s\n", ins, itop);
             extern uint32_t g_host_stnew; static uint32_t pstn = 0; const uint32_t stn = g_host_stnew - pstn; pstn = g_host_stnew;
             if (stn > 50) {   // which words of NextLineState changed (word index:count)
                 extern uint32_t g_host_stdiff[64]; static uint32_t pd[64];

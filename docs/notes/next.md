@@ -1543,3 +1543,14 @@ heavy frame) because of ONE field: palSeq, the palette log position (Fluid write
   Fluid's level change: 1 negative frame per 50, worst -1.0 ms (tick3: 1-9 / -2.3).
   `.nxovl` +824 B (nxAttrBeam alone 684 B - the one to move back if the heap needs it).
   Left: the save frames (`slow` 5.8-7 ms of SD port handlers while NextZXOS writes the save).
+
+### The save frames: a busy poll costs the guest real time (2026-11-21, hw-run DVp2w, save2)
+
+With the card-busy hold (above) NextZXOS polled port #EB ~7000 times a frame while the card
+programmed Fluid's save (host, `PICOSPECCY_SDBUSY_US=4000`, `pclog ins=`): `[NXNEG] hb:` slow
+6-7 ms + most of interp. `wrBusyHold` now gives the guest, per busy answer, the REAL time since
+its previous one (20 us .. 2 ms, through VIDEO::Draw - DivMMC serves every machine): between two
+probes a poll learns nothing, and with a fixed 20 us a long card busy (~35 ms) had stretched a
+frame to 39 ms (save1). hw: the save frame -19 ms -> -1.1 ms (one save; writes res=0). Left in
+it: interp ~12.8 ms (the driver runs from the divMMC ROM, PC < #4000: the slow loop with the
+trap check, ~400 ns/M1) and slow ~6.4 ms (the SD path itself, c0w / async reads).

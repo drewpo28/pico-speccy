@@ -2191,7 +2191,13 @@ extern void nxIoNote(uint16_t port, uint32_t us, bool out);   // NextReg.cpp
 static inline __attribute__((always_inline)) bool nxRegPort(uint16_t address) {
   return Z80Ops::isNext && (address == 0x253B || address == 0x243B);
 }
+#if HOST_BUILD
+uint32_t g_host_ins[256], g_host_in_n;   // host bench: INs per low port byte (PICOSPECCY_PCLOG)
+#endif
 IRAM_ATTR uint8_t Ports::input(uint16_t address) {
+#if HOST_BUILD
+  g_host_ins[address & 0xFF]++; g_host_in_n++;
+#endif
   if (__builtin_expect(Z80Ops::isProfi, 0)) { return inputProfi(address); }
   if (__builtin_expect(Z80Ops::isSam, 0)) return Sam::portIn(address);
   if (__builtin_expect(Z80Ops::isEnt, 0)) return Ep::portIn(address);
