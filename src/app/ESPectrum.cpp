@@ -4040,7 +4040,11 @@ __not_in_flash("audio") static void dcblock_run(int16_t* buf, int count, DcBlock
 // Both YM2203 FM halves into audioBufferFM[bufpos .. bufpos+count-1]. The range
 // is cleared first because gen() accumulates: on a TFM board the two chips' FM
 // outputs are summed on the way to the DAC, exactly like this.
-__not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
+// In FLASH since 2026-11-21 (was __not_in_flash "audio", 508 B of SRAM on every
+// build): all it does is call OpnFm::gen, which is flash code anyway. The RAM
+// caller (AYGetSample) tests TsfmSubsys::enabled first, so with TSFM off an AY
+// write never reaches flash through here.
+void ESPectrum::FMGenSound(int count, int bufpos) {
   if (!TsfmSubsys::enabled || !audioBufferFM) return;
   memset(audioBufferFM + bufpos, 0, count * sizeof(int16_t));
   if (opnfm[0]) opnfm[0]->gen(audioBufferFM, count, bufpos);
@@ -4315,8 +4319,9 @@ __not_in_flash("audio") void ESPectrum::AYGetSample() {
             chip2->gen_sound(audbufpos - audbufcntAY, audbufcntAY);
     // FM shares the AY counter deliberately: both are caught up by the same
     // register-write hook, so one position keeps the two halves of a YM2203 in
-    // step with no second counter to get out of sync.
-    FMGenSound(audbufpos - audbufcntAY, audbufcntAY);
+    // step with no second counter to get out of sync. The gate is here, in RAM:
+    // FMGenSound itself lives in flash.
+    if (TsfmSubsys::enabled) FMGenSound(audbufpos - audbufcntAY, audbufcntAY);
     audbufcntAY = audbufpos;
   }
 }

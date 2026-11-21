@@ -719,9 +719,12 @@ Test ELFs `debug/DVp2w-elm-wowfix7-1.1.3` / `wowperf10` (PERF). Read: `aud hold`
 
 ## SRAM trims across the sound devices (2026-11-21, NOT hw-tested; host tests only)
 
-From an audit of every sound device except GS/NeoGS for SRAM. No ARM toolchain in that
-session, so the numbers are `sizeof` / arithmetic, not `nm -S` of a firmware build:
-**owed — a DVp2 build and a `.bss`/heap diff against the previous ELF.**
+From an audit of every sound device except GS/NeoGS for SRAM. The first six items were
+sized by `sizeof` / arithmetic; a DVp2 MinSizeRel build made afterwards in the same
+session (Ubuntu's `gcc-arm-none-eabi` 13.2 + SDK 2.3.1 — not the project's 14.2, so
+expect a few % on code sizes) confirmed the static ones: `pwm_audio.cpp.o` `.bss` 1404 B
+(the two 640 B copies + the rest), `midi_wt.c.o` `.bss` 40 B. Heap figures still owed
+on hardware (Memory Info with each option on).
 
 - **`pwm_audio`: the ZX frame copy is 8-bit** (`buff_L/R` uint8, was int16 pre-scaled):
   **−1280 B .bss on every build** (merged onto the two-frame ring above, 2026-11-21: the ring
@@ -766,14 +769,39 @@ session, so the numbers are `sizeof` / arithmetic, not `nm -S` of a firmware bui
   gained six ring-lifetime checks (the old code fails five) and passes under ASan/UBSan.
   Hw owed: a module and a .mid, back seek, track end → next track, F11 mid-track.
 
+- **RAM-resident sound code, measured (DVp2, gcc 13.2)**: `SAASound::gen_sound` 1904 B,
+  `midi_wt_render` 1264, `ESPectrum::FMGenSound` 508 (dcblock_run inlined), `MidiSynth::
+  gen_sound` 264, `Midi::send/busy` 72 — all resident with the device off. Overlay
+  windows do not fit: SAA/MIDI are live toggles (AC_SUBSYS) and a window is a boot
+  decision. Done instead (**.data 95192 → 94080, −1112 B on every build**):
+  - `SAASound.cpp` at **-O2 -ffast-math** (was -O3 -funroll-loops: 1904 B vs 772 at -O2).
+    At -O2 `envTick`/`envSetLevels`/`toneUpdateData` went out of line into FLASH, i.e.
+    flash calls from the RAM loop on every envelope clock / tone half-cycle — so
+    `envTick` + `envSetLevels` are `always_inline` and the `new_data` test of
+    `toneUpdateData` sits in the loop (flash only after a frequency write). Result
+    **1284 B**. Left as flash calls, all rare: `toneUpdateData` (after a write),
+    `envSetNewData` (envelope boundary with new data), `memset` (muted path, once a
+    frame, as before). `envSetLevels` was a flash call even at -O3; it no longer is.
+    Host: `saa_clock_test` PASS; a 6-channel + noise + envelope bench renders the same
+    CRC (e4ee7d44) at -O3 and -O2, 26.9 / 24.6 ns/sample.
+  - `FMGenSound` in **flash** (it only calls `OpnFm::gen`, flash already);
+    `AYGetSample` (RAM) tests `TsfmSubsys::enabled` before the call, so with TSFM off
+    an AY write never reaches flash through it.
+  - **NOT changed: the MIDI render.** -O2 saves only 348 B (1264 → 916; -Os 644) on a
+    loop that runs 32 voices per sample on core0, and there was no GM bank in the
+    session to bench it. Found on the way, pre-existing, a speed (not memory) issue:
+    `midi_wt_render` calls `wt_pitch_step` in FLASH (control-rate refresh of modulated
+    voices, `wt_refresh_mod`) — a flash call from a RAM loop, up to ~2.5k a frame with
+    32 vibrato voices. Hw owed for the two changes above: SAA music on Karabas/CMS
+    (pitch, envelopes), TSFM demo (TheLink) with the AY catch-up.
+
 **What the audit left (not done):** the per-chip 640-sample buffers of the unipolar
 sources (AY ×3, SAA, CMS ×2, SN, Covox, PIT, MIDI, beeper) could accumulate straight into
 one uint16 frame accumulator — −7…9 KB on a multi-chip TS-Conf set, the big remaining
 lever, but it moves the gating decisions (Next pan, `selected_chip`, SAA tape mute) from
 the frame end to generation time and touches the AY slot bodies and the players that
-read `SamplebufAY/SAA`. RAM-resident code still unmeasured: `SAASound::gen_sound` and
-`MidiSynth::gen_sound` + `midi_wt_render` (-O3 -funroll-loops, resident with SAA / MIDI
-off) — measure with `nm -S`, then -O2 or an overlay window. The PI-CARD ring could go
+read `SamplebufAY/SAA`. The MIDI render's -O2 (−348 B) and its `wt_pitch_step` flash
+call are above. The PI-CARD ring could go
 4096 → 2048 frames (−8 KB while playing) only after underruns are counted (`C0_MIDI_AHEAD`
 1600 + FEED 256 is close). Micro: `AySound` field widths (~150-200 B a chip), 24 MIDI
 voices instead of 32 (~1.2 KB).

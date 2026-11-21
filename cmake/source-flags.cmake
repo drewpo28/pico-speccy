@@ -10,8 +10,13 @@ set_source_files_properties(${PP_XMP_SRC} PROPERTIES COMPILE_FLAGS
     "-O2 -w -DLIBXMP_CORE_PLAYER -DLIBXMP_STATIC -I${CMAKE_SOURCE_DIR}/external/libxmp -include ${CMAKE_SOURCE_DIR}/src/player/pp_xmp_alloc.h")
 set_source_files_properties(src/speccy/devices/sound/AySound.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
+# SAA1099 (Karabas #FF, CMS): -O2, not -O3 -funroll-loops (2026-11-21). gen_sound is
+# SRAM-resident on every build, SAA on or off, and the unroll made it 1904 B against
+# 772 at -O2 (arm-none-eabi-gcc 13.2, DVp2 MinSizeRel) — the FM cores' lesson again.
+# Host bench (6 tone channels + noise + both envelopes): 26.85 vs 26.83 ns/sample,
+# output bit-identical.
 set_source_files_properties(src/speccy/devices/sound/SAASound.cpp PROPERTIES
-    COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
+    COMPILE_FLAGS "-O2 -ffast-math")
 # YM2203 FM (TurboSound FM): 24 operators at the AY sample rate is the whole cost.
 # -O2, not -O3 -funroll-loops, for all three FM cores: -O3+unroll doubles the
 # hot code (17.3->8.1 KB at -O2, measured 2026-09-02) for ~14% worst-case speed

@@ -362,7 +362,11 @@ void SAASound::envSetControl(int env, uint8_t data) {
 //////////////////////////////////////////////////////////////////////
 // Envelope: Tick (from stripwax CSAAEnv::Tick)
 //////////////////////////////////////////////////////////////////////
-void SAASound::envTick(int env) {
+// always_inline (with envSetLevels): both run inside the RAM gen_sound loop on
+// every envelope clock, and gen_sound is -O2 since 2026-11-21 — out of line they
+// were flash calls from a RAM hot loop. (At -O3 envTick was inlined but
+// envSetLevels already was such a call.)
+__attribute__((always_inline)) inline void SAASound::envTick(int env) {
     EnvelopeGen &e = envs[env];
 
     if (!e.enabled) {
@@ -414,7 +418,7 @@ void SAASound::envTick(int env) {
 //////////////////////////////////////////////////////////////////////
 // Envelope: SetLevels (from stripwax CSAAEnv::SetLevels)
 //////////////////////////////////////////////////////////////////////
-void SAASound::envSetLevels(int env) {
+__attribute__((always_inline)) inline void SAASound::envSetLevels(int env) {
     EnvelopeGen &e = envs[env];
     const EnvShape &shape = env_shapes[e.shape];
 
@@ -606,8 +610,10 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
                 if (ch == 4 && envs[1].enabled && !envs[1].clock_externally)
                     envTick(1);
 
-                // Update buffered octave/offset on half-cycle completion
-                toneUpdateData(ch);
+                // Update buffered octave/offset on half-cycle completion. The
+                // new_data test is here so the flash call happens only after a
+                // frequency write, not on every half-cycle.
+                if (c.new_data) toneUpdateData(ch);
             }
 
             lvl_acc += (uint32_t)c.level * (65536u - t_prev);
