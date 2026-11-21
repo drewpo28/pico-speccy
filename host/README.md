@@ -142,7 +142,8 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   that left for nx_slow, instructions outside the Next loop and its entries a frame. The pclog
   line also carries `stnew` (line states posted to core1 that frame) and, above 50, `stdiff`
   (which NextLineState words changed - host layout: the pointer is 8 bytes).
-  A `pclog ins=` line per frame gives the INs and their top three ports.
+  A `pclog ins=` line per frame gives the INs and their top three ports, and `wlo` the Next
+  loop's writes below #4000 (nxPoke8Slow) by 4K block.
 * `PICOSPECCY_MEMDUMP=file.bin:N` writes the Z80's 64K address space (current paging)
   at the N-th presented frame, on the same clock: for code a ROM unpacks into RAM
   (Karabas ROMain's menu), then `tools/z80disasm.py file.bin --raw --org 0`.

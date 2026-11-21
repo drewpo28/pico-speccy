@@ -182,6 +182,7 @@ public:
     static inline void postOpcFetch();
     static inline bool opcodeTrapPage(uint16_t pc);
     static inline uint8_t nextOpcode(uint16_t pc); // direct Next slots, paired M1 only
+    static inline bool nextTrapQuiet(uint16_t pc); // Next: a trap-page fetch preOpcFetch would do nothing on
     static uint8_t nextOpcodeSlow(uint16_t pc);
 
     // Raw-SD adaptive read-ahead (DivSD/ZC): see DivMMC.cpp
@@ -358,6 +359,24 @@ __attribute__((always_inline)) inline bool DivMMC::opcodeTrapPage(uint16_t pc) {
     constexpr uint32_t pages = (1u << 0) | (1u << 4) | (1u << 5);
     if (page < 32) return ((pages >> page) & 1) || (pc | 7u) == 0x1FFFu;
     return page == 0x3D;
+}
+
+// The Next loop's filter in front of nextOpcodeSlow: true = an opcode fetch at pc (on a trap
+// page) on which preOpcFetch's Next branch would change nothing - not an entry point
+// (#0000-#0038 step 8, #0066, #04C6 / #0562 / #04D7 / #056A, the #3Dxx page), not an off
+// point (#1FF8-#1FFF), the reset fetch armed, and the automap-reset gate (NR 0x0A b4 /
+// NR 0x83 b0) open or with nothing left to reset. NextZXOS runs whole routines on pages
+// #00 / #04 / #05: every opcode went through nextOpcodeSlow and a full state sync (hw PC
+// profile of a boot frame, 2026-11-21: 11 %). The boot ROM / config window and the
+// Multiface return early in preOpcFetch too: false is only ever the safe answer.
+__attribute__((noinline)) inline bool DivMMC::nextTrapQuiet(uint16_t pc) {
+    extern bool g_next_automap_armed;
+    if (Config::arch != A_NEXT || !g_next_automap_armed) return false;
+    if ((pc <= 0x0038 && (pc & 7) == 0) || pc == 0x0066 || pc == 0x04C6 || pc == 0x0562 ||
+        pc == 0x04D7 || pc == 0x056A || (pc & 0xFF00) == 0x3D00 || (pc | 7u) == 0x1FFFu) return false;
+    const uint8_t* nr = NextReg::reg;
+    if (!(nr[0x0A] & 0x10) || !(nr[0x83] & 0x01)) return !automap && !next_nmi_btn;
+    return true;
 }
 
 // Called only at a complete M1 boundary: every previous preOpcFetch has its

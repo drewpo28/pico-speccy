@@ -1714,12 +1714,18 @@ IRAM_ATTR __attribute__((noinline, optimize("O2"))) void Z80::exec_nocheck_ts() 
 #endif
 // The accessors' fallbacks (next_memory.h / next_opcode.h). Each byte takes
 // what the inline path would have taken for it.
+#if HOST_BUILD
+extern uint32_t g_host_wlo[4];   // NextVideo.cpp (host bench)
+#endif
 namespace NextMemory {
 NX_OVL_CODE __attribute__((noinline)) uint32_t nxPeek16Edge(uint32_t address) {
     const uint16_t next = (uint16_t)(address + 1);
     return MemESP::ramCurrent[address >> 13][address & 0x1FFF] | (MemESP::ramCurrent[next >> 13][next & 0x1FFF] << 8);
 }
 NX_OVL_CODE __attribute__((noinline)) void nxPoke8Slow(uint32_t t, uint32_t pc, uint32_t address, uint32_t value) {
+#if HOST_BUILD
+    ::g_host_wlo[(address >> 12) & 3]++;   // pclog wlo: writes below #4000 by 4K
+#endif
     CPU::tstates = t; Z80::setRegPC((uint16_t)pc);
     Z80Ops::poke8((uint16_t)address, (uint8_t)value);
 }
@@ -1753,7 +1759,8 @@ NX_OVL_CODE __attribute__((noinline)) uint32_t fetchSlow(uint32_t t, uint32_t pc
 // The first M1: the divMMC automap pages are all below 0x4000, so one compare
 // keeps their check (and the divmmc flag) out of the path of code in RAM.
 #define nxFetchM1() do { \
-        if (__builtin_expect(nx_pc < 0x4000, 0) && divmmc && DivMMC::opcodeTrapPage(nx_pc)) { \
+        if (__builtin_expect(nx_pc < 0x4000, 0) && divmmc && DivMMC::opcodeTrapPage(nx_pc) && \
+            !DivMMC::nextTrapQuiet(nx_pc)) { \
             const uint16_t nx_tp_ = nx_pc; \
             nxSync(nx_op = DivMMC::nextOpcodeSlow(nx_tp_)); \
         } else nx_op = MemESP::ramCurrent[nx_pc >> 13][nx_pc & 0x1fff]; \

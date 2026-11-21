@@ -603,7 +603,9 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
             char itop[64]; int il = 0; itop[0] = 0;
             for (int k = 0; k < 3; k++) { int b = 0; for (int i = 1; i < 256; i++) if (ih[i] > ih[b]) b = i;
                 if (!ih[b]) break; il += snprintf(itop + il, sizeof itop - il, " %02X:%u", b, ih[b]); ih[b] = 0; }
-            fprintf(stderr, "host: pclog ins=%u%s\n", ins, itop);
+            extern uint32_t g_host_wlo[4]; static uint32_t pwl[4]; uint32_t wl[4];
+            for (int i = 0; i < 4; i++) { wl[i] = g_host_wlo[i] - pwl[i]; pwl[i] = g_host_wlo[i]; }
+            fprintf(stderr, "host: pclog ins=%u%s | wlo %u %u %u %u\n", ins, itop, wl[0], wl[1], wl[2], wl[3]);
             extern uint32_t g_host_stnew; static uint32_t pstn = 0; const uint32_t stn = g_host_stnew - pstn; pstn = g_host_stnew;
             if (stn > 50) {   // which words of NextLineState changed (word index:count)
                 extern uint32_t g_host_stdiff[64]; static uint32_t pd[64];

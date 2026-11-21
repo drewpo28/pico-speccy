@@ -1554,3 +1554,16 @@ probes a poll learns nothing, and with a fixed 20 us a long card busy (~35 ms) h
 frame to 39 ms (save1). hw: the save frame -19 ms -> -1.1 ms (one save; writes res=0). Left in
 it: interp ~12.8 ms (the driver runs from the divMMC ROM, PC < #4000: the slow loop with the
 trap check, ~400 ns/M1) and slow ~6.4 ms (the SD path itself, c0w / async reads).
+
+### Trap-page fetches that preOpcFetch would ignore take the fast path (2026-11-21, hw-run DVp2w)
+
+A hw PC profile of a NextZXOS boot frame (cpu ~25 ms): DivMMC::nextOpcodeSlow ~11 %, writes below
+#4000 through the generic path ~12 %, LDIR partly per byte ~17 %. Every opcode on the divMMC trap
+pages (#00xx / #04xx / #05xx / #3Dxx) went through nextOpcodeSlow and a full nxSync (lim = 0, so
+the next head took the slow branch too). `DivMMC::nextTrapQuiet(pc)` (noinline, RAM) answers true
+only where preOpcFetch's Next branch changes nothing: not an entry point (#0000-#0038 step 8,
+#0066, #04C6 / #0562 / #04D7 / #056A, #3Dxx), not an off point (#1FF8-#1FFF), the reset fetch
+armed, the automap-reset gate open or nothing to reset; any doubt = the old path. hw: the boot
+frame cpu 24.6-25.0 -> 23.6 ms (interp 22.4 -> 21.3); NextZXOS boot, Fluid + its save, card
+writes fine. `.nxovl` -200 B, `.data` +140 B. Left for the boot: writes into divMMC RAM and
+per-byte LDIRs through the generic accessors (host: `pclog ... | wlo` = writes below #4000 by 4K).
