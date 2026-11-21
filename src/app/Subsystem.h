@@ -79,7 +79,18 @@ namespace Subsystems {
     }
 
 SUBSYSTEM_DECL(TurboSubsys);   // AY chip1 (second AY for TurboSound)
-SUBSYSTEM_DECL(CovoxSubsys);   // 640 B audioBufferCovoxL
+// Covox: 640 B (mono: plain Covox, R aliases L) or 1280 B (stereo: SounDrive,
+// the Next DACs, SAM's SAA-side DACs). Declared by hand for the stereo shape.
+struct CovoxSubsys {
+    static volatile bool enabled;
+    static bool wanted;
+    static bool dirty;
+    static void request(bool on);
+    static bool apply();
+    static bool needStereo();            // the current Config wants two rails
+    static bool stereo;                  // what the live buffer holds
+    static bool ready() { return enabled && stereo == needStereo(); }
+};
 SUBSYSTEM_DECL(PitSubsys);     // 640 B audioBufferPIT (Pentagon Byte 8253)
 
 SUBSYSTEM_DECL(SaaSubsys);     // SAASound saaChip + sample buffers

@@ -24,7 +24,18 @@ constexpr uint32_t CHUNK = 32;                           // samples per core1 st
 
 constexpr uint32_t RV_FM = 1u << 16;                     // entry: an FM port write (reg = port & 3)
 
-struct Entry { uint32_t pos; uint32_t rv; };             // reg | value << 8 | RV_FM
+// One word an entry (was {pos, rv}, 4 KB a ring; 2 KB now): reg | value << 8 |
+// RV_FM | pos << POS_SH. A position is a sample index inside one frame (< 1024),
+// so 15 bits are plenty; ringPut SATURATES rather than masks, so an out-of-range
+// position can only apply late (at the frame end), never reorder.
+constexpr uint32_t POS_SH  = 17;
+constexpr uint32_t POS_MAX = 0x7FFFu;
+struct Entry {
+    uint32_t w;
+    uint32_t pos() const { return w >> POS_SH; }
+    uint32_t rv()  const { return w & ((1u << POS_SH) - 1); }
+};
+static_assert(sizeof(Entry) == 4, "MoonSplit ring entry is one word");
 struct Blk {
     Entry   q[RING];
     int16_t L[BUF];
@@ -51,8 +62,9 @@ inline void lock()   { spin_lock_unsafe_blocking(s_lock); }
 inline void unlock() { spin_unlock_unsafe(s_lock); }
 
 inline void applyEntry(const Entry& e) {
-    if (e.rv & RV_FM) { if (s_fm) s_fm->write((int)(e.rv & 3), (uint8_t)(e.rv >> 8)); }
-    else moonpcm->write((uint8_t)e.rv, (uint8_t)(e.rv >> 8));
+    const uint32_t rv = e.rv();
+    if (rv & RV_FM) { if (s_fm) s_fm->write((int)(rv & 3), (uint8_t)(rv >> 8)); }
+    else moonpcm->write((uint8_t)rv, (uint8_t)(rv >> 8));
 }
 
 // Apply every queued write due at or before s_done.
@@ -60,7 +72,7 @@ inline void applyDue() {
     while (s_qr != s_qw) {
         __dmb();
         const Entry& e = s_b->q[s_qr & (RING - 1)];
-        if (e.pos > s_done) break;
+        if (e.pos() > s_done) break;
         applyEntry(e);
         s_qr++;
     }
@@ -76,7 +88,7 @@ void genTo(uint32_t to) {
         uint32_t next = to;
         if (s_qr != s_qw) {
             __dmb();
-            const uint32_t p = s_b->q[s_qr & (RING - 1)].pos;
+            const uint32_t p = s_b->q[s_qr & (RING - 1)].pos();
             if (p < next) next = p;
         }
         const int n = (int)(next - s_done), off = (int)s_done;
@@ -118,8 +130,7 @@ bool MoonSplit::on() { return s_b != nullptr; }
 
 static inline void ringPut(uint32_t pos, uint32_t rv) {
     Entry& e = s_b->q[s_qw & (RING - 1)];
-    e.pos = pos;
-    e.rv  = rv;
+    e.w = rv | ((pos > POS_MAX ? POS_MAX : pos) << POS_SH);
     __dmb();
     s_qw = s_qw + 1;
 }

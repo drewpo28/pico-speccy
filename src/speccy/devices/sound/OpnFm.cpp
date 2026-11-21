@@ -27,6 +27,7 @@ Deliberate differences from fm.cpp, all of them size or platform driven:
 */
 
 #include "OpnFm.h"
+#include "FmTables.h"
 
 #include <math.h>
 #include <string.h>
@@ -82,47 +83,20 @@ Deliberate differences from fm.cpp, all of them size or platform driven:
 #define OPN_CHAN(N) ((N) & 3)
 #define OPN_SLOT(N) (((N) >> 2) & 3)
 
-// ── shared tables (heap, reference counted) ─────────────────────────────────
-// sin_tab: sine in the chip's logarithmic ("decibel") domain, 1024 entries.
-// tl_base: the x = 0..255 row of fm.cpp's tl_tab; the other 12 rows are that
-//          row shifted right by the row index, and the odd index is the sign.
-static uint16_t* s_sin_tab = nullptr;
-static uint16_t* s_tl_base = nullptr;
-static int       s_tab_refs = 0;
+// ── shared tables: FmTab (FmTables.h), the OPL3/OPLL heap tables ──────────────
+// sin_tab: sine in the chip's logarithmic ("decibel") domain, 1024 entries —
+//          fm.cpp's init math is the ymf262/ym2413 math (same ENV_STEP, same
+//          "non-standard sinus"), so it is FmTab::sin0 itself.
+// tl_base: the x = 0..255 row of fm.cpp's tl_tab is FmTab::tl_base << 2 (fm.cpp
+//          bakes "n <<= 2, 13 bits as in the real chip"; FmTab holds it
+//          unshifted). The shift is applied at the fetch, which is exact (the
+//          same integer either way). The other 12 rows are that row shifted
+//          right by the row index, and the odd index is the sign.
+// Sharing them saves 2.5 KB whenever TSFM runs beside OPL3 or OPLL.
+#define s_sin_tab (FmTab::sin0)
+#define s_tl_base (FmTab::tl_base)
 
-static bool buildTables() {
-    s_sin_tab = new (std::nothrow) uint16_t[SIN_LEN];
-    s_tl_base = new (std::nothrow) uint16_t[TL_RES_LEN];
-    if (!s_sin_tab || !s_tl_base) {
-        delete[] s_sin_tab; s_sin_tab = nullptr;
-        delete[] s_tl_base; s_tl_base = nullptr;
-        Debug::log("OpnFm: table OOM");
-        return false;
-    }
-
-    for (int x = 0; x < TL_RES_LEN; x++) {
-        double m = floor((1 << 16) / pow(2.0, (x + 1) * (ENV_STEP / 4.0) / 8.0));
-        int n = (int)m;             // 16 bits
-        n >>= 4;                    // 12 bits
-        n = (n & 1) ? (n >> 1) + 1 : (n >> 1);   // 11 bits, rounded
-        n <<= 2;                    // 13 bits, as in the real chip
-        s_tl_base[x] = (uint16_t)n;
-    }
-
-    for (int i = 0; i < SIN_LEN; i++) {
-        // "non-standard sinus" — fm.cpp's comment; checked against the real chip.
-        double m = sin(((i * 2) + 1) * M_PI / SIN_LEN);
-        double o = (m > 0.0) ? 8 * log(1.0 / m) / log(2.0)
-                             : 8 * log(-1.0 / m) / log(2.0);
-        o = o / (ENV_STEP / 4);
-        int n = (int)(2.0 * o);
-        n = (n & 1) ? (n >> 1) + 1 : (n >> 1);
-        s_sin_tab[i] = (uint16_t)(n * 2 + (m >= 0.0 ? 0 : 1));
-    }
-    return true;
-}
-
-bool OpnFm::tablesReady() { return s_sin_tab != nullptr; }
+bool OpnFm::tablesReady() { return FmTab::ready(); }
 
 OpnFm* opnfm[2] = { nullptr, nullptr };
 
@@ -130,7 +104,7 @@ OpnFm* opnfm[2] = { nullptr, nullptr };
 static inline int op_out(uint32_t p) {
     if (p >= TL_TAB_LEN) return 0;
     const uint32_t q = p >> 1;
-    const int v = (int)(s_tl_base[q & 255] >> (q >> 8));
+    const int v = (int)(((uint32_t)s_tl_base[q & 255] << 2) >> (q >> 8));
     return (p & 1) ? -v : v;
 }
 
@@ -257,8 +231,7 @@ OpnFm::OpnFm() {
     m_TA = m_TAC = 0; m_TB = 0; m_TBC = 0;
     memset(&m_sl3, 0, sizeof(m_sl3));
 
-    if (s_tab_refs == 0) buildTables();
-    s_tab_refs++;
+    FmTab::acquire();   // refcounted; false = OOM, tablesReady() reports it
 
     for (int c = 0; c < 3; c++) {
         setupConnection(&m_ch[c], c);
@@ -268,10 +241,7 @@ OpnFm::OpnFm() {
 }
 
 OpnFm::~OpnFm() {
-    if (--s_tab_refs == 0) {
-        delete[] s_sin_tab; s_sin_tab = nullptr;
-        delete[] s_tl_base; s_tl_base = nullptr;
-    }
+    FmTab::release();
 }
 
 // ── rate-dependent constants ────────────────────────────────────────────────

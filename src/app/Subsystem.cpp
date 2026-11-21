@@ -95,26 +95,47 @@ volatile bool CovoxSubsys::enabled = false;
 bool CovoxSubsys::wanted = false;
 bool CovoxSubsys::dirty = false;
 
+bool CovoxSubsys::stereo = false;
+
+// Two rails only where something writes a different right side: SounDrive
+// (Ports.cpp), the Next's four DACs (NextPorts.cpp) and SAM's DACs (Sam.cpp).
+// Plain Covox (#FB / #DD) writes one value to both, so its R aliases L.
+bool CovoxSubsys::needStereo() {
+    return Config::soundriveEnabled() || Config::arch == A_NEXT || Config::arch == A_SAM;
+}
+
 void CovoxSubsys::request(bool on) {
     wanted = on;
-    if (wanted != enabled) dirty = true;
+    if (wanted != enabled || (enabled && stereo != needStereo())) dirty = true;
 }
 
 bool CovoxSubsys::apply() {
     dirty = false;
-    if (wanted == enabled) return true;
+    const bool st = needStereo();
+    if (wanted == enabled && (!enabled || st == stereo)) return true;
 
     if (wanted) {
+        // Shape change (mono <-> stereo) under a live buffer: a fresh one. Runs at
+        // a frame boundary / reset like every apply, so the zeroed tail is the
+        // same as a fresh enable.
+        if (ESPectrum::audioBufferCovoxL && st != stereo) {
+            free(ESPectrum::audioBufferCovoxL);
+            ESPectrum::audioBufferCovoxL = nullptr;
+            ESPectrum::audioBufferCovoxR = nullptr;
+        }
         if (!ESPectrum::audioBufferCovoxL) {
-            ESPectrum::audioBufferCovoxL = (uint8_t*)tryCalloc(2 * ESP_AUDIO_SAMPLES_PENTAGON);
+            ESPectrum::audioBufferCovoxL = (uint8_t*)tryCalloc((st ? 2 : 1) * ESP_AUDIO_SAMPLES_PENTAGON);
             if (!ESPectrum::audioBufferCovoxL) {
                 Debug::log("CovoxSubsys: OOM");
+                enabled = false;
                 wanted = false;
                 Config::covox = 0;
                 Config::soundrive = 0;
                 return false;
             }
-            ESPectrum::audioBufferCovoxR = ESPectrum::audioBufferCovoxL + ESP_AUDIO_SAMPLES_PENTAGON;
+            ESPectrum::audioBufferCovoxR = st ? ESPectrum::audioBufferCovoxL + ESP_AUDIO_SAMPLES_PENTAGON
+                                              : ESPectrum::audioBufferCovoxL;
+            stereo = st;
         }
         enabled = true;
     } else {

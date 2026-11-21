@@ -19,21 +19,37 @@
 //  byte rate, flash is fine.)
 #include "wavetable.c.inl"       // parse_midi, midi_sample_stereo, wt_set_bank, wt_has_active_voices
 
-// Lazy voice array: the 32-voice state (~5 KB) is heap-backed and only present
-// while a GM.DLS bank is bound (i.e. GM.DLS MIDI is the active engine). This keeps
-// it out of permanent .bss for every other configuration. MidiSubsys owns the
-// lifecycle: bind allocates, midi_wt_unbind() (via MidiSynth::deinit) frees.
+// Lazy engine state: the 32-voice array (~5 KB), the 16-channel table and the
+// 256-entry µ-law LUT are ONE heap block, present only while a GM.DLS bank is
+// bound (i.e. GM.DLS MIDI is the active engine). This keeps all of it out of
+// permanent .bss for every other configuration (the channels + LUT were ~0.8 KB
+// of .bss until 2026-11-21). MidiSubsys owns the lifecycle: bind allocates,
+// midi_wt_unbind() (via MidiSynth::deinit) frees. Layout: voices | channels | lut
+// (every part is a multiple of 4 bytes, so each stays word-aligned).
 // tryCalloc, not calloc: pico_malloc PANICS on NULL, and Pico-Zx-Player binds the bank
 // from inside the menu, where the heap can be thin — a refusal is handled below.
 void* tryCalloc(size_t n);
+_Static_assert(sizeof(wt_voice_t) % 4 == 0 && sizeof(wt_channel_t) % 4 == 0,
+               "midi_wt block parts must stay word-aligned");
 int midi_wt_voices_alloc(void) {
-    if (!g_voices) g_voices = (wt_voice_t *) tryCalloc(WT_MAX_VOICES * sizeof(wt_voice_t));
-    return g_voices != (wt_voice_t *) 0;
+    if (!g_voices) {
+        uint8_t *blk = (uint8_t *) tryCalloc(WT_MAX_VOICES * sizeof(wt_voice_t)
+                                             + WT_MIDI_CHANNELS * sizeof(wt_channel_t)
+                                             + 256 * sizeof(int16_t));
+        if (!blk) return 0;
+        g_voices    = (wt_voice_t *) blk;
+        g_channels  = (wt_channel_t *) (blk + WT_MAX_VOICES * sizeof(wt_voice_t));
+        wt_ulaw_lut = (int16_t *) (blk + WT_MAX_VOICES * sizeof(wt_voice_t)
+                                       + WT_MIDI_CHANNELS * sizeof(wt_channel_t));
+    }
+    return 1;
 }
 
 void midi_wt_unbind(void) {
-    free(g_voices);
+    free(g_voices);             // the whole block: voices, channels, µ-law LUT
     g_voices = (wt_voice_t *) 0;
+    g_channels = (wt_channel_t *) 0;
+    wt_ulaw_lut = (int16_t *) 0;
     g_active_mask = 0;          // no live voices once the array is gone
 }
 

@@ -220,25 +220,41 @@ volatile int16_t* pcm_end_callback(volatile size_t* size) {
     return NULL;
 }
 
-static int16_t buff_L[640] = { 0 };
-static int16_t buff_R[640] = { 0 };
-static volatile size_t m_off = 0; // in 16-bit words
-static volatile size_t m_size = 0; // 16-bit values prepared (available)
+// The ZX half of the frame, as the mixer produced it (unipolar 0..255) plus the
+// volume it was written with. Kept 8-bit and scaled per sample in the ISR: an
+// int16 copy (2 x 1280 B) cost 1280 B more .bss for one multiply a sample.
+// s_zvol8 is latched with the frame, so a volume change still lands on a frame
+// edge exactly as when the copy was pre-scaled.
+static uint8_t buff_L[640] = { 0 };
+static uint8_t buff_R[640] = { 0 };
+static volatile uint32_t s_zvol8 = 0;
+static volatile size_t m_off = 0; // in samples
+static volatile size_t m_size = 0; // samples prepared (available)
 
-esp_err_t __not_in_flash_func(pwm_audio_write)(
+static inline int32_t zscale(uint8_t v, uint32_t vol8) {
+    const int32_t x = (int32_t)v * (int32_t)vol8;
+    return x > 32767 ? 32767 : x;
+}
+
+// -O3 turns a plain copy loop into a memcpy call, i.e. into flash.
+#if defined(__GNUC__) && !defined(__clang__)
+#define PWM_NO_LIBCALL __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#else
+#define PWM_NO_LIBCALL
+#endif
+PWM_NO_LIBCALL esp_err_t __not_in_flash_func(pwm_audio_write)(
     uint8_t *bufL,
     uint8_t *bufR,
     size_t len,
     size_t* bytes_written,
     uint32_t wait_ms
 ) {
-    uint32_t vol8 = (uint32_t)(vol + Config::audio_boost) << 3;
+    if (len > sizeof(buff_L)) len = sizeof(buff_L);
     for (size_t i = 0; i < len; ++i) {
-        int32_t vL = (int32_t)bufL[i] * (int32_t)vol8;
-        int32_t vR = (int32_t)bufR[i] * (int32_t)vol8;
-        buff_L[i] = vL > 32767 ? 32767 : (int16_t)vL;
-        buff_R[i] = vR > 32767 ? 32767 : (int16_t)vR;
+        buff_L[i] = bufL[i];
+        buff_R[i] = bufR[i];
     }
+    s_zvol8 = (uint32_t)(vol + Config::audio_boost) << 3;
     m_off = 0;
     m_size = len;
     if (bytes_written) *bytes_written = len;
@@ -573,13 +589,15 @@ static void __not_in_flash_func(pcm_call_inner)() {
     // (hw-confirmed same day: GMX + GS at 7 MHz plays clean, neg frames and all).
     int32_t zL, zR;
     if (m_off < m_size) {
-        zL = buff_L[m_off];
-        zR = buff_R[m_off];
+        const uint32_t zv = s_zvol8;
+        zL = zscale(buff_L[m_off], zv);
+        zR = zscale(buff_R[m_off], zv);
         ++m_off;
     } else if (m_size > 0) {
         g_pcm_hold_ct++;
-        zL = buff_L[m_size - 1];
-        zR = buff_R[m_size - 1];
+        const uint32_t zv = s_zvol8;
+        zL = zscale(buff_L[m_size - 1], zv);
+        zR = zscale(buff_R[m_size - 1], zv);
     } else {
         zL = 0;
         zR = 0;

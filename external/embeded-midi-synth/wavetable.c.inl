@@ -201,7 +201,10 @@ static gm_bank_view_t g_bank;
 // driven by MidiSubsys. NULL until a GM.DLS bank is bound. Indexed access below is
 // unchanged (pointer indexing); the only spot that needed care is the sizeof().
 static wt_voice_t  *g_voices = (wt_voice_t *) 0;
-static wt_channel_t g_channels[WT_MIDI_CHANNELS];
+// pico-speccy: the channel table lives in the same heap block as g_voices (see
+// midi_wt_voices_alloc in src/speccy/devices/sound/midi_wt.c), so a session
+// without a bound GM.DLS bank pays no .bss for it. NULL until bound.
+static wt_channel_t *g_channels = (wt_channel_t *) 0;
 static uint32_t g_next_age;
 
 // Active-voice bitmask: bit i set iff g_voices[i].active. Lets the audio loop
@@ -346,7 +349,8 @@ static void wt_build_luts(void) {}
 // µ-law sample decode LUT: pcm byte -> int16. Built once from the integer codec
 // (no float/libm), keep it in RAM on device (the audio loop does two loads per
 // voice per sample through it). The hot path reads wt_ulaw_lut[v->pcm[i]].
-static int16_t wt_ulaw_lut[256];
+// pico-speccy: heap, in the g_voices block (256 entries; see g_channels above).
+static int16_t *wt_ulaw_lut = (int16_t *) 0;
 
 static void wt_engine_reset(void) {
     memset(g_voices, 0, WT_MAX_VOICES * sizeof(wt_voice_t)); // pico-spec: g_voices is a pointer now

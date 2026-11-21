@@ -3866,12 +3866,14 @@ __not_in_flash("audio") void ESPectrum::CovoxGetSample() {
     audbufpos >>= multiplicator;
   if (audbufpos > audbufcntCovox) {
     uint8_t *sound_buf_l = audioBufferCovoxL + audbufcntCovox;
-    uint8_t *sound_buf_r = audioBufferCovoxR + audbufcntCovox;
     int sound_bufsize = audbufpos - audbufcntCovox;
-    while (sound_bufsize-- > 0) {
-      *sound_buf_l++ = lastCovoxVal;
-      *sound_buf_r++ = lastCovoxValR;
+    // Mono Covox (CovoxSubsys::stereo false): R is the same buffer as L.
+    if (audioBufferCovoxR != audioBufferCovoxL) {
+      uint8_t *sound_buf_r = audioBufferCovoxR + audbufcntCovox;
+      for (int n = sound_bufsize; n > 0; n--) *sound_buf_r++ = lastCovoxValR;
     }
+    while (sound_bufsize-- > 0)
+      *sound_buf_l++ = lastCovoxVal;
     audbufcntCovox = audbufpos;
   }
   s_cvKeyCnt = audbufcntCovox; s_cvKeyD = audioCOVOXDivider; s_cvKeyM = multiplicator;
@@ -5059,12 +5061,13 @@ void ESPectrum::loop() {
         }
         if (CovoxSubsys::enabled && (Config::covox || Config::soundriveEnabled()) && faudbufcntCovox < samplesPerFrame) {
           uint8_t *sound_buf_l = audioBufferCovoxL + faudbufcntCovox;
-          uint8_t *sound_buf_r = audioBufferCovoxR + faudbufcntCovox;
           int sound_bufsize = samplesPerFrame - faudbufcntCovox;
-          while (sound_bufsize-- > 0) {
-            *sound_buf_l++ = lastCovoxVal;
-            *sound_buf_r++ = lastCovoxValR;
+          if (audioBufferCovoxR != audioBufferCovoxL) {   // stereo (SounDrive / Next / SAM)
+            uint8_t *sound_buf_r = audioBufferCovoxR + faudbufcntCovox;
+            for (int n = sound_bufsize; n > 0; n--) *sound_buf_r++ = lastCovoxValR;
           }
+          while (sound_bufsize-- > 0)
+            *sound_buf_l++ = lastCovoxVal;
         }
         // KR580VI53 (8253 PIT) — complete buffer for remaining frame
         if (PitSubsys::enabled && Z80Ops::isByte && faudbufcntPIT < samplesPerFrame) {
