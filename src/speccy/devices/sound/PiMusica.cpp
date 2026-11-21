@@ -121,6 +121,33 @@ void armRead() {
     arm(code, p, 12);
 }
 
+// The track's SRAM (2026-11-21): the 16 KB ring, the render chunk and core1's
+// 8 KB stack exist only while a decoder is open — taken in openDecoder, given
+// back in closeDecoder (track end, session end, reset, seek back). Before that
+// they were claimed in setup() and held for the whole session even with no file
+// on the card, ~25 KB of heap for an option that is mostly idle.
+// Freeing is safe on core0: the audio tick that reads the ring runs on core0
+// (detached first, so it sees nullptr from its next entry), and core1 only
+// touches the ring / its stack under the lock with g_pimus_c1_live re-checked.
+void dropBuffers() {
+    pcm_card_detach();
+    if (S->ring)    { Buffer::pfree(S->ring); S->ring = nullptr; }
+    if (S->tmp)     { free(S->tmp);           S->tmp = nullptr; }
+    if (S->c1stack) { free(S->c1stack);       S->c1stack = nullptr; }
+}
+
+// false = no SRAM for the ring / chunk (the track then reports "finished").
+// No core1 stack is not a failure: the module renders on core0, as before.
+bool takeBuffers(bool wantStack) {
+    if (!S->ring) S->ring = (int16_t*)Buffer::palloc(RING_FRAMES * 4, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    if (!S->tmp)  S->tmp  = (int16_t*)tryMalloc(FEED * 4);
+    if (!S->ring || !S->tmp) { dropBuffers(); return false; }
+    if (wantStack && !S->c1stack) S->c1stack = (uint8_t*)tryMalloc(C1_STACK);
+    memset(S->ring, 0, RING_FRAMES * 4);
+    pcm_card_attach(S->ring, RING_FRAMES);
+    return true;
+}
+
 void closeDecoder() {
     if (S->dec) {
         g_pimus_c1_live = false;
@@ -132,6 +159,7 @@ void closeDecoder() {
         delete d;                               // MidiDecoder::close resets the synth (core0)
     }
     pcm_card_r = pcm_card_w;                    // nothing of the old track plays on
+    dropBuffers();                              // no track, no ring (see takeBuffers)
     S->isMidi = false;
     S->paused = S->ended = false;
     S->seekReq = 0;
@@ -242,6 +270,11 @@ void pumpLocked(int chunks) {
 void openDecoder() {
     const bool midi = (S->fileSize >= 14 && !memcmp(S->file, "MThd", 4)) ||
                       (S->fileSize >= 20 && !memcmp(S->file, "RIFF", 4) && !memcmp(S->file + 8, "RMID", 4));
+    if (!takeBuffers(!midi)) {                  // a .mid renders on core0: no stack
+        Debug::log("[PIMUS] no SRAM for the %u-frame ring, track refused", (unsigned)RING_FRAMES);
+        S->phase = P_ENDED;                     // the position frame says "finished"
+        return;
+    }
     pp::Decoder* d = pp::createDecoder(std::string(midi ? "mid" : "mod"));
     const uint32_t t0 = time_us_32();
     bool ok = d && d->openMemory(S->file, S->fileSize);
@@ -249,6 +282,7 @@ void openDecoder() {
                ok ? d->meta.format : (d ? d->err : "no decoder"), (unsigned)((time_us_32() - t0) / 1000));
     if (!ok) {
         if (d) delete d;
+        dropBuffers();
         S->phase = P_ENDED;                     // the position frame says "finished"
         return;
     }
@@ -353,26 +387,19 @@ const char* PiMusica::init() {
     State* s = (State*)tryCalloc(sizeof(State));
     if (!s) return "no heap";
     new (s) State();
-    s->ring = (int16_t*)Buffer::palloc(RING_FRAMES * 4, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
-    s->tmp  = (int16_t*)tryMalloc(FEED * 4);
-    s->c1stack = (uint8_t*)tryMalloc(C1_STACK);   // no stack = every module renders on core0
+    // The ring / chunk / core1 stack are per track now (takeBuffers): only the
+    // state and the lock are claimed here.
     const int id = spin_lock_claim_unused(false);
-    if (!s->ring || !s->tmp || id < 0) {
-        if (s->ring) Buffer::pfree(s->ring);
-        if (s->tmp) free(s->tmp);
-        if (s->c1stack) free(s->c1stack);
-        if (id >= 0) spin_lock_unclaim(id);
+    if (id < 0) {
         free(s);
-        return "no heap for the ring";
+        return "no spinlock";
     }
     s->lock = spin_lock_init(id);
-    memset(s->ring, 0, RING_FRAMES * 4);
     S = s;
-    pcm_card_attach(S->ring, RING_FRAMES);
     __dmb();
     g_pimus_on = 1;
-    Debug::log("[PIMUS] PI-CARD MUSICA on #63/#67, ring %u frames @%p, core1 stack %s", (unsigned)RING_FRAMES, S->ring,
-               S->c1stack ? "8 KB" : "NONE (core0 renders)");
+    Debug::log("[PIMUS] PI-CARD MUSICA on #63/#67, ring %u frames + core1 stack %u B per track",
+               (unsigned)RING_FRAMES, (unsigned)C1_STACK);
     return nullptr;
 }
 
@@ -405,15 +432,19 @@ void PiMusica::portWrite(uint8_t lo, uint8_t v) {
 }
 
 static void c1Tramp(void*) {
-    lock();
-    if (g_pimus_c1_live) pumpLocked(1);
-    unlock();
+    pumpLocked(1);                              // the lock is held by core1Pump
 }
 
 void PiMusica::core1Pump() {
     if (!S || !g_pimus_c1_live) return;
     if (RING_FRAMES - (pcm_card_w - pcm_card_r) < (uint32_t)FEED) return;   // full: no lock taken
-    c1CallOnStack((void*)(((uintptr_t)S->c1stack + C1_STACK) & ~(uintptr_t)7), c1Tramp, nullptr, S->c1stack);
+    // The lock is taken BEFORE the stack switch and live re-checked under it:
+    // closeDecoder clears g_pimus_c1_live and then takes the lock, so once it has
+    // been through, core1 can no longer step onto a stack dropBuffers() freed.
+    lock();
+    if (g_pimus_c1_live && S->c1stack)
+        c1CallOnStack((void*)(((uintptr_t)S->c1stack + C1_STACK) & ~(uintptr_t)7), c1Tramp, nullptr, S->c1stack);
+    unlock();
 }
 
 void PiMusica::frameTick() {

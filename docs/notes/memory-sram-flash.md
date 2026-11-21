@@ -582,6 +582,9 @@ re-provisions. Those five are still owed.
 
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
+(2026-11-21: the sound devices were audited for SRAM separately — the static and heap
+trims made and the levers left are in sound.md, "SRAM trims across the sound devices".)
+
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):
 `.bss` 89068 → 106808, `.data` (mostly `.time_critical` RAM-resident code)
 103080 → 112152, plus 8224 off the heap ceiling because the core0 stack moved.

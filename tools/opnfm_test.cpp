@@ -1,15 +1,18 @@
 // Host-side test harness for src/speccy/devices/sound/OpnFm.cpp (the TurboSound FM / YM2203 OPN core).
 // An FM core fails quietly and by degrees, so run this after ANY change to it.
 //
-//   g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp && /tmp/opnfm_test
+//   g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp
+//       src/speccy/devices/sound/FmTables.cpp && /tmp/opnfm_test
 //
-// It links against a local Debug::log stub (OpnFm.cpp's only project dependency),
+// It links against a local Debug::log stub and a tryMalloc stub (OpnFm's tables are
+// FmTab's since 2026-11-21, so FmTables.cpp is linked too),
 // so nothing else of the firmware has to build. Expected output:
 //   A 440.1 Hz   B 0   C/F fundamental 440.1 Hz   D 48 (48.1)   E 12 (12.0)
 //   G nonzero and bounded   H 440.1 Hz
 // I is a throughput figure, not a pass/fail.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstdarg>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +26,9 @@ struct Debug { static void log(const char* fmt, ...); };
 void Debug::log(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt); vprintf(fmt, ap); va_end(ap); printf("\n");
 }
+
+// FmTables.cpp allocates through the non-panicking tryMalloc; on the host, malloc.
+extern "C" void* tryMalloc(size_t n) { return malloc(n); }
 
 static const int RATE = 31250;
 

@@ -16,8 +16,10 @@
 // core0 only — midi_wt is one engine shared with the emulator's own live MIDI
 // (MidiSynth), which steps aside while a card .mid plays.
 //
-// Reboot-class (Config::pimusica): the ring and the lock are taken once in
-// setup(). Only on boards with QSPI (butter) PSRAM, like the player itself.
+// Reboot-class (Config::pimusica): the state and the lock are taken once in
+// setup(); the 16 KB SRAM ring, the render chunk and core1's 8 KB stack only
+// while a track is open (2026-11-21). Only on boards with QSPI (butter) PSRAM,
+// like the player itself.
 #pragma once
 #include <stdint.h>
 

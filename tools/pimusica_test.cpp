@@ -135,6 +135,7 @@ static void session(uint32_t size, bool core1 = true) {
 int main() { setvbuf(stdout, nullptr, _IONBF, 0);
     CHECK(PiMusica::init() == nullptr);
     CHECK(g_pimus_on == 1);
+    CHECK(pcm_card_ring == nullptr);                  // the ring is per track (takeBuffers)
     CHECK(in63() == 0);                               // idle: no command
     // ping
     sendCmd(0x01);
@@ -148,6 +149,7 @@ int main() { setvbuf(stdout, nullptr, _IONBF, 0);
     session(10000);
     CHECK(FakeDec::opens == 1); CHECK(FakeDec::lastExt == "mod");
     CHECK(g_pimus_c1_live);
+    CHECK(pcm_card_ring != nullptr);                  // taken at the open
     CHECK(pcm_card_w > 0);                            // the head start + core1 filled it
     uint32_t w0 = pcm_card_w;
     frames(3); CHECK(pcm_card_w == w0);               // ring full: nothing more
@@ -181,6 +183,7 @@ int main() { setvbuf(stdout, nullptr, _IONBF, 0);
     for (int i = 0; i < 8000; i++) { drain(640); frames(1); uint8_t s2 = serve(); if (s2 == 0x16 && lastState == 0x02) break; }
     CHECK(lastState == 0x02);
     CHECK(!g_pimus_c1_live);
+    CHECK(pcm_card_ring == nullptr);                  // given back with the decoder
 
     // ── session 2: a 300-byte file, 0x13 only, opened as MIDI by its magic ──
     g_file.clear();
@@ -190,10 +193,12 @@ int main() { setvbuf(stdout, nullptr, _IONBF, 0);
       CHECK(!g_pimus_c1_live); CHECK(PiMusica::ownsMidiSynth());
       CHECK(serve() == 0x14); frames(1); CHECK(serve() == 0x15); frames(1); CHECK(serve() == 0x19); frames(1); CHECK(serve() == 0x16);
       CHECK(pcm_card_w - pcm_card_r >= 1500);        // core0 keeps ~2.5 frames ahead
-      drain(1000); frames(1, false); CHECK(pcm_card_w - pcm_card_r >= 1500); }
+      drain(1000); frames(1, false); CHECK(pcm_card_w - pcm_card_r >= 1500);
+      CHECK(pcm_card_ring != nullptr); }
     // a short window: the plugin acknowledges fewer bytes than asked -> same request again
     sendCmd(0x01); CHECK(serve() == 0x11);
     CHECK(!PiMusica::ownsMidiSynth());
+    CHECK(pcm_card_ring == nullptr);                  // reset ends the session: no ring
     g_file.assign(5000, 0x5A);
     sendCmd(0x02, (uint8_t)5000, (uint8_t)(5000 >> 8), 0, 0, 2, 0x02, 0);
     CHECK(poll() == 0x12); readFrame(f, 13);
@@ -213,6 +218,7 @@ int main() { setvbuf(stdout, nullptr, _IONBF, 0);
     g_failOpen = true; g_file.assign(100, 2);
     sendCmd(0x02, 100, 0, 0, 0, 2, 0x02, 0);
     CHECK(serve() == 0x13); frames(1); CHECK(serve() == 0x16); CHECK(lastState == 0x02);
+    CHECK(pcm_card_ring == nullptr);                  // a failed open keeps nothing
     g_failOpen = false;
     // an unknown host command is logged and ignored; a reset mid-session is clean
     sendCmd(0x7E); CHECK(in63() == 0);

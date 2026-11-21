@@ -225,19 +225,34 @@ volatile int16_t* pcm_end_callback(volatile size_t* size) {
 // nothing to play for its whole overrun and the ZX sample froze ("hold") - WOWDEMO at full
 // average speed still froze 1 600-1 900 samples every 60 frames (24 late frames of 5-7 ms),
 // heard as a trembling SAA. Now every write appends one frame and the timer plays one frame
-// behind: a frame up to a frame late costs nothing. +20 ms of latency, +2.5 KB of SRAM.
+// behind: a frame up to a frame late costs nothing. +20 ms of latency.
 // Counters run free (index = counter % AU_RING); both sides are core0 (the alarm IRQ and
 // the main loop), so the writer's index updates are taken with the IRQ off.
+// The samples stay as the mixer made them (unipolar 0..255) and the ISR scales them by
+// s_zvol8, latched at the write: int16 copies cost 2 x 2560 B for one multiply a sample
+// (ccr-1d34403f; a volume change lands up to a frame early on the queued samples).
 enum { AU_RING = 1280 };                 // two frames of the longest machine (640)
-static int16_t buff_L[AU_RING] = { 0 };
-static int16_t buff_R[AU_RING] = { 0 };
+static uint8_t buff_L[AU_RING] = { 0 };
+static uint8_t buff_R[AU_RING] = { 0 };
+static volatile uint32_t s_zvol8 = 0;
 static volatile uint32_t m_wr = 0;       // samples written
 static volatile uint32_t m_rd = 0;       // samples played
 static volatile bool m_have = false;     // something was written since the reset: hold, not silence
-static int16_t m_lastL = 0, m_lastR = 0; // the last sample played (the hold level)
+static uint8_t m_lastL = 0, m_lastR = 0; // the last sample played (the hold level)
 static bool m_prime = true;              // the next write puts one frame of lead in front of it
 
-esp_err_t __not_in_flash_func(pwm_audio_write)(
+static inline int32_t zscale(uint8_t v, uint32_t vol8) {
+    const int32_t x = (int32_t)v * (int32_t)vol8;
+    return x > 32767 ? 32767 : x;
+}
+
+// -O3 turns a plain copy loop into a memcpy call, i.e. into flash.
+#if defined(__GNUC__) && !defined(__clang__)
+#define PWM_NO_LIBCALL __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#else
+#define PWM_NO_LIBCALL
+#endif
+PWM_NO_LIBCALL esp_err_t __not_in_flash_func(pwm_audio_write)(
     uint8_t *bufL,
     uint8_t *bufR,
     size_t len,
@@ -245,7 +260,7 @@ esp_err_t __not_in_flash_func(pwm_audio_write)(
     uint32_t wait_ms
 ) {
     if (len > AU_RING / 2) len = AU_RING / 2;
-    uint32_t vol8 = (uint32_t)(vol + Config::audio_boost) << 3;
+    s_zvol8 = (uint32_t)(vol + Config::audio_boost) << 3;
     uint32_t w = m_wr;
     // The lead: after a reset, or when the timer ran dry (a frame more than a frame late, a
     // pause), one frame at the current level goes in first, so the timer is a frame behind.
@@ -260,10 +275,8 @@ esp_err_t __not_in_flash_func(pwm_audio_write)(
     }
     for (uint32_t i = 0; i < pad; ++i, ++w) { buff_L[w % AU_RING] = m_lastL; buff_R[w % AU_RING] = m_lastR; }
     for (size_t i = 0; i < len; ++i, ++w) {
-        int32_t vL = (int32_t)bufL[i] * (int32_t)vol8;
-        int32_t vR = (int32_t)bufR[i] * (int32_t)vol8;
-        buff_L[w % AU_RING] = vL > 32767 ? 32767 : (int16_t)vL;
-        buff_R[w % AU_RING] = vR > 32767 ? 32767 : (int16_t)vR;
+        buff_L[w % AU_RING] = bufL[i];
+        buff_R[w % AU_RING] = bufR[i];
     }
     __dmb();
     m_wr = w;
@@ -600,15 +613,17 @@ static void __not_in_flash_func(pcm_call_inner)() {
     // (hw-confirmed same day: GMX + GS at 7 MHz plays clean, neg frames and all).
     int32_t zL, zR;
     const uint32_t rd = m_rd;
+    const uint32_t zv = s_zvol8;
     if (rd != m_wr) {
-        zL = buff_L[rd % AU_RING];
-        zR = buff_R[rd % AU_RING];
+        m_lastL = buff_L[rd % AU_RING];
+        m_lastR = buff_R[rd % AU_RING];
         m_rd = rd + 1;
-        m_lastL = (int16_t)zL; m_lastR = (int16_t)zR;
+        zL = zscale(m_lastL, zv);
+        zR = zscale(m_lastR, zv);
     } else if (m_have) {
         g_pcm_hold_ct++;
-        zL = m_lastL;
-        zR = m_lastR;
+        zL = zscale(m_lastL, zv);
+        zR = zscale(m_lastR, zv);
     } else {
         zL = 0;
         zR = 0;

@@ -583,9 +583,10 @@ is arithmetic here, and its `tl_tab` (26 KB) is stored as the 256-entry base row
 it is built from, with the shift and sign that fm.cpp bakes into the flat table
 re-applied at the fetch. Only ~2.5 KB of shared tables remain, on the heap.
 
-Validated on the host, not on hardware, by `tools/opnfm_test.cpp` (OpnFm.cpp's
-only project dependency is `Debug::log`, which the harness stubs, so it builds
-with `g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp`):
+Validated on the host, not on hardware, by `tools/opnfm_test.cpp` (the harness
+stubs `Debug::log` and `tryMalloc`; since 2026-11-21 the tables are `FmTab`'s, see
+sound.md "SRAM trims", so it builds with `g++ -O2 -Isrc -o /tmp/opnfm_test
+tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp src/speccy/devices/sound/FmTables.cpp`):
 440.0 Hz demanded / 440.1 Hz measured (algorithm 7 and via autocorrelation on a
 real 4-op patch), key-off decays to exact silence, channel 3 3-slot mode plays,
 SSG-EG cycles and stays bounded, timer A 48 overflows/s against 48.1 wanted,

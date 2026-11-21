@@ -674,7 +674,7 @@ Tracker modules render on core1 (`PiMusica::core1Pump` in render_core, one spinl
 a core0 top-up at the frame end when the ring falls under 1024 frames); a .mid renders
 on core0 only (`midi_wt` is one engine — `MidiSynth::gen_sound` steps aside while
 `PiMusica::ownsMidiSynth()`). Audio > "PI-CARD MUSICA" (`Config::pimusica`, NVS
-`pimusica`, AC_REBOOT: the 16 KB ring + lock are claimed in setup(); `pp::available()`
+`pimusica`, AC_REBOOT: the lock is claimed in setup(), the 16 KB ring per track since 2026-11-21 — see "SRAM trims"; `pp::available()`
 = QSPI PSRAM only). Ports: one byte test (`g_pimus_on`) + a flash call in both RAM
 port paths, BEFORE the Beta alias switch (`address & 0xE3` takes #63/#67 for the
 WD1793 DATA register in DOS context); not on Profi (VV55 there, on real hardware too).
@@ -716,3 +716,65 @@ A writer that runs ahead drops the oldest unplayed samples (IRQ off: both sides 
 the writer (the modulo is a multiply). The host has its own audio path (host_audio.cpp): hw only.
 Test ELFs `debug/DVp2w-elm-wowfix7-1.1.3` / `wowperf10` (PERF). Read: `aud hold` near 0 while
 `[SD2] neg` stays where it was; listen for any machine's audio lag (+20 ms).
+
+## SRAM trims across the sound devices (2026-11-21, NOT hw-tested; host tests only)
+
+From an audit of every sound device except GS/NeoGS for SRAM. No ARM toolchain in that
+session, so the numbers are `sizeof` / arithmetic, not `nm -S` of a firmware build:
+**owed — a DVp2 build and a `.bss`/heap diff against the previous ELF.**
+
+- **`pwm_audio`: the ZX frame copy is 8-bit** (`buff_L/R` uint8, was int16 pre-scaled):
+  **−1280 B .bss on every build** (merged onto the two-frame ring above, 2026-11-21: the ring
+  holds uint8, **−2560 B**; the volume is latched per write, so a change can land up to a
+  frame early on queued samples). `pwm_audio_write` copies and latches the volume
+  (`s_zvol8`), `pcm_call_inner` multiplies per sample (`zscale`) — a volume change still
+  lands on a frame edge. The copy loop carries `optimize("no-tree-loop-distribute-patterns")`
+  so -O3 cannot turn it into a flash `memcpy` from this RAM function. Hw owed: `HDMIAU`
+  dur/gap, audio level unchanged on PWM/I2S/HDMI.
+- **OpnFm (TSFM) uses `FmTab`**, the OPL3/OPLL tables: fm.cpp's sine is the ymf262/ym2413
+  sine, and its `tl` row is `FmTab::tl_base << 2` (applied in `op_out`). **−2.5 KB of heap
+  whenever TSFM runs beside OPL3 or OPLL.** Checked exhaustively (0 mismatches over all
+  13 rows + the sine) and by a 3000-frame random-register render of two chips at full and
+  half rate: CRC identical before/after (39D1747B / A024F39B, session scratch);
+  `tools/opnfm_test.cpp` output identical. Its recipe now links FmTables.cpp + a tryMalloc stub.
+- **MoonSplit ring entry is one word** (`reg | val << 8 | RV_FM | pos << 17`, pos
+  saturated at 0x7FFF so it can only apply late, never reorder): the block 6.7 → 4.6 KB,
+  **−2 KB while MoonSound is on.** Compiled only — no test links MoonSplit.cpp. Hw owed:
+  an OPL4 track (moonsound_14.trd / "05 encounter") sounds as before.
+- **Plain Covox gets one 640 B buffer** (`audioBufferCovoxR == audioBufferCovoxL`): **−640 B
+  of heap.** Two rails only where a right side differs: `CovoxSubsys::needStereo()` =
+  SounDrive enabled || Next || SAM. A shape change re-allocates in `apply()`; `request()`
+  marks dirty on it, and the nm:: reconcile uses `CovoxSubsys::ready()` (on AND right
+  shape) as "on", so SounDrive switched on under a live mono Covox gets its second rail.
+  Writers fill R only when it is a separate buffer. Hw owed: Covox #FB, SounDrive on Profi
+  (Single Warrior), Next DAC, SAM DACs; SounDrive toggled with Covox on.
+- **The MIDI engine's channel table + µ-law LUT live in the `g_voices` block**
+  (`midi_wt_voices_alloc`, one tryCalloc: voices | channels | lut): **−~0.8 KB .bss** for
+  every session without a bound GM.DLS bank; `wavetable.c.inl` holds them as pointers.
+  Compiled only (no GM bank in the repo to render). Hw owed: GM.DLS MIDI plays, reboot/
+  rebind (`MidiSynth::reset` → bind) still sounds.
+- **PI-CARD MUSICA takes its ring, chunk and core1 stack per TRACK**, not in setup():
+  `takeBuffers` in `openDecoder`, `dropBuffers` in `closeDecoder` (track end, session end,
+  reset, seek back = reopen). **~25 KB of heap back while the option is on and nothing
+  plays.** The price: a track can now be REFUSED for want of SRAM ("no SRAM for the ring",
+  reported as finished) where the boot claim either worked or switched the card off, and
+  16 KB comes and goes per track (fragmentation). A .mid takes no core1 stack. core1Pump
+  now takes the lock BEFORE switching to the heap stack and re-checks `g_pimus_c1_live`
+  under it, so core1 cannot step onto a stack `dropBuffers` freed (closeDecoder clears the
+  flag, then takes the lock). The audio tick reading the ring is core0's (alarm IRQ set
+  up in setup()), and the ring is detached before it is freed. `tools/pimusica_test.cpp`
+  gained six ring-lifetime checks (the old code fails five) and passes under ASan/UBSan.
+  Hw owed: a module and a .mid, back seek, track end → next track, F11 mid-track.
+
+**What the audit left (not done):** the per-chip 640-sample buffers of the unipolar
+sources (AY ×3, SAA, CMS ×2, SN, Covox, PIT, MIDI, beeper) could accumulate straight into
+one uint16 frame accumulator — −7…9 KB on a multi-chip TS-Conf set, the big remaining
+lever, but it moves the gating decisions (Next pan, `selected_chip`, SAA tape mute) from
+the frame end to generation time and touches the AY slot bodies and the players that
+read `SamplebufAY/SAA`. RAM-resident code still unmeasured: `SAASound::gen_sound` and
+`MidiSynth::gen_sound` + `midi_wt_render` (-O3 -funroll-loops, resident with SAA / MIDI
+off) — measure with `nm -S`, then -O2 or an overlay window. The PI-CARD ring could go
+4096 → 2048 frames (−8 KB while playing) only after underruns are counted (`C0_MIDI_AHEAD`
+1600 + FEED 256 is close). Micro: `AySound` field widths (~150-200 B a chip), 24 MIDI
+voices instead of 32 (~1.2 KB).
+
