@@ -96,12 +96,24 @@ static void fuzzRun(unsigned long long n) {
         for (int i = 0; i < 6; i++) mem[(uint16_t)(pc + i)] = b[i];
         Z80::setRegPC(pc);
         CPU::tstates = 0;
+        if (k + 1 == n)   // the last test, in full (a bisection on n finds the first that differs)
+            printf("T %llu pc=%04X bytes=%02X %02X %02X %02X %02X %02X af=%04X bc=%04X de=%04X hl=%04X ix=%04X iy=%04X sp=%04X %s\n",
+                   k, pc, b[0], b[1], b[2], b[3], b[4], b[5], Z80::getRegAF(), Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL(),
+                   Z80::getRegIX(), Z80::getRegIY(), Z80::getRegSP(), (k & 1) ? "steps" : "slice");
         // Odd tests: two single steps (every access at the slice end, i.e. the
         // slow paths). Even: one slice of 40..103 T — the instruction, then
         // whatever follows it, on the fast paths until the slice runs out.
         if (k & 1) { sliceTo(1); if (!Z80::isHalted()) sliceTo(1); }
         else sliceTo(40 + (rnd() & 63));
         hashState();
+        if (k + 1 == n)
+            printf("E pc=%04X af=%04X bc=%04X de=%04X hl=%04X ix=%04X iy=%04X sp=%04X wz=%04X r=%02X t=%lu\n", Z80::getRegPC(), Z80::getRegAF(),
+                   Z80::getRegBC(), Z80::getRegDE(), Z80::getRegHL(), Z80::getRegIX(), Z80::getRegIY(), Z80::getRegSP(), Z80::getMemPtr(),
+                   Z80::getRegR(), (unsigned long)CPU::tstates);
+        if (k + 1 == n) {   // the code the test ran into: 24 bytes at the word under the final SP
+            const uint16_t a = (uint16_t)(mem[(uint16_t)(Z80::getRegSP() - 2)] | (mem[(uint16_t)(Z80::getRegSP() - 1)] << 8));
+            printf("M %04X:", a); for (int i = 0; i < 24; i++) printf(" %02X", mem[(uint16_t)(a + i)]); printf("\n");
+        }
         if ((k & 4095) == 4095) printf("F %llu %08lX\n", k + 1, (unsigned long)hsh);
     }
     printf("FUZZ n=%llu hash=%08lX memcrc=%08lX\n", n, (unsigned long)hsh, (unsigned long)memCrc());

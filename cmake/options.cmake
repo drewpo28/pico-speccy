@@ -103,6 +103,9 @@ option(TSCONF_DRAM_MODEL "TS-Conf: model DRAM contention (CPU/video vs DMA) and 
 # to the framebuffer (ESPectrum.cpp donateZxPagesToFb). Block-granular: 0x0F = pages
 # 0-3, 0x50 = pages 4/6. 0x5F = the 2026-10-13 default; 0x50 keeps 0-3 (the usual
 # game code/data pages) in SRAM; 0x00 = the pre-v1.0.10 layout (FB on the heap).
+# [Z80HW] (src/speccy/machines/Next/NextHwBench.cpp): core0 cycles per Z80 instruction on the
+# board and the [NXNEG] hb: split of a frame (CPU.cpp HB_*). Test builds only.
+option(Z80_HWBENCH "Next: [Z80HW] core0 cycles per Z80 instruction, once ~12 s in (NextHwBench.cpp); test builds" OFF)
 # ZX Spectrum Next: 8K SRAM frames of the hot-page pool (MemESP.cpp, nextHotTick):
 # pages the CPU keeps mapped are copied from butter PSRAM into SRAM. 8 = 4 x 16K;
 # 0 = off. Taken from the heap ~3 s into the Next session (after the renderer's

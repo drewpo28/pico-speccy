@@ -595,7 +595,48 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
             char lp[64]; int ll = 0; lp[0] = 0;
             for (int k = 0; k < 4; k++) { int b = 0; for (int i = 1; i < 256; i++) if (fl[i] > fl[b]) b = i;
                 if (!fl[b]) break; ll += snprintf(lp + ll, sizeof lp - ll, " %02X:%u", b, fl[b]); fl[b] = 0; }
-            fprintf(stderr, "host: pclog acks=%u outs=%u haltT=%u idleT=%u%s |%s | lpg%s\n", acks, outs, hT, iT, top, tp, lp);
+            extern uint32_t g_host_stnew; static uint32_t pstn = 0; const uint32_t stn = g_host_stnew - pstn; pstn = g_host_stnew;
+            if (stn > 50) {   // which words of NextLineState changed (word index:count)
+                extern uint32_t g_host_stdiff[64]; static uint32_t pd[64];
+                fprintf(stderr, "host: stdiff");
+                for (int i = 0; i < 64; i++) { const uint32_t d = g_host_stdiff[i] - pd[i]; pd[i] = g_host_stdiff[i]; if (d) fprintf(stderr, " %d:%u", i, d); }
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr, "host: pclog acks=%u outs=%u haltT=%u idleT=%u%s |%s | lpg%s | stnew=%u\n", acks, outs, hT, iT, top, tp, lp, stn);
+            // PICOSPECCY_OPLOG=1: the Next loop's opcode mix over the window's BUSY frames
+            // (no HALT / idle skip), printed once at the window end: the base opcodes, the
+            // second byte of CB / DD / ED / FD, and the opcodes that left for nx_slow.
+            if (getenv("PICOSPECCY_OPLOG")) {
+                extern uint32_t g_host_op[256], g_host_pfx[4][256], g_host_slow[256];
+                static uint32_t po[256], pp[4][256], ps[256], bo[256], bp[4][256], bs[256], nbusy;
+                extern uint32_t g_host_gen, g_host_genpc[4], g_host_slices;
+                static uint32_t pg_ = 0, bg = 0, pgq[4], bgq[4], ptt = 0, btt = 0;
+                if (hT + iT == 0) btt += g_host_slices - ptt;
+                ptt = g_host_slices;
+                const bool busy = hT + iT == 0;
+                if (busy) nbusy++;
+                if (busy) { bg += g_host_gen - pg_; for (int q = 0; q < 4; q++) bgq[q] += g_host_genpc[q] - pgq[q]; }
+                pg_ = g_host_gen; for (int q = 0; q < 4; q++) pgq[q] = g_host_genpc[q];
+
+                for (int i = 0; i < 256; i++) {
+                    if (busy) { bo[i] += g_host_op[i] - po[i]; bs[i] += g_host_slow[i] - ps[i];
+                        for (int k = 0; k < 4; k++) bp[k][i] += g_host_pfx[k][i] - pp[k][i]; }
+                    po[i] = g_host_op[i]; ps[i] = g_host_slow[i]; for (int k = 0; k < 4; k++) pp[k][i] = g_host_pfx[k][i];
+                }
+                if (presented == from + cnt - 1) {
+                    uint64_t tot = 0; for (int i = 0; i < 256; i++) tot += bo[i];
+                    fprintf(stderr, "host: oplog busy frames=%u insns=%llu (%.0f/frame)\n", nbusy, (unsigned long long)tot, nbusy ? (double)tot / nbusy : 0.0);
+                    fprintf(stderr, "host: oplog generic loop %u insns (%.0f/frame), by 16K quarter %u %u %u %u; Next loop entries %.0f/frame\n", bg, nbusy ? (double)bg / nbusy : 0.0, bgq[0], bgq[1], bgq[2], bgq[3], nbusy ? (double)btt / nbusy : 0.0);
+                    auto dump = [&](const char* name, uint32_t* h, int n) {
+                        uint32_t c[256]; memcpy(c, h, sizeof c);
+                        fprintf(stderr, "host: oplog %s:", name);
+                        for (int k = 0; k < n; k++) { int b = 0; for (int i = 1; i < 256; i++) if (c[i] > c[b]) b = i;
+                            if (!c[b]) break; fprintf(stderr, " %02X:%.2f%%", b, 100.0 * c[b] / (tot ? tot : 1)); c[b] = 0; }
+                        fprintf(stderr, "\n");
+                    };
+                    dump("base", bo, 48); dump("CB", bp[0], 16); dump("DD", bp[1], 16); dump("ED", bp[2], 16); dump("FD", bp[3], 16); dump("slow", bs, 24);
+                }
+            }
             fprintf(stderr, "host: pclog f=%u dt=%u c0=%u c1=%u PC=%04X SP=%04X [%02X %02X %02X %02X %02X %02X] (SP)=%04X\n", presented, dt, c0, c1, pc, sp,
                     MemESP::readbyte(pc), MemESP::readbyte(pc + 1), MemESP::readbyte(pc + 2), MemESP::readbyte(pc + 3),
                     MemESP::readbyte(pc + 4), MemESP::readbyte(pc + 5), MemESP::readword(sp));

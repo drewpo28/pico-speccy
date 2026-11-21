@@ -1774,6 +1774,9 @@ NX_OVL_CODE __attribute__((noinline)) uint32_t fetchSlow(uint32_t t, uint32_t pc
 //    stamps the ones that may change it (next_dispatch.inc), SCF/CCF read the
 //    stamp, lastFlagQ is published on the way out and before a shared handler.
 NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool divmmc) {
+#if HOST_BUILD
+    { extern uint32_t g_host_slices; g_host_slices++; }   // PICOSPECCY_OPLOG: entries a frame
+#endif
     uint32_t nx_t = CPU::tstates, nx_r = regR, nx_lim = NextMemory::lim_nx();
     uint16_t nx_pc = regPC.word;
     uint32_t nx_qs = lastFlagQ ? nx_r : nx_r - 1;
@@ -1788,7 +1791,11 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
             // raster tick is the old head test; and an instruction that could
             // reach either limit before it ends goes to the shared handlers.
             if (nx_t >= CPU::stFrame + 4) break;
+#if Z80_HWBENCH && !HOST_BUILD
+            if (nx_t >= VIDEO::ts_line_t) { extern volatile uint32_t g_hb_tick; const uint32_t hb_ = time_us_32(); nxSync(VIDEO::tsDrawTick()); g_hb_tick += time_us_32() - hb_; }
+#else
             if (nx_t >= VIDEO::ts_line_t) nxSync(VIDEO::tsDrawTick());
+#endif
             nx_lim = NextMemory::lim_nx();   // also after nxSync zeroed it
             if (nx_t >= nx_lim) {
                 nxFetchM1();
@@ -1796,6 +1803,16 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
             }
         }
         nxFetchM1();
+#if HOST_BUILD
+        {   // host bench (PICOSPECCY_OPLOG): the opcode mix of the Next loop
+            extern uint32_t g_host_op[256], g_host_pfx[4][256];
+            g_host_op[nx_op]++;
+            if (nx_op == 0xCB || nx_op == 0xDD || nx_op == 0xED || nx_op == 0xFD) {
+                const uint8_t* sp = MemESP::ramCurrent[nx_pc >> 13];
+                if (sp) g_host_pfx[nx_op == 0xCB ? 0 : nx_op == 0xDD ? 1 : nx_op == 0xED ? 2 : 3][sp[nx_pc & 0x1fff]]++;
+            }
+        }
+#endif
 #if PERF_TRACE && PERF_HIST
         z80_op_hist[nx_op]++;
         if (nx_pc_hist) nx_pc_hist[(uint16_t)(nx_pc - 1) >> 5]++;
@@ -1832,10 +1849,17 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
         // DD / FD followed by another prefix leaves prefixOpcode set: both end
         // the loop, the shared one carries on.
     nx_slow:
+#if HOST_BUILD
+        { extern uint32_t g_host_slow[256]; g_host_slow[nx_op]++; }
+#endif
         lastFlagQ = (nx_qs == nx_r - 1);   // the shared SCF / CCF read it (DD 37 as well)
         flagQ = false;
         opCode = nx_op;
+#if Z80_HWBENCH && !HOST_BUILD
+        { extern volatile uint32_t g_hb_slow; const uint32_t hb_ = time_us_32(); nxSyncHot(dcOpcode[nx_op]()); g_hb_slow += time_us_32() - hb_; }
+#else
         nxSyncHot(dcOpcode[nx_op]());
+#endif
         if (__builtin_expect(!g_next_fastrd || prefixOpcode, 0)) { lastFlagQ = flagQ; return; }
         if (flagQ) nx_qs = nx_r;
         if (__builtin_expect(pendingEI, 0) && nx_t < CPU::stFrame) pendingEI = false;   // EI, and the slice goes on
@@ -2228,6 +2252,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
 #endif
 
         if (nbp > 0 && Config::pcBreakHit(REG_PC)) { z80_in_nocheck = false; return; }
+#if HOST_BUILD
+        { extern uint32_t g_host_gen, g_host_genpc[4]; g_host_gen++; g_host_genpc[REG_PC >> 14]++; }   // PICOSPECCY_OPLOG: outside the Next loop
+#endif
 #if PERF_TRACE
         if (g_elm_fastrd) g_elm_gen_n++;   // an instruction the eLeMeNt loop did not take (PC < 0x4000, a prefix chain)
 #endif

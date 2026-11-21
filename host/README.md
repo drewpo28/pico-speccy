@@ -137,6 +137,11 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   idle loops, the top interrupted-PC buckets (`PC@page`) and `lpg` (the PC's 8K page at every line
   end, IFF-blind). `PICOSPECCY_HOTLOG=1`: one line per frame with the hot-page pool, mmu[] and the
   hottest pages by its ranking.
+* `PICOSPECCY_OPLOG=1` (with a PCLOG window): the Next loop's opcode mix over the window's busy
+  frames, printed once at its end - base opcodes, the second byte of CB / DD / ED / FD, the ones
+  that left for nx_slow, instructions outside the Next loop and its entries a frame. The pclog
+  line also carries `stnew` (line states posted to core1 that frame) and, above 50, `stdiff`
+  (which NextLineState words changed - host layout: the pointer is 8 bytes).
 * `PICOSPECCY_MEMDUMP=file.bin:N` writes the Z80's 64K address space (current paging)
   at the N-th presented frame, on the same clock: for code a ROM unpacks into RAM
   (Karabas ROMain's menu), then `tools/z80disasm.py file.bin --raw --org 0`.

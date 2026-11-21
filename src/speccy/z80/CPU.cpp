@@ -76,6 +76,15 @@ uint32_t c16_rd[9], c16_wr[9], c16_fe[9], c16_flip, c16_bank;
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Next/NextVideo.h"
 #include "speccy/machines/Next/NextInt.h"
+// Z80_HWBENCH: where a Next frame's CPU::loop time goes ([NXNEG] hb=, NextNeg.cpp)
+#if Z80_HWBENCH && !HOST_BUILD
+volatile uint32_t g_hb_exec, g_hb_halt, g_hb_int, g_hb_dma, g_hb_tick, g_hb_slow;
+#define HB_T0() const uint32_t hb_t0_ = time_us_32()
+#define HB_ADD(v) (v += time_us_32() - hb_t0_)
+#else
+#define HB_T0() do {} while (0)
+#define HB_ADD(v) do {} while (0)
+#endif
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
 // bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
@@ -956,7 +965,7 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
             // (an interrupt in service): the CPU runs until RETI / RETN wakes us.
             if (__builtin_expect(Z80DMA::nxPending, 0) &&
                 (Z80DMA::nxStall || tstates >= Z80DMA::nxNextT) &&
-                Z80DMA::nxService(sliceEnd)) {
+                ({ HB_T0(); const bool d_ = Z80DMA::nxService(sliceEnd); HB_ADD(g_hb_dma); d_; })) {
                 BREAKPOINTS
                 continue;
             }
@@ -966,8 +975,10 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
                     // at a boundary take it at once (execute() would run one
                     // more instruction first); pendingEI / a fetched prefix fall
                     // through to execute(), whose own checkINT takes it
+                    HB_T0();
                     if (Z80::atInstrBoundary()) Z80::checkINT();
                     if (Z80::isIFF1()) Z80::execute();
+                    HB_ADD(g_hb_int);
                     BREAKPOINTS
                     continue;
                 }
@@ -977,27 +988,27 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
                 if (Z80::isHalted()) {
                     if (!stamped) { tstates_active = tstates; stamped = true; }
                     halted = true;
-                    NEXTVID::haltAdvanceTo(target);
+                    HB_T0(); NEXTVID::haltAdvanceTo(target); HB_ADD(g_hb_halt);
                 } else {
                     stFrame = target;
                     NextInt::slEnd = target;    // NextInt::reschedule may bring it in
-                    Z80::exec_nocheck();
+                    HB_T0(); Z80::exec_nocheck(); HB_ADD(g_hb_exec);
                     if (stFrame == 0) {
                         if (!stamped) { tstates_active = tstates; stamped = true; }
                         halted = true;
-                        NEXTVID::haltAdvanceTo(NextInt::slEnd);
+                        HB_T0(); NEXTVID::haltAdvanceTo(NextInt::slEnd); HB_ADD(g_hb_halt);
                     }
                 }
             } else {
                 const uint32_t end = dmaT < sliceEnd ? dmaT : sliceEnd;
                 if (!Z80::isHalted()) {
                     stFrame = end;
-                    Z80::exec_nocheck();
+                    HB_T0(); Z80::exec_nocheck(); HB_ADD(g_hb_exec);
                     if (stFrame != 0) { BREAKPOINTS continue; }   // ended early: ex raised / DMA due
                 }
                 if (!stamped) { tstates_active = tstates; stamped = true; }
                 halted = true;
-                NEXTVID::haltAdvanceTo(end);
+                HB_T0(); NEXTVID::haltAdvanceTo(end); HB_ADD(g_hb_halt);
             }
             BREAKPOINTS
         }

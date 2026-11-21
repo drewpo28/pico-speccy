@@ -2449,6 +2449,7 @@ void NEXTVID::onClockChange() {
 #if HOST_BUILD
 uint32_t g_host_haltT, g_host_idleT;   // host bench: T skipped in HALT / NextIdle loops (PICOSPECCY_PCLOG)
 uint32_t g_host_linepg[256];   // host bench: the 8K page of the PC at every line end (PICOSPECCY_PCLOG)
+uint32_t g_host_op[256], g_host_pfx[4][256], g_host_slow[256], g_host_gen, g_host_genpc[4], g_host_slices, g_host_stnew, g_host_stdiff[64];   // host bench: the Next loop's opcode mix (PICOSPECCY_OPLOG)
 #endif
 IRAM_ATTR void NEXTVID::haltAdvanceTo(uint32_t stEnd) {
 #if HOST_BUILD
@@ -2703,10 +2704,25 @@ volatile uint32_t g_nx_rows = 0;            // rows composed (all, not only samp
 volatile uint16_t* g_nx_pcs = nullptr;    // [2048]
 volatile uint16_t* g_nx_pcpg = nullptr;   // [256]
 #endif
+#if Z80_HWBENCH && !HOST_BUILD
+// [NXNEG] hb2: the raster tick's parts (Z80_HWBENCH test builds): calls, paper-phase calls,
+// copper, capture + fixups, the post (state compare / copy, ring), the tilemap row snapshot
+volatile uint32_t g_hb_sw_n, g_hb_ph_n, g_hb_cop, g_hb_cap, g_hb_post, g_hb_map;
+#define HB2_T0(n) const uint32_t n = timer_hw->timerawl
+#define HB2_ADD(v, n) (v += timer_hw->timerawl - n)
+#else
+#define HB2_T0(n) do {} while (0)
+#define HB2_ADD(v, n) do {} while (0)
+#endif
 NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
     // Phases 0..15 = the attribute capture points inside line lineIdx's paper
     // (flash; phase 0 alone unless a racing writer is on), then the line end.
+#if Z80_HWBENCH && !HOST_BUILD
+    g_hb_sw_n++;
+    if (s_capPhase < NX_CAP_GROUPS) { g_hb_ph_n++; nxPaperStart(); return; }
+#else
     if (s_capPhase < NX_CAP_GROUPS) { nxPaperStart(); return; }
+#endif
 #if HOST_BUILD
     { extern uint32_t g_host_linepg[256]; g_host_linepg[MemESP::mmu[Z80::getRegPC() >> 13] & 0xFF]++; }
 #endif
@@ -2746,12 +2762,14 @@ NX_NOLIB __attribute__((noinline)) IRAM_ATTR void NEXTVID::ScanlineWork() {
             s_pdn = 0;
             s_pdRec = draw;
             s_copXBase = (int16_t)(xPaperOff - 12 - (int)hcEnd);
+            HB2_T0(hbc0);
             copperRun(prev, (uint16_t)uL, hcEnd);
             s_copT -= (int32_t)hcEnd << 2;                  // hc_ula wraps, cvc steps
             if (s_copT < 0) s_copT = 0;
             s_copXBase = (int16_t)(xPaperOff - 12);
             if ((copCtrl >> 6) == 3 && cur == 0) copPC = 0;
             copperRun(cur, 0, 140);                         // up to paper x 128
+            HB2_ADD(g_hb_cop, hbc0);
             NextLineState st;
             if (draw) {
                 captureLine(st);
@@ -2809,13 +2827,21 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
         // Post the line: capture, and open a new state slot only when
         // something the renderer reads has moved since the last line.
         NextLineState st;
+        HB2_T0(hbe0);
         if (s_preCap) nxStCopy(st, *s_preCap);
         else {
             captureLine(st);
             nxRowFixupsHot(st, row, firstVisibleLine, paperTopRow);
         }
+        HB2_ADD(g_hb_cap, hbe0);
         rowSpr = st.sprSeq; rowPal = st.palSeq;
+        HB2_T0(hbe1);
         if (!nx_have || !nxSameState(st, *s_c0St)) {
+#if HOST_BUILD
+            { extern uint32_t g_host_stnew, g_host_stdiff[64]; g_host_stnew++;
+              if (nx_have) { const uint32_t* x = (const uint32_t*)&st; const uint32_t* y = (const uint32_t*)s_c0St;
+                for (unsigned i = 0; i < sizeof(NextLineState) / 4 && i < 64; i++) if (x[i] != y[i]) g_host_stdiff[i]++; } }
+#endif
             const uint32_t k = (nx_cur + 1) % NEXT_C1_STATES;
             nxWaitUntil(nx_st_job[k]);
             nxStCopy(nx_st[k], st);
@@ -2824,14 +2850,17 @@ __attribute__((always_inline)) inline void NEXTVID::emitRowBody(int row) {
             nx_have = true;
         }
         if (nx_w - nx_r >= NEXT_C1_RING) nxWaitUntil(nx_w - NEXT_C1_RING + 1);
+        HB2_ADD(g_hb_post, hbe1);
     }
     if (g_next_c1_live) {
         nx_ring[nx_w % NEXT_C1_RING] = (uint32_t)row | (nx_cur << 16);
         nx_segOf[nx_w % NEXT_C1_RING] = s_segPost;
         nx_seqOf[2 * (nx_w % NEXT_C1_RING)] = rowSpr;           // this line's, not the slot's
         nx_seqOf[2 * (nx_w % NEXT_C1_RING) + 1] = rowPal;
+        HB2_T0(hbe2);
         if (s_mapSh && (s_c0St->r6B & 0x80)) nxMapSnapPost(*s_c0St, row, paperTopRow, nx_w);
         else nx_mapOf[nx_w % NEXT_C1_RING] = 0xFF;
+        HB2_ADD(g_hb_map, hbe2);
         __dmb();                    // job + state visible before the index
         nx_w = nx_w + 1;
         nx_st_job[nx_cur] = nx_w;
