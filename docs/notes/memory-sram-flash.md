@@ -1824,3 +1824,35 @@ Its log (`...12.42.07.780`, eLeMeNt boot): `FatFs LFN scratch 2004BE40 -> 2004BE
 remounted; the menu opened (Stage::begin). A settings Apply is not in this log.
 Bench trap from this round: `PICOSPECCY_NOPSRAM=1` with an eLeMeNt card makes Config fall
 back to Pentagon AND SAVE it to the bench card's storage.nvs (fixed back by hand).
+
+## EpFdc sector buffers + three BTstack file statics out of .bss (2026-11-21, hw-confirmed DVp2w)
+
+- `EpFdc::Drive::buf` (512 B x A:, B: and `s_none`) is a `Buffer::pcold` pointer taken at the
+  drive's first mount (`ensureBuf`; no memory -> the mount fails with a log line), kept for the
+  session. `s_none` never gets one: every buffer access is behind a mount-started transfer.
+  `snapSave` writes 512 zeros for a drive without one, `snapLoad` takes one (or skips the
+  bytes and drops the transfer).
+- BTstack `sdp_response_buffer` (1 021 B, sdp_server.c), `a2dp_config_process_sep_discovery_seps`
+  (920 B, a2dp.c), `the_setup` (524 B, sm.c): cmake/wifi.cmake copies the three SDK files into
+  `build/btcold/btcold_*.c` at configure time with that declaration turned into a pointer and a
+  `btcold_*_alloc(al)` appended (a2dp.c's bare `#include "a2dp.h"` respelled `classic/a2dp.h`),
+  filters the originals out of pico_btstack_classic / pico_btstack_ble, and stops the configure
+  if the text is not found (a BTstack update). `BtHost::powerOnAsync` fills them from
+  `buffer_pcold` before `servicesInit` (no memory -> `S_FAILED`, "no memory for the BTstack
+  buffers"). sm.c's `setup` pointer is NULL until then: nothing in sm runs before sm_init.
+Measured (`nm -S`, build-all/DVp2w): .bss -3 977 B, RAM code unchanged, the SDK's own three
+objects absent from the map. Host: Enterprise + EXDOS with GAMES_EP64_01.IMG reads sectors
+(88 x5, C8) and reaches IS-BASIC with EXDOS on. Test ELF `debug/DVp2w-coldbt-1.1.3`
+(build: 13:01:53). To check on hw: BT headphones + pairing a BLE device (SM) + tape from a
+phone (A2DP sink SEP discovery, SDP), an EP disk load.
+**hw 2026-11-21 DVp2w** (log `...13.03.17.912`, owner: no problems): eLeMeNt COMPLETE 69 520;
+BT scan + JBL GO 2 streaming; EP boot (COMPLETE 52 744) with the speaker reconnected, EXDOS
+mounted GAMES_EP64_01.IMG; tape from a Xiaomi phone 15 s+ with lost 0 / bad 0 / underflows 0.
+Two BT lines in that log, both NOT caused by this round (the AVDTP pools stay static):
+`avdtp.c.241: Not enough memory to create connection` -> `tape: cannot call ... (0x56)`: Tape in
+drops the headphones and pages the phone in the SAME call, while the one AVDTP connection slot
+(MAX_NR_AVDTP_CONNECTIONS 1) is still the headphones' - the race the audio switch already
+waits out (`s_audioPending`); the phone then connected by itself. `hci.c.1274: ACL Cont Fragment
+but no first fragment for handle 0x0b` x2 around that overlap, no stream loss. First phone-tape
+log on record, so no older baseline. If wanted: make tapeConnect wait for the release like
+audioConnect does.

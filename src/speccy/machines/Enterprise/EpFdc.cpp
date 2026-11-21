@@ -3,6 +3,7 @@
 #include "app/SnapPack.h"
 #include "fs/FileUtils.h"
 #include "app/Debug.h"
+#include "app/Buffer.h"
 #include "speccy/z80/CPU.h"
 #include <string.h>
 #include <stdio.h>
@@ -29,13 +30,20 @@ struct Drive {
     // The sector in transfer: bufPos = byte offset into it (-1 = none), bufSec = the
     // sector (track/side/sector) the buffer holds (-1 = nothing loaded), dirty = a
     // write landed in it.
-    uint8_t     buf[512];
+    // 512 B, Buffer::pcold at the drive's first mount (2026-11-21: was inline, 3 x 512 B
+    // of SRAM .bss on every machine, s_none's never used). Kept for the session.
+    // Every buf access is behind haveDisk() / a transfer a mount started.
+    uint8_t*    buf = nullptr;
     int32_t     bufPos = -1;
     int32_t     bufLba = -1;                     // LBA of the buffered sector, -1 = none
     int32_t     xfrLba = -1;                     // LBA of the sector in transfer
     bool        dirty = false;
 
     bool haveDisk() const { return f != nullptr; }
+    bool ensureBuf() {
+        if (!buf) buf = (uint8_t*)Buffer::pcold(512);
+        return buf != nullptr;
+    }
     uint32_t lba(uint8_t trk, uint8_t sd, uint8_t sec) const {
         return ((uint32_t)trk * sides + sd) * spt + (sec - 1);
     }
@@ -158,6 +166,10 @@ bool mount(uint8_t d, const std::string& path) {
     if (d >= NDRV) return false;
     Drive& dr = s_drv[d];
     dr.close();
+    if (!dr.ensureBuf()) {
+        Debug::log("[EXDOS] %c: no memory for the sector buffer\n", 'A' + d);
+        return false;
+    }
     bool ro = false;
     FIL* fp = fopen2(path.c_str(), FA_READ | FA_WRITE);
     if (!fp) { fp = fopen2(path.c_str(), FA_READ); ro = true; }
@@ -487,7 +499,8 @@ uint32_t snapSave(uint8_t* out) {
         o.u8(d.curTrack); o.u8(d.side); o.u8(d.motor ? 1 : 0); o.u8((uint8_t)d.motorFrames);
         o.u32((uint32_t)d.bufPos); o.u32((uint32_t)d.bufLba); o.u32((uint32_t)d.xfrLba);
         o.u8(d.dirty ? 1 : 0);
-        o.raw(d.buf, 512);
+        if (d.buf) o.raw(d.buf, 512);
+        else for (int k = 0; k < 512; k++) o.u8(0);   // never mounted: an empty buffer
     }
     return o.n;
 }
@@ -505,7 +518,8 @@ bool snapLoad(const uint8_t* in, uint32_t n) {
         d.curTrack = i.u8(); d.side = i.u8(); d.motor = i.u8() != 0; d.motorFrames = i.u8();
         d.bufPos = (int32_t)i.u32(); d.bufLba = (int32_t)i.u32(); d.xfrLba = (int32_t)i.u32();
         d.dirty = i.u8() != 0;
-        i.raw(d.buf, 512);
+        if (d.ensureBuf()) i.raw(d.buf, 512);
+        else { for (int k = 0; k < 512; k++) i.u8(); d.bufLba = -1; d.dirty = false; d.endTransfer(); }
     }
     return i.ok;
 }

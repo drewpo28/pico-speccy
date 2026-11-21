@@ -153,3 +153,8 @@ ledger: `docs/notes/memory-sram-flash.md`, "Bluetooth state on the heap". Test E
 values, the ZiFi transport table; rawSourcePick rows per call. .bss -4 332 B. Details:
 `docs/notes/memory-sram-flash.md`, "FatFs scratch and nm:: UI tables". Test ELF
 `debug/DVp2w-coldbss3-1.1.3` (the first cut tested PSRAM with `>=` and left the LFN block on the heap).
+
+## Item 4, third round 2026-11-21: EpFdc buffers + BTstack file statics (hw-confirmed DVp2w, committed)
+
+.bss -3 977 B; `docs/notes/memory-sram-flash.md`, "EpFdc sector buffers + three BTstack file
+statics". Test ELF `debug/DVp2w-coldbt-1.1.3`.

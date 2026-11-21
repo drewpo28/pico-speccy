@@ -6,6 +6,12 @@
 #include "app/Debug.h"
 #include "app/Buffer.h"
 #include "app/TryAlloc.h"
+extern "C" {
+void* buffer_pcold(size_t bytes);                        // Buffer.cpp
+int btcold_sdp_alloc(void* (*al)(size_t));               // generated BTstack copies (cmake/wifi.cmake)
+int btcold_a2dp_alloc(void* (*al)(size_t));
+int btcold_sm_alloc(void* (*al)(size_t));
+}
 #include "fs/FileUtils.h"
 #include "fatfs/ff.h"
 
@@ -1859,6 +1865,14 @@ bool powerOnAsync() {
         s_hidsDescStore = m;            m += DESC_STORE_SIZE;
         s_sdpA2dp = m;                  m += SDP_REC_SIZE;
         s_sdpSink = m;
+    }
+    // BTstack's own file statics, made pointers at configure time (cmake/wifi.cmake,
+    // btcold_*): SDP response 1 KB, A2DP SEP table 920 B, SM setup 524 B. Before
+    // servicesInit, which inits the three modules. Kept once taken.
+    if (!btcold_sdp_alloc(buffer_pcold) || !btcold_a2dp_alloc(buffer_pcold) || !btcold_sm_alloc(buffer_pcold)) {
+        s_state = S_FAILED;
+        blog("no memory for the BTstack buffers");
+        return false;
     }
     hci_dump_init(&s_dump);
     s_hci_reg.callback = &packetHandler;
