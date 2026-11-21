@@ -736,7 +736,9 @@ void sdcard_led_set_active(const void *fp)
 	sd_led_active = fp;
 }
 
-#ifdef PICO_DEFAULT_LED_PIN
+/* 255 = no GPIO LED (the *_W boards: the user LED is the radio's WL_GPIO0, which
+ * needs a cyw43 bus transaction and cannot be touched from the SD read path). */
+#if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
 static volatile int sd_led_blink_enabled = 0;
 
 void sdcard_set_led_blink(int enable)

@@ -2321,21 +2321,31 @@ int main() {
     // and the screen dark — so a radio that did not answer (a *_WS image on a
     // module whose radio is elsewhere) held the picture back for every one of the
     // twelve retries. Video is running now; WifiNet::busUp() tries the bus once.
+    // The radio LED (WL_GPIO0) only blinks once the bus is really up — a
+    // one-glance "the radio answered" indicator that needs no console. On the
+    // Waveshare (*_WS) it is LED1 and LED2 (GPIO23) blinks alongside; on the
+    // Pimoroni Pico Plus 2 W (*_W, PICO_DEFAULT_LED_PIN=255) it is the board's
+    // ONLY user LED, so this is the one time that LED ever lights.
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
-    // LED1 lives on the radio module's own GPIO0, so it only blinks once the bus
-    // is really up — a one-glance "the radio answered" indicator that needs no
-    // console. LED2 (GPIO23) blinks alongside so the pair is easy to read.
+    #define W_BOOT_GPIO_LED(on) gpio_put(PICO_DEFAULT_LED_PIN, (on))
+    #else
+    #define W_BOOT_GPIO_LED(on) ((void)0)
+    #endif
     for (int i = 0; i < 6; i++) {
-        gpio_put(PICO_DEFAULT_LED_PIN, true);
+        W_BOOT_GPIO_LED(true);
         WifiNet::ledSet(true);
         sleep_ms(33);
-        gpio_put(PICO_DEFAULT_LED_PIN, false);
+        W_BOOT_GPIO_LED(false);
         WifiNet::ledSet(false);
         sleep_ms(33);
     }
+    #undef W_BOOT_GPIO_LED
+    // The blink left the radio powered. With no boot join coming (the same test
+    // ESPectrum::loop uses for autoBegin) switch it off again: scan / connect /
+    // ZiFi / Bluetooth bring it up on demand (busUp / cyw43_ensure_up).
+    if (!(Config::wifi_enabled && !Config::wifi_ssid.empty())) WifiNet::powerDown();
     // Shown on the first emulator frame (flushBootNotices).
     if (WifiNet::radioDead()) osd_boot_notice("WiFi radio not found: wrong W image?");
-    #endif
 #endif
     { extern size_t getFreeHeap(void); Debug::log("main: entering ESPectrum::loop(), freeHeap=%u", (unsigned)getFreeHeap()); }
     Debug::log2SD("main: entering ESPectrum::loop()");

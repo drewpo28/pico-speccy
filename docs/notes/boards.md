@@ -929,6 +929,33 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   (`__psramrom_start` 0x1027F000). A Pico 2 W build would need a slimmer firmware.
 - `BUTTER_PSRAM_GPIO` = the carrier's plain value (probed only on an RP2350A; the
   Plus 2 W is B → GPIO47).
+- **User LED (checked 2026-11-21 against the SDK's pimoroni_pico_plus2_w_rp2350.h;
+  the Pimoroni schematic PDF host is blocked from the cloud session): the only user
+  LED is the radio's WL_GPIO0** (`CYW43_WL_GPIO_LED_PIN 0`), GP25 is WL_CS, user
+  switch GPIO45, PSRAM CS GPIO47. So `PICO_DEFAULT_LED_PIN=255` and no GPIO LED code
+  runs — correct, driving GP25 would break the radio bus. Consequences: on `*p2w`
+  the LED stays DARK for good — no boot blinks, no flash-write / SD-access blink
+  (Settings "SD LED" is a no-op), and the boot radio-LED blink + "WiFi radio not
+  found" notice were `*_WS` only (guarded by `PICO_DEFAULT_LED_PIN != 255`).
+  **Changed 2026-11-21 (owner's OK, NOT hw-tested): the boot radio-LED blink (6x,
+  after vga_start_semaphore) and the "WiFi radio not found" notice now run on every
+  W image**, the GPIO half only where a GPIO LED exists. Cost on `*p2w`: the radio
+  bus comes up at every boot (~0.35 s + ~230 KB firmware download) even with WiFi
+  unused. Expect 6 blinks of the LED right after the picture appears.
+  **Then, unless a boot join is due (`wifi_enabled` && SSID saved — the autoBegin
+  test), `WifiNet::powerDown()` switches the radio off again** (2026-11-21, NOT
+  hw-tested): `cyw43_deinit` (SDK 2.3.1 / cyw43-driver 055d642 read) = netifs
+  removed, `cyw43_spi_deinit` (PIO SM + program + both DMA channels unclaimed),
+  `cyw43_init` (WL_REG_ON low, `cyw43_poll = NULL`, `bt_loaded = false`). The next
+  `busUp()` (scan/connect/ZiFi) or BT `cyw43_ensure_bt_up` therefore re-runs the full
+  power-on + firmware download. Log: `WiFi: radio powered down` + `WiFi[off]` PIO/DMA
+  claims. Watch on hw: a later bring-up must still find a PIO block with room for
+  the 6-instruction gSPI program (anything loaded into the freed space between boot
+  and the first WiFi/BT use could take it; on `*_WS` the block must also be the
+  gpio_base-16 one). A remembered BT device (BtHost::bootTick) pays the download twice.
+  Bug fixed: `sdcard.c` guarded with a bare `#ifdef PICO_DEFAULT_LED_PIN`, so with
+  SD LED on every SD read did `gpio_put(255, x)` (also on ZERO2, LED=255); now
+  `!= 255` like every other consumer. NOT hw-tested.
 - Hw check owed (owner has a Pico Plus 2 W): boot + picture, `WiFi: cyw43_arch_init
   pins REG_ON=23 DATA=24 CLK=29 CS=25` and a join, sound on GP26-28, PSRAM 8 MB found.
 - **"No picture on m1p2w" (review, 2026-10-13): the PUBLISHED v1.0.9 `m1p2w` is the
@@ -936,7 +963,7 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   Pimoroni Pico Plus 2 W it is the wrong firmware; the new `*_W` image is the one for
   that module. Two robustness fixes came out of reading the bring-up path (NOT
   hw-tested, `debug/m1p2w-radiofix-1.0.9.uf2` / `m1p2ws-radiofix-`): (1) the boot
-  radio-LED blink (WS boards only — it powers the radio up, ~0.35 s + firmware load)
+  radio-LED blink (WS boards only until 2026-11-21, now every W image — it powers the radio up, ~0.35 s + firmware load)
   ran BEFORE `vga_start_semaphore`, i.e. with the screen dark; it now runs after video
   starts. (2) **The SDK leaks on a failed CYW43 bring-up**: `cyw43_ll_bus_init` never
   undoes `cyw43_spi_init`, so each retry claimed a fresh PIO SM + program + 2 DMA

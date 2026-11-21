@@ -42,6 +42,11 @@ bool busUp();
 // The radio was tried and did not answer (wrong W image for this module, or a
 // dead radio). Stays true for the session.
 bool radioDead();
+// Power the radio off again (WL_REG_ON low, the bus's PIO SM/program and DMA
+// channels released — cyw43_deinit). State is reset so the next busUp() (or a
+// Bluetooth bring-up) powers it on and downloads the firmware afresh. No-op if
+// the bus is not up. Main thread, never while associated.
+void powerDown();
 
 // Service the driver + lwIP. Cheap when idle. Called once per emulated frame
 // from ESPectrum::loop and inside every blocking wait of WifiNet/WifiSock.
