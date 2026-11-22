@@ -1427,11 +1427,13 @@ static const Node kHardware[] = {
 // starting point (landscape, BGR, no flips), which is the way back from a panel that
 // came up mirrored or with inverted colours.
 #if TFT
+#include "drivers/st7789/st7789.h"     // TFT_BRIGHTNESS_MAX
 static const Node kTft[] = {
     NM_BOOL  (TXT_TFT_INVERT,   SET_TFT_INVERT, nullptr),
     NM_BOOL  (TXT_TFT_BGR,      SET_TFT_BGR,    nullptr),
     NM_BOOL  (TXT_TFT_FLIPX,    SET_TFT_FLIP_X, nullptr),
     NM_BOOL  (TXT_TFT_FLIPY,    SET_TFT_FLIP_Y, nullptr),
+    NM_INT   (TXT_TFT_BRIGHT,   SET_TFT_BRIGHT, 0, TFT_BRIGHTNESS_MAX, 1, nullptr),
     NM_ACTION(TXT_TFT_DEFAULTS, act_tftDefaults, nullptr),
 };
 #endif

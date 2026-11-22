@@ -28,6 +28,8 @@
 #define TFT_DC_PIN 10
 #endif
 
+#define TFT_BRIGHTNESS_MAX 10
+
 #define TEXTMODE_COLS 53
 #define TEXTMODE_ROWS 30
 
@@ -55,6 +57,10 @@ extern "C" {
 #endif
 extern uint8_t TFT_FLAGS;
 extern uint8_t TFT_INVERSION;
+// Backlight 0..TFT_BRIGHTNESS_MAX (PWM on TFT_LED_PIN); live — tft_set_brightness()
+// applies at once, Config persists TFT_BRIGHTNESS as a plain NVS key.
+extern uint8_t TFT_BRIGHTNESS;
+void tft_set_brightness(uint8_t lvl);
 void refresh_lcd();
 #ifdef __cplusplus
 }

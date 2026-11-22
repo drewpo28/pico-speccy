@@ -801,6 +801,7 @@ void act_updateFirmware() {
 }
 
 #if TFT
+#include "drivers/st7789/st7789.h"     // TFT_BRIGHTNESS_MAX
 void act_tftDefaults() {
     // Staged like any edit, so it is undone by Esc and asks for the reboot once, with
     // the rest of the commit. The landscape bit is re-asserted by every TFT setter.
@@ -808,6 +809,7 @@ void act_tftDefaults() {
     Stage::set(SET_TFT_BGR,    1);
     Stage::set(SET_TFT_FLIP_X, 0);
     Stage::set(SET_TFT_FLIP_Y, 0);
+    Stage::set(SET_TFT_BRIGHT, TFT_BRIGHTNESS_MAX);
     uiToast(TXT_TFT_DEFAULTS, false, 1200);
 }
 #endif
