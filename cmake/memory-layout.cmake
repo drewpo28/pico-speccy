@@ -358,9 +358,9 @@ endif()
 # longer fits there goes to the heap AFTER the early HGFX arena claim - the arena keeps its size.
 set(ELMOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the eLeMeNt Z80 loop overlay window, or AUTO (rp2350-memmap.ld)")
 if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
-    set(ELMOVL_WIN_SIZE_EFFECTIVE 17408)   # 2026-11-19: CB + DD/FD (IX/IY) in the loop (+2 424), the LCU slot's stores and reads (+440), the HGFX register store and the plain-page store (+344) in the slow accessors: content 16 328; was 13 112. 2026-11-20: +1024 for the ED set in the loop (nx_ed, +848 B): content 17 176. 2026-11-22: Elm::splitRead (the OverClock ROM wait read, +156 B): content 17 344
+    set(ELMOVL_WIN_SIZE_EFFECTIVE 18176)   # 2026-11-19: CB + DD/FD (IX/IY) in the loop (+2 424), the LCU slot's stores and reads (+440), the HGFX register store and the plain-page store (+344) in the slow accessors: content 16 328; was 13 112. 2026-11-20: +1024 for the ED set in the loop (nx_ed, +848 B): content 17 176. 2026-11-22: Elm::splitRead (the OverClock ROM wait read, +156 B): content 17 344. 2026-11-22: +256 for hamCubeRowFast (HAM cube rows in RAM); +512 for runFlushHot + qRegApply moved out of .dmaovl (paired register queue entries)
     if (PERF_TRACE)
-        set(ELMOVL_WIN_SIZE_EFFECTIVE 18176)   # 2026-11-20 (content 17 960): + the PERF counters and the DD/FD histograms; the pages57 tail is short of the tables, they go to the heap
+        set(ELMOVL_WIN_SIZE_EFFECTIVE 19712)   # 2026-11-22: + the HGFX queue depth/full counters inlined into the pushes (+512); + splitRead + hamCubeRowFast + runFlushHot/qRegApply; 2026-11-20 (content 17 960): + the PERF counters and the DD/FD histograms; the pages57 tail is short of the tables, they go to the heap
     endif()
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})

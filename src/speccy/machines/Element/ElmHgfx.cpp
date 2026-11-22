@@ -17,6 +17,9 @@
 #include "speccy/core/MemESP.h"
 #include "app/ESPectrum.h"
 #include "speccy/video/Video.h"
+#if !HOST_BUILD
+#include <hardware/xip_cache.h>   // the core1 queue through the uncached alias (ensure)
+#endif
 #include "speccy/z80/CPU.h"
 
 volatile bool g_elm_c1_live;
@@ -201,6 +204,7 @@ static struct Ham {
     uint32_t rgb[168];                  // the colour of each slot
     uint8_t n;                          // slots in use, 0 = the cube
 }* s_ham;
+static volatile bool s_hamCubeLut;      // lut holds the cube tables (hamCubeLutBuild), n = 0
 struct HamBox { uint16_t lo, hi; uint32_t w; uint8_t mn[3], mx[3]; };
 static uint16_t* s_hamTmp;              // counts + bin order, then the boxes: PSRAM
 static uint8_t s_hamHold;
@@ -216,8 +220,22 @@ static inline int16_t s16(uint8_t r) { return (int16_t)(s_r[r] | (s_r[r + 1] << 
 ELM_INL int16_t e16(uint8_t r) { return (int16_t)(s_e[r] | (s_e[r + 1] << 8)); }
 // The core1 queue: core0 writes s_qw, core1 s_qr, both free-running. In PSRAM, one
 // frame of a heavy demo is ~8000 entries. Bits 31..29 kind, the rest as below.
-enum : uint32_t { Q_N = 1u << 14, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29,
-                 Q_BYTES = 5u << 29, Q_SNAP = 6u << 29 };
+// The queue lives in SRAM, 4 K entries = 16 KB of heap (2026-11-22). In uncached PSRAM the
+// store itself stalled core0 (HAMCOLOR: cpu 21.2 -> 18.3 ms, realFPS 41.9 -> 48.8, core1's
+// engine 9.0 -> 5.8 ms, hw elmham5p). Sized by [HGFX] qdepth (hw elmq1p / elmq2p): only
+// HAMCOLOR goes deep - a whole frame piles up while core1 holds Q_DRAW for the beam - and
+// 4 K fills ~12 times a minute for ~1.5 ms each with realFPS still at the 48.8 ceiling, the
+// same as 8 K; PF2026 / LIMSHOWM stay at 1, HGFXAGON at 1.5-2.9 K. PSRAM if the heap says no.
+// ELM_Q_SRAM=0 (CMake) puts it back in PSRAM for an A/B; ELM_Q_LOG2 sets the size.
+#ifndef ELM_Q_SRAM
+#define ELM_Q_SRAM 1
+#endif
+#ifndef ELM_Q_LOG2                       // the queue's size, 2^n entries
+#define ELM_Q_LOG2 (ELM_Q_SRAM ? 12 : 14)
+#endif
+enum : uint32_t { Q_N = 1u << ELM_Q_LOG2, Q_VRAM = 0u << 29, Q_REG = 1u << 29, Q_CMD = 2u << 29, Q_DRAW = 3u << 29, Q_RUN = 4u << 29,
+                 Q_BYTES = 5u << 29, Q_SNAP = 6u << 29,
+                 Q_REG2 = 7u << 29 };   // two register writes: r1 << 8 | v1 in bits 0-12, r2 << 8 | v2 in bits 13-25 (writeRegFast)
 static uint32_t* s_q;
 static volatile uint32_t s_qw, s_qr, s_drawPosted, s_drawDone;
 static bool s_direct;               // chunky windows are mapped: the engine stays on core0
@@ -403,7 +421,28 @@ bool ensure() {
         if (s_buf) { memset(s_buf, 0, BUF_SIZE + COLOURS); s_col = s_buf + BUF_SIZE; }
         else Debug::log("[ELM] no memory for the HGFX buffers");
     }
-    if (s_buf && !s_q) s_q = (uint32_t*)Buffer::palloc(Q_N * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (s_buf && !s_q) {
+#if ELM_Q_SRAM
+        s_q = (uint32_t*)tryMalloc(Q_N * sizeof(uint32_t));
+        Debug::log("[ELM] core1 queue: %u entries in %s", (unsigned)Q_N, s_q ? "SRAM" : "PSRAM (no heap)");
+        if (!s_q)
+#endif
+        s_q = (uint32_t*)Buffer::palloc(Q_N * sizeof(uint32_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+#if !HOST_BUILD
+        // The queue in PSRAM goes through the uncached, non-allocating alias on BOTH cores:
+        // a cached store was a write-allocate line fill every other word (HAMCOLOR: 18 500
+        // entries a frame, the store + dmb ~20 % of core0, hw PERF_HIST 2026-11-22; the
+        // same cost as tsconf.md's DMA through XIP). Both sides uncached = no stale line to
+        // invalidate; the range is cleaned + dropped from the cache once, before the switch.
+        const uintptr_t p = (uintptr_t)s_q;
+        if (p >= XIP_BASE && p < XIP_END) {
+            const uintptr_t lo = (p - XIP_BASE) & ~(uintptr_t)7, n = ((p - XIP_BASE + Q_N * sizeof(uint32_t) + 7) & ~(uintptr_t)7) - lo;
+            xip_cache_clean_range(lo, n);
+            xip_cache_invalidate_range(lo, n);
+            s_q = (uint32_t*)(p + (XIP_NOCACHE_NOALLOC_BASE - XIP_BASE));
+        }
+#endif
+    }
     return s_buf && s_hot;
 }
 
@@ -666,6 +705,10 @@ void drain() { drainWait(false); }
 
 #if PERF_TRACE
 static uint32_t s_pWaitUs, s_pPush, s_pDrop;          // core0
+// The queue's depth right after a push (sizing the queue, 2026-11-22): the window's max, the
+// session's max, and the frames whose max passed 1/2/4/8 K entries.
+static uint32_t s_pQMax, s_pQMaxAll, s_pQFr, s_pQOver[4];
+static uint32_t s_pQFullUs, s_pQFullN;  // core0 waiting on a FULL queue (wait= also holds the draw wait)
 static uint32_t s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush;   // the pair frame: what moved per 60 frames
 static uint32_t s_pLutFree, s_pLutLost, s_pLutLostPx;             // the last re-deal: free slots, drawn pairs dropped, their pixels
 static uint32_t s_pDealH[8], s_pDealHb[8];                         // HRXC deal: the weights of indices 0..7 (top) and 32..39 (bottom) of the last frame
@@ -675,30 +718,43 @@ static volatile uint32_t s_pDrawUs, s_pDraws, s_pExecUs, s_pExecN, s_pCmdUs, s_p
 static volatile uint32_t s_pDrMin = ~0u, s_pDrMax;   // core1: the dirty rows' range in the shown buffer this window
 #endif
 
+#if PERF_TRACE
+ELM_INL void qDepth() { const uint32_t d = s_qw - s_qr; if (d > s_pQFr) s_pQFr = d; }
+ELM_INL void qWait(uint32_t need) {
+    if (Q_N - (s_qw - s_qr) >= need) return;
+    const uint32_t t0 = time_us_32();
+    while (Q_N - (s_qw - s_qr) < need) { }
+    const uint32_t dt = time_us_32() - t0;
+    s_pWaitUs += dt; s_pQFullUs += dt; s_pQFullN++;
+}
+#endif
 ELM_INL void pushRaw(uint32_t e) {
 #if PERF_TRACE
     s_pPush++;
-    if (s_qw - s_qr >= Q_N) {
-        const uint32_t t0 = time_us_32();
-        while (s_qw - s_qr >= Q_N) { }
-        s_pWaitUs += time_us_32() - t0;
-    }
+    qWait(1);
 #endif
     while (s_qw - s_qr >= Q_N) { }
     s_q[s_qw & (Q_N - 1)] = e;
     __sync_synchronize();
     s_qw = s_qw + 1;
+#if PERF_TRACE
+    qDepth();
+#endif
 }
 // A two-word entry lands whole: core1 sees s_qw move once.
 ELM_INL void pushRaw2(uint32_t e, uint32_t e2) {
 #if PERF_TRACE
     s_pPush++;
+    qWait(2);
 #endif
     while (s_qw - s_qr >= Q_N - 1) { }
     s_q[s_qw & (Q_N - 1)] = e;
     s_q[(s_qw + 1) & (Q_N - 1)] = e2;
     __sync_synchronize();
     s_qw = s_qw + 2;
+#if PERF_TRACE
+    qDepth();
+#endif
 }
 // A whole byte run lands at once, like the two-word entry.
 ELM_INL void pushBytes() {
@@ -708,18 +764,29 @@ ELM_INL void pushBytes() {
     if (n == 1) { pushRaw(Q_VRAM | s_bOff | (uint32_t)b[0] << 16 | (s_bRead ? 1u << 24 : 0)); return; }
 #if PERF_TRACE
     s_pPush++;
+    qWait(words + 1);
 #endif
     while (Q_N - (s_qw - s_qr) < words + 1) { }
     s_q[s_qw & (Q_N - 1)] = Q_BYTES | s_bOff | (n - 1) << 16 | (s_bRead ? 1u << 24 : 0);
     for (uint32_t w = 0; w < words; w++) s_q[(s_qw + 1 + w) & (Q_N - 1)] = s_bData[w];
     __sync_synchronize();
     s_qw = s_qw + words + 1;
+#if PERF_TRACE
+    qDepth();
+#endif
 }
-ELM_HOT static void runFlushHot() {
+// writeRegFast holds one register write back so the next one shares its queue word
+// (HAMCOLOR: INDEX + OX + one VRAM byte a pixel, 3 words -> 2). Older than any run: the
+// runs are flushed before it is taken, and a new run flushes it first (runFlush).
+static uint32_t s_rpE;                  // r << 8 | v
+static uint8_t s_rpN;
+// .elmovl, not .dmaovl: the paired register write grew it and .dmaovl must not grow (2026-11-22).
+ELM_OVL_CODE static void runFlushHot() {
+    if (s_rpN) { s_rpN = 0; pushRaw(Q_REG | s_rpE); }
     if (s_runLen) { pushRaw2(Q_RUN | s_runOff | (uint32_t)s_runLen << 16, s_runSrc); s_runLen = 0; }
     if (s_bLen) pushBytes();
 }
-ELM_INL void runFlush() { if (s_runLen | s_bLen) runFlushHot(); }
+ELM_INL void runFlush() { if (s_runLen | s_bLen | s_rpN) runFlushHot(); }
 ELM_INL void byteAppend(uint16_t off, uint8_t v, bool wasRead) {
     if (s_bLen && s_bLen < BRUN_MAX && off == (uint16_t)(s_bOff + s_bLen) && wasRead == s_bRead) {
         ((uint8_t*)s_bData)[s_bLen++] = v;
@@ -741,6 +808,7 @@ void reset() {
     h1Off(false, "reset"); s_h1Retry = 0; s_h1Edge = 0; s_h1Pref = s_h1Cand = -1; s_h1CandRun = 0; s_h1Hold = 0; s_c1Limits = false;
     s_drawUse[0] = s_drawUse[1] = 0;
     s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
+    s_hamCubeLut = false;
     free(s_ham); s_ham = nullptr;          // 4.8 KB of heap only while a program uses HAM
     s_hamHold = 0; s_hamCubeOn = false;
     if (s_buf) memset(s_buf, 0, BUF_SIZE);
@@ -1049,7 +1117,11 @@ ELM_OVL_CODE void writeRegFast(uint8_t r, uint8_t v) {
     if (r >= REG_COUNT) return;
     s_fbDirty = true;
     s_r[r] = v;
-    if (queued()) { runFlush(); pushRaw(Q_REG | (uint32_t)r << 8 | v); }   // push() spelled out: GCC kept push in flash (a veneer from here, planet8)
+    if (queued()) {                      // push() spelled out: GCC kept push in flash (a veneer from here, planet8)
+        const uint32_t rv = (uint32_t)r << 8 | v;
+        if (s_rpN) { s_rpN = 0; pushRaw(Q_REG2 | s_rpE | rv << 13); }
+        else { runFlush(); s_rpE = rv; s_rpN = 1; }
+    }
     else s_e[r] = v;
 }
 
@@ -1967,10 +2039,30 @@ ELM_ROW static void underLine(const uint8_t* q, const uint8_t* zx, const uint8_t
 // The cube's dither: 4x4 ordered, a threshold in 1/16 of a level on every channel
 // (the old 2x2 at a fixed +-18 left steps on the 85-wide blue levels, owner 2026-11-02).
 static const uint8_t kBayer4[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+// A channel's cube level at Bayer step b (0..15). v is taken to 6 bits (HAM's modify
+// values are 6-bit anyway) so hamCubeRowFast's tables give the same slot.
+static inline int cubeLvl(int v, int n, int b) {
+    const int t = b * 2 + 1;                                        // (0..15 + 0.5) / 16, in 1/32
+    const int l = ((v & ~3) * (n - 1) * 32 + t * 255) / (255 * 32);
+    return l < n - 1 ? l : n - 1;
+}
 static inline uint8_t cubeSlot(uint32_t rgb, int x, int y) {
-    const int t = kBayer4[(y & 3) * 4 + (x & 3)] * 2 + 1;          // (0..15 + 0.5) / 16, in 1/32
-    const auto lvl = [t](int v, int n) { const int l = (v * (n - 1) * 32 + t * 255) / (255 * 32); return l < n - 1 ? l : n - 1; };
-    return s_cube[lvl((int)(rgb >> 16), 6) * 28 + lvl((int)((rgb >> 8) & 255), 7) * 4 + lvl((int)(rgb & 255), 4)];
+    const int b = kBayer4[(y & 3) * 4 + (x & 3)];
+    return s_cube[cubeLvl((int)(rgb >> 16), 6, b) * 28 + cubeLvl((int)((rgb >> 8) & 255), 7, b) * 4 + cubeLvl((int)(rgb & 255), 4, b)];
+}
+// The cube in s_ham->lut while no picture palette uses it (n = 0): three tables of
+// [Bayer step 16][v >> 2 64], R pre-scaled by 28, G by 4, B by 1 - their sum is the
+// s_cube index (HAMCOLOR: a whole-screen HAM gradient every frame, hw 2026-11-22).
+static void hamCubeLutBuild() {
+    s_hamCubeLut = false;
+    if (!s_ham || s_ham->n) return;
+    uint8_t* l = s_ham->lut;
+    for (int b = 0; b < 16; b++) for (int i = 0; i < 64; i++) {
+        l[b * 64 + i]        = (uint8_t)(cubeLvl(i * 4, 6, b) * 28);
+        l[1024 + b * 64 + i] = (uint8_t)(cubeLvl(i * 4, 7, b) * 4);
+        l[2048 + b * 64 + i] = (uint8_t)cubeLvl(i * 4, 4, b);
+    }
+    s_hamCubeLut = true;
 }
 // One row of HAM to RGB.
 template <typename F> static inline void hamWalk(const uint8_t* p, int n, F f) {
@@ -2066,6 +2158,28 @@ ELM_OVL_CODE static void hamRowFast(const uint8_t* p, int n, int y, uint32_t* d)
         *d++ = s4[2] | s4[3] << 8 | s4[0] << 16 | s4[1] << 24;
     }
 }
+// The cube path the same way (hamCubeLutBuild's tables; hamLine + cubeSlot is the reference).
+ELM_OVL_CODE static void hamCubeRowFast(const uint8_t* p, int n, int y, uint32_t* d) {
+    const uint8_t* lr[4]; const uint8_t* lut = s_ham->lut;
+    for (int k = 0; k < 4; k++) lr[k] = lut + kBayer4[(y & 3) * 4 + k] * 64;
+    const uint32_t* col = s_hot->colRgb;
+    uint32_t c = 0;
+    for (int x = 0; x < n; x += 4) {
+        uint32_t s4[4];
+        for (int k = 0; k < 4; k++) {
+            const uint32_t b = p[x + k], v = (b & 0x3F) << 2;
+            switch (b >> 6) {
+            case 0:  c = col[b & 0x3F];                   break;
+            case 1:  c = (c & 0xFFFF03) | v;              break;
+            case 2:  c = (c & 0x03FFFF) | (v << 16);      break;
+            default: c = (c & 0xFF03FF) | (v << 8);       break;
+            }
+            const uint8_t* t = lr[k];
+            s4[k] = s_cube[t[(c >> 18) & 63] + t[1024 + ((c >> 10) & 63)] + t[2048 + ((c >> 2) & 63)]];
+        }
+        *d++ = s4[2] | s4[3] << 8 | s4[0] << 16 | s4[1] << 24;
+    }
+}
 
 // The same for a row already in RGB.
 static void rgbLine(const uint32_t* c, int n, int y, uint8_t* slots) {
@@ -2145,7 +2259,7 @@ static bool hamProgram(bool force) {
     if (s_ham && !s_hamTmp)
         s_hamTmp = (uint16_t*)Buffer::palloc(HAM_BINS * 2 * sizeof(uint16_t) + 168 * sizeof(HamBox),
                                              Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
-    if (!s_ham || !s_hamTmp) { drain(); free(s_ham); s_ham = nullptr; return false; }
+    if (!s_ham || !s_hamTmp) { s_hamCubeLut = false; drain(); free(s_ham); s_ham = nullptr; return false; }
     uint16_t* h = s_hamTmp;
     uint16_t* idx = h + HAM_BINS;
     HamBox* box = (HamBox*)(idx + HAM_BINS);
@@ -2225,6 +2339,7 @@ static bool hamProgram(bool force) {
     static int8_t s_said = -1;
     if (s_said != (int8_t)useCube) { s_said = (int8_t)useCube; Debug::log("[ELM] HAM: %s (mse %u, %d bins)", useCube ? "dithered cube" : "picture palette", (unsigned)mse, n); }
     if (useCube) { if (s_ham->n) { drain(); s_ham->n = 0; } return false; }
+    s_hamCubeLut = false;                // before the drain: core1 leaves the cube tables
     drain();                             // core1 maps through the table being rewritten
     static bool s_slotKInit;
     if (!s_slotKInit) { s_slotKInit = true; memset(s_hamSlotK, 0xFF, sizeof s_hamSlotK); for (int k = 0; k < 168; k++) s_hamSlotK[kSlots(k)] = (uint8_t)k; }
@@ -2271,6 +2386,7 @@ static void cubeProgram() {
         s_cube[k] = s;
         VIDEO::elmPaletteSet(s, (uint32_t)(r * 255 / 5) << 16 | (uint32_t)(g * 255 / 6) << 8 | (b * 255 / 3));
     }
+    hamCubeLutBuild();
 }
 
 static bool wantPairFor2() {             // HGFX 2: text or a picture (owner's rule)
@@ -2719,11 +2835,12 @@ static void renderFrame() {
         if (feature == 1) fillLine(const_cast<uint8_t*>(q), WIDTH);
         if (feature == 2) {
             const int fy = y0 + y;
-            if (s_ham && s_ham->n && !(x0 & 3)) {
+            if (s_ham && (s_ham->n || s_hamCubeLut) && !(x0 & 3)) {
                 rowPump(fy);
                 int cx[8][2];
                 if (!VIDEO::rowCarves(fy, cx)) {
-                    hamRowFast(q, WIDTH, y, (uint32_t*)(VIDEO::vga.frameBuffer[fy] + x0));
+                    if (s_ham->n) hamRowFast(q, WIDTH, y, (uint32_t*)(VIDEO::vga.frameBuffer[fy] + x0));
+                    else hamCubeRowFast(q, WIDTH, y, (uint32_t*)(VIDEO::vga.frameBuffer[fy] + x0));
 #if HOST_BUILD
                     {   // bench check (PICOSPECCY_ELM_CHECK): the row as hamLine + outDirect's order draw it
                         static const bool chk = getenv("PICOSPECCY_ELM_CHECK") != nullptr;
@@ -2850,7 +2967,12 @@ static void frameSetup() {
             s_hamHold = 25;
             s_palDirty = false; s_palValid = true;
             if (hamProgram(need)) s_hamCubeOn = false;
-            else if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; }
+            else {
+                if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; }
+                // The cube again: the median cut is 15-18 ms of core0 (HAMCOLOR's
+                // 1513 bins, hw 2026-11-22) - ask again in 5 s, not 0.5 s.
+                s_hamHold = 250;
+            }
             s_fullDraw = true;               // slots were dealt: every row through the new mapping
         } else s_hamHold--;
         return;
@@ -3049,6 +3171,10 @@ static void frameEndBody() {
     s_drawQw = s_qw;
 posted:
 #if PERF_TRACE
+    if (s_pQFr > s_pQMax) s_pQMax = s_pQFr;
+    if (s_pQFr > s_pQMaxAll) s_pQMaxAll = s_pQFr;
+    for (int k = 0; k < 4; k++) if (s_pQFr > (1024u << k)) s_pQOver[k]++;
+    s_pQFr = s_qw - s_qr;                // what the next frame starts with
     static uint32_t n;
     if (++n == 60) {
         n = 0;
@@ -3073,6 +3199,9 @@ posted:
                    s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
                    s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1], Elm::g_elm_ps[0] / 60, Elm::g_elm_ps[1] / 60);
+        Debug::log("[HGFX] qdepth: max %u (session %u) of %u | frames > 1K %u, 2K %u, 4K %u, 8K %u | full %u x %uus",
+                   s_pQMax, s_pQMaxAll, (unsigned)Q_N, s_pQOver[0], s_pQOver[1], s_pQOver[2], s_pQOver[3], s_pQFullN, s_pQFullUs);
+        s_pQMax = 0; s_pQFullN = s_pQFullUs = 0; s_pQOver[0] = s_pQOver[1] = s_pQOver[2] = s_pQOver[3] = 0;
         Debug::log("[HGFX] c0/fr: superseded %u | frameEnd %uus (max %u) | drain %uus (max %u, %u frames > 2 ms) | frameSetup %uus (max %u) | pair snapshot wait %uus (max %u), core1 copy %uus (max %u)",
                    s_pSuper, s_pFeUs / 60, s_pFeMax, s_pDrnUs / 60, s_pDrnMax, s_pDrnN, s_pSetUs / 60, s_pSetMax, s_pSnapUs / 60, s_pSnapMax,
                    s_pSnapC1Us / 60, s_pSnapC1Max);
@@ -3200,6 +3329,11 @@ posted:
 void repaint() { if (s_live) { drain(); s_pairStale = true; s_fullDraw = true; frameSetup(); renderFrame(); } }
 
 // core1: a bounded batch, then back to the loop for the other pumps.
+// core1: a register entry, single or paired (writeRegFast). In .elmovl: .dmaovl must not grow.
+ELM_OVL_CODE static void qRegApply(uint32_t e) {
+    if ((uint8_t)(e >> 8) == REG_COUNT) s_e20 = (uint8_t)e; else s_e[(e >> 8) & 31] = (uint8_t)e;
+    if ((e & (7u << 29)) == Q_REG2) s_e[(e >> 21) & 31] = (uint8_t)(e >> 13);
+}
 ELM_HOT void core1Pump() {
 #if PERF_TRACE
     const uint32_t t0 = time_us_32(); uint32_t draw = 0, cnt = 0;
@@ -3246,7 +3380,7 @@ ELM_HOT void core1Pump() {
         }
         switch (e & (7u << 29)) {
         case Q_VRAM: execVram((uint16_t)e, (uint8_t)(e >> 16), e & (1u << 24), 0xFFFF); break;
-        case Q_REG:  if ((uint8_t)(e >> 8) == REG_COUNT) s_e20 = (uint8_t)e; else s_e[(uint8_t)(e >> 8)] = (uint8_t)e; break;
+        case Q_REG:  case Q_REG2: qRegApply(e); break;
         case Q_CMD:  {
 #if PERF_TRACE
             const uint32_t c0 = time_us_32();

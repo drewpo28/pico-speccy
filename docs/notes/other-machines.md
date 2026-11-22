@@ -1768,6 +1768,93 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   page still counts as ROM (assumption: built-in esxDOS from the flash). It sets `g_elm_romWait` (the M1 +1 T in
   Z80_JLS) and the split slots; called from remap, p4kOut, cpuSpeed, frameEnd. Bench (ELMLOG prints `[ELM] ROM wait
   on/off`): ZOOM writes 05 on the legacy map (on), then maps URAM into Zone 0 (off), picture as before.
+- **HAMCOLOR (HGFXDEM2): the HAM cube path in RAM (2026-11-22, NOT hw-tested; `debug/DVp2w-elmham1-1.1.3`, build
+  Nov 22 2026 00:40:05).** hw log `logs/devttyACM0_2026_11_22.00.28.25.743.txt` (b6f0be0f, non-PERF): `neg=52-53` of
+  60, worst cpu 39-44 ms with `ef` 15-18 ms. The demo scrolls a whole-screen HAM gradient every frame (bench shots);
+  its 1513 bins give mse 518 > HAM_MAX_MSE, so `[ELM] HAM: dithered cube`. Two costs: (1) every row went `hamLine`
+  (flash) -> `hamWalk` (`tableRgb` from `s_col` in PSRAM) -> `cubeSlot` -> `outDirect` (flash) on core1, the RAM
+  `hamRowFast` served the palette path only; (2) `hamProgram`'s median cut every 25 frames on core0 (the `ef` spike),
+  thrown away each time for the cube. Now: `hamCubeLutBuild` (from `cubeProgram`) puts three `[Bayer 16][v>>2 64]`
+  tables (R x28, G x4, B) into the idle `s_ham->lut` (`s_hamCubeLut`; cleared before the palette path rewrites the
+  LUT and when s_ham goes), `hamCubeRowFast` (`.elmovl`, 252 B) = colRgb + three loads + `s_cube` a pixel straight into
+  the FB; `cubeSlot` takes channels to 6 bits so both agree (HAM's modify values are 6-bit; table colours lose < 4/255).
+  A cube result holds the next median cut 250 frames (5 s), not 25. Bench: `PICOSPECCY_ELM_CHECK` 32 768 cube rows,
+  0 bad; picture as before. `.elmovl` AUTO 17 408 -> 17 664 (PERF 18 176 -> 18 688): +256 B SRAM.
+  **hw (elmham1 / elmham1p PERF, log `devttyACM0_2026_11_22.00.50.35.605.txt`): the `ef` spike now every 5 s; the
+  steady frame unchanged, cpu ~23 ms, realFPS 38-39.** The cube draw was never the limit: `[HGFX] draw 1.4-1.9 ms`,
+  `wait` ~0. HAMCOLOR itself writes e_030 03 then 05 (bench ELMLOG, #834F / #8353): 28 MHz, `T/fr=573440`, ~20 %
+  of it HALT. Its inner loop per pixel: `LD (#8303),A` (INDEX; the register page is at #8300), `LD (IX+0),E` (OX,
+  IX=#8305), `LD (#4000),A` (the VRAM window) = 3 queue entries, `q=18 573/fr`, core1 engine 7.9 ms/fr.
+- **PERF_HIST of HAMCOLOR (`debug/DVp2w-elmham1h-1.1.3`, build 00:54:27; `build-all/PICO_DV_W-elmperf` reconfigured
+  with PERF_HIST=ON + NXOVL_WIN_SIZE=57344), core0:** `exec_nocheck_elm` 32.5 %, `writeRegFast` 21 %, `runFlushHot`
+  9.3 %, `elmRegWrOk` 4.9, `elmPoke8Slow` 4.6, `elmRegStore` 2.9, `elmLcuWrOk` 2.9, `poke8_cold` 2.8, `writeVram` 2.7,
+  `memWrite` 1.9. Inside `writeRegFast` 65 % of the samples sit in one 16-byte bucket: the queue store + `dmb`
+  (runFlushHot's hot bucket the same) - ~20 % of core0. `s_q` (64 KB) is PREFER_PSRAM: every other word a
+  write-allocate line fill through XIP (tsconf.md: ~1.3 us per 8 bytes).
+- **The queue through the uncached alias (2026-11-22, NOT hw-tested; `debug/DVp2w-elmham2p-1.1.3`, PERF no HIST,
+  build 01:11:32).** `Hgfx::ensure`: after the palloc, a PSRAM `s_q` is cleaned + invalidated in the XIP cache once
+  and then addressed at XIP_NOCACHE_NOALLOC (0x15...) by both cores - no allocate fill on core0's stores, no stale
+  line on core1's reads (core1 pays an uncached read per word; it had 7.9 + 1.4 ms of 20). Host unchanged.
+  **hw (elmham2p, same log from line 4262): cpu 23.3 -> 21.6 ms, realFPS 38.6 -> 41.1, XIP misses 0.62 -> 0.20 M/s;
+  c1 engine 7.9 -> 10.4 ms.** Still `neg=52`.
+- **Paired register entries (2026-11-22, NOT hw-tested; `debug/DVp2w-elmham3p-1.1.3` PERF build 01:20:08,
+  `debug/DVp2w-elmham3-1.1.3` plain build 01:20:27).** `writeRegFast` holds one write back (`s_rpE` / `s_rpN`); the
+  next one goes out with it as one `Q_REG2` word (type 7: r1 << 8 | v1 in bits 0-12, r2 << 8 | v2 in 13-25), so
+  HAMCOLOR's pixel is 2 words, not 3. `runFlush` flushes the held write first (it is older than any run: runs are
+  flushed before it is taken, a new run calls runFlush). `runFlushHot` and the core1 decode `qRegApply` moved from
+  `.dmaovl` to `.elmovl` (the change overflowed `.dmaovl` by 72 B, and it must not grow); `.elmovl` AUTO 17 664 ->
+  18 176 (PERF 18 688 -> 19 200), 136 B left (PERF 264); `.dmaovl` content down, 488 B left. Bench: HAMCOLOR frames as
+  before, ELM_CHECK 0 bad; HGFXZOOM picture as before.
+  **hw (elmham3h PERF_HIST, log `devttyACM0_2026_11_22.01.25.22.146.txt`): q 18 500 -> 12 300/fr, cpu 21.2 ms,
+  realFPS ~41.9; c1 engine 9.0 ms.** Profile: `exec_nocheck_elm` 36.7 %, `writeRegFast` 12.1, `runFlushHot` 8.1 -
+  both hot buckets are the uncached store + the `dmb` right behind it (the dmb waits out the QMI write).
+- **Queue published one push late (2026-11-22, NOT hw-tested; `debug/DVp2w-elmham4p-1.1.3` PERF build 01:34:10,
+  `debug/DVp2w-elmham4-1.1.3` plain build 01:34:32).** core1 reads up to `s_qp`, not `s_qw`; `qPublish` (dmb +
+  `s_qp = s_qw`) runs at the start of every push, so entry k's PSRAM store has finished behind the Z80 work before
+  its dmb; explicit `qPublish` in `drainWait`, after the frame's Q_DRAW and after Q_SNAP (every point core0 waits
+  for core1); the stuck reset sets `s_qp` too. Bench: HAMCOLOR (ham rows 0 bad), HGFXZOOM, TETRIS, HGFXAGON (425 984
+  direct runs, 0 bad) pictures right, no "queue stuck". `.elmovl` 48 B left (PERF 176); `.dmaovl` unchanged.
+  **hw (elmham4 plain, logs `devttyACM0_2026_11_22.01.25.22.146.txt` from line 7955 and `...19.13.41.220.txt`):
+  no gain** - [NEG2] on HAMCOLOR identical to elmham3 (neg 52-53/60, worst cpu 23.0-23.1 vs 22.8-23.4 ms, el
+  24.6 ms), worst `ef` +150 us (the explicit publishes). So the cost is not the dmb but the uncached store itself
+  (the store buffer fills; PERF_HIST pinned it on the dmb by skid). **REVERTED 2026-11-22** (back to dmb after the
+  store, core1 reads to `s_qw`). The ~4 s spike (cpu 37 ms, ef 15 ms) is in elmham3 and elmham4 alike: still open.
+- **The queue in SRAM, diagnostic (2026-11-22, NOT hw-tested; `ELM_Q_SRAM=ON` CMake option, default OFF;
+  `debug/DVp2w-elmham5p-1.1.3` PERF no HIST build 19:17:01, `debug/DVp2w-elmham5-1.1.3` plain build 19:19:37).**
+  `Q_N` 16 K -> 8 K entries, 32 KB by `tryMalloc` (PSRAM fallback, the log says which: `[ELM] core1 queue: 8192
+  entries in SRAM`). Question it answers: does core0 stall on the uncached PSRAM store? Read `[PERF] cpu=` (elmham3
+  21.2 ms), realFPS (41.9) and the queue-full wait (`s_pWaitUs`, the half-size queue must not stall core0 instead).
+  Not a fix as is: 32 KB of heap for the whole HGFX session.
+  **hw-confirmed 2026-11-22 DVp2w (elmham5p, log `devttyACM0_2026_11_22.19.23.35.723.txt`): THE PSRAM STORE WAS IT.**
+  HAMCOLOR: cpu 21.2 -> 18.0-18.6 ms (max 20.7), realFPS 41.9 -> 48.6-49.1 (the 48.8 ceiling, PF2026), c1 engine
+  9.0 -> 5.8 ms (core1 reads SRAM too), q 12 300/fr unchanged, wait=0 us/fr with 8 K entries. The ~4 s spike (max
+  35 ms, NEG2 ef 15.9 ms) is still there. Next: the queue in SRAM for good at a size that fits the heap budget.
+- **Sizing the queue (2026-11-22, NOT hw-tested; `debug/DVp2w-elmq1p-1.1.3`, PERF no HIST, build 19:28:09, SRAM
+  8 K entries).** PERF line `[HGFX] qdepth: max M (session S) of 8192 | frames > 1K a, 2K b, 4K c, 8K d`: the
+  depth right after each push, the window's and the session's max, and the frames whose max passed each mark.
+  `wait=` in `[HGFX] 60f` now counts the two-word and byte-run pushes too. `ELM_Q_LOG2` (CMake, empty = 13 in SRAM,
+  14 in PSRAM) sets the size. Run HAMCOLOR, PF2026, LIMSHOWM, HGFXAGON; pick the smallest 2^n above the session max
+  with wait 0. Trap: `build:` is `__TIME__` of ESPectrum.cpp - touch it, or a rebuild keeps the old stamp.
+  **hw 2026-11-22 DVp2w (elmq1p, log `devttyACM0_2026_11_22.19.29.22.375.txt`; HAMCOLOR, PF2026, LIMSHOWM,
+  HGFXAGON in that order):** HAMCOLOR is the only deep one - most frames < 1K, but ~14 of 60 go past 2K and ~8-10
+  past 4K, session max 8192 = full (bursts while core1 holds Q_DRAW for the beam: a whole frame of ~12 300 entries
+  piles up). realFPS 48.2-49.0 regardless. PF2026 and LIMSHOWM: q ~1/fr, depth 1 (their `wait=` 0.3-2.5 ms is the
+  previous-draw wait, not the queue). HGFXAGON: 1481 steady, 2912 at its start. `heap free 19144 largest 13860`
+  with the 32 KB queue in (arena 54 528 B lent to the NeoGS cache). NB `wait=` = full-queue wait + the frameEnd
+  wait for the previous draw (`drop=` counts those, ~120 us each in HAMCOLOR): the two are not separable there.
+- **Full-queue counter + two sizes (2026-11-22, NOT hw-tested; PERF no HIST, SRAM queue):**
+  `debug/DVp2w-elmq2p-8k-1.1.3` (build 19:40:08) and `debug/DVp2w-elmq2p-4k-1.1.3` (19:42:40). The qdepth line
+  ends `| full N x Tus`: only core0's waits on a full queue. `.elmovl` PERF term 19 200 -> 19 712 (content 19 232).
+  Question: does 4K (16 KB) keep HAMCOLOR at the ceiling, or do the bursts cost frames?
+  **hw 2026-11-22 DVp2w (elmq2p-4k, log `devttyACM0_2026_11_22.19.46.22.475.txt`, HAMCOLOR): 4K is enough.**
+  realFPS 47.9-49.0 (8K: 48.2-49.0), cpu 18.7-19.5 ms; the queue fills 10-14 times a minute, 12-24 ms of full
+  wait per 60 frames (~1.5 ms each, ~0.3 ms/frame); 13-22 frames of 60 past 2K. `heap free 35520 largest 30236`
+  (32 KB queue: 19 144 / 13 860). Owner: looks the same as the 8K build.
+- **The SRAM queue made the default (2026-11-22, hw-confirmed DVp2w 2026-11-22 (owner "работает", elmq3); `debug/DVp2w-elmq3-1.1.3` plain build
+  19:48:34, `debug/DVp2w-elmq3p-1.1.3` PERF 19:48:56).** `ELM_Q_SRAM` default ON (code default 1), `ELM_Q_LOG2`
+  empty = 12 in SRAM / 14 in PSRAM; `tryMalloc` 16 KB at `ensure()`, held for the session (never freed, like the
+  PSRAM one); no heap -> the uncached PSRAM alias as before, logged `[ELM] core1 queue: 4096 entries in PSRAM (no
+  heap)` (then only 4 K entries: an A/B wants `-DELM_Q_SRAM=OFF`). `.elmovl` plain 18 040 of 18 176 (136 B left).
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

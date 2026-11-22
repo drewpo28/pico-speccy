@@ -110,6 +110,14 @@ if (PERF_HIST)
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=0)
 endif()
+if (ELM_Q_SRAM)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ELM_Q_SRAM=1)
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ELM_Q_SRAM=0)
+endif()
+if (NOT ELM_Q_LOG2 STREQUAL "")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ELM_Q_LOG2=${ELM_Q_LOG2})
+endif()
 # PERF_TRACE's TS-Conf INT-accept ring (TsConf.cpp ts_int_ring, 16 B per entry):
 # 512 = 8 KB of .bss, enough for ~1.6 fishbone frames; 64 keeps a PERF build
 # light enough for the 720x576 video-mode gate (FB grow 26.9 KB + 10 KB margin).

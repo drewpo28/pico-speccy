@@ -34,6 +34,9 @@ option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
 # They cost ~5 ms per TMNT frame (a counter on every guest memory access), so they
 # are off unless a profiling session asks for them; PERF_TRACE stays cheap.
 option(PERF_HIST "Per-access Z80/TS-Conf histograms in the PERF log (slow; needs PERF_TRACE)" OFF)
+# eLeMeNt HGFX core1 queue: SRAM (16 KB of heap, default) or uncached PSRAM for an A/B (ElmHgfx.cpp ELM_Q_SRAM).
+option(ELM_Q_SRAM "eLeMeNt: the HGFX core1 queue in SRAM (OFF = uncached PSRAM)" ON)
+set(ELM_Q_LOG2 "" CACHE STRING "eLeMeNt: the HGFX core1 queue size, 2^n entries (empty = 12 in SRAM, 14 in PSRAM)")
 # PERF_HIST's core0 PC sampler (PcProf.cpp): bucket = 2^PCPROF_SHIFT bytes of code.
 # 6 (64 B) names a loop; 8 (256 B) keeps a 13 KB interpreter switch inside the
 # 56 buckets one dump prints — the Next core spread over 200 x 64 B buckets left
