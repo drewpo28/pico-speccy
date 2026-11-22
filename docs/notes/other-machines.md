@@ -1905,6 +1905,9 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   **hw-confirmed 2026-11-22 DVp2w (elmpace1p, log `devttyACM0_2026_11_22.21.02.19.000.txt`, HAMCOLOR):**
   `period` 20.32-20.61 ms (`paced`, what it would have been, 21.0-21.7), el 19.0-19.8, short 7-8/60; realFPS
   48.5-49.2 (one window 47.4 with `hold` 395 - the HAM re-check frame), `[PERF] aud` hold 0 in the rest.
+  Committed b5286257 (eLeMeNt only). **Every machine (a522bebb, hw-confirmed DVp2w 2026-11-22: owner "проблем не
+  обнаружено" on `debug/DVp2w-paceall-1.1.3`, build 21:06:29; machines not itemised):** the `isElm` condition
+  dropped, V-Sync off only.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 

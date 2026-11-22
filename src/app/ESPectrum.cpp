@@ -5811,13 +5811,15 @@ void ESPectrum::loop() {
       const int64_t rem = target - (int64_t)(time_us_64() - ts_start);
       idle = rem > 0 ? rem : 0;
     }
-    // eLeMeNt: a frame under the target pays back what the frames before it overran.
-    // Each frame used to wait out its own target only, so the period was the mean of
-    // max(el, target), not of el: HAMCOLOR with 52 of 60 frames ~1.4 ms over and the
-    // rest short ran 46.4 FPS at a mean el of 19.5 ms of 20.48, the audio ring running
-    // dry ([PERF] aud hold > 0; hw [NEG3] 2026-11-22). The debt is capped at one frame
-    // and dropped on a stall or fast-forward - catching up never runs ahead.
-    if (Z80Ops::isElm && !Config::loopVsync()) {
+    // A frame under the target pays back what the frames before it overran (every
+    // machine, V-Sync off; the V-Sync wait has its own clock). Each frame used to wait
+    // out its own target only, so the period was the mean of max(el, target), not of
+    // el: the eLeMeNt's HAMCOLOR with 52 of 60 frames ~1.4 ms over and the rest short
+    // ran 46.4 FPS at a mean el of 19.5 ms of 20.48, the audio ring running dry
+    // ([PERF] aud hold > 0; hw [NEG3] 2026-11-22; eLeMeNt-only first, b5286257). The
+    // debt is capped at one frame and dropped on a stall or fast-forward - catching up
+    // never runs ahead; a machine that overruns every frame sees no change.
+    if (!Config::loopVsync()) {
       static int64_t s_debt = 0;
       const int64_t over = (int64_t)(time_us_64() - ts_start) - target;
       if (maxSpeed || over > target) s_debt = 0;
