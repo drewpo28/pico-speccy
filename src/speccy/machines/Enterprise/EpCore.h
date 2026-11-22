@@ -72,6 +72,10 @@ struct Nick {
     // outMap applied. nullptr = off.
     uint8_t* hiOut = nullptr;
     static constexpr int HI_PX = OUT_PX * 2;
+    // Video > Frame skip: the display slots only move the address counters
+    // (and the data bus, from the run's last slot); no pixels, no L_HIRES. The LPB
+    // slots, margins, IRQ and VSYNC run as ever. Set per line by the host (Ep.cpp).
+    bool skipPx = false;
     // Output byte per Nick colour (256 entries); the default is the identity.
     void setOutMap(const uint8_t* m);
     // .pss: `io(ptr, bytes)` visits every field; palRebuild() after a load.
@@ -94,6 +98,7 @@ private:
     template <int VM> bool slotT(uint8_t* o, uint8_t* hi);   // true: a 16-px slot
     template <int VM> int spanT(int n, uint8_t* o, int ostep, uint8_t* hi);
     int span(int n, uint8_t* o, int ostep, uint8_t* hi);
+    void skipSpan(int n);
 };
 
 struct Dave {

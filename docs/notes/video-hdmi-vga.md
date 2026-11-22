@@ -1429,3 +1429,68 @@ pair slot (L, R), 2 source px. The integer scalers repeat whole BYTES, so:
   L L R R. Both the PIO ISR (x4 branch) and the expander `hdmi_big_line`. ISR +72 B,
   SCRATCH_X 3908/4096. x4 still shows only the centre 256 of 320 bytes = 512 of 640
   pair px. Test ELF `debug/DVp2w-x4pairs-1.1.2`.
+
+## Video > Frame skip (2026-11-22; TS-Conf hw-run DVp2w fskip3, the rest NOT hw-tested; host-checked 48K)
+
+Replaces Options > Frameskip (`Config::throtling`, nvs `throtling2`), which never
+skipped a frame: with the last frame's idle under its 1-3 ms it left the frame's
+SOUND unfinished (the end-of-frame AY/beeper/DAC fill in ESPectrum::loop). Now
+`Config::frame_skip` (nvs `frame_skip`, default Off), rule from pico-amiga (main.c
+there, A1200): a frame that starts over 1 ms behind its time is emulated but not
+drawn, at most 4 in a row (then one is drawn whatever the delay).
+
+- Decision: `ESPectrum::frameSkipDecide()` (flash) once a frame at the top of
+  `VIDEO::EndFrame`: lateness = the ending frame's overrun so far + the pacing debt
+  (`s_debt`, now file scope; V-Sync on: the overrun alone). Result in `VIDEO::skipLate`
+  for the frame that begins. `[SKIP] n frames not drawn in t ms` once a second while
+  it skips; `g_frame_skips` counts. Host: `PICOSPECCY_SKIP=N` forces N of every N+1.
+- Classic path (ZX family, Pentagon, Scorpion/GMX, Profi DS80, Timex, ATM, TS-Conf ZX):
+  the beam chain keeps its timing - `paper_skip` sends `MainScreen_Blank*` to
+  `MainScreen_NoPaper` (contention, MOON_LINE_PUB, line hand-back as MainScreen);
+  whole-line counters (ATM EGA/text, 16col, eLeMeNt turbo) are parked at Blank with
+  `ts_line_t` = MAX (`lateSkipPark`, flash); TS-Conf whole-line takes the maxSpeed
+  skip branch as is. Border machine parked (Border_Blank); the first drawn frame
+  after a skip sets `brdnextframe` so its border is repainted whole at its end.
+  Not with Gigascreen (the blend pairs N with N+2 = same page), VDAC2, HGFX.
+- Next: `NEXTVID::skipFrame` with the autoskip's `coherent` exceptions.
+- SAM: `Sam::frameStart` arms no rows (and no change log). Enterprise: `Nick::skipPx`
+  per line - `skipSpan` moves ld1/ld2 as slotT would and runs the run's last slot into
+  scratch (data bus); LPB slots, IRQ, VSYNC unchanged; the pair-driver decision of a
+  skipped frame is kept. eLeMeNt HGFX pair frames: the existing GS-behind skip branch
+  (never two in a row).
+- Counting (round 2, `debug/DVp2w-fskip2-1.1.3`): a machine that cannot skip is asked
+  and draws anyway, so only `VIDEO::skipTaken` (set by the renderer that did skip)
+  counts: `[SKIP] n frames not drawn (m late) in t ms`, m > n = asked, not taken.
+  Round 1's line counted the asks: on eLeMeNt HGFX mode 3 (HAMCOLOR, hw log
+  2026-11-22 21:39) it said ~10/s while nothing was skipped. F8 (OSD 2) shows
+  `FPS / DRW` (frames drawn a second) instead of `FPS / FND` while the option is on.
+- eLeMeNt HGFX outside the pair modes (round 2): a late frame end with core1 still on
+  the last picture neither waits (that wait was ef up to 24 ms in the log) nor posts a
+  draw; runs still flushed, `s_fbDirty` kept. The worst frames in that log were mostly
+  Z80-bound (cpu 24-30 ms with ef < 1 ms): no skip helps those.
+- F8's FPS is a 10-frame window: catch-up pacing keeps the 60-frame period at 20.5 ms
+  (48.8 FPS, [NEG3]) while single 25-35 ms frames show as ~40 for one window.
+- TS-Conf (round 3, `debug/DVp2w-fskip3-1.1.3`): round 1 parked the whole-line renderer
+  at Blank (the maxSpeed skip). tsDrawTick is more than the renderer: it completes the
+  TS DMA (`TsConf::dmaLineTick`), applies the beam-scheduled palette and publishes the
+  MoonSound line - with it parked the frame rate FELL (hw log 2026-11-22,
+  demorama_TS at 14 MHz, round-1 build). Now `ts_skip_render`: the tick and the row
+  counters run, no row is rendered or posted. ATM and 16col ticks only render: they
+  stay parked (lateSkipPark). The maxSpeed skip still parks TS-Conf (not touched).
+- F8 (OSD 2): FPS / FND / DRW over a rolling 50-frame window, still redrawn every 10
+  frames (that period drives the other F8 pages too); reset after a > 0.5 s gap.
+  Host: 48K, PICOSPECCY_SKIP=1 -> `FPS 50.08 / DRW 25.04`.
+- Round 4 (`debug/DVp2w-fskip4-1.1.3`): lateness = overrun at EndFrame + the last
+  frame's tail after it (`s_postLast`: frame-end sound mix, NeoGS, I/O) + debt; the
+  `[SKIP]` line prints every second while the option is on: frames, not drawn, late,
+  over / post / debt avg/max, vsync. hw 2026-11-22, eLeMeNt NETHER at 28 MHz in HGFX
+  mode 4: `30 frames, 3 not drawn (24 late) | over 12000 post 1500 debt 17000` with
+  [NEG2] cpu 38-46 ms, ef 0.3 ms - core0 is the Z80 alone (the picture is core1's), so
+  there is nothing to skip; F8 FPS 28.7 / DRW 26.4 is the emulation's own speed. Frame
+  skip cannot help a CPU-bound frame; only a slower emulated clock would (pico-amiga's
+  fast-RAM throttle), not done.
+- Cost: SRAM +313 B (EndFrame +216, MainScreen_Blank* +60, flags/veneers).
+- Host check: 48K TT48 with `PICOSPECCY_SKIP=1` - drawn frames correct, the shots
+  differ from the no-skip run only in the FLASH phase (which emulated frame the shot
+  caught). Owed on hw: Pentagon/128K heavy titles, TS-Conf, ATM EGA, Profi DS80, SAM,
+  EP, Next, eLeMeNt HGFX - picture and border after skips, sound kept, FPS.

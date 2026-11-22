@@ -114,7 +114,6 @@ const char* romsetName(int32_t composite);
     /* ── Options > Other ─────────────────────────────────────────────────────── */      \
     X(SET_ALU_TIMING,      AC_LIVE,   0,                     get_aluTiming,  put_aluTiming,  hook_aluTiming, -1)          \
     X(SET_ISSUE2,          AC_PURE,   0,                     get_issue2,     put_issue2,     nullptr,        -1)          \
-    X(SET_FRAMESKIP,       AC_PURE,   0,                     get_throtling,  put_throtling,  nullptr,        -1)          \
     /* ── Additional hardware ─────────────────────────────────────────────────── */      \
     X(SET_LED_IND,         AC_LIVE,   0,                     get_ledInd,     put_ledInd,     hook_ledInd,    -1)          \
     X(SET_SD_LED,          AC_LIVE,   0,                     get_sdLed,      put_sdLed,      hook_sdLed,     -1)          \
@@ -128,6 +127,7 @@ const char* romsetName(int32_t composite);
     X(SET_PALETTE,         AC_LIVE,   F_PREVIEW | F_PALETTE, get_palette,    put_palette,    hook_palette,   -1)          \
     X(SET_SCANLINES,       AC_LIVE,   F_PREVIEW,             get_scanlines,  put_scanlines,  hook_scanlines, -1)          \
     X(SET_VSYNC,           AC_LIVE,   0,                     get_vsync,      put_vsync,      hook_vsync,        -1)          \
+    X(SET_FRAMESKIP,       AC_PURE,   0,                     get_frameSkip,  put_frameSkip,  nullptr,        -1)          \
     X(SET_HDMI_DITHER,     AC_LIVE,   F_PREVIEW,             get_dither,     put_dither,     hook_dither,    -1)          \
     /* Z80 DMA is REBOOT-CLASS: its engine's code lives in fixed-VMA overlay windows    */ \
     /* (.dmarovl + .dmaovl) which the HEAP owns on a session booted with DMA off, and   */ \

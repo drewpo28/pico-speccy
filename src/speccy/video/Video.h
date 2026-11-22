@@ -473,6 +473,15 @@ public:
   // returns the count (<= 8). Flash; for renderers that repaint every row (SAM).
   static int rowCarves(int row, int (*cx)[2]);
   static bool paper_hold;          // eLeMeNt HGFX owns the paper: the timing runs, no pixels
+  // Video > Frame skip (ESPectrum::frameSkipDecide, set at the top of
+  // EndFrame): the frame that begins now is emulated but not drawn. Every machine's
+  // renderer reads it for its own frame (classic path below, NEXTVID, Sam, Ep, Hgfx).
+  static bool skipLate;
+  static bool skipTaken;           // a renderer did skip the frame (counted by frameSkipDecide)
+  // A skipped frame on the beam renderer: MainScreen_Blank* take MainScreen_NoPaper
+  // (contention and line timing kept, no pixels, bl_live too). Armed in EndFrame.
+  static bool paper_skip;
+  static void lateSkipPark();      // EndFrame's flash half for a late-skipped frame
   static void elmPaletteSet(uint8_t slot, uint32_t rgb);
   static uint32_t zxRgb(uint8_t i);
   // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):

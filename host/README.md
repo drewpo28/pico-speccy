@@ -144,6 +144,8 @@ CONTENT from DIR; without it the mount answers "no FAT file system".
   (which NextLineState words changed - host layout: the pointer is 8 bytes).
   A `pclog ins=` line per frame gives the INs and their top three ports, and `wlo` the Next
   loop's writes below #4000 (nxPoke8Slow) by 4K block.
+* `PICOSPECCY_SKIP=N`: Video > Frame skip forced on N frames of every N+1
+  (the PC is never late), to check the not-drawn path (`[SKIP]` lines).
 * `PICOSPECCY_MEMDUMP=file.bin:N` writes the Z80's 64K address space (current paging)
   at the N-th presented frame, on the same clock: for code a ROM unpacks into RAM
   (Karabas ROMain's menu), then `tools/z80disasm.py file.bin --raw --org 0`.

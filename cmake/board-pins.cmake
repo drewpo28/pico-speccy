@@ -139,7 +139,6 @@ IF(MURM2)
         TFT_CLK_PIN=19
         TFT_INV=${TFT_INV}
 
-        DEFAULT_THROTTLING=0
         PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
 ELSEIF(PICO_PC)
@@ -210,7 +209,6 @@ ELSEIF(PICO_PC)
         # HDMI 8 pins starts from pin:
         HDMI_BASE_PIN=12
 
-        DEFAULT_THROTTLING=0
         PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
 ELSEIF(PICO_DV)
@@ -279,7 +277,6 @@ ELSEIF(PICO_DV)
         # HDMI 8 pins starts from pin:
         HDMI_BASE_PIN=6
 
-        DEFAULT_THROTTLING=0
         PICO_DEFAULT_LED_PIN=${W_LED_PIN}
 )
 ELSEIF(ZERO2)
@@ -361,7 +358,6 @@ ELSEIF(ZERO2)
         HDMI_BASE_PIN=32
 
         PICO_DEFAULT_LED_PIN=255
-        DEFAULT_THROTTLING=0
     )
 ELSE()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -437,7 +433,6 @@ ELSE()
         TFT_CLK_PIN=13
         TFT_INV=${TFT_INV}
 
-        DEFAULT_THROTTLING=0
         PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
 ENDIF()

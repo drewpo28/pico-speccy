@@ -3082,10 +3082,13 @@ static void frameEndBody() {
     // palette, no tear), core0 does not wait for core1, and the next frame end deals and
     // draws the screens as they are then. Never two in a row: the change runs at >= 25 FPS.
     // (Skipping the draw on core1 never fired: its palette was staged, push at draw 57/60.)
+    // Video > Frame skip (VIDEO::skipLate) takes the same way out, with the
+    // same never-two-in-a-row rule: the picture is all this machine can skip.
     static bool s_gsSkipLast;
     if (s_pair && (mode == 1 || mode == 2) && s_q && g_elm_c1_live && !s_gsSkipLast &&
-        GS::enabled && GS::behind()) {
+        ((GS::enabled && GS::behind()) || VIDEO::skipLate)) {
         s_gsSkipLast = true;
+        if (VIDEO::skipLate) VIDEO::skipTaken = true;
 #if PERF_TRACE
         s_pGsSkip++;
 #endif
@@ -3196,6 +3199,17 @@ static void frameEndBody() {
     // core1 still on the last frame: the machine waits for it. Dropping the frame instead
     // let core0 run ten frames ahead and showed one in ten (HGFXAGON: 5 of 60, in jerks).
     if (supersede) goto posted;          // the queued draw is this frame's (see s_c0Hold)
+    // Video > Frame skip, outside the pair modes (those took the branch at the
+    // top): core1 still on the last picture and this frame late - no wait, no draw. The
+    // engine's runs still go to core1; the next frame end draws the picture as it is then
+    // (s_fbDirty kept). The run-ahead the comment above warns of cannot happen: the pacing
+    // holds the machine to wall time and frameSkipDecide never skips more than 4 in a row.
+    if (s_drawDone != s_drawPosted && VIDEO::skipLate && !s_pair) {
+        VIDEO::skipTaken = true;
+        s_fbDirty = true;
+        runFlush();
+        goto posted;
+    }
     if (s_drawDone != s_drawPosted) {
         const uint32_t t0 = time_us_32();
 #if PERF_TRACE

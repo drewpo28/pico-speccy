@@ -516,7 +516,7 @@ public:
     static uint8_t  joy2cursor;
     static uint8_t  secondJoy;
     static uint8_t  kempstonPort;
-    static uint8_t  throtling;
+    static bool     frame_skip;   // Video > Frame skip (ESPectrum::frameSkipDecide)
     static bool CursorAsJoy;
     static uint8_t scanlines;
     // CRT filter. 0=Off; 1..3 = Soft/Medium/Strong with a soft 4-pixel-pitch mask

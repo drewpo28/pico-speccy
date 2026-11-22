@@ -275,6 +275,23 @@ int Nick::span(int n, uint8_t* o, int ostep, uint8_t* hi) {
     }
 }
 
+// A run of display slots on a frame that is not drawn (skipPx): slotT's address steps
+// without its pixels - PIXEL reads two bytes a slot (ld1 += 2), ATTRIBUTE one of each
+// (ld1, ld2), the character modes, LPIXEL and VSYNC one ld1 byte (their ld2 is the
+// line's, stepped in LPB slot 3). The last slot runs for real into a scratch slot, so
+// the data bus holds what the guest would read (#80..#83 return it).
+void Nick::skipSpan(int n) {
+    if (n <= 0 || !displayEnabled) return;
+    const int k = n - 1;
+    if (videoMode == 1) ld1 = (uint16_t)(ld1 + 2 * k);
+    else {
+        ld1 = (uint16_t)(ld1 + k);
+        if (videoMode == 2) ld2 = (uint16_t)(ld2 + k);
+    }
+    alignas(4) uint8_t scratch[8];
+    span(1, scratch, 0, nullptr);
+}
+
 int Nick::line(uint8_t* out, uint8_t* aux, int visLo, int visHi, int from, int to) {
     alignas(4) uint8_t scratch[8];
     int flags = 0;
@@ -295,6 +312,7 @@ int Nick::line(uint8_t* out, uint8_t* aux, int visLo, int visHi, int from, int t
             if (leftMargin > s && leftMargin < e) e = leftMargin;
             if (visLo > s && visLo < e) e = visLo;
             if (visHi > s && visHi < e) e = visHi;
+            if (skipPx) { skipSpan(e - s); s = e - 1; continue; }
             const bool vis = s >= visLo && s < visHi;
             uint8_t* dst = vis ? out : aux;
             uint8_t* o = dst ? dst + (s - FIRST) * 8 : scratch;

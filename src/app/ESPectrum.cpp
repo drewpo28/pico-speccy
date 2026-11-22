@@ -4550,6 +4550,72 @@ void ESPectrum::netBackgroundTick() {
     }
 }
 
+// Frame pacing debt (V-Sync off): what the frames before this one overran, paid back
+// from the idle of short ones (loop, below). File scope for frameSkipDecide.
+static int64_t s_debt = 0;
+// frameSkipDecide: when this frame's EndFrame ran, and the last frame's work after it.
+static uint64_t s_efAt = 0;
+static int64_t  s_postLast = 0;
+
+// Video > Frame skip (Config::frame_skip), pico-amiga's rule (main.c there):
+// a frame that starts over 1 ms behind its time is emulated but not drawn - the
+// machine keeps its speed and its sound, the picture gives way, as little as it
+// takes. After FS_MAX skipped in a row one is drawn whatever the delay, so the
+// picture still moves when the emulation alone overruns. Called once a frame at the
+// top of VIDEO::EndFrame, i.e. while the frame just emulated is ending: its own
+// overrun so far plus the debt before it is how late the next one starts (V-Sync on:
+// the overrun alone - that wait has its own clock). The answer is VIDEO::skipLate,
+// read by every machine's renderer for the frame that begins now. Flash: once a frame.
+// A machine that cannot skip a frame (eLeMeNt HGFX outside its pair modes, VDAC2,
+// Gigascreen) is asked and draws anyway: only VIDEO::skipTaken, set by the renderer
+// that did skip, counts as not drawn (g_frame_skips: F8's DRW, the [SKIP] line).
+volatile uint32_t g_frame_skips = 0;            // frames not drawn (since boot)
+__attribute__((noinline)) bool ESPectrum::frameSkipDecide() {
+    enum { FS_MAX = 4, FS_LATE_US = 1000 };
+    static uint8_t s_skipped = 0;
+    if (VIDEO::skipTaken) { VIDEO::skipTaken = false; g_frame_skips = g_frame_skips + 1; }
+    const uint64_t now64 = time_us_64();
+    // The frame's work does not end here: after EndFrame come the sound chips' frame-end
+    // generation and mix (TSFM, OPL, SAA...), NeoGS MP3, disk I/O. Judged at this point
+    // alone, a TS-Conf demo at 30 FPS was never late (hw 2026-11-22: FPS 30 = DRW 30):
+    // the last frame's tail after EndFrame (s_postLast, measured in loop) is added.
+    const int64_t over = (int64_t)(now64 - ts_start) - target;
+    const int64_t late = over + s_postLast + (Config::loopVsync() ? 0 : s_debt);
+    s_efAt = now64;
+    bool skip = false;
+    if (Config::frame_skip && !maxSpeed && !CPU::paused)
+        skip = late > FS_LATE_US && s_skipped < FS_MAX;
+#if HOST_BUILD
+    // Bench: PICOSPECCY_SKIP=N skips N frames of every N+1 whatever the lateness (the
+    // PC is never late), so a drawn frame can be diffed against a run without it.
+    static const int s_force = getenv("PICOSPECCY_SKIP") ? atoi(getenv("PICOSPECCY_SKIP")) : 0;
+    if (s_force > 0 && !CPU::paused) { static uint32_t s_n = 0; skip = (++s_n % (uint32_t)(s_force + 1)) != 0; }
+#endif
+    s_skipped = skip ? s_skipped + 1 : 0;
+    // One line a second while the option is on (the hw test reads it): emulated frames,
+    // not drawn, asked (asked > not drawn = the machine could not skip), and what the
+    // decision saw - the overrun at EndFrame, the tail after it, the debt - avg / max.
+    if (Config::frame_skip && !CPU::paused) {
+        static uint32_t s_fr = 0, s_ask = 0, s_skip0 = 0, s_t = 0;
+        static int64_t s_ovSum = 0, s_ovMax = INT64_MIN, s_poSum = 0, s_poMax = 0, s_dbSum = 0;
+        s_fr++; if (skip) s_ask++;
+        s_ovSum += over; if (over > s_ovMax) s_ovMax = over;
+        s_poSum += s_postLast; if (s_postLast > s_poMax) s_poMax = s_postLast;
+        s_dbSum += s_debt;
+        const uint32_t now = (uint32_t)now64;
+        if ((uint32_t)(now - s_t) >= 1000000u) {
+            if (s_t)
+                Debug::log("[SKIP] %u ms: %u frames, %u not drawn (%u late) | over %d/%d post %d/%d debt %d us | vsync %d",
+                           (unsigned)((now - s_t) / 1000u), (unsigned)s_fr, (unsigned)(g_frame_skips - s_skip0),
+                           (unsigned)s_ask, (int)(s_ovSum / s_fr), (int)s_ovMax, (int)(s_poSum / s_fr), (int)s_poMax,
+                           (int)(s_dbSum / s_fr), (int)Config::loopVsync());
+            s_t = now; s_fr = s_ask = 0; s_skip0 = g_frame_skips;
+            s_ovSum = s_poSum = s_dbSum = 0; s_ovMax = INT64_MIN; s_poMax = 0;
+        }
+    }
+    return skip;
+}
+
 //=======================================================================================
 // MAIN LOOP
 //=======================================================================================
@@ -5202,8 +5268,10 @@ void ESPectrum::loop() {
         pwm_audio_in_frame_started();
       }
 #endif
-      int32_t t_us = Config::throtling * 1000l;
-      if ((!t_us || idle > t_us) && !(maxSpeed && Tape::tapeStatus == TAPE_LOADING)) {
+      // (The old "Frameskip" µs option sat here: with the last frame's idle under it,
+      // this frame's sound was left unfinished - nothing was skipped but audio. The
+      // picture is skipped now, Video > Frame skip: frameSkipDecide.)
+      if (!(maxSpeed && Tape::tapeStatus == TAPE_LOADING)) {
         // Finish fill of beeper audio buffer (tstate-weighted)
         if (beeperTstatesInSample > 0 && audbufcntover < (uint32_t)samplesPerFrame) {
           // Complete partial sample with constant beeper value
@@ -5515,11 +5583,31 @@ void ESPectrum::loop() {
           snprintf(OSD::stats_lin1, sizeof(OSD::stats_lin1),
                    "TST: %05d / IDL: %05d ", CPU::tstates_active,
                    (int)(ESPectrum::idle));
-          snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
-                   "FPS:%6.2f / FND:%6.2f ",
-                   VIDEO::framecnt / (ESPectrum::totalseconds / 1000000),
-                   VIDEO::framecnt /
-                       (ESPectrum::totalsecondsnodelay / 1000000));
+          // A rolling 50-frame window, redrawn every 10 frames (this block's period, which
+          // the other F8 pages share): over 10 frames one 25-35 ms frame that the pacing
+          // pays back over the next ones read as ~40 FPS (eLeMeNt, hw 2026-11-22).
+          // Video > Frame skip: FND gives way to DRW, the frames actually
+          // drawn a second (FPS counts every emulated frame, drawn or not).
+          extern volatile uint32_t g_frame_skips;
+          static uint32_t s_skipBase = 0;
+          static double s_wSec[5], s_wNd[5];
+          static uint32_t s_wFr[5], s_wSk[5];
+          static uint8_t s_wi = 0, s_wn = 0;
+          static uint32_t s_wAt = 0;   // F8 reopened, a menu, a pause: start the window again
+          { const uint32_t now = time_us_32(); if ((uint32_t)(now - s_wAt) > 500000u) s_wi = s_wn = 0; s_wAt = now; }
+          s_wSec[s_wi] = ESPectrum::totalseconds; s_wNd[s_wi] = ESPectrum::totalsecondsnodelay;
+          s_wFr[s_wi] = (uint32_t)VIDEO::framecnt; s_wSk[s_wi] = g_frame_skips - s_skipBase;
+          s_skipBase = g_frame_skips;
+          s_wi = (uint8_t)((s_wi + 1) % 5); if (s_wn < 5) s_wn++;
+          double sec = 0, nd = 0; uint32_t fr = 0, sk = 0;
+          for (int k = 0; k < s_wn; k++) { sec += s_wSec[k]; nd += s_wNd[k]; fr += s_wFr[k]; sk += s_wSk[k]; }
+          sec /= 1000000; nd /= 1000000;
+          if (Config::frame_skip)
+            snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2), "FPS:%6.2f / DRW:%6.2f ",
+                     fr / sec, (fr > sk ? fr - sk : 0) / sec);
+          else
+            snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2), "FPS:%6.2f / FND:%6.2f ",
+                     fr / sec, fr / nd);
           OSD::drawStats();
         } else if (VIDEO::OSD == 3) {
           snprintf(OSD::stats_lin1, sizeof(OSD::stats_lin1),
@@ -5621,6 +5709,8 @@ void ESPectrum::loop() {
     LED::drawCornerIcons(lamp_on, fdd_write);
 
     elapsed = time_us_64() - ts_start;
+    // frameSkipDecide's tail: this frame's work after its EndFrame (0 when none ran).
+    s_postLast = s_efAt >= (uint64_t)ts_start ? (int64_t)(ts_start + elapsed - s_efAt) : 0;
     idle = target - elapsed;
     // [NXNEG] (machines/Next/NextNeg.cpp, flash): the worst overrun frame of each second
     if (__builtin_expect(Z80Ops::isNext, 0)) {
@@ -5820,12 +5910,11 @@ void ESPectrum::loop() {
     // debt is capped at one frame and dropped on a stall or fast-forward - catching up
     // never runs ahead; a machine that overruns every frame sees no change.
     if (!Config::loopVsync()) {
-      static int64_t s_debt = 0;
       const int64_t over = (int64_t)(time_us_64() - ts_start) - target;
       if (maxSpeed || over > target) s_debt = 0;
       else if (over > 0) { s_debt += over; if (s_debt > target) s_debt = target; }
       else if (s_debt > 0 && idle > 0) { const int64_t pay = s_debt < idle ? s_debt : idle; idle -= pay; s_debt -= pay; }
-    }
+    } else s_debt = 0;
     if (!maxSpeed) {
       // ZiFi over USB-CDC: the frame-pacing waits below are the longest no-pump
       // windows in the whole loop (up to ~13 ms busy-NOP) — long enough for a

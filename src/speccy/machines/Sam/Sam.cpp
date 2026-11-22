@@ -1031,6 +1031,17 @@ static inline void rowsTick(uint32_t t) {
 }
 
 void frameStart() {
+    // Video > Frame skip (VIDEO::skipLate, decided in this frame's EndFrame
+    // just before): no rows, no change log (rowsTick never fires); frameEnd renders
+    // nothing. The next drawn frame's frameSetup takes the state as it is then.
+    if (VIDEO::skipLate) {
+        VIDEO::skipTaken = true;
+        s_armed = true;
+        s_row = s_yres;
+        s_rowT = 0xFFFFFFFFu;
+        s_nchg = 0;
+        return;
+    }
     s_armed = frameSetup();
     if (!s_armed) { s_rowT = 0xFFFFFFFFu; return; }
     s_row = 0;

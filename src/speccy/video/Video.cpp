@@ -584,6 +584,9 @@ uint8_t  VIDEO::ts_vmode_live = 0;
 uint8_t  VIDEO::ts_render_live = 0;
 // TsDraw / TsFastMem.h state (see the TS-Conf fast video path further down)
 uint32_t VIDEO::ts_line_t   = 0xFFFFFFFFu;   // T-state at which the next content line renders
+// Video > Frame skip on TS-Conf: this frame's tick runs (DMA, palette) but
+// renders and posts no row (EndFrame arms it, RedrawPausedFrame clears it).
+static bool ts_skip_render = false;
 static uint32_t ts_line_idx = 0;             // that line, 0..(lin_end2 - lin_end - 1)
 // ...and the fb ROW the per-line clock is on, 0..yres. The top/bottom border
 // bands are raster lines like any other and a guest may drive the Border
@@ -1655,6 +1658,9 @@ uint32_t VIDEO::lastBrdTstate;
 bool VIDEO::brdChange = false;
 bool VIDEO::paper_off = false;
 bool VIDEO::paper_hold = false;
+bool VIDEO::paper_skip = false;
+bool VIDEO::skipLate = false;
+bool VIDEO::skipTaken = false;
 bool VIDEO::brdnextframe = true;
 bool VIDEO::brdGigascreenChange = true;
 bool VIDEO::gigascreen_enabled = false;
@@ -6152,7 +6158,7 @@ IRAM_ATTR __attribute__((noinline)) void VIDEO::MainScreen_Blank(unsigned int st
 
         if (brdChange) DrawBorder(); // Needed to avoid tearing in demos like Gabba (Pentagon)
 
-        if ((paper_off || paper_hold) && !bl_live) {
+        if (((paper_off || paper_hold) && !bl_live) || paper_skip) {
             // Debug "Paper off": keep the exact T-state/contention flow but write
             // nothing — MiddleBorder paints through the paper columns instead.
             coldraw_cnt = 0;
@@ -6233,7 +6239,7 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
 
         if (brdChange) DrawBorder();
 
-        if ((paper_off || paper_hold) && !bl_live) {
+        if (((paper_off || paper_hold) && !bl_live) || paper_skip) {
             coldraw_cnt = 0;
             Draw = &MainScreen_NoPaper;
             Draw_Opcode = &MainScreen_Opcode;
@@ -6309,7 +6315,7 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow_Opcode(bool contended) {
 
         if (brdChange) DrawBorder();
 
-        if ((paper_off || paper_hold) && !bl_live) {
+        if (((paper_off || paper_hold) && !bl_live) || paper_skip) {
             coldraw_cnt = 0;
             Draw = &MainScreen_NoPaper;
             Draw_Opcode = &MainScreen_Opcode;
@@ -7835,7 +7841,11 @@ IRAM_ATTR void VIDEO::tsDrawTick() {
     }
     do {
         const uint32_t row = ts_row_idx;
-        if (row >= lin_end && row < lin_end2) {
+        if (__builtin_expect(ts_skip_render, 0)) {
+            // a late-skipped frame: the clock, its side work and the row counters
+            // (tsCramChanged / tsPalettePoll read ts_line_idx), no row
+            if (row >= lin_end && row < lin_end2) { linedraw_cnt = row; ts_line_idx = row - lin_end + 1; }
+        } else if (row >= lin_end && row < lin_end2) {
             ts_line_idx = row - lin_end;
             linedraw_cnt = row;               // keep the shared counters coherent
             curline = ts_line_idx;
@@ -9539,6 +9549,23 @@ static __attribute__((noinline)) void c16TraceTick() {
 }
 #endif
 
+// Video > Frame skip, the frame EndFrame has just armed (classic path, not
+// TS-Conf's whole-line renderer: that one takes the maxSpeed skip). Flash on purpose.
+__attribute__((noinline)) void VIDEO::lateSkipPark() {
+    skipTaken = true;
+    if (Draw == &MainScreen_Blank || Draw == &MainScreen_Blank_Snow) {
+        // The beam renderer: its timing skeleton runs (48K/128K/+3 contention, the
+        // per-line hooks), the pixels are not written.
+        paper_skip = true;
+    } else {
+        // A whole-line T-state counter (ATM/Evo EGA/text, Pentagon 16col, eLeMeNt
+        // turbo): uncontended, so Blank is its timing; the tick never fires.
+        Draw = &Blank;
+        Draw_Opcode = &Blank_Opcode;
+        ts_line_t = 0xFFFFFFFFu;
+    }
+}
+
 IRAM_ATTR void VIDEO::EndFrame() {
     PERF_BUCKET_SCOPE(PB_ENDFRAME);
 #if COL16_TRACE
@@ -9556,6 +9583,9 @@ IRAM_ATTR void VIDEO::EndFrame() {
     // never waits (it stops the moment the FIFO is full), and 60 x 32 bytes per
     // PERF window comfortably carries the ~600 bytes those lines write.
     Debug::pumpUart();
+
+    // Video > Frame skip: decided once here, for every machine (flash call).
+    skipLate = ESPectrum::frameSkipDecide();
 
     if (__builtin_expect(Z80Ops::isElm, 0)) Elm::frameEnd();   // HGFX: mode change, the picture
 
@@ -10200,6 +10230,20 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
     ts_line_t = 0xFFFFFFFFu;
     col16_fast = false;
     if (ts_render_live) tsC1PlacementPoll();   // GS active → render on core0, see the function
+    // Video > Frame skip. Not with Gigascreen (the blend pairs frame N with
+    // N+1; a skip pairs it with N+2, the same page) nor where the picture is not the
+    // beam's (VDAC2, eLeMeNt HGFX: Elm::frameEnd decides there). TS-Conf's whole-line
+    // renderer takes the maxSpeed skip as it is (Blank, nothing posted); the others
+    // keep their arming and are parked after it (below).
+    const bool lateSkip = skipLate && !skipFrame && !gigascreen_enabled && !ft_live && !paper_hold;
+    // TS-Conf whole-line: the line tick keeps running (it also completes the TS DMA and
+    // applies the beam-scheduled palette: parked at Blank like the maxSpeed skip, the
+    // guest spun on DMA_ACT and the frame rate FELL, hw 2026-11-22 demorama_TS); only
+    // the rows are not rendered or posted (tsDrawTick reads ts_skip_render).
+    ts_skip_render = lateSkip && ts_render_live;
+    if (ts_skip_render) skipTaken = true;
+    const bool noPaint = skipFrame || lateSkip;
+    paper_skip = false;
     if (skipFrame) {
         // Skip rendering: 1/1024 frames during tape loading, 1/256 otherwise
         Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;
@@ -10294,6 +10338,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         Draw = &MainScreen_Blank;
         Draw_Opcode = &MainScreen_Blank_Opcode;
     }
+    if (lateSkip && !skipFrame && !ts_render_live) lateSkipPark();   // flash: once a frame, only when skipping
     tsFastMemRecalc();
 
     // DS80 borders are rendered by the state machine with DS80 geometry
@@ -10328,7 +10373,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         // GMX 640x200 / TS-Conf non-ZX modes: the per-T-state border machine
         // stays parked (its writers would put raw ZX indices into a pair-slot
         // framebuffer) — cold flash body in gmxBorderFrame, cheap check here.
-        gmxBorderFrame(skipFrame);
+        gmxBorderFrame(noPaint);
         if (ts_render_live) tsBandReplay();   // ...and put the per-line band colours back
         brdGigascreenChange = false;
         DrawBorder = &Border_Blank;
@@ -10336,6 +10381,8 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         brdChange = false;
     } else {
     bool brdWalked = false;     // DrawBorder() ran this frame end (lenBorderRearm)
+    // Completes the border of the frame that just ended (Border_Blank, a no-op, when it
+    // was late-skipped); `noPaint` below is about the frame that begins now.
     if (!skipFrame) {
         if (brdChange || brdGigascreenChange) {
             DrawBorder();
@@ -10355,7 +10402,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
 
     // Restart border drawing (single TopBorder_Blank for all models — the
     // Leningrad-1 keeps its machine running into the next frame, see lenBorderRearm)
-    if (skipFrame) {
+    if (noPaint) {
         DrawBorder = &Border_Blank;
         lastBrdTstate = tStatesBorder;
     } else if (__builtin_expect(g_len_wrap, 0)) {
@@ -10365,6 +10412,11 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         lastBrdTstate = tStatesBorder;
     }
     brdChange = false;
+    // Late skip: the border writes of a skipped frame went to Border_Blank, so the
+    // first drawn frame after it repaints its whole border at its end (brdnextframe).
+    static bool s_brdSkipped = false;
+    if (noPaint) s_brdSkipped = true;
+    else if (s_brdSkipped) { brdnextframe = true; s_brdSkipped = false; }
     }
 
     // ── Gigascreen Auto, why it is (not) engaging ─────────────────────────────
@@ -10491,6 +10543,8 @@ void VIDEO::RedrawPausedFrame() {
     if (Z80Ops::isTsconf && tsCramDirty) tsPalettePoll(true);
 
     uint32_t saved_tstates = CPU::tstates;
+    paper_skip = false;   // a late-skipped frame: this walk draws the picture
+    ts_skip_render = false;
 
     // Arm the paper renderer at start-of-frame state (mirror of EndFrame's
     // re-arm — while paused it may be left at Blank by a maxSpeed skip-frame).

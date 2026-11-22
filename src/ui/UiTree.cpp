@@ -94,12 +94,6 @@ static const Option opt_alu[] = {
     { "Early", 0 },
     { "Late",  1 },
 };
-static const Option opt_frameskip[] = {          // Config::throtling, microseconds
-    { "Off",  0 },
-    { "1000", 1 },
-    { "2000", 2 },
-    { "3000", 3 },
-};
 static const Option opt_palette[] = {
     { "Pulsar",    0 },
     { "Alone",     1 },
@@ -1610,6 +1604,9 @@ static const Node kVideo[] = {
     // Host: on = the machine follows the monitor's refresh (smooth scrolling, a 50 Hz
     // machine runs ~20% fast on a 60 Hz screen), off = the machine's own frame rate.
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
+    // A frame that starts over 1 ms behind its time is emulated but not drawn, up to
+    // 4 in a row (ESPectrum::frameSkipDecide): the machine keeps its speed and sound.
+    NM_BOOL (TXT_VID_FRAMESKIP,  SET_FRAMESKIP,  nullptr),
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),
@@ -1997,7 +1994,6 @@ static const Node kOptions[] = {
               profiles_vlabel, opt_profile_foot, p_hasSD),
     NM_RADIO (TXT_OTHER_ALU,        SET_ALU_TIMING, opt_alu,       nullptr),
     NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
-    NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
     NM_SUB   (TXT_OPT_PREF_ROM,     kPrefRom,       nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),

@@ -2634,6 +2634,9 @@ void NEXTVID::EndFrame() {
             s_lastAuto = true;
             g_nx_autoskip = g_nx_autoskip + 1;
         } else s_lastAuto = false;
+        // Video > Frame skip (ESPectrum::frameSkipDecide, any cause of the
+        // lateness, up to 4 in a row): the same not-drawn frame, the same exceptions.
+        if (!skipFrame && VIDEO::skipLate && !coherent) { skipFrame = true; VIDEO::skipTaken = true; }
     }
     lineIdx = 0;
     totalLines = (CPU::statesInFrame >> ESPectrum::multiplicator) / VIDEO::tStatesPerLine;

@@ -112,6 +112,7 @@
 #define TXT_VID_SCREEN_TOP  "Screen position"
 #define TXT_VID_RENDER      "Render type"
 #define TXT_VID_GIGASCREEN  "Gigascreen"
+#define TXT_VID_FRAMESKIP   "Frame skip"
 #define TXT_VID_ULAPLUS     "ULA+"
 #define TXT_VID_TIMEX       "Timex Gfx mode"
 #define TXT_VID_16COL       "16col (Pentagon)"
@@ -461,7 +462,6 @@
 #define TXT_ROM_SLOT_PENT1   "Pentagon bank #1"
 #define TXT_OTHER_ALU        "ALU timing"
 #define TXT_OTHER_ISSUE2     "48K Issue 2"
-#define TXT_OTHER_FRAMESKIP  "Frameskip"
 #define TXT_OTHER_HOTKEYS    "Remap hot keys"
 
 // ── Debug ──────────────────────────────────────────────────────────────────────

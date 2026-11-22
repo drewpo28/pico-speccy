@@ -341,6 +341,9 @@ public:
     static int32_t mouseDY;
 
     static bool maxSpeed;
+
+    // Video > Frame skip: the next frame is not drawn (VIDEO::skipLate).
+    static bool frameSkipDecide();
 };
 
 #define bitRead(value, bit) (((value) >> (bit)) & 0x01)

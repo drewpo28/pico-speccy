@@ -255,7 +255,11 @@ static uint8_t* s_lRow = nullptr;
 static int  s_lVisLo = 0, s_lVisHi = 0, s_lX0 = 0;
 static uint8_t* s_px = nullptr;                // OUT_PX bytes, heap (the machine's own)
 
+static bool s_frameSkip = false;               // VIDEO::skipLate for this frame (frameEnd)
+
 static void linePath() {
+    s_nick.skipPx = s_frameSkip;               // the whole line, from its first part
+    if (s_frameSkip) { s_lRow = nullptr; s_lDirect = false; return; }
     const bool pair = VIDEO::sam_pair_live && s_ps;
     s_nick.hiOut = pair ? s_ps->hi : nullptr;
     int y = 0, cx[8][2];
@@ -284,7 +288,7 @@ static void lineRun() {
     EPT_BEGIN(t0);
     linePart(EpCore::Nick::SLOTS);
     int y = 0;
-    uint8_t* row = fbRow(y);
+    uint8_t* row = s_nick.skipPx ? nullptr : fbRow(y);   // a skipped frame: the row keeps the last picture
     if (s_lDirect) {
         const int xres = (int)VIDEO::vga.xres;
         const int lo = (s_lVisLo - EpCore::Nick::FIRST) * 8, hi = (s_lVisHi - EpCore::Nick::FIRST) * 8;
@@ -495,9 +499,12 @@ void frameEnd() {
     }
     s_b6Read = false;
     s_dave.outN = 0;
-    // The next frame's resolution: 16 px a slot if this one showed a hi-res line.
-    bool want = s_hiSeen;
+    // The next frame's resolution: 16 px a slot if this one showed a hi-res line
+    // (a frame that was not drawn saw none: the driver stays as it is).
+    bool want = s_frameSkip ? VIDEO::sam_pair_live : s_hiSeen;
     s_hiSeen = false;
+    s_frameSkip = VIDEO::skipLate;             // Video > Frame skip
+    if (s_frameSkip) VIDEO::skipTaken = true;
     if (want && !s_ps) {
         s_ps = (PairState*)tryMalloc(sizeof(PairState));
         if (s_ps) pairReset();

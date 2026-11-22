@@ -7006,9 +7006,8 @@ static void buildEmulatorInfoText() {
 
     // Rows that only exist in some configurations — printed only when they do,
     // so the common case stays short.
-    if (Config::throtling)
-        pos += infoAppend(buf, pos, bufsz,
-            " Frameskip      : %d us\n", Config::throtling * 1000);
+    if (Config::frame_skip)
+        pos += infoAppend(buf, pos, bufsz, " Frame skip     : When late\n");
     if (Z80Ops::isProfi && Config::profi_ext_keys)
         pos += infoAppend(buf, pos, bufsz, " XT keyboard    : On\n");
     if (g_quorum && Quorum::fkeysToGuest)

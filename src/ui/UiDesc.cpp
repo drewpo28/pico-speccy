@@ -182,6 +182,16 @@ static int describeVsync(int32_t v, DescLine* out, int max) {
     return n;
 }
 
+// Video > Frame skip (ESPectrum::frameSkipDecide): what gives way.
+static int describeFrameSkip(int32_t v, DescLine* out, int max) {
+    if (v != 1) return 0;
+    int n = sub (out, 0, max, "Frame late > 1 ms", nullptr, DESC_PLAIN);
+    n = rule(out, n, max, "emulated, not drawn", "");
+    n = rule(out, n, max, "up to 4 in a row", "");
+    n = rule(out, n, max, "speed and sound kept", "");
+    return n;
+}
+
 // Video > Screen position: what the three numbers are (border rows above the paper,
 // the paper, border rows below) and which raster lines of the Pentagon's 304 visible
 // ones that keeps — lines 16..303 are visible on the real machine.
@@ -273,6 +283,7 @@ int describe(const Node& n, int32_t value, DescLine* out, int max) {
         case SET_MACHINE: return describeMachine(value, out, max);
         case SET_GS_MODE: return describeGs(value, out, max);
         case SET_VSYNC:   return describeVsync(value, out, max);
+        case SET_FRAMESKIP: return describeFrameSkip(value, out, max);
         case SET_SCREEN_TOP: return describeScreenTop(value, out, max);
         case SET_CPU_MHZ:
         case SET_VREG:
