@@ -873,6 +873,10 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   showed the title before the fix. Dead end: sending chunky WRITES to the VP bit 2 buffer (the Reference's "bit2 =
   source ... and CHUNKY access") also hid the bars, but lost TETRIS's background picture and HGFNICCC's 3D part;
   chunky writes stay on bit 1. The video peeking in at the bottom and sliding up after ~1450 frames is the demo.
+- SLAMTRIS (SLAM+ris, source github.com/nagydani/SLAMtris) needs Timex video (SetUp e_010) AND ULA+ (e_011): it
+  sets `OUT (#FF),2` (multicolour) and loads 64 ULA+ entries per level. With Timex off the hw frame came out as an
+  orange/white/grey 2-colour mess (owner 2026-11-22); a settings matter, not an emulation bug. The bench draws the
+  menu and play correctly with both on.
 - HGFXHAM8.TAP never showed a picture: a shared tape flash-load bug, see storage-tape.md "Tape polarity, long blocks".
 - **HRXCIMGS (zxart 392307, "HiRes Indexed Color pictures"; owner on the host 2026-11-14 against the zxart shot; fixed
   on the bench, owner on the host build 2026-11-14 after round 2: "сейчас отлично"; NOT hw-tested, test ELF
