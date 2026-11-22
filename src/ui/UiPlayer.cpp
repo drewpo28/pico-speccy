@@ -1060,7 +1060,7 @@ void run(const string& startPath) {
                 case PA_AUTO:  s_auto = !s_auto; hdr = true; break;
                 case PA_REPEAT: s_repeat = !s_repeat; hdr = true; break;
                 case PA_LOOPS: case PA_FADE: {
-                    // The same steps as Audio > Pico-Zx-Player; saved when the page closes.
+                    // VGMPlay's loop / fade steps; saved when the page closes.
                     static const uint8_t kLoops[] = { 1, 2, 3, 4, 5, 8, 0 };
                     static const uint8_t kFade[]  = { 0, 1, 2, 3, 5, 8, 10 };
                     const uint8_t* t = a == PA_LOOPS ? kLoops : kFade;

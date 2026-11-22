@@ -380,7 +380,8 @@ const char* romsetName(int32_t composite);
     /* Spectrum Next CPU clock cap (Config::next_clk_cap): live, re-applies the  */ \
     /* nextreg 0x07 speed — the SET_TSCONF_CLK twin. Appended last (APPEND ONLY). */ \
     X(SET_NEXT_CLK,        AC_LIVE,   0,                     get_nextClk,    put_nextClk,    hook_nextClk,   -1) \
-    /* Audio > Pico-Zx-Player > Loop count / Fade time. AC_PURE: read when a track */ \
+    /* Pico-Zx-Player loop count / fade time (no menu row: the player page cycles */ \
+    /* them itself; kept for the APPEND ONLY ids). AC_PURE: read when a track    */ \
     /* opens, so an edit applies from the next track played.                      */ \
     X(SET_PL_LOOPS,       AC_PURE,   0,                     get_plLoops,    put_plLoops,   nullptr,        -1)          \
     X(SET_PL_FADE,        AC_PURE,   0,                     get_plFade,     put_plFade,    nullptr,        -1)          \

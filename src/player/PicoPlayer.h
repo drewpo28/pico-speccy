@@ -79,7 +79,7 @@ public:
     const char* err = nullptr;
 
 protected:
-    // Loops and fade (Audio > Pico-Zx-Player, VGMPlay's LoopCount / FadeTime).
+    // Loops and fade (the player page, VGMPlay's LoopCount / FadeTime).
     // A decoder whose song has a loop point calls loopPassed() every time
     // playback reaches the end of the song: true = keep playing (jump back to
     // the loop), false = the track ends here. After `loops` passes it arms a
