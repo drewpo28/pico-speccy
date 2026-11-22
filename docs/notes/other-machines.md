@@ -877,6 +877,12 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   sets `OUT (#FF),2` (multicolour) and loads 64 ULA+ entries per level. With Timex off the hw frame came out as an
   orange/white/grey 2-colour mess (owner 2026-11-22); a settings matter, not an emulation bug. The bench draws the
   menu and play correctly with both on.
+- RADDEMOS/T-REX (Radastan: ZX-Uno #FC3B=#40, #FD3B=3; 16 colours from ULA+ entries 0-15 via #BF3B/#FF3B) never
+  switched Radastan on with ZiFi on (owner 2026-11-23): the generic `Ports::output` ZX-Uno UART branch took every
+  #FC3B/#FD3B write before `Elm::portOut` saw it. The bench sweep missed it because its NVS had zifi_enabled=0 (and
+  the FRAM e_zxi_039=03 turns ZiFi off at boot: set FRAM byte #39=00 to test with it on). Fix: that branch skips
+  `Z80Ops::isElm` (Elm::portOut already forwards #C6-#C9 to ZiFi); Ports::output +24 B RAM. Bench-confirmed with
+  ZiFi on, hw-confirmed 2026-11-23 (DVp2w, `debug/DVp2w-elm-radzifi-1.1.3`). Needs ULA+ on (palette writes are gated by it).
 - HGFXHAM8.TAP never showed a picture: a shared tape flash-load bug, see storage-tape.md "Tape polarity, long blocks".
 - **HRXCIMGS (zxart 392307, "HiRes Indexed Color pictures"; owner on the host 2026-11-14 against the zxart shot; fixed
   on the bench, owner on the host build 2026-11-14 after round 2: "сейчас отлично"; NOT hw-tested, test ELF

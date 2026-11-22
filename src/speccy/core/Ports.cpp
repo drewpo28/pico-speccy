@@ -3169,7 +3169,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // ZX UNO register file (#FC3B address / #FD3B data) — Karabas-Pro's UART
   // bridge to its on-board ESP8266. Full 16-bit decode (as on the FPGA), bit8
   // picks the data port; bridges to the same ESP link as the #xxEF windows.
-  if (Config::zifi_enabled && (address | 0x0100) == 0xFD3B) {
+  // Not on the eLeMeNt: its #FC3B/#FD3B are the whole ZX-Uno register file
+  // (Radastan #40..#43 among them) and Elm::portOut passes the UART registers
+  // on to ZiFi itself. Taking the pair here hid Radastan with ZiFi on (T-REX).
+  if (Config::zifi_enabled && (address | 0x0100) == 0xFD3B && !Z80Ops::isElm) {
     ZiFi::unoUartWrite(address & 0x0100, data);
     return;
   }
