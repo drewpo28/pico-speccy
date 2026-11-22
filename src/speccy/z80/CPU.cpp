@@ -167,6 +167,7 @@ bool Z80Ops::isNext = false;
 bool Z80Ops::isSam = false;
 bool Z80Ops::isEnt = false;
 bool Z80Ops::isElm = false;
+bool Z80Ops::idleHook = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -355,6 +356,7 @@ void CPU::reset() {
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
     Z80Ops::isNext = (Config::arch == A_NEXT);
+    Z80Ops::idleHook = Z80Ops::isNext || Z80Ops::isElm;
     // Off the Next every port is "decoded": the shared decoders test the NR
     // 0x82-0x85 bit alone (no isNext), so leaving a 48K personality behind a
     // machine switch must not silence another machine's AY / divMMC / mouse.

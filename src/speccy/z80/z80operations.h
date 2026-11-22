@@ -54,6 +54,9 @@ public:
     static bool isEnt;      // Enterprise 64/128 (src/speccy/machines/Enterprise owns the memory map)
     static bool isElm;      // eLeMeNt ZX (Pentagon 1024 flags + src/speccy/machines/Element)
     static bool isSam;      // MGT SAM Coupe (src/speccy/machines/Sam owns the memory map)
+    // isNext || isElm: the memory-poll idle-loop fast-forward (NextIdle.h) is hooked on
+    // taken backward JRs - one flag, so the shared decoders pay one load as before.
+    static bool idleHook;
 };
 
 #endif // Z80OPERATIONS_H

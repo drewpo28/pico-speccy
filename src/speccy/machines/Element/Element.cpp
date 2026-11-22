@@ -539,6 +539,38 @@ uint32_t g_elm_io_cnt[8];   // bytes a window: dmaCopy plain / COPY, dmaFromCard
 uint32_t g_elm_io_us[5];    // core0 time a window: dmaFromCard, fdmaRun (whole call), fdmaRun chunky rows + per-byte pieces, (3) VRAM-window pieces, (4) the time charge (VIDEO::Draw)
 uint32_t g_elm_fd_why[8], g_elm_fd_kind[8], g_elm_fd_src[8];   // fd_src: fill / URAM / chunky window / plain page (4 = per-byte read fallback)   // FastDMA pieces a window: per-byte reason (1 src divMMC, 2 overlap, 3 dst low, 4 VRAM rule, 5 split chunky src, 6 other window), destination kind
 #endif
+// ---- the memory-poll idle loop (NextIdle.cpp asks; Element.h) ---------------------------
+// NETHER waits at #1DDF (LD A,(#FD34) / CP 8 / JR C) for its interrupt counter, ~7 000 passes
+// a 28 MHz frame (~40% of its T) on the shared loop: the code is in RAM below #4000.
+#if PERF_TRACE
+uint32_t g_elm_idle[2];
+#endif
+bool idleReadOk(uint16_t a) {
+    const uint32_t slot = a >> 13;
+    if ((g_elm_rdmask >> slot) & 1) return false;               // a window page with side effects
+    if (MemESP::ramContended[slot]) return false;               // 3.5 MHz: the pass length moves with the beam
+    if (slot <= 1) {
+        if (MemESP::divmmc_mapped || MemESP::overlayCount != 0 || g_ngs_zxdma) return false;
+    }
+    return MemESP::ramCurrent[slot] != nullptr;
+}
+bool idleFetchOk(uint16_t a) {
+    if (Config::numPcBP || Config::numMemReadBP) return false;
+    if (a < 0x4000) {
+        // divMMC automap entry points (RSTs and #0066, the #1FF8-#1FFF exit, #3Dxx) and the
+        // 48 ROM key-wait return (keyWaitSkip owns that one)
+        if (a < 0x0068 || (a >= 0x1FF8 && a <= 0x1FFF) || (a & 0xFF00) == 0x3D00 || a == 0x15E1) return false;
+    }
+    return idleReadOk(a);
+}
+void idleAdvanceTo(uint32_t to) {
+    while (CPU::tstates < to) {
+        uint32_t n = to - CPU::tstates;
+        if (VIDEO::tStatesPerLine && n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+        VIDEO::Draw(n, false);
+    }
+}
+
 void keyWaitSkip() {
     const uint16_t af = Z80::getRegAF();
     if (!(af & 0x40) || (af & 0x01)) return;   // Z set, C clear: no key, loop again

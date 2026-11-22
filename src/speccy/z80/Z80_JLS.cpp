@@ -864,9 +864,10 @@ Z80_COLD uint8_t Z80::scorp_dos_exit_rom() {
 // Next idle-loop fast-forward (NextIdle) may move the clock to stFrame.
 bool z80_in_nocheck = false;   // NextReg::rasterPollFF reads it too
 
-// Next: a taken backward JR NZ/Z (decodeOpcode20/28) — the same idle-loop
+// Next, eLeMeNt: a taken backward JR NZ/Z/NC/C — the same idle-loop
 // candidate test check_trdos runs for JP/CALL/RET (NextSID's main loop is
-// CP A / CP (HL) / JR Z, 96% of the frame).
+// CP A / CP (HL) / JR Z, 96% of the frame; eLeMeNt NETHER waits in
+// LD A,(nn) / CP n / JR C below #4000, ~40% of its 28 MHz frame).
 static inline __attribute__((always_inline)) void nextIdleNote() {
     NextIdle::note(Z80::getRegPC());
 }
@@ -939,7 +940,10 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
         return;
     }
     // eLeMeNt ZX: the 48 ROM key wait returns here every pass (Elm::keyWaitSkip, flash).
-    if (__builtin_expect(Z80Ops::isElm, 0) && REG_PC == 0x15E1) Elm::keyWaitSkip();
+    if (__builtin_expect(Z80Ops::isElm, 0)) {
+        if (REG_PC == 0x15E1) Elm::keyWaitSkip();
+        NextIdle::note(REG_PC);   // a memory-poll idle loop below #4000 (NextIdle.h, Elm::idle*)
+    }
     if (Z80Ops::isEnt) return;      // Enterprise: no Beta, no #3Dxx trap
     if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
         if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
@@ -2261,6 +2265,10 @@ IRAM_ATTR void Z80::exec_nocheck() {
         if (nbp > 0 && Config::pcBreakHit(REG_PC)) { z80_in_nocheck = false; return; }
 #if HOST_BUILD
         { extern uint32_t g_host_gen, g_host_genpc[4]; g_host_gen++; g_host_genpc[REG_PC >> 14]++; }   // PICOSPECCY_OPLOG: outside the Next loop
+        // PICOSPECCY_GENLOG: what the eLeMeNt loop left to this one - by 256-byte PC page,
+        // by opcode, and whether a DD/FD chain was in progress.
+        if (g_elm_fastrd) { extern uint32_t g_host_egPc[256], g_host_egOp[256], g_host_egPfx;
+            g_host_egPc[REG_PC >> 8]++; g_host_egOp[Z80Ops::peek8(REG_PC)]++; if (prefixOpcode) g_host_egPfx++; }
 #endif
 #if PERF_TRACE
         if (g_elm_fastrd) g_elm_gen_n++;   // an instruction the eLeMeNt loop did not take (PC < 0x4000, a prefix chain)
@@ -2610,7 +2618,7 @@ NX_DISP_INL void Z80::decodeOpcode20()
         REG_PC += offset;
         REG_WZ = REG_PC + 1;
         REG_PC++;
-        if (Z80Ops::isNext && offset < 0) nextIdleNote();
+        if (Z80Ops::idleHook && offset < 0) nextIdleNote();
         return;
     }
     REG_PC++;
@@ -2659,7 +2667,7 @@ NX_DISP_INL void Z80::decodeOpcode28()
         REG_PC += offset;
         REG_WZ = REG_PC + 1;
         REG_PC++;
-        if (Z80Ops::isNext && offset < 0) nextIdleNote();
+        if (Z80Ops::idleHook && offset < 0) nextIdleNote();
         return;
     }
     REG_PC++;
@@ -2712,7 +2720,7 @@ NX_DISP_INL void Z80::decodeOpcode30()
         REG_WZ = REG_PC + 1;
         REG_PC++;
         // Atic Atac Remake's intro pause: LD HL,(nn) / XOR A / SBC HL,BC / JR C
-        if (Z80Ops::isNext && offset < 0) nextIdleNote();
+        if (Z80Ops::idleHook && offset < 0) nextIdleNote();
         return;
     }
     REG_PC++;
@@ -2766,7 +2774,7 @@ NX_DISP_INL void Z80::decodeOpcode38()
         REG_WZ = REG_PC + 1;
         REG_PC++;
         // Atic Atac Remake's intro pause: LD HL,(nn) / XOR A / SBC HL,BC / JR C
-        if (Z80Ops::isNext && offset < 0) nextIdleNote();
+        if (Z80Ops::idleHook && offset < 0) nextIdleNote();
         return;
     }
     REG_PC++;

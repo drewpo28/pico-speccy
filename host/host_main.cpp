@@ -549,6 +549,25 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
             if (presented == k.at + k.hold) key_event(k.sc, false);
         }
     }
+    // PICOSPECCY_GENLOG=N: every N presented frames, the instructions the eLeMeNt loop left
+    // to the shared one (Z80_JLS.cpp): the top 256-byte PC pages and opcodes, DD/FD chains.
+    {
+        static const char* gl = getenv("PICOSPECCY_GENLOG");
+        static const uint32_t gn = gl ? (uint32_t)atoi(gl) : 0;
+        if (gn && presented % gn == 0) {
+            extern uint32_t g_host_egPc[256], g_host_egOp[256], g_host_egPfx;
+            uint32_t tot = 0; for (int i = 0; i < 256; i++) tot += g_host_egPc[i];
+            fprintf(stderr, "host: genlog %u/fr pfx=%u | pc", tot / gn, g_host_egPfx / gn);
+            for (int k = 0; k < 8; k++) { int b = 0; for (int i = 1; i < 256; i++) if (g_host_egPc[i] > g_host_egPc[b]) b = i;
+                if (!g_host_egPc[b]) break; fprintf(stderr, " %02X00:%u", b, g_host_egPc[b] / gn); g_host_egPc[b] = 0; }
+            fprintf(stderr, " | op");
+            for (int k = 0; k < 10; k++) { int b = 0; for (int i = 1; i < 256; i++) if (g_host_egOp[i] > g_host_egOp[b]) b = i;
+                if (!g_host_egOp[b]) break; fprintf(stderr, " %02X:%u", b, g_host_egOp[b] / gn); g_host_egOp[b] = 0; }
+            fprintf(stderr, "\n");
+            for (int i = 0; i < 256; i++) g_host_egPc[i] = g_host_egOp[i] = 0;
+            g_host_egPfx = 0;
+        }
+    }
     // PICOSPECCY_PCLOG=from:count prints PC/SP and the bytes at PC once per presented
     // frame for `count` frames from frame `from` (a hang locator, no debugger).
     static const char* pclog = getenv("PICOSPECCY_PCLOG");

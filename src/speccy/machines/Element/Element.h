@@ -103,6 +103,18 @@ uint32_t dmaCopy(uint16_t src, uint16_t dst, uint32_t n, uint32_t cycles);
 uint32_t dmaFromCard(uint16_t port, uint16_t dst, uint32_t n, uint32_t cycles);
 // The 48 ROM key wait (RET to #15E1, Z80::check_trdos): skip whole idle passes to the slice end.
 void keyWaitSkip();
+// The memory-poll idle-loop fast-forward (machines/Next/NextIdle.cpp, shared with the Next):
+// the eLeMeNt's answers. idleFetchOk / idleReadOk: the byte at `a` is plain memory now - no
+// window page (VRAM / COPY / split, g_elm_rdmask), no divMMC, no ROM overlay, no ZX-DMA, no
+// divMMC automap entry point, no contention - so a pass that fetches / reads only such bytes
+// repeats until an interrupt. idleAdvanceTo: guest time to `to` with the video walked line
+// by line (keyWaitSkip's walk), R left to the caller. Flash, called from flash.
+bool idleFetchOk(uint16_t a);
+bool idleReadOk(uint16_t a);
+void idleAdvanceTo(uint32_t to);
+#if PERF_TRACE
+extern uint32_t g_elm_idle[2];                // idle-loop skips, T skipped ([HGFX] 60f line)
+#endif
 bool nmiBlocked();                            // SafeNMI: the button is locked
 void nmiTaken(uint16_t pc);                   // SafeNMI: the return address
 extern uint8_t* wrKind;                       // per high address byte: 0 = plain RAM

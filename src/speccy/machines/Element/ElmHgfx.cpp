@@ -45,7 +45,7 @@ static int histTop(char* line, int pos, int cap, uint32_t* h, int n, int k) {
     }
     return pos;
 }
-namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2]; }
+namespace Elm { extern uint32_t g_elm_kw[2], g_elm_ps[2], g_elm_idle[2]; }
 extern volatile uint32_t g_c1_loop_us[3];   // main.cpp render_core (PERF_TRACE): core1 us in sd_async_pump / GS::pump / Hgfx::core1Pump
 #if HOST_BUILD && PERF_TRACE
 volatile uint32_t g_c1_loop_us[3];          // the host has no render_core: stays 0
@@ -3251,12 +3251,12 @@ posted:
         }
         // z80 loop = entries of Z80::exec_nocheck_elm a frame (0 = the generic loop ran: fastmem
         // level 0, a COPY window at #4000+, a breakpoint); kw = key-wait skips / passes skipped.
-        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u | dr=%u..%u | z80 loop %u/fr gen %u/fr kw %u/%u ps %u/%u",
+        Debug::log("[HGFX] 60f: q=%u/fr wait=%uus/fr drop=%u | c1 engine %uus/fr (%u, cmd %uus) draw %uus x%u skip %u rows %u fill=%u | runs %u/fr %uB sram=%u%u h1=%d | pair pidx %u pal %u full %u lut %u | dr=%u..%u | z80 loop %u/fr gen %u/fr kw %u/%u ps %u/%u idle %u/fr %uT/fr",
                    s_pPush / 60, s_pWaitUs / 60, s_pDrop, s_pExecUs / 60, s_pExecN / 60, s_pCmdUs / 60,
                    s_pDraws > s_pSkips ? s_pDrawUs / (s_pDraws - s_pSkips) : 0, s_pDraws - s_pSkips, s_pSkips,
                    s_pDraws > s_pSkips ? s_pRows / (s_pDraws - s_pSkips) : 0, s_qw - s_qr,
                    s_pRuns / 60, s_pRunBytes / 60, (unsigned)s_sramOn[0], (unsigned)s_sramOn[1], s_h1 ? (int)(s_h1Base ? 1 : 0) : -1,
-                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1], Elm::g_elm_ps[0] / 60, Elm::g_elm_ps[1] / 60);
+                   s_pPidxChg, s_pPalChg, s_pFullFlip, s_pLutPush, s_pDrMin == ~0u ? 0 : s_pDrMin, s_pDrMax, ::g_elm_loop_n / 60, ::g_elm_gen_n / 60, Elm::g_elm_kw[0], Elm::g_elm_kw[1], Elm::g_elm_ps[0] / 60, Elm::g_elm_ps[1] / 60, Elm::g_elm_idle[0] / 60, Elm::g_elm_idle[1] / 60);
         Debug::log("[HGFX] qdepth: max %u (session %u) of %u | frames > 1K %u, 2K %u, 4K %u, 8K %u | full %u x %uus",
                    s_pQMax, s_pQMaxAll, (unsigned)Q_N, s_pQOver[0], s_pQOver[1], s_pQOver[2], s_pQOver[3], s_pQFullN, s_pQFullUs);
         s_pQMax = 0; s_pQFullN = s_pQFullUs = 0; s_pQOver[0] = s_pQOver[1] = s_pQOver[2] = s_pQOver[3] = 0;
@@ -3271,7 +3271,7 @@ posted:
         s_pDrnUs = s_pDrnMax = s_pDrnN = s_pSetUs = s_pSetMax = 0;
         s_pPrinted = true;
         s_pDrMin = ~0u; s_pDrMax = 0;
-        ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0; Elm::g_elm_ps[0] = Elm::g_elm_ps[1] = 0;
+        ::g_elm_loop_n = ::g_elm_gen_n = 0; Elm::g_elm_kw[0] = Elm::g_elm_kw[1] = 0; Elm::g_elm_ps[0] = Elm::g_elm_ps[1] = 0; Elm::g_elm_idle[0] = Elm::g_elm_idle[1] = 0;
         {   // the ED mix a frame: which block / 16-bit ops would pay to paste into the loop
             uint32_t tot = 0; for (int i = 0; i < 256; i++) tot += ::g_elm_ed_hist[i];
             if (tot) {

@@ -2450,6 +2450,7 @@ void NEXTVID::onClockChange() {
 uint32_t g_host_haltT, g_host_idleT;   // host bench: T skipped in HALT / NextIdle loops (PICOSPECCY_PCLOG)
 uint32_t g_host_linepg[256];   // host bench: the 8K page of the PC at every line end (PICOSPECCY_PCLOG)
 uint32_t g_host_op[256], g_host_pfx[4][256], g_host_slow[256], g_host_gen, g_host_genpc[4], g_host_slices, g_host_stnew, g_host_stdiff[64], g_host_wlo[4];   // host bench: the Next loop's opcode mix (PICOSPECCY_OPLOG)
+uint32_t g_host_egPc[256], g_host_egOp[256], g_host_egPfx;   // host bench: what the eLeMeNt loop left to the shared one (PICOSPECCY_GENLOG)
 #endif
 IRAM_ATTR void NEXTVID::haltAdvanceTo(uint32_t stEnd) {
 #if HOST_BUILD

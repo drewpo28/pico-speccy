@@ -2200,3 +2200,25 @@ page-0 window + `hobbit_*` hooks in MemESP): nothing of it was kept.
   Ports::output -112 is GCC's own doing); flash +118.7 KB with every dump. Third round
   (keys, MAGIC, PLMs): RAM +10 B, all Hobbit state, no RAM code moved; DVp2 4 MB has 8 KB left
   to the hard floor (`__psramrom_start` 0x10266000).
+
+**NETHER (eLeMeNt, 28 MHz) at ~30 FPS: a memory-poll idle loop below #4000 (2026-11-22, host-checked; hw owed,
+`debug/DVp2w-elm-idle1-1.1.3` + `-prof-`).**
+- hw PERF (`debug/DVp2w-elm-nether-prof`, log `...22.27.45.770`): HGFX mode 4, `cpu` 33-46 ms, `z80 loop 8/fr gen
+  30045/fr` - the game runs on the SHARED loop; PC profile: `Z80::exec_nocheck` 35 %, poke8_cold 9 %, elmPoke8Slow 7 %,
+  peek8 5 %, peek16_generic 3 %; `exec_nocheck_elm` 0.2 %.
+- Bench (`PICOSPECCY_GENLOG=N`, new: the instructions the eLeMeNt loop left to the shared one, by PC page / opcode):
+  in play 23 300/fr, 21 200 of them at #1DDF `LD A,(#FD34) / CP 8 / JR C` - the wait for the ISR's frame counter,
+  ~7 000 passes x 32 T = ~40 % of the 573 440 T frame. The game's code lives in RAM below #4000 (#0C00, #1000-#14FF,
+  #1Dxx), where `exec_nocheck_elm` does not run (PC >= #4000 only).
+- Bench recipe: own root (SYS + BIN from ~/pico-speccy, the saved Element NVS, a COPY of roms/element with FRAM #030 = 5),
+  NETHER.* in the root, launcher tape `10 LOAD *"NETHER.BAS"`, keys LOAD "" at 900, `0` (start) at 5500/6000/6500 held
+  15 frames. `esxdos_ver=1` (0.8.9 ROM): ~/pico-speccy/SYS is not the 0.9.0 release, and the 0.9.0 ROM then answers
+  every esxDOS BASIC command with "C Nonsense in BASIC" (also `GO TO "dir"`).
+- Fix: NextIdle (machines/Next) is shared with the eLeMeNt. Hooks: the taken backward JR (decodeOpcode20/28/30/38,
+  `Z80Ops::idleHook` = isNext || isElm, one load as before) and check_trdos's eLeMeNt branch (JP / CALL / RET; also
+  reached from exec_nocheck_elm through nxSync). The machine answers are `Elm::idleFetchOk / idleReadOk /
+  idleAdvanceTo` (Element.cpp): plain memory only (g_elm_rdmask, divMMC, ROM overlay, ZX-DMA, contention, automap entry
+  points, #15E1 = keyWaitSkip's); a pass reads only at fixed addresses (`LD A,(nn)`, `LD HL,(nn)`, `LD rr,(nn)`, no
+  (HL)/(BC)/(DE), no stack, no CALL / RET); the pass is walked again on the live mapping before every skip. Bench:
+  gen 23 300 -> 2 200 a frame, the play state identical to the run without it (game clock, units). SRAM +33 B.
+  PERF builds print `idle N/fr T/fr` at the end of the `[HGFX] 60f` line.

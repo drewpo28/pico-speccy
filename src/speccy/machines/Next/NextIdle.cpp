@@ -1,5 +1,9 @@
 // ZX Next memory-poll idle loop fast-forward — see NextIdle.h.
+// Shared with the eLeMeNt ZX (Z80Ops::isElm): the detector, the verdict table and the skip
+// are machine-free; the three machine answers - which bytes are plain memory (lowOk), which
+// reads a pass may make, how guest time moves - come from Elm::idle* (Element.cpp) there.
 #include "NextIdle.h"
+#include "speccy/machines/Element/Element.h"
 #include "speccy/machines/Next/NextVideo.h"
 #include "speccy/z80/z80.h"
 #include "speccy/z80/CPU.h"
@@ -102,6 +106,7 @@ static int plainLen(uint16_t a) {
 // 0x0460 (LD A,(#948F) / OR A / JR Z) with page 2 at 0x0000: 88% of a 28 MHz
 // frame, hw 2026-10-14.
 static bool lowOk(uint16_t a) {
+    if (Z80Ops::isElm) return Elm::idleFetchOk(a);   // windows exist above #4000 too
     if (a >= 0x4000) return true;
     const uint8_t slot = (uint8_t)(a >> 13);
     if ((MemESP::next_rom_mask >> slot) & 1) return false;
@@ -110,6 +115,26 @@ static bool lowOk(uint16_t a) {
     if (MemESP::nextBootRomActive || MemESP::nextConfigMode) return false;
     if (a < 0x0068 || (a >= 0x1FF8 && a <= 0x1FFF) || (a & 0xFF00) == 0x3D00) return false;
     return true;
+}
+
+// eLeMeNt: a pass may read memory only at a fixed address that is plain memory now
+// (Elm::idleReadOk: no VRAM / COPY / split window, no divMMC, no ZX-DMA) - LD A,(nn),
+// LD HL,(nn), LD rr,(nn); no (HL) / (BC) / (DE) reads and no stack (PUSH / POP; CALL / RET
+// are refused in validate), whose addresses the walk cannot know.
+static bool elmOpOk(uint16_t a, uint8_t o) {
+    if (o == 0x0A || o == 0x1A) return false;
+    if (o >= 0x40 && o < 0xC0 && (o & 7) == 6) return false;              // LD r,(HL) / ALU (HL)
+    if ((o & 0xCB) == 0xC1) return false;                                  // PUSH / POP
+    if (o == 0xCB && (MemESP::dbgPeek(a + 1) & 7) == 6) return false;      // BIT b,(HL)
+    uint16_t nn;
+    if (o == 0x3A || o == 0x2A) nn = (uint16_t)(MemESP::dbgPeek(a + 1) | (MemESP::dbgPeek(a + 2) << 8));
+    else if (o == 0xED) {
+        const uint8_t x = MemESP::dbgPeek(a + 1);
+        if (x != 0x4B && x != 0x5B && x != 0x6B) return true;              // SBC / ADC / NEG: no memory
+        nn = (uint16_t)(MemESP::dbgPeek(a + 2) | (MemESP::dbgPeek(a + 3) << 8));
+    }
+    else return true;
+    return Elm::idleReadOk(nn) && Elm::idleReadOk((uint16_t)(nn + 1));
 }
 
 // The pass from S: every path that does not leave the loop must come back to
@@ -141,11 +166,13 @@ static bool validate(uint16_t s) {
             if (!lowOk(a) || !lowOk((uint16_t)(a + 3))) return false;
             const uint8_t o = MemESP::dbgPeek(a);
             const int len = plainLen(a);
+            if (len && Z80Ops::isElm && !elmOpOk(a, o)) return false;
             if (len) { p.pc = (uint16_t)(a + len); continue; }
             const uint16_t nn = (uint16_t)(MemESP::dbgPeek(a + 1) | (MemESP::dbgPeek(a + 2) << 8));
             const uint16_t jr = (uint16_t)(a + 2 + (int8_t)MemESP::dbgPeek(a + 1));
             if (o == 0xC3) { p.pc = nn; continue; }                   // JP nn
             if (o == 0x18) { p.pc = jr; continue; }                   // JR e
+            if (Z80Ops::isElm && (o == 0xCD || o == 0xC9 || (o & 0xC7) == 0xC0)) return false;   // no stack writes (Elm)
             if (o == 0xCD) {                                          // CALL nn
                 if (p.sp >= 4) return false;
                 p.ret[p.sp++] = (uint16_t)(a + 3);
@@ -238,7 +265,7 @@ void jump() {
         return;
     }
     // the low-RAM verdict depends on the live mapping, not just on the code
-    if (s < 0x4000 && !lowOk(s)) { s_ok = 0xFFFF; return; }
+    if ((s < 0x4000 || Z80Ops::isElm) && !lowOk(s)) { s_ok = 0xFFFF; return; }
     const uint32_t now = CPU::tstates, r = Z80::getFetchCounter();
     const uint32_t d = now - s_lastT, dR = r - s_lastR;
     s_lastT = now; s_lastR = r;
@@ -260,7 +287,15 @@ void jump() {
     if (lim <= now) { vtGiveUp(s); return; }
     const uint32_t k = (lim - now) / d;
     if (k < 2) { vtGiveUp(s); return; }
-    if (!NEXTVID::idleAdvanceTo(now + k * d)) { vtGiveUp(s); return; }
+    if (Z80Ops::isElm) {
+        // the eLeMeNt's windows move with paging: the pass is walked again on the live
+        // mapping before each skip (one walk a slice at most)
+        if (!validate(s)) { vtGiveUp(s); return; }
+        Elm::idleAdvanceTo(now + k * d);
+#if PERF_TRACE
+        Elm::g_elm_idle[0]++; Elm::g_elm_idle[1] += CPU::tstates - now;
+#endif
+    } else if (!NEXTVID::idleAdvanceTo(now + k * d)) { vtGiveUp(s); return; }
     Z80::incRegR(k * dR);
     s_lastT = CPU::tstates;
     s_lastR = Z80::getFetchCounter();
