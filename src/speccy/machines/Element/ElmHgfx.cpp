@@ -198,7 +198,9 @@ static uint8_t s_cube[168];
 // 2x2 dither stays as the fallback. The histogram (RGB 4:4:4 bins, every fourth row)
 // is taken on core0 twice a second; the bin -> slot table fills on core1 as bins turn
 // up (0xFF = not yet), so a new palette costs no full nearest-colour pass.
-enum { HAM_BINS = 4096, HAM_DITHER = 10, HAM_MAX_MSE = 300, HAM_STICK = 3 * 16 * 16 };   // a slot keeps its colour within 16 levels a channel
+// HAM_MAX_MSE on the level-split median cut (2026-11-22): photos (HGFXHAM8) 29..146,
+// HAMCOLOR's gradient 335..422 (the sort cut gave 34..166 and 447..537, threshold 300).
+enum { HAM_BINS = 4096, HAM_DITHER = 10, HAM_MAX_MSE = 230, HAM_STICK = 3 * 16 * 16 };   // a slot keeps its colour within 16 levels a channel
 static struct Ham {
     uint8_t lut[HAM_BINS];
     uint32_t rgb[168];                  // the colour of each slot
@@ -2256,13 +2258,22 @@ static bool hrcFlicker() {
 // weighted mean. false: no memory (the cube then).
 static bool hamProgram(bool force) {
     if (!s_ham && (s_ham = (Ham*)tryMalloc(sizeof(Ham))) != nullptr) s_ham->n = 0;
+    // The PSRAM fallback: counts, then the packed bins (4 B each), then the boxes.
     if (s_ham && !s_hamTmp)
-        s_hamTmp = (uint16_t*)Buffer::palloc(HAM_BINS * 2 * sizeof(uint16_t) + 168 * sizeof(HamBox),
+        s_hamTmp = (uint16_t*)Buffer::palloc(HAM_BINS * sizeof(uint16_t) + HAM_BINS * sizeof(uint32_t) + 168 * sizeof(HamBox),
                                              Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     if (!s_ham || !s_hamTmp) { s_hamCubeLut = false; drain(); free(s_ham); s_ham = nullptr; return false; }
-    uint16_t* h = s_hamTmp;
-    uint16_t* idx = h + HAM_BINS;
-    HamBox* box = (HamBox*)(idx + HAM_BINS);
+    // The scratch in SRAM for this one call when the heap has it (8 KB of counts, then
+    // ~6 KB of bins + 2.7 KB of boxes): in PSRAM every pass read h[idx[i]] at random
+    // through the XIP cache the flash code shares - the level cut still took 6.6 ms of
+    // the 8.9 ms re-check (hw HAMCOLOR 2026-11-22).
+    ScopedHeap hS(HAM_BINS * sizeof(uint16_t));
+    uint16_t* h = hS ? hS.as<uint16_t>() : s_hamTmp;
+#if PERF_TRACE
+    // Where the 15-18 ms of a re-check go (HAMCOLOR's 5 s spike, 2026-11-22): logged each call.
+    const uint32_t tp0 = time_us_32();
+    uint32_t tp1 = 0, tp2 = 0, tp3 = 0;
+#endif
     memset(h, 0, HAM_BINS * sizeof(uint16_t));
     const int n0 = s_r[REG_VP] & 1;
     if (hrcGiga()) for (int y = 0; y < HEIGHT; y += 4) {
@@ -2278,21 +2289,32 @@ static bool hamProgram(bool force) {
             uint16_t& v = h[rgbBin((int)(c >> 16), (int)((c >> 8) & 255), (int)(c & 255))];
             if (v != 0xFFFF) v++;
         });
+#if PERF_TRACE
+    tp1 = time_us_32();
+#endif
     int n = 0;
-    for (int b = 0; b < HAM_BINS; b++) if (h[b]) idx[n++] = (uint16_t)b;
+    for (int b = 0; b < HAM_BINS; b++) n += h[b] != 0;
     if (!n) return false;
-    const auto ch = [](uint16_t b, int a) { return a == 0 ? b >> 8 : a == 1 ? (b >> 4) & 15 : b & 15; };
+    // A bin is one word from here on: bits 0-11 the bin (R 8-11, G 4-7, B 0-3), 16-31 its weight.
+    ScopedHeap itS(n * sizeof(uint32_t) + 168 * sizeof(HamBox));
+    uint32_t* idx = itS ? itS.as<uint32_t>() : (uint32_t*)(s_hamTmp + HAM_BINS);
+    HamBox* box = (HamBox*)(idx + (itS ? n : HAM_BINS));
+    n = 0;
+    for (int b = 0; b < HAM_BINS; b++) if (h[b]) idx[n++] = (uint32_t)b | (uint32_t)h[b] << 16;
+    const auto ch = [](uint32_t b, int a) { return (int)((b >> (8 - 4 * a)) & 15); };
     const auto fit = [&](HamBox& x) {
         x.w = 0;
-        for (int a = 0; a < 3; a++) { x.mn[a] = 15; x.mx[a] = 0; }
+        uint32_t mn = 0xFFF, mx = 0;     // per channel, the nibbles side by side
         for (int i = x.lo; i < x.hi; i++) {
-            x.w += h[idx[i]];
+            const uint32_t e = idx[i];
+            x.w += e >> 16;
             for (int a = 0; a < 3; a++) {
-                const uint8_t v = (uint8_t)ch(idx[i], a);
-                if (v < x.mn[a]) x.mn[a] = v;
-                if (v > x.mx[a]) x.mx[a] = v;
+                const uint32_t m = 0xFu << (8 - 4 * a), v = e & m;
+                if (v < (mn & m)) mn = (mn & ~m) | v;
+                if (v > (mx & m)) mx = (mx & ~m) | v;
             }
         }
+        for (int a = 0; a < 3; a++) { x.mn[a] = (uint8_t)ch(mn, a); x.mx[a] = (uint8_t)ch(mx, a); }
     };
     int nb = 1;
     box[0].lo = 0; box[0].hi = (uint16_t)n; fit(box[0]);
@@ -2307,28 +2329,41 @@ static bool hamProgram(bool force) {
         }
         if (pick < 0) break;
         HamBox& b = box[pick];
-        std::sort(idx + b.lo, idx + b.hi, [&](uint16_t p, uint16_t q) { return ch(p, axis) < ch(q, axis); });
-        uint32_t acc = 0; int cut = b.lo;
-        while (cut < b.hi - 1 && (acc += h[idx[cut]]) * 2 < b.w) cut++;
-        cut++;                           // [lo, cut) and [cut, hi), both non-empty
-        if (cut >= b.hi) cut = b.hi - 1;
+        // The weighted median by level, not by a sort: a channel has 16 levels, so the
+        // weights per level, the first level where half the weight is reached, and one
+        // partition pass (a std::sort per cut was 13 of the 16 ms of a re-check, hw
+        // HAMCOLOR 2026-11-22). Equal levels stay on one side; mn < mx (score > 0), so
+        // [mn, L) and [L, mx] are both non-empty.
+        const int sh = 8 - 4 * axis;
+        uint32_t lw[16] = { 0 };
+        for (int i = b.lo; i < b.hi; i++) lw[(idx[i] >> sh) & 15] += idx[i] >> 16;
+        int L = b.mn[axis] + 1;
+        for (uint32_t acc = 0; L < b.mx[axis]; L++) { acc += lw[L - 1]; if (acc * 2 >= b.w) break; }
+        int cut = b.lo;
+        for (int j = b.hi - 1; cut <= j; ) {
+            if ((int)((idx[cut] >> sh) & 15) < L) cut++;
+            else { const uint32_t t = idx[cut]; idx[cut] = idx[j]; idx[j--] = t; }
+        }
         HamBox& c = box[nb++];
         c.lo = (uint16_t)cut; c.hi = b.hi; b.hi = (uint16_t)cut;
         fit(b); fit(c);
     }
+#if PERF_TRACE
+    tp2 = time_us_32();
+#endif
     uint32_t pal[168];
     uint64_t err = 0, tw = 0;
     for (int k = 0; k < nb; k++) {
         uint32_t s3[3] = { 0, 0, 0 }, w = 0;
         for (int i = box[k].lo; i < box[k].hi; i++) {
-            const uint32_t wt = h[idx[i]];
+            const uint32_t wt = idx[i] >> 16;
             for (int a = 0; a < 3; a++) s3[a] += wt * (uint32_t)(ch(idx[i], a) * 17);
             w += wt;
         }
         pal[k] = (s3[0] / w) << 16 | (s3[1] / w) << 8 | (s3[2] / w);
         for (int i = box[k].lo; i < box[k].hi; i++) {
-            const uint16_t b = idx[i];
-            err += (uint64_t)h[b] * dist(pal[k], (uint32_t)(ch(b, 0) * 17) << 16 | (uint32_t)(ch(b, 1) * 17) << 8 | (uint32_t)(ch(b, 2) * 17));
+            const uint32_t b = idx[i];
+            err += (uint64_t)(b >> 16) * dist(pal[k], (uint32_t)(ch(b, 0) * 17) << 16 | (uint32_t)(ch(b, 1) * 17) << 8 | (uint32_t)(ch(b, 2) * 17));
         }
         tw += w;
     }
@@ -2336,6 +2371,15 @@ static bool hamProgram(bool force) {
     // steps show as bands without a full dither. Mean squared error per pixel, RGB.
     const uint32_t mse = tw ? (uint32_t)(err / tw) : 0;
     const bool useCube = mse > HAM_MAX_MSE;
+#if PERF_TRACE
+    tp3 = time_us_32();
+    Debug::log("[ELM] HAM check: hist %uus, cut %uus (%d bins, %d boxes), mse %uus -> %s (mse %u), scratch %s/%s",
+               (unsigned)(tp1 - tp0), (unsigned)(tp2 - tp1), n, nb, (unsigned)(tp3 - tp2), useCube ? "cube" : "palette", (unsigned)mse,
+               hS ? "SRAM" : "PSRAM", itS ? "SRAM" : "PSRAM");
+#endif
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_HAMLOG")) Debug::log("[ELM] HAM check: %d bins, %d boxes, mse %u -> %s", n, nb, (unsigned)mse, useCube ? "cube" : "palette");
+#endif
     static int8_t s_said = -1;
     if (s_said != (int8_t)useCube) { s_said = (int8_t)useCube; Debug::log("[ELM] HAM: %s (mse %u, %d bins)", useCube ? "dithered cube" : "picture palette", (unsigned)mse, n); }
     if (useCube) { if (s_ham->n) { drain(); s_ham->n = 0; } return false; }

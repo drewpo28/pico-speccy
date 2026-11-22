@@ -1855,6 +1855,35 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   empty = 12 in SRAM / 14 in PSRAM; `tryMalloc` 16 KB at `ensure()`, held for the session (never freed, like the
   PSRAM one); no heap -> the uncached PSRAM alias as before, logged `[ELM] core1 queue: 4096 entries in PSRAM (no
   heap)` (then only 4 K entries: an A/B wants `-DELM_Q_SRAM=OFF`). `.elmovl` plain 18 040 of 18 176 (136 B left).
+  Committed f0e0951a.
+- **HAMCOLOR's 5 s spike = the HAM re-check (2026-11-22).** Every 250 frames `frameSetup` runs `hamProgram` to see
+  whether 168 colours would now hold the picture; it lands on the cube again. PERF timers (`[ELM] HAM check: hist /
+  cut / mse`, hw `debug/DVp2w-elmhs1p-1.1.3`, log `devttyACM0_2026_11_22.20.04.18.084.txt`): hist 1.7 ms, **cut
+  12.9-13.6 ms**, mse 0.6 ms (1409-1513 bins, mse 447-518). The cut was a `std::sort` of the box per split (flash
+  code, PSRAM scratch). Now the weighted median by LEVEL: weights of the 16 levels on the axis, the first level
+  reaching half, one partition pass; equal levels stay on one side. That is a better cut: mse drops 12-30 %
+  (HAMCOLOR 447..537 -> 319..422, HGFXHAM8 photos 34..166 -> 29..146, both measured on the host bench A/B), so
+  `HAM_MAX_MSE` 300 -> 230 (geometric middle of 146 and 319). Bench: HAMCOLOR always cube, HGFXHAM8 always palette,
+  pictures as before (sheet compared), ELM_CHECK 0 bad (HAMCOLOR, HGFXHAM8, HGFXAGON). Host: `PICOSPECCY_HAMLOG=1`
+  logs each check. NOT hw-tested: `debug/DVp2w-elmhs2p-1.1.3` (PERF 20:20:13), `debug/DVp2w-elmhs2-1.1.3` (20:20:31).
+  **hw (elmhs2p, log `devttyACM0_2026_11_22.20.27.29.285.txt`): cut 13.6 -> 6.2-6.6 ms only**, hist 1.7, mse 0.5-0.6;
+  frameSetup max 13.9 -> 8.7 ms. So the sort was half of it; the rest = `h[idx[i]]` read at random in PSRAM
+  (`s_hamTmp`) through the XIP cache shared with the flash code, ~45 K visits per check. Odd: realFPS 45.7-46.6 for
+  the whole run (cpu the same 18.9 ms, `[PERF] aud` ticks 40 300 vs 38 400 and hold > 0, XIP hits 49-53 M vs
+  37-44 M per 60f) - a once-per-5 s check cannot do that; unexplained, A/B against elmq3p owed.
+- **The re-check's scratch in SRAM (2026-11-22, NOT hw-tested; `debug/DVp2w-elmhs3p-1.1.3` PERF 20:33:55,
+  `debug/DVp2w-elmhs3-1.1.3` 20:34:13).** `ScopedHeap` for the one call: counts (8 KB), then the bins packed as one
+  word each (bin | weight << 16, n x 4 B) + the boxes (2.7 KB) - ~17 KB for HAMCOLOR's 1513 bins, freed on return;
+  either one falls back to `s_hamTmp` in PSRAM (now 8 + 16 KB + boxes). Every pass reads the packed word in order,
+  no lookup into the counts. Bench: mse and decisions identical to elmhs2 on every check (HAMCOLOR 13, HGFXHAM8 113),
+  ELM_CHECK 0 bad. The PERF line ends `scratch SRAM/SRAM` (or PSRAM).
+  **hw-confirmed 2026-11-22 DVp2w (elmhs3p, log `devttyACM0_2026_11_22.20.42.06.889.txt`): scratch SRAM/SRAM, hist
+  1.25 ms, cut 4.2-4.4 ms, mse 0.33 ms = ~5.9 ms a check (was ~16)**; the check frame ~25 ms, level with the
+  background `max` of 25-27 ms in windows without a check (one window 31.6). Not taken further: the cut in RAM
+  would be a permanent 0.5-1 KB for one frame in 5 s, `.elmovl` has 136 B. **The realFPS ~46 is NOT the change:**
+  elmhs1p (the sort cut, 48.1-48.8 in the 20:04 log) gave 45.5-46.8 in the same later session (log
+  `devttyACM0_2026_11_22.20.46.16.738.txt`; its `build:` line is the previous firmware's) - environment (HDMI /
+  audio pacing: `[PERF] aud` hold > 0, ticks 40 300 vs 38 400), not investigated.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
