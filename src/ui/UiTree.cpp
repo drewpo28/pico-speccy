@@ -1971,7 +1971,7 @@ static const Node kInterface[] = {
     // the indicators on (to see what they will mean) as much as after.
     NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
     NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
-    // The corner HDD / CD icon: here, not under Devices > IDE / HDD, because DivIDE
+    // The corner SD / HDD / CD icons: here, not under Devices > IDE / HDD, because DivIDE
     // (esxDOS in IDE mode) lights it too and that menu is hidden without an IDE scheme.
     NM_BOOL     (NM_IND TXT_IDE_LED,   SET_IDE_LED,   nullptr),
 };

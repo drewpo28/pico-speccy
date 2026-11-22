@@ -55,6 +55,10 @@ namespace LED {
     static inline void touchR(Id i) { rdec[i] = DECAY_FRAMES; }
     static inline void touchW(Id i) { wdec[i] = DECAY_FRAMES; }
 
+    // SD / ZCTRL: touchR = any card traffic, IN or OUT (every SPI command, a CMD17
+    // read too, and every chip select is an OUT); touchW = a sector really written
+    // (DivMMC::storeSector for DivSD / ZC, NgsSd for NeoGS's card).
+
     // Recent-activity queries (true within DECAY_FRAMES of the last touch).
     static inline bool readActive(Id i)  { return rdec[i] != 0; }
     static inline bool writeActive(Id i) { return wdec[i] != 0; }
@@ -80,8 +84,8 @@ namespace LED {
     void drawSpriteFg(Id i, int xpix, int ypix, uint8_t fg);
     // The top-right drive icons (after pico-amiga's): the floppy at VIDEO::osd_lamp_x
     // while `fdd_on`, the IDE drive's HDD or CD (IDE::act_*) 12 px left of it, or in
-    // the corner on its own. Blue body = read, red = write. Same erase contract as
-    // drawSpriteFg: any change of what is shown repaints the border (brdChange).
+    // the corner on its own; the SD card (rdec/wdec of SD and ZCTRL) left of those.
+    // Blue body = read, red = write. Same erase contract as drawSpriteFg: any change of what is shown repaints the border (brdChange).
     void drawCornerIcons(bool fdd_on, bool fdd_write);
 }
 

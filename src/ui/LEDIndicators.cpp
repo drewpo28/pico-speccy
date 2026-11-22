@@ -401,6 +401,9 @@ static inline uint8_t actState(Id i) {
     // IDE: the corner icon's signal (IDE::noteActivity — a sector really moved), not
     // port traffic: a status poll is a register read and lit the glyph on its own.
     if (i == IDE) return ::IDE::act_decay ? (::IDE::act_wrote ? 2 : 1) : 0;
+    // SD / ZC: wdec = a stored sector, rdec = all card traffic (a write's own data
+    // and response bytes too), so a write shows red, not the read+write yellow.
+    if (i == SD || i == ZCTRL) return wdec[i] ? 2 : (rdec[i] ? 1 : 0);
     return (uint8_t)((rdec[i] ? 1 : 0) | (wdec[i] ? 2 : 0));
 }
 
@@ -484,6 +487,12 @@ static const uint16_t kCornerCd[8] = {
     ROW("BBL..LBB"), ROW("BBBLLBBB"), ROW(".BBBBBB."), ROW("..BBBB.."),
 };
 
+// SD card: cut corner top-right, white contacts along the top, white label.
+static const uint16_t kCornerSd[8] = {
+    ROW("BBBBBB.."), ROW("BLBLBLB."), ROW("BLBLBLBB"), ROW("BBBBBBBB"),
+    ROW("BBBBBBBB"), ROW("BLLLLLLB"), ROW("BLLLLLLB"), ROW("BBBBBBBB"),
+};
+
 static void drawCorner(const uint16_t* g, int x, int y, uint8_t body) {
     const uint8_t col[4] = { 0, body, (uint8_t)zxColor(7, 1), (uint8_t)zxColor(4, 1) };
     for (int r = 0; r < 8; r++) {
@@ -499,18 +508,27 @@ static void drawCorner(const uint16_t* g, int x, int y, uint8_t body) {
 void drawCornerIcons(bool fdd_on, bool fdd_write) {
     const bool hd_on = Config::ide_led && ::IDE::act_decay;   // set by IDE and DivIDE sector moves
     const bool cd    = ::IDE::act_cd;
+    // The guest's SD cards (DivMMC/DivSD SPI, NeoGS's card, Z-Controller): the same
+    // rdec/wdec counters as the strip's SD / ZC glyphs, same Config::ide_led gate.
+    // wdec = a sector really written (DivMMC::storeSector / NgsSd), not port OUTs.
+    const bool sd_w  = wdec[SD] || wdec[ZCTRL];
+    const bool sd_on = Config::ide_led && (rdec[SD] || rdec[ZCTRL] || sd_w);
     // What is shown, as one byte: an icon moving (the floppy going out leaves the
     // HDD to slide into the corner) needs the same border repaint as one vanishing.
-    const uint8_t state = (uint8_t)((fdd_on ? 1 : 0) | (hd_on ? (cd ? 4 : 2) : 0));
+    const uint8_t state = (uint8_t)((fdd_on ? 1 : 0) | (hd_on ? (cd ? 4 : 2) : 0) |
+                                    (sd_on ? 8 : 0));
     static uint8_t was = 0;
     const int lx = VIDEO::osd_lamp_x, ly = VIDEO::osd_lamp_y;
+    // Right to left: floppy, HDD / CD, SD — each 12 px left of the one before it.
     const int hx = fdd_on ? lx - 12 : lx;
+    const int sx = hd_on ? hx - 12 : hx;
+    const int n  = (fdd_on ? 1 : 0) + (hd_on ? 1 : 0) + (sd_on ? 1 : 0);
     if (VIDEO::osdCarveLive()) {
         // Borderless / a big mode that hides the border: the icons sit on the
         // picture. Reserve their cells and back them with the border colour while
         // lit; hand the cells back when they go out.
         if (state) {
-            const int x0 = ((fdd_on && hd_on) ? lx - 15 : lx - 3) & ~3;
+            const int x0 = (lx - 3 - 12 * (n - 1)) & ~3;
             VIDEO::blSetCarve(VIDEO::BL_CARVE_LAMP, x0, ly, lx + 9, ly + 8);
             for (int row = ly; row < ly + 8; row++) {
                 uint8_t* line = (uint8_t*)VIDEO::vga.frameBuffer[row];
@@ -527,6 +545,8 @@ void drawCornerIcons(bool fdd_on, bool fdd_write) {
     if (hd_on)
         drawCorner(cd ? kCornerCd : kCornerHdd, hx, ly,
                    ::IDE::act_wrote ? zxColor(2, 1) : zxColor(1, 1));
+    if (sd_on)
+        drawCorner(kCornerSd, sx, ly, sd_w ? zxColor(2, 1) : zxColor(1, 1));
 }
 
 void drawLegendIcon(Id i, int xpix, int ypix, uint8_t body, uint8_t black,

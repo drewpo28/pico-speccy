@@ -23,6 +23,7 @@ extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card
 #include "speccy/machines/Atm.h"   // Atm::evo: the ZX-Evo drives the card CS
 #include "speccy/devices/disk/MB02.h"   // page 0 goes back to MB-02+'s mapping when the divMMC window drops
 #include "app/Debug.h"
+#include "ui/LEDIndicators.h"   // LED::touchW in storeSector
 #include "speccy/devices/storage/IDE.h"   // IDE::noteActivity: DivIDE lights the IDE icons
 #include "app/ESPectrum.h"   // ESPectrum::idle for the [SD2] line, multiplicator (wrBusyHold)
 #include "speccy/video/Video.h"   // VIDEO::Draw: a busy poll's probe interval (wrBusyHold)
@@ -2232,6 +2233,9 @@ void DivMMC::loadSector(uint32_t sector) {
 }
 
 void DivMMC::storeSector(uint32_t sector) {
+    // The SD / ZC indicators' "write" (strip glyph + corner icon): only a stored
+    // sector — the port OUTs are commands and chip selects, read traffic too.
+    LED::touchW(s_card == CARD_ZC ? LED::ZCTRL : LED::SD);
     raDrop();
     const Medium& m = s_med[s_card];
     if (!m.present || m.ro || sector >= LBA_VMBR) {

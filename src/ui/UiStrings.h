@@ -201,7 +201,7 @@
 #define TXT_HW_IDE          "IDE / HDD"
 #define TXT_IDE_IMAGES      "Images hd0 / hd1"
 #define TXT_IDE_CREATE      "Create image"
-#define TXT_IDE_LED         "HDD / CD icon"
+#define TXT_IDE_LED         "SD / HDD / CD icon"
 // Enter on an IDE slot: its source, an image or the card's own sectors (the DivSD idea,
 // one level up). Picking the card lands on read-only; Write needs an explicit F6.
 #define TXT_IDE_SRC_TITLE   "Disk source"

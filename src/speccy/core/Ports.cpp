@@ -3011,7 +3011,7 @@ static __attribute__((noinline)) bool atmPortWriteEarly(uint16_t address, uint8_
   atmPageTrace(address, data);
 #endif
   if (DivMMC::zc_enabled && (uint8_t)address == 0x57) {
-    LED::touchW(LED::ZCTRL);
+    LED::touchR(LED::ZCTRL);   // activity; "write" = a stored sector (DivMMC::storeSector)
     // ZX-Evo in shadow mode: #57 with A15 = 1 is the card's CS line (what #77 is
     // outside shadow mode) — zports.v sdcfg_wr.
     if (Atm::evo && (ESPectrum::trdos || Atm::shaden) && (address & 0x8000)) DivMMC::zc_write_config(data);
@@ -3851,12 +3851,12 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         }
       } else {
         if (lo == 0xEB && NextReg::portOn(NextReg::PE_SPI)) {
-          LED::touchW(LED::SD);
+          LED::touchR(LED::SD);   // activity; "write" = a stored sector (DivMMC::storeSector)
           DivMMC::mmc_write(data);
           return;
         }
         if (lo == 0xE7 && NextReg::portOn(NextReg::PE_SPI)) {
-          LED::touchW(LED::SD);
+          LED::touchR(LED::SD);
           DivMMC::mmc_cs(Z80Ops::isNext ? NextPorts::e7Select(data) : data);
           return;
         }
@@ -3865,8 +3865,8 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
 
     if (DivMMC::zc_enabled) {
       uint8_t lo = address & 0xFF;
-      if (lo == 0x77) { LED::touchW(LED::ZCTRL); DivMMC::zc_write_config(data); return; }
-      if (lo == 0x57) { LED::touchW(LED::ZCTRL); DivMMC::zc_write_data(data); return; }
+      if (lo == 0x77) { LED::touchR(LED::ZCTRL); DivMMC::zc_write_config(data); return; }
+      if (lo == 0x57) { LED::touchR(LED::ZCTRL); DivMMC::zc_write_data(data); return; }
     }
 
 #if IDE_PORT_TRACE

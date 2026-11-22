@@ -172,7 +172,7 @@ public:
     static bool     ledIndicators;
     static bool     rzx_loop;       // Snapshots > RZX loop: restart a recording when it ends
     static uint8_t  led_style;      // Interface > LED indicators > Icons: 0 = Classic (1-bit glyphs), 1 = Colour
-    static bool     ide_led;        // Interface > HDD / CD icon: HDD/CD icon in the top-right corner (LED::drawCornerIcons)
+    static bool     ide_led;        // Interface > SD / HDD / CD icon: SD + HDD/CD icons in the top-right corner (LED::drawCornerIcons)
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
     static bool     sdLedBlink;     // blink onboard GPIO LED on physical SD card access (no-op on *_W: LED is on the radio)
     // Chip temperature calibration, whole °C added to the ADC sensor reading.

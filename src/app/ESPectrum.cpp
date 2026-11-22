@@ -5705,7 +5705,7 @@ void ESPectrum::loop() {
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
                     ((Z80Ops::isP3 || Z80Ops::isSam) && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
-    // The floppy, plus the IDE drive's HDD / CD icon beside it (LEDIndicators.cpp).
+    // The floppy, plus the IDE drive's HDD / CD and the SD card icons beside it (LEDIndicators.cpp).
     LED::drawCornerIcons(lamp_on, fdd_write);
 
     elapsed = time_us_64() - ts_start;

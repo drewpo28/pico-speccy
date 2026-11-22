@@ -422,6 +422,16 @@ any ONE of them restores the bug completely.
   **Interface > HDD / CD icon** (`Config::ide_led`, nvs `ideLed`, default on).
   Any change of what is shown sets `brdChange` (the old erase contract), since the HDD
   icon slides into the corner when the floppy goes out.
+- **SD card icon (hw-confirmed 2026-11-23 DVp2w):** `kCornerSd` left of the HDD / CD
+  (or wherever the row ends), lit by `rdec/wdec[SD]` and `[ZCTRL]` — the same guest SD
+  traffic as the strip's SD / ZC glyphs (DivMMC/DivSD SPI, NeoGS card, eLeMeNt, ZC).
+  Same gate `Config::ide_led`, menu renamed **SD / HDD / CD icon** (nvs key still
+  `ideLed`). The carve now spans `lx - 3 - 12*(n-1)` for n lit icons.
+  Red = `wdec[SD]/[ZCTRL]`, which now means a sector really written: `touchW` only in
+  `DivMMC::storeSector` (SD or ZCTRL by `s_card`) and NgsSd's REQ_WRITE. The port OUTs
+  (#EB/#E7/#57/#77) are `touchR` now: every SPI command (CMD17 read included) and chip
+  select is an OUT, so before this the strip's SD / ZC glyphs went "write" on pure reads.
+  Strip state for SD / ZC: write wins (red), never the read+write yellow.
 - **IDE activity = `IDE::noteActivity`** in `read_sector`, `write_sector_done`,
   `atapi_fill_block` (CD), decayed in `LED::decay()`. The strip's IDE glyph uses it too:
   port touches lit it yellow on a bare status poll (seen on the +3e boot).
