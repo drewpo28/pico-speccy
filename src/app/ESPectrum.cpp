@@ -4956,7 +4956,9 @@ void ESPectrum::loop() {
 #if PERF_TRACE || NEXT_TRACE
     DivMMC::sdStatTick();
 #endif
+    const uint64_t n3_c0 = time_us_64();   // [NEG3]: CPU::loop measured here (PERF resets cpu_frame_us mid-frame)
     CPU::loop();
+    const uint64_t n3_c1 = time_us_64();
 #if NXNEG_PROF && !NEXT_TRACE
     NxFrameProf::frameEnd();
 #endif
@@ -5701,7 +5703,26 @@ void ESPectrum::loop() {
       }
       if (pmax_win > w_pmax) w_pmax = pmax_win;
       if (idle < 0) neg_cnt++;
+      // [NEG3] the window's AVERAGES (NEG2 shows only the worst frame): the frame period
+      // (ts_start to ts_start), its work (el) and where el went. HAMCOLOR ran 48.8 FPS in
+      // one session and 46.4 in a later one with the same ELF and the same cpu (2026-11-22).
+      static uint64_t a_prev_ts = 0;
+      static uint32_t a_per = 0, a_el = 0, a_pre = 0, a_loop = 0, a_aud = 0, a_mix = 0, a_kbd = 0, a_n = 0;
+      static uint32_t a_paced = 0, a_short = 0;   // sum of max(el, target); frames under the target
+      if (a_prev_ts) { a_per += (uint32_t)(ts_start - a_prev_ts); a_n++; }
+      a_prev_ts = ts_start;
+      a_el += (uint32_t)elapsed; a_pre += (uint32_t)(n3_c0 - ts_start); a_loop += (uint32_t)(n3_c1 - n3_c0);
+      a_aud += g_aud_write_us; a_mix += g_mix_us; a_kbd += g_kbd_us;
+      a_paced += (uint32_t)(elapsed > (uint64_t)target ? elapsed : (uint64_t)target);
+      if (elapsed < (uint64_t)target) a_short++;
       if (++frame_cnt >= 60) {
+        // el = pre (ts_start -> CPU::loop, holds aud) + loop (CPU::loop) + post (the rest, holds mix, kbd)
+        // paced = the mean of max(el, target): the period a per-frame pacing without
+        // catch-up gives; short = frames under the target (the rest overran).
+        Debug::log("[NEG3] 60f avg: period=%u paced=%u el=%u = pre %u (aud %u) + loop %u + post %u (mix %u kbd %u) | short %u/60",
+                   a_n ? a_per / a_n : 0, a_paced / 60, a_el / 60, a_pre / 60, a_aud / 60, a_loop / 60,
+                   (a_el - a_pre - a_loop) / 60, a_mix / 60, a_kbd / 60, a_short);
+        a_per = a_el = a_pre = a_loop = a_aud = a_mix = a_kbd = a_n = a_paced = a_short = 0;
         // ef is inside cpu (EndFrame: DS80 border flush + the [SPI] print —
         // Debug::log over USB-CDC can cost ms, so a worst frame with big ef
         // and zero everything else is usually the diagnostics frame itself);
@@ -5789,6 +5810,19 @@ void ESPectrum::loop() {
       while ((int64_t)time_us_64() < e && NEXTVID::c0Help()) {}
       const int64_t rem = target - (int64_t)(time_us_64() - ts_start);
       idle = rem > 0 ? rem : 0;
+    }
+    // eLeMeNt: a frame under the target pays back what the frames before it overran.
+    // Each frame used to wait out its own target only, so the period was the mean of
+    // max(el, target), not of el: HAMCOLOR with 52 of 60 frames ~1.4 ms over and the
+    // rest short ran 46.4 FPS at a mean el of 19.5 ms of 20.48, the audio ring running
+    // dry ([PERF] aud hold > 0; hw [NEG3] 2026-11-22). The debt is capped at one frame
+    // and dropped on a stall or fast-forward - catching up never runs ahead.
+    if (Z80Ops::isElm && !Config::loopVsync()) {
+      static int64_t s_debt = 0;
+      const int64_t over = (int64_t)(time_us_64() - ts_start) - target;
+      if (maxSpeed || over > target) s_debt = 0;
+      else if (over > 0) { s_debt += over; if (s_debt > target) s_debt = target; }
+      else if (s_debt > 0 && idle > 0) { const int64_t pay = s_debt < idle ? s_debt : idle; idle -= pay; s_debt -= pay; }
     }
     if (!maxSpeed) {
       // ZiFi over USB-CDC: the frame-pacing waits below are the longest no-pump

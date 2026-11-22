@@ -1884,6 +1884,27 @@ rowPump removed) are worth it. Done here, all in `ElmHgfx.cpp`:
   elmhs1p (the sort cut, 48.1-48.8 in the 20:04 log) gave 45.5-46.8 in the same later session (log
   `devttyACM0_2026_11_22.20.46.16.738.txt`; its `build:` line is the previous firmware's) - environment (HDMI /
   audio pacing: `[PERF] aud` hold > 0, ticks 40 300 vs 38 400), not investigated.
+- **realFPS 46 vs 48.8 with the same ELF (2026-11-22, open).** Same-session A/B (log `...20.46.16.738.txt`: elmhs1p
+  then elmhs3p) both 45.5-47.2; elmhs1p gave 48.1-48.8 at 20:04. Boot logs identical (diffed), the HAM work
+  identical (q, check bins, c1 engine, draw, wait, GS line, NEG2 worst). The loop is paced by `pwm_audio_write`
+  blocking at the top of the frame (V-Sync off) - `hold > 0` = the emulation late, so each frame's work grew by
+  ~1-2.6 ms outside the [PERF] `cpu`. NB in PERF builds `cpu_frame_us` is zeroed mid-frame by Video.cpp's PERF hook,
+  so NEG2's `cpu`/`post` of the worst frame are wrong there. Diagnostic: `[NEG3] 60f avg: period el = pre (aud) +
+  loop + post (mix kbd)` - averages, CPU::loop timed in ESPectrum::loop itself (always on for Elm/Profi, beside
+  NEG2). `debug/DVp2w-elmneg3p-1.1.3` (PERF, build 20:53:18), NOT hw-run yet.
+  **hw (elmneg3p, log `devttyACM0_2026_11_22.20.55.46.310.txt`, three boots, the third with the radio powered
+  down):** HAMCOLOR `period` 21.3-22.2 ms but `el` 19.1-19.9 (= pre 0.07 + loop 18.6-19.2 + post 0.5-0.65) -
+  shorter than the 20.48 target. Wi-Fi is not it (boot 3 the same). The pacing: each frame waits out ITS OWN
+  target (`idle = target - el`, the wait from now), so the period is the mean of max(el, target); with 52 of 60
+  frames over by ~1.4 ms and the rest short, mean el < target still gives 46.4 FPS and an audio ring running dry.
+  The session-to-session difference is the spread of el, not its mean.
+- **Catch-up pacing for the eLeMeNt (2026-11-22, NOT hw-tested; `debug/DVp2w-elmpace1p-1.1.3` PERF 21:00:51,
+  `debug/DVp2w-elmpace1-1.1.3` 21:01:09).** ESPectrum::loop, before the wait, eLeMeNt with V-Sync off: an
+  overrun adds to `s_debt` (capped at one target), a short frame pays it from its idle; maxSpeed or a frame
+  over two targets drops the debt. `[NEG3]` adds `paced` (mean of max(el, target)) and `short n/60`.
+  **hw-confirmed 2026-11-22 DVp2w (elmpace1p, log `devttyACM0_2026_11_22.21.02.19.000.txt`, HAMCOLOR):**
+  `period` 20.32-20.61 ms (`paced`, what it would have been, 21.0-21.7), el 19.0-19.8, short 7-8/60; realFPS
+  48.5-49.2 (one window 47.4 with `hold` 395 - the HAM re-check frame), `[PERF] aud` hold 0 in the rest.
 
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
