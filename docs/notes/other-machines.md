@@ -2261,3 +2261,20 @@ page-0 window + `hobbit_*` hooks in MemESP): nothing of it was kept.
   (HL)/(BC)/(DE), no stack, no CALL / RET); the pass is walked again on the live mapping before every skip. Bench:
   gen 23 300 -> 2 200 a frame, the play state identical to the run without it (game clock, units). SRAM +33 B.
   PERF builds print `idle N/fr T/fr` at the end of the `[HGFX] 60f` line.
+
+**HGFX line interrupt g_zxi_01C/01D: who uses it (2026-11-23, bench survey; NOT hw-tested, not implemented).**
+We only store the two registers. MB03+ Reference: "HGFX line interrupt Y position", generation enabled by m_zxi_02F
+bit 1 "(don't use it with eLeMeNt ZX)"; the current eZX Reference lists 01C/01D ("HGFX/HRC line interrupt") with NO enable
+bit and NO coordinate system, and its eINT has its own Video Line types (#02/#03, HDMI line 0-575 absolute or mode lines).
+- Static scan (owner's eLeMeNtZx, zxart eLeMeNt ZX, ~/pico-speccy/E, EZ, !4TEST): 207 files select g_zxi registers by
+  `LD BC,#7C3B` + `LD A,n`; none selects #1C/#1D. #1E/#1F (beam read, implemented) only GALWAY1 and WALLRUN.
+  m_zxi_02F is written only by the MB03+ SetUp / ReFlashr.
+- Dynamic sweep (37 .BAS of Demos + Games, `PICOSPECCY_ELMLOG=1`, filter on the index): only **PF2026** writes it,
+  `LD HL,#0211 / OUT (C),L / OUT (C),H` at #608C (the static scan missed it: OUT (C),L). #211 = 529; on HDMI 576p that is
+  the bottom border (ZX line 264 of the visible 288 = 24 lines under the picture). No g_zxi_050 (eINT) write
+  (TETRIS writes g_050 = 0 only). IM 2, I = #82, vector #82FF -> #7EAA: one handler for every INT, a 50-tick
+  second counter + the per-frame HGFX scroller / FastDMA copy; so it expects ONE INT a frame, moved to line 529.
+- Side finds in the same log: the LnxPckg APP launcher (NETHER, PF2026) writes m_zxi_004 = 03 (MB03+ LED matrix char
+  mode); GIGASCRS writes m_zxi_00B = 01 (MB03+ GigaScreen) next to e_zxi_01D. Both are no-ops on the eZX.
+- Open before implementing: does a non-zero 01C/01D replace the ULA INT on the eZX or add one; HDMI or mode lines;
+  needs an eZX hw test (an IM 2 handler that reads g_zxi_01E/01F and counts INTs per frame) or the author's answer.
