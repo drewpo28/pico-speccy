@@ -110,6 +110,9 @@ extern volatile bool g_pairPushNow;
 // buffer otherwise (sramPromote), never both. Taken at the moment of need it was not
 // there any more: 60 KB free when PF2026 ran against 72 KB wanted (hw 2026-11-16).
 static uint8_t* s_arena;
+// ...or, a third user, the HRC Gigascreen mix's frame before (gigaArenaManage): its first
+// s_gigaArenaRows rows live in the arena, the rest in s_buf. 0 = not in the arena.
+static uint16_t s_gigaArenaRows;
 static bool s_sramArena;             // the row blocks are slices of s_arena (not freed one by one)
 static uint16_t s_sramOwn;           // ...except these (bit = s_sram index): the heap's, past the arena
 // HGFX 1 is two 49152-byte buffers and COPY walks them every frame: while the heap has
@@ -522,7 +525,7 @@ static bool arenaForUs() {
 #endif
 static void arenaLendTick() {
     if (!ELM_ARENA_LEND || !s_arena || !GS::enabled) return;
-    if (s_h1 || s_sramOn[0] || s_sramOn[1]) { s_arenaIdle = 0; return; }
+    if (s_h1 || s_sramOn[0] || s_sramOn[1] || s_gigaArenaRows) { s_arenaIdle = 0; return; }
     if (s_arenaHold) { s_arenaHold--; return; }
     if (GS::shLent()) return;
     if (s_arenaLentLog) { s_arenaLentLog = false; Debug::log("[ELM] HGFX arena back from the NeoGS cache"); }
@@ -563,7 +566,7 @@ static void h1Manage() {
     Debug::log("[ELM] HGFX buffer %d #%04X..#%04X in SRAM (the arena)", n, (unsigned)(s_h1Base - (n ? BUF1 : 0)), (unsigned)(s_h1Base - (n ? BUF1 : 0) + s_h1Size));
 }
 static void sramPromote() {
-    if (s_direct || s_h1 || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
+    if (s_direct || s_h1 || s_gigaArenaRows || !s_buf || s_bpp != 8 || s_w != WIDTH || s_h != HEIGHT || !s_b1) return;
     if (s_sramRetry) { s_sramRetry--; return; }
     if ((int)s_sramOn[0] + (int)s_sramOn[1] >= SRAM_MAX) return;
     const int n = s_sramOn[0] ? 1 : s_sramOn[1] ? 0 : s_use[1] > s_use[0];
@@ -668,6 +671,7 @@ void arenaFree() {
     }
     sramOff(true);
     h1Off(true, "machine change");
+    if (s_gigaArenaRows) { drain(); s_gigaArenaRows = 0; }   // the mix's last draw may still read it
     free(s_arena); s_arena = nullptr;
 }
 static inline void runFlush();
@@ -2206,6 +2210,34 @@ static void rgbLine(const uint32_t* c, int n, int y, uint8_t* slots) {
 // before is kept as INK << 4 | PAPER a pixel in the HGFX buffers, idle below mode 3.
 static bool s_gigaPrev;                 // the kept frame is a frame of this picture
 static inline bool hrcGiga() { return mode == 1 && giga; }
+// The ZX colours with G apart (sums of four fit), filled by frameSetup once a frame: per
+// row it was 16 flash calls of VIDEO::zxRgb, 3072 a frame.
+static uint32_t s_hrcZx[16];
+static void hrcZxFill() {
+    for (int i = 0; i < 16; i++) { const uint32_t c = VIDEO::zxRgb((uint8_t)i); s_hrcZx[i] = (c & 0xFF00FF) | (c & 0xFF00) << 12; }
+}
+// The frame before, row y. In s_buf (PSRAM) the draw read and wrote all 48 KB of it every
+// frame through the XIP cache: a write-allocate line fill per 8 bytes and core0's code
+// and guest pages evicted (TOCHIHRC slow with Gigascreen on, owner 2026-11-23). The SRAM
+// arena is idle in HRC: the rows it holds live there (hw arenas run 24-57 KB).
+static inline uint8_t* gigaPrevRow(int y) { return (y < s_gigaArenaRows ? s_arena : s_buf) + (uint32_t)y * WIDTH; }
+// core0, frameEnd, after its drain (core1 not drawing). A move loses the history: the
+// next frame is drawn unmixed and kept, as at the start of a mix.
+static void gigaArenaManage() {
+    const bool want = hrcGiga() && s_arena && !s_h1 && !s_sramOn[0] && !s_sramOn[1];
+    if (want && !s_gigaArenaRows) {
+        if (!arenaForUs()) return;           // lent to the NeoGS cache: back by a later frame
+        const uint32_t rows = s_arenaSize / WIDTH;
+        s_gigaArenaRows = (uint16_t)(rows > HEIGHT ? HEIGHT : rows);
+        s_gigaPrev = false;
+        Debug::log("[ELM] HRC Gigascreen: frame before in SRAM (the arena), %u of %u rows", (unsigned)s_gigaArenaRows, (unsigned)HEIGHT);
+    } else if (!want && s_gigaArenaRows) {
+        drain();                             // the last mixed draw may still be on core1
+        s_gigaArenaRows = 0;
+        s_gigaPrev = false;
+        Debug::log("[ELM] HRC Gigascreen: arena released");
+    }
+}
 static void hrcRow(const uint8_t* scr, int y, uint8_t* out) {
     hrLine(scr, y, false, out);
     if (keyBottom && scr != keyBottom) {
@@ -2216,11 +2248,10 @@ static void hrcRow(const uint8_t* scr, int y, uint8_t* out) {
 // keep: this row becomes the frame before (the render, not the histogram pass).
 static void hrcMixRow(int y, uint32_t* out, bool keep) {
     Hot* H = s_hot;
-    uint32_t zx[16];
-    for (int i = 0; i < 16; i++) { const uint32_t c = VIDEO::zxRgb((uint8_t)i); zx[i] = (c & 0xFF00FF) | (c & 0xFF00) << 12; }   // G apart: sums of four fit
+    const uint32_t* zx = s_hrcZx;
     const auto mix = [&](uint32_t a) { return ((a & 0x3FF03FF) >> 2 & 0xFF00FF) | ((a >> 22) & 0xFF) << 8; };
     hrcRow(keyTop ? keyTop : VIDEO::grmem, y, H->line);
-    uint8_t* prev = s_buf + (uint32_t)y * WIDTH;
+    uint8_t* prev = gigaPrevRow(y);
     if (giga == 1 && gigaOther) {
         hrLine(gigaOther, y, false, H->slots);
         for (int x = 0; x < WIDTH; x++)
@@ -2240,14 +2271,15 @@ static void hrcMixRow(int y, uint32_t* out, bool keep) {
 // swaps attributes every frame; a #7FFD bit 3 flip every frame reads the same way, the
 // shown screen is what is compared). On after 4 such frames in a row with 48+ cells
 // (1.5 % of 3072), off half a second after the last one: a still page keeps its 512 px.
-// The two attribute frames live in the second HGFX buffer, idle below mode 3.
+// The two attribute frames live in the second HGFX buffer, idle below mode 3; they take
+// turns (the older one is overwritten), one 3 KB PSRAM store a frame instead of two copies.
 static bool hrcFlicker() {
-    static uint8_t s_run, s_hold;
+    static uint8_t s_run, s_hold, s_side;
     const uint8_t* at = (keyTop ? keyTop : VIDEO::grmem) + 0x3000;
-    uint8_t* p1 = s_buf + 0x10000; uint8_t* p2 = p1 + 0xC00;
+    uint8_t* p1 = s_buf + 0x10000 + (s_side ? 0xC00 : 0); uint8_t* p2 = s_buf + 0x10000 + (s_side ? 0 : 0xC00);
     int f = 0;
     for (int i = 0; i < 3072; i++) f += (at[i] != p1[i]) & (at[i] == p2[i]);
-    memcpy(p2, p1, 3072); memcpy(p1, at, 3072);
+    memcpy(p2, at, 3072); s_side ^= 1;      // the frame before that is the frame before now
     if (f >= 48) { if (s_run < 4) s_run++; if (s_run == 4) s_hold = 25; }
     else { s_run = 0; if (s_hold) s_hold--; }
     return s_hold != 0;
@@ -2935,6 +2967,7 @@ static void frameSetup() {
     const bool hr = mode == 1 || mode == 2;
     bool wantPair = (hr && !hrcGiga()) || mode == 5 || mode == 6 || mode == 7;
     if (!hrcGiga()) s_gigaPrev = false;
+    else hrcZxFill();                    // core1 idle here (frameEnd / repaint drained)
     if (mode == 4) {
         if (s_pairHold) s_pairHold--;
         else { wantPair = wantPairFor2(); s_pairWant2 = wantPair; s_pairHold = 25; }
@@ -3072,7 +3105,7 @@ static void frameEndBody() {
     // dumps once a second (plain BASIC at 28 MHz, 2026-11-16).
     if (!s_live) { static uint8_t n; if (++n >= 60) { n = 0; ::pcprof_dump(); } }
 #endif
-    if (!s_live) { if (s_h1) { h1Off(true, "video off"); Elm::remap(); } return; }
+    if (!s_live) { if (s_h1) { h1Off(true, "video off"); Elm::remap(); } if (s_gigaArenaRows) gigaArenaManage(); return; }
     // A pair frame given up for the NeoGS: the card owes more than half its 24 ms backlog
     // (GS::behind). A picture change draws the whole picture every frame (17-21 ms on core1)
     // and stages a new palette for nearly every one; the row pumps are withheld while the
@@ -3111,6 +3144,7 @@ static void frameEndBody() {
         else s_c0Hold = false;
     }
     if (!supersede && (s_pair || mode == 4 || hrcGiga())) drain();   // the pair tables are rewritten under the frame; the HRC mix shares scratch
+    gigaArenaManage();
     if (g_cowOn && (supersede || s_drawDone == s_drawPosted)) cowEnd();   // its draw is done (or held off and re-dealt)
     if (s_cowBackoff) s_cowBackoff--;
 #if HOST_BUILD

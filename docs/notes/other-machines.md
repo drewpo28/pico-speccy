@@ -936,6 +936,18 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   Tochi's title stays in the pair frame, the demo part mixes, one switch each way. A flicker made of bitmaps alone
   under the same attributes is not seen.
   Dead end: following g_zxi_008 alone - the title page is 512 px text and went soft (owner: "точно неправильно").
+  **Slow with Gigascreen on (owner 2026-11-23; fix hw-confirmed 2026-11-23 on DVp2w, `debug/DVp2w-elm-hrcgiga[-perf]-1.1.3`, build
+  13:21 / 13:25 perf).** The mix kept its frame before (INK << 4 | PAPER a pixel, 48 KB) in `s_buf` = PSRAM: core1
+  read and wrote all of it every frame through the cached XIP alias (write-allocate fills, core0's code and pages
+  evicted). Now `gigaArenaManage` (frameEnd, after the drain) puts its rows in the SRAM arena while HRC mixes
+  (`gigaPrevRow`: the first `s_arenaSize / 256` rows; a 48 896 B hw arena holds 191 of 192), released on mix
+  end / video off / `arenaFree`; `arenaLendTick` and `sramPromote` leave it alone meanwhile. Also: the 16 ZX
+  colours once a frame (`s_hrcZx`, frameSetup) instead of 16 flash `zxRgb` calls a row, and `hrcFlicker`'s two
+  attribute frames take turns (one 3 KB store a frame, no copy). +67 B .bss, no code into RAM. Bench (arena capped
+  at 48 896): On mixes as before; Auto turns on when the demo part flickers. Bench trap: FRAM #1D (03 = Auto)
+  overrides the nvs `gigascreen_onoff` at boot - patch the byte for an On/Off run; and the demo part starts after
+  Space on the title, past frame ~1500, so a 40 s run never reaches it. If hw is still slow, the perf ELF's
+  `[HGFX] 60f` (c1 draw, wait) and `c0/fr` (drain, frameSetup max = the half-second `hamProgram`) lines say which.
   **Hot keys against the SetUp (owner 2026-11-14: Alt+PgUp did nothing in Tochi and in the SetUp; bench).** The
   Gigascreen key answered "not in this video mode" under the extra video (`paper_hold`) and never told the SetUp:
   under the extra video it now just cycles the setting (HRC reads it, nothing to arm), and both paths end in
