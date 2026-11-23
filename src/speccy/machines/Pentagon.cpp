@@ -49,7 +49,9 @@ void Pentagon::eff7Paging(uint8_t data) {
     uint8_t prevSRAM = MemESP::newSRAM;
     uint8_t prevNotMore = MemESP::notMore128;
     MemESP::notMore128 = bitRead(data, 2);
-    if (Z80Ops::is1024) {
+    if (Z80Ops::isElm) {
+      // eLeMeNt ZX (personality 07): D3 = RAM page 0, not the cache - Elm::portOut.
+    } else if (Z80Ops::is1024) {
       // Pentagon-1024SL v2.x: EFF7 D3 overlays the hidden CACHE page at
       // 0x0000-0x3FFF — the SAME separate memory the #FB/#7B trap maps
       // (Unreal's EFF7_ROCACHE), NOT RAM bank 0. Mapping ram[0] here

@@ -125,7 +125,13 @@ static void protectPool(uint32_t* base, uint32_t* n) {
 static uint32_t protectPages() { uint32_t b, n; protectPool(&b, &n); return n; }
 // g_zxi_010, or the obsolete e_zxi_001 = #FF ("former Ultimate mode"): FLASH6 of 2024 and the
 // SetUp open their layout-6 / E windows with only that, so it counts as Full.
-static uint8_t uramMode() { return s_r->g[0x010] ? s_r->g[0x010] : (s_r->e[0x001] == 0xFF ? 1 : 0); }
+// The MB03+'s own obsolete switch counts too: m_zxi_000 = FF (#703B select / #713B data,
+// MB03+ Reference: "former Ultimate mode, use g-zxi_010 instead"). NSID_Player_Pro r0650
+// (ByteFEST 2021) sets it before paging URAM into Zone 0 and puts the old value back on exit.
+static uint8_t s_mIdx, s_m000;
+static uint8_t uramMode() {
+    return s_r->g[0x010] ? s_r->g[0x010] : (s_r->e[0x001] == 0xFF || s_m000 == 0xFF ? 1 : 0);
+}
 struct Zone { uint16_t page[2]; uint8_t par; };
 static Zone s_z[4];
 static uint8_t s_zone;
@@ -1687,6 +1693,7 @@ void reset() {
     vramHi = &s_r->g[0x021];
     // Memory-register windows at their documented defaults.
     s_zone = 0;
+    s_mIdx = s_m000 = 0;
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
     g_elm_hgfxSlots = 0;
@@ -2067,7 +2074,10 @@ bool portIn(uint16_t a, uint8_t* out) {
         *out = unoUart(s_uIdx) ? ZiFi::unoUartRead(true) : uRead(s_uIdx);
         return true;
     }
-    // #703B..#773B: the MB03+ answers here with #3x. It is not fitted.
+    // #703B..#773B: the MB03+ answers here with #3x. It is not fitted; only m_zxi_000
+    // (the old Ultimate switch, see uramMode) is kept, so a program reads back what it wrote.
+    if (a == 0x703B) { *out = s_mIdx; return true; }
+    if (a == 0x713B) { *out = s_mIdx == 0 ? s_m000 : 0xFF; return true; }
     if ((a & 0xF8FF) == 0x703B) { *out = 0xFF; return true; }
     return false;
 }
@@ -2153,6 +2163,11 @@ bool portOut(uint16_t a, uint8_t v) {
         }
         return true;
     }
+    if (a == 0x703B) { s_mIdx = v; return true; }
+    if (a == 0x713B) {
+        if (s_mIdx == 0 && v != s_m000) { s_m000 = v; remap(); }
+        return true;
+    }
     if ((a & 0xF8FF) == 0x703B) return true;
     if (a == 0xEFF7) {
         VIDEO::timexHiresRequest(v & 2);
@@ -2163,6 +2178,14 @@ bool portOut(uint16_t a, uint8_t v) {
         // (Pentagon::eff7Paging). No toast: TheLink flips it around beam-raced effects.
         if (g_elm_personality == 7 && (s_r->e[0x032] & 2) && !MemESP::pagingLock)
             cpuSpeed((v & 0x10) ? 0 : (s_r->e[0x030] ? s_r->e[0x030] : 1), true);
+        // The Reference, "Pentagon 1024 v2.2 memory": #EFF7 bit 3 = 1 "disable ROM and
+        // connect RAM page 0 at h0000-h3FFF" - RAM page 0 itself, not the 1024SL's hidden
+        // cache page (Pentagon::eff7Paging leaves D3 to us). NSID_Player_Pro r0650's
+        // Pentagon builds (S650PENT/PEN2) load a tune into page 0 and read it at #0000.
+        if (g_elm_personality == 7 && !MemESP::pagingLock) {
+            const uint8_t ram0 = (v >> 3) & 1;
+            if (MemESP::page0ram != ram0) { MemESP::page0ram = ram0; MemESP::recoverPage0(); romWaitUpdate(true); }
+        }
     }                                                    // and on to the generic decode
     return false;
 }
