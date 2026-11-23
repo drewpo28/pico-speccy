@@ -392,7 +392,8 @@ inline static void joyMap(const VirtualKeyItem& it) {
 
   if (jt == JOY_KEMPSTON || jt == JOY_FULLER || jt == JOY_CUSTOM) {
     // VK_DPAD_* always map to their VK_JOY_* counterparts, so isVKDown(VK_JOY_B)
-    // etc. tracks the physical button whatever joydef says (JoyTest relies on it).
+    // etc. tracks the physical button whatever joydef says (JoyTest also reads
+    // VK_DPAD_*, which is what it sees on Sinclair / Cursor).
     // Aliasing a button onto another Kempston bit (C -> Joy.A) is resolved in the
     // Kempston port-update loop from the slot's joydef entry.
     static const VirtualKey slotVk[8] = {

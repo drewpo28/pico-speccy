@@ -136,25 +136,26 @@ static const char* typeShow(uint8_t t) { return t < 5 ? kTypeShow[t] : "?"; }
 // Pill width of a cell, in live pixels.
 static inline int cellW(int i) { return (KC[i].w ? KC[i].w : 56) * Sf.glyphScale; }
 
-// JoyTest: the VK a physical pad control reports -> our cell.
-static int cellForJoyVk(int vk) {
-    switch (vk) {
-        case fabgl::VK_JOY_LEFT:  return J_LEFT;
-        case fabgl::VK_JOY_RIGHT: return J_RIGHT;
-        case fabgl::VK_JOY_UP:    return J_UP;
-        case fabgl::VK_JOY_DOWN:  return J_DOWN;
-        case fabgl::VK_JOY_START: return J_START;
-        case fabgl::VK_JOY_MODE:  return J_MODE;
-        case fabgl::VK_JOY_A:     return J_A;
-        case fabgl::VK_JOY_B:     return J_B;
-        case fabgl::VK_JOY_C:     return J_C;
-        case fabgl::VK_JOY_X:     return J_X;
-        case fabgl::VK_JOY_Y:     return J_Y;
-        case fabgl::VK_JOY_Z:     return J_Z;
-        case fabgl::VK_JOY_L2:    return J_L2;
-        case fabgl::VK_JOY_R2:    return J_R2;
-        default:                  return -1;
-    }
+// JoyTest: is the physical pad control behind cell c held right now? The D-pad,
+// A/B, Start and Select arrive as VK_DPAD_* and keyboard.cpp joyMap turns them
+// into VK_JOY_* ONLY for Kempston / Fuller / Custom; on Sinclair 1/2 and Cursor
+// they become ZX digit keys instead, so a test that read VK_JOY_* alone lit only
+// the raw extras (C X Y Z L2 R2). VK_DPAD_* state is kept on every type.
+// Indexed by cell (J_LEFT..J_R2 = 0..13 = the joydef slot order).
+static bool joyCellDown(fabgl::Keyboard* kbd, int c) {
+    static const uint16_t dpad[8] = {
+        fabgl::VK_DPAD_LEFT, fabgl::VK_DPAD_RIGHT, fabgl::VK_DPAD_UP, fabgl::VK_DPAD_DOWN,
+        fabgl::VK_DPAD_START, fabgl::VK_DPAD_SELECT, fabgl::VK_DPAD_FIRE, fabgl::VK_DPAD_ALTFIRE
+    };
+    static const uint16_t joy[14] = {
+        fabgl::VK_JOY_LEFT, fabgl::VK_JOY_RIGHT, fabgl::VK_JOY_UP, fabgl::VK_JOY_DOWN,
+        fabgl::VK_JOY_START, fabgl::VK_JOY_MODE, fabgl::VK_JOY_A, fabgl::VK_JOY_B,
+        fabgl::VK_JOY_C, fabgl::VK_JOY_X, fabgl::VK_JOY_Y, fabgl::VK_JOY_Z,
+        fabgl::VK_JOY_L2, fabgl::VK_JOY_R2
+    };
+    if (c < 0 || c >= 14) return false;
+    if (kbd->isVKDown((fabgl::VirtualKey)joy[c])) return true;
+    return c < 8 && kbd->isVKDown((fabgl::VirtualKey)dpad[c]);
 }
 
 // ── layout ─────────────────────────────────────────────────────────────────────
@@ -418,14 +419,12 @@ static void mappingPage() {
         // ── JoyTest: light the pressed controls, B held for ~5 ticks leaves ────
         if (s_test) {
             bool dirty = false;
-            for (int vk = fabgl::VK_JOY_RIGHT; vk <= fabgl::VK_JOY_R2; vk++) {
-                const int c = cellForJoyVk(vk);
-                if (c < 0) continue;
-                const bool down = kbd->isVKDown((fabgl::VirtualKey)vk);
+            for (int c = 0; c < 14; c++) {
+                const bool down = joyCellDown(kbd, c);
                 if (down != s_lit[c]) { s_lit[c] = down; dirty = true; }
             }
             if (dirty) drawAllCells();
-            if (kbd->isVKDown(fabgl::VK_JOY_B)) {
+            if (joyCellDown(kbd, J_B)) {         // B held leaves (any joystick type)
                 if (++testExit == 5) { leaveTest(); testExit = 0; }
             } else testExit = 0;
         }
