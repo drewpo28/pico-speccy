@@ -3558,7 +3558,15 @@ ELM_HOT void core1Pump() {
     }
 #endif
 }
-void paletteLost() { s_palDirty = true; s_palAll = true; s_fullDraw = true; }
+void paletteLost() {
+    s_palDirty = true; s_palAll = true; s_fullDraw = true;
+    // HAM / HRC mixed: hamProgram writes only colours its slot cache (s_ham->rgb) does not
+    // hold, so slots rewritten under it (VIDEO::applyPalette - the menu's Video > Palette
+    // preview hands its slots back that way) stayed the G3R3B2 ramp: PF2026 in wrong
+    // colours after a walk through the Video menu (owner 2026-11-23). Put them back now.
+    if (s_ham && s_ham->n && !s_hamCubeOn && (hrcGiga() || (mode >= 3 && s_r[REG_FEATURE] == 2)))
+        for (int k = 0; k < s_ham->n; k++) VIDEO::elmPaletteSet(kSlots(k), s_ham->rgb[k]);
+}
 
 }
 

@@ -966,6 +966,14 @@ Next in the middle of a batch and half the runs came out as the 128 Tape Loader.
   setting behind it.
 - HW128X512's seam is the picture's own wrap (a 512-line collage through a 256-line window), not the offset register.
 
+**PF2026 colours broken after the Video menu (owner 2026-11-23: "переключить Frame skip -> ломается палитра", also V-Sync;
+hw-confirmed DVp2w by the owner 2026-11-23, `debug/DVp2w-elm-hampal-1.1.3`).** Not the setting: a cursor walk
+over Video > Palette is enough (bench: F1 / Esc alone and the Video level above Palette stay right). The palette preview
+borrows slots 168..183 and gives them back with `VIDEO::applyPalette()`, which rewrites 0..239; `Hgfx::paletteLost`
+only set dirty, and in HAM / HRC mixed `hamProgram` writes just the colours its slot cache (`s_ham->rgb`) lacks, so the
+ramp stayed in every slot. `paletteLost` now re-pushes the `s_ham->n` cached slots when the HAM branch is live (not on
+the cube). SRAM +0, flash code.
+
 **PF2026 sound and WOWDEMO colours (owner on the bench build, 2026-11-14: "звук очень странный", wrong colours; fixed on the bench, NOT hw-tested).**
 - PF2026 streams ADC.BIN through a 64 KB SoundDMA loop at #0F0000 (URAM pages #78-#7F; par #9D = play, loop, signed,
   extended period, stereo; period #1612 = 20298.67 Hz, 1600 bytes a video packet) and paces the video on g_zxi_04A.
