@@ -240,6 +240,9 @@ static int32_t get_tftFlipX() { return (TFT_FLAGS & MADCTL_MX) ? 1 : 0; }
 static void    put_tftFlipX(int32_t v) { tftFlagBit(MADCTL_MX, v != 0); }
 static int32_t get_tftFlipY() { return (TFT_FLAGS & MADCTL_MY) ? 1 : 0; }
 static void    put_tftFlipY(int32_t v) { tftFlagBit(MADCTL_MY, v != 0); }
+static int32_t get_tftBright() { return TFT_BRIGHTNESS; }
+static void    put_tftBright(int32_t v) { TFT_BRIGHTNESS = (uint8_t)v; }
+static bool    hook_tftBright(int32_t nv, int32_t) { tft_set_brightness((uint8_t)nv); return true; }
 #else
 // No panel on this build: the ids stay in the table (it is append-only) but no row
 // references them, so these only have to exist.
@@ -251,6 +254,9 @@ static int32_t get_tftFlipX() { return 0; }
 static void    put_tftFlipX(int32_t) {}
 static int32_t get_tftFlipY() { return 0; }
 static void    put_tftFlipY(int32_t) {}
+static int32_t get_tftBright() { return 0; }
+static void    put_tftBright(int32_t) {}
+static bool    hook_tftBright(int32_t, int32_t) { return true; }
 #endif
 
 // ── the machine pair ───────────────────────────────────────────────────────────

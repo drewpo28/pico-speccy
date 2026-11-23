@@ -29,6 +29,16 @@ MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations g
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+**TFT backlight brightness (2026-11-22, NOT hw-tested):** Video > TFT panel >
+Brightness, 0..10 (`SET_TFT_BRIGHT`, `AC_LIVE | F_PREVIEW` — applies while the row is
+edited, Esc reverts; "Restore defaults" sets 10). `TFT_LED_PIN` (M1 GP9, M2 GP15 —
+per the Murmulator schematic) is now a PWM output instead of a plain high GPIO:
+`tft_set_brightness()` in st7789.c, wrap 255, divider for ~20 kHz at boot clock,
+level `16 + lvl*24` (0 = dimmest, never black; 10 = 256 > wrap = steady on). Slices:
+GP9 = 4B, GP15 = 7B; no audio/AY-clock pin of M1/M2/W variants sits on them. Persisted
+as the plain NVS key `TFT_BRIGHTNESS` next to `TFT_FLAGS`. Modelled on MadedCat's
+Murmulator_rp2040 (`cfg_brightness`, `TFT_MIN_BRIGHTNESS + cfg_brightness*10`).
+
 ## A machine switch resets the CPU turbo (2026-11-18, hw-confirmed 2026-11-18 by the owner)
 
 Owner: switching machine sets the CPU clock back to that machine's default.

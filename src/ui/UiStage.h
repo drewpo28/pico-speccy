@@ -406,7 +406,10 @@ const char* romsetName(int32_t composite);
     /* LED::drawCornerIcons, nothing to apply. Appended last per the APPEND ONLY rule. */ \
     X(SET_IDE_LED,        AC_PURE,   0,                     get_ideLed,     put_ideLed,    nullptr,        -1) \
     /* Interface > LED indicators > Icons (Config::led_style): read live by LED::draw. */ \
-    X(SET_LED_STYLE,      AC_PURE,   0,                     get_ledStyle,   put_ledStyle,  nullptr,        -1)
+    X(SET_LED_STYLE,      AC_PURE,   0,                     get_ledStyle,   put_ledStyle,  nullptr,        -1) \
+    /* Video > TFT panel > Brightness (TFT_BRIGHTNESS, 0..10): backlight PWM, live    */ \
+    /* and previewed while the row is edited. Appended last per the APPEND ONLY rule. */ \
+    X(SET_TFT_BRIGHT,     AC_LIVE,   F_PREVIEW,             get_tftBright,  put_tftBright, hook_tftBright, -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

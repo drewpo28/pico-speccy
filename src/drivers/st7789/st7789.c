@@ -19,6 +19,7 @@
 #include "st7789.pio.h"
 #include "hardware/dma.h"
 #include "hardware/clocks.h"
+#include "hardware/pwm.h"
 
 #ifndef SCREEN_WIDTH
 #define SCREEN_WIDTH 320
@@ -36,6 +37,32 @@
 
 uint8_t TFT_FLAGS = MADCTL_ROW_COLUMN_EXCHANGE | MADCTL_BGR_PIXEL_ORDER;
 uint8_t TFT_INVERSION = 0;
+uint8_t TFT_BRIGHTNESS = TFT_BRIGHTNESS_MAX;
+
+// Backlight: TFT_LED_PIN as a PWM output (M1 GP9 = slice 4B, M2 GP15 = slice 7B; no
+// audio/AY-clock pin shares those slices). Wrap 255, divider for ~20 kHz at the boot
+// clock: out of the audible band and slow enough for the panel's backlight transistor.
+// The divider is not retuned on an overclock — the frequency just scales with it.
+// Level 0 is the dimmest step, never black: a dark panel would hide the very menu
+// that turns it back up.
+void tft_set_brightness(uint8_t lvl) {
+    if (lvl > TFT_BRIGHTNESS_MAX) lvl = TFT_BRIGHTNESS_MAX;
+    TFT_BRIGHTNESS = lvl;
+    // 0..10 -> 16..256 (256 > wrap = constantly on at the top step)
+    pwm_set_gpio_level(TFT_LED_PIN, 16 + lvl * 24);
+}
+
+static void tft_backlight_init(void) {
+    gpio_set_function(TFT_LED_PIN, GPIO_FUNC_PWM);
+    pwm_config c = pwm_get_default_config();
+    float div = (float)clock_get_hz(clk_sys) / (256.0f * 20000.0f);
+    if (div < 1.0f) div = 1.0f;
+    if (div > 255.0f) div = 255.0f;
+    pwm_config_set_clkdiv(&c, div);
+    pwm_config_set_wrap(&c, 255);
+    pwm_init(pwm_gpio_to_slice_num(TFT_LED_PIN), &c, true);
+    tft_set_brightness(TFT_BRIGHTNESS);
+}
 
 #define CHECK_BIT(var, pos) (((var)>>(pos)) & 1)
 
@@ -179,11 +206,9 @@ void graphics_init() {
     gpio_init(TFT_CS_PIN);
     gpio_init(TFT_DC_PIN);
     gpio_init(TFT_RST_PIN);
-    gpio_init(TFT_LED_PIN);
     gpio_set_dir(TFT_CS_PIN, GPIO_OUT);
     gpio_set_dir(TFT_DC_PIN, GPIO_OUT);
     gpio_set_dir(TFT_RST_PIN, GPIO_OUT);
-    gpio_set_dir(TFT_LED_PIN, GPIO_OUT);
 
     gpio_put(TFT_CS_PIN, 1);
     gpio_put(TFT_RST_PIN, 1);
@@ -251,7 +276,7 @@ void graphics_init() {
     // Note the delays have been shortened a little
     
     lcd_init(init_seq);
-    gpio_put(TFT_LED_PIN, 1);
+    tft_backlight_init();
 
     // Initialize palette — will be overwritten by Video::applyPalette() at startup
     for (int i = 0; i < 17; i++)

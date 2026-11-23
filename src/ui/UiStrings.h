@@ -119,6 +119,7 @@
 #define TXT_TFT_BGR         "RGB / BGR order"
 #define TXT_TFT_FLIPX       "Flip X"
 #define TXT_TFT_FLIPY       "Flip Y"
+#define TXT_TFT_BRIGHT      "Brightness"
 #define TXT_TFT_DEFAULTS    "Restore defaults"
 
 #define TXT_AUD_MIDI        "MIDI"

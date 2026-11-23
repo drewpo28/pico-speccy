@@ -1463,6 +1463,7 @@ void Config::saveRemotes(const Remote* list, int count) {
 #if TFT
 extern "C" uint8_t TFT_FLAGS;
 extern "C" uint8_t TFT_INVERSION;
+extern "C" uint8_t TFT_BRIGHTNESS;
 #endif
 
 // Parse NVS data from a raw string (the card-less RAM copy) into the line blocks
@@ -1502,6 +1503,7 @@ void Config::load() {
         #if TFT
         nvs_get_u8("TFT_FLAGS", TFT_FLAGS, sts);
         nvs_get_u8("TFT_INVERSION", TFT_INVERSION, sts);
+        nvs_get_u8("TFT_BRIGHTNESS", TFT_BRIGHTNESS, sts);
         #endif
         nvs_get_arch("arch", arch, sts);
         arch = archCanon(arch);   // "Karabas" in NVS is an alias of Profi
@@ -2095,6 +2097,7 @@ void Config::writeKeys(NvsWriter& buf) {
     #if TFT
     nvs_set_u8(buf,"TFT_FLAGS", TFT_FLAGS);
     nvs_set_u8(buf,"TFT_INVERSION", TFT_INVERSION);
+    nvs_set_u8(buf,"TFT_BRIGHTNESS", TFT_BRIGHTNESS);
     #endif
     nvs_set_str(buf,"arch",archToStr(arch));
     nvs_set_str(buf,"romSet",romsetToStr(romSet));
