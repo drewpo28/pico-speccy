@@ -2007,6 +2007,7 @@ static void buildSpectrumRGB(const PaletteDef &pal, uint32_t out[16]) {
 static uint32_t spectrum_rgb888[16];
 
 void initGigascreenBlendLUT();
+void rebuildGigascreenBlendLUT();
 
 // Apply color matrix transform to an RGB888 color
 static inline uint32_t matrixTransform(uint32_t rgb, const uint16_t *m) {
@@ -2404,8 +2405,14 @@ void VIDEO::applyPalette() {
     // Re-apply GigaScreen blend palette if active. Never on Next: NEXTVID's
     // colours live in the plain G3R3B2 cube at 17-219, and the blend LUT
     // overwrites 17-136 (the "yellow unreadable screen" failure).
+    // rebuild, not init: initGigascreenBlendLUT() is one-shot, so once the blends had been
+    // built it returned at once and the loop above left the plain cube in 17..136 - every
+    // blended pixel then showed a random cube colour. Seen on the eLeMeNt (owner 2026-11-24,
+    // VGA: "wrong attributes"): leaving its extra video (HGFX / Radastan / KeyLayer, whose
+    // colours use slots 16..239) calls this; a palette change from the menu hit it on every
+    // machine and output.
     if (gigascreenArmed() && Config::arch != A_NEXT)
-        initGigascreenBlendLUT();
+        rebuildGigascreenBlendLUT();
     // The TS-Conf 256-slot remap owns most of the hardware palette; everything
     // above just rewrote it, so its slot shadow is stale — write every assigned
     // slot again (hw 2026-09-06: "picture right, colours wrong" after a palette
@@ -6411,6 +6418,13 @@ void initGigascreenBlendLUT() {
         }
     }
     gigsBlendLUTReady = true;
+}
+
+// The blends again, whatever was written over 17..136 since (applyPalette: the cube).
+// Same context rule as applyPalette itself: it rewrites the whole palette anyway.
+void rebuildGigascreenBlendLUT() {
+    gigsBlendLUTReady = false;
+    initGigascreenBlendLUT();
 }
 
 // Blend 4 packed palette-index pixels via LUT

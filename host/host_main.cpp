@@ -401,6 +401,13 @@ static std::mutex s_snapCvMx;
 static std::condition_variable s_snapCv;
 
 extern "C" void host_frame_done(void) {
+    // PICOSPECCY_APPLYPAL=N: VIDEO::applyPalette() at emulated frame N, from this (the
+    // emulation) thread - what a palette change in the menu or the eLeMeNt leaving its
+    // extra video does. Bench check for the Gigascreen blends surviving it (2026-11-24).
+    if (const char* ap = getenv("PICOSPECCY_APPLYPAL")) {
+        static uint32_t frames = 0;
+        if (++frames == (uint32_t)atoi(ap)) { VIDEO::applyPalette(); fprintf(stderr, "host: applyPalette at frame %u\n", frames); }
+    }
     uint8_t** fb = VIDEO::vga.frameBuffer;
     const int xres = VIDEO::vga.xres, yres = VIDEO::vga.yres;
     if (!fb || xres <= 0 || yres <= 0) return;

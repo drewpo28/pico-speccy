@@ -1152,6 +1152,19 @@ mismatch shows as ~1 judder/s instead).
   is on the far side of a boot-only init (here: core1's `hdmi_init`), not in the
   reset path — that is where to look first, not at `Config::arch`.
 
+## Gigascreen blends lost after applyPalette (2026-11-24, bench-confirmed, hw owed: `debug/DVp2w-gsblend-1.1.3`)
+
+Owner (eLeMeNt, VGA, Gigascreen On): "wrong attributes show". The blends live in palette slots
+17..136 (`initGigascreenBlendLUT`), and `applyPalette` rewrites 0..239 with the plain cube and then
+"re-applies" them - but `initGigascreenBlendLUT` is one-shot (`gigsBlendLUTReady`), so once built it
+returned at once and every blended pixel showed a cube colour: whole 8x8 cells in a wrong colour.
+Callers that hit it: the eLeMeNt leaving its extra video (HGFX / Radastan / KeyLayer use slots 16..239,
+`Hgfx` `s_live` off), Hgfx reset, a palette change from the menu (any machine, any output), the palette
+preview end. Not VGA-specific. Fix: `applyPalette` calls `rebuildGigascreenBlendLUT()` (ready = false,
+then init). The one-shot guard stays for the other callers. Bench: `PICOSPECCY_APPLYPAL=N` (host_main.cpp)
+calls applyPalette at emulated frame N; GIGASCRS on the eLeMeNt (FRAM #1D = 01) with N = 2000: before the
+fix 7F7F7F/7F0000/FF7F7F became DB0000/926DFF/6D6DAA and red cells appeared, after it the colours stay.
+
 ## Gigascreen auto-yield + boot notices (2026-08-13, NOT hw-tested)
 
 The menu commit path never shows `featureBudgetGate`'s free-list (it reboots
