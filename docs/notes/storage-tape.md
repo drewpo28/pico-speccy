@@ -1632,6 +1632,16 @@ itself: the picker stops at the first pass). All three clocks now: 252 hs6 42, 3
 `largest=45772`, both 8 KB buffers granted), `extractFile ok=1`, the SCL inserted and ran. Not
 timed on hw; the host bench is where a before/after would be measured if ever wanted.
 
+**378 MHz A/B on PF2026 (2026-11-24, logs 18.29 / 18.46, same part of the demo, card 1):** the
+owner heard the music break up and saw FPS below 48.8 with Frame skip on. Not the SD: HS on =
+48.4 FPS, core0 19.8 ms/frame (max 40), read-ahead 5.58 ms/window; HS off = 45.7 FPS, 20.3 ms,
+8.81 ms/window; HS off + Frame skip off = 41.8 FPS, 23.3 ms. The `[PERF] aud:` line is clean
+throughout (hold 0, und 0, dup 0, q 64..65): every sample reaches HDMI; what breaks up is the
+guest's own music timing, because core0 is at the frame budget (19.8 of 20.5 ms, peaks 40-68) and
+late frames run the Z80 behind real time — the state PF2026 at 378 was left in when the plan was
+closed on 2026-11-19 (car ~48.2). At 504 the same part runs at 16.3 ms and 49 FPS. Faster SD
+makes it slightly BETTER (the guest's #EB polls cost core0 more than the demo's work).
+
 **Test** (`debug/DVp2w-sdhs-1.1.3`, PERF_TRACE on): the mount line says which program held
 and at what rate; then anything that streams from the card (PF2026, TX-1696 intro, NextZXOS
 boot) with the `[SD]` `ph` field (block data us) and `c1` ms against a `hs 00` run (toggle
