@@ -1484,3 +1484,158 @@ esxDOS itself; in the .pss reboot keys because DivMMC RAM belongs to one release
   The browser's /SYS/NMI.ORG must ALSO be 0.9.0's own nmi.sys: an old 0.8.x NMI.ORG
   (3539 B, `CALL $2F35`, 136 calls into $2F00-$3Cxx) loaded at $2000 resets the
   machine on Shift+N (host-confirmed; this was the owner's hw failure after the fix).
+
+## SD high speed (CMD6) on the PIO path + the zip copy buffers (2026-11-24; hs6 42 MHz hw-confirmed DVp2w 504/252 on two cards, PF2026 -30 % per read-ahead window; 378 = hs4 47.25 passes; zip 8 KB buffers hw-ok)
+
+Prompted by xrip/pico-286 commit 3fc64a43 ("Use SPI DMA and a shared 8 KiB buffer", 3.24x
+image reads). Its three parts, judged for us:
+
+- **DMA**: no. DVp2w's card is on pio1 (GPIO 5/18/19 are not a hardware SPI set), and SD by
+  DMA was built and refuted on 2026-11-19 (sddma1/2): any extra DMA channel starves the HDMI
+  TMDS FIFO (`cyw43-dma-hdmi-underrun`). Their video path tolerates it, ours does not.
+- **8 KiB chunks**: their old image loop was f_read 512 B per sector, i.e. one CMD17 per
+  sector; this is where most of the 3.24x comes from. We already burst where it matters
+  (FatFs non-tiny, 4 KB player bounces, DivMMC's 32-sector CMD18 read-ahead: 0.775 ms
+  command latency + 0.163 ms per sector at 25.2 MHz, hw 2026-10). The one remaining
+  per-sector copy was `ZipExtract` (512-byte stack buffers: CMD17 + CMD24 per sector,
+  ~0.3 MB/s on a stored entry). Now `zipIoAlloc`: 8 KB from the Buffer pool (read target
+  SRAM/arena, inflate output may be PSRAM), halving down to 512 B when memory is thin, so a
+  thin heap costs speed, never the extract. Also 1.5 KB off core0's stack.
+- **CMD6 high speed**: the only transferable idea, and it was already the open lever after
+  PF2026 (`pf2026-50fps-plan`). Note their "50 MHz" is 31.5 MHz on the wire: clk_peri 126 MHz
+  and the PL022's even prescale x postdiv.
+
+**What was built (PIO path only, `SDCARD_PIO` boards; hardware-SPI boards untouched):**
+
+- `spi.pio`: two more programs. `spi_cpha0` is 4 cycles per bit and samples MISO on cycle 2
+  (synchroniser bypassed) = ~20 ns after the falling edge at 25.2 MHz, fine against the card's
+  t_ODLY <= 14 ns. Above 25 MHz that point is too early (10 ns at 47 MHz), so `spi_cpha0_hs4`
+  samples on cycle 3 of 4 (15.9 ns at 47.25 MHz / 378 MHz clk_sys) and `spi_cpha0_hs5` on
+  cycle 4 of 5 (21.2 ns at 37.8 MHz: today's margin at 1.5x the rate). The card holds DO to
+  the next falling edge + 5 ns, so a late sample is always safe. MOSI changes on the falling
+  edge in all three. Programs are added once; `pio_apply_mode()` re-inits the SM with the
+  chosen one and the integer divider: hs4 = 47.25 MHz at 378, 42 at 504, 31.5 at 252; hs5 =
+  37.8 / 33.6 / 25.2. `pio_fast_div(mode)` records `g_sd_sck_hz`.
+- `sdcard.c`: after a successful init, `sd_try_high_speed()`: CMD6 check (0x00FFFFF1, byte 13
+  bit 1 = HS supported; SDv1/MMC answer illegal command and stay at default), CMD6 switch
+  (0x80FFFFF1, byte 16 low nibble == 1), then hs4 and hs5 in turn, each behind
+  `sd_hs_selftest()`: 4 CMD18 bursts of 16 sectors at 0, 1/4, 1/2, 3/4 of the card, every
+  block's CRC16 (XMODEM, the CRC every data path discards; `rcvr_datablock` grew a `crc` out
+  argument) checked. A wrong sample point shows up here as CRC errors in milliseconds, not as
+  a corrupt file later. Nothing passing: SM back to the default program, CMD6 0x80FFFFF0 back
+  to default speed. `g_sd_hs_mode`: 0 default, 1 hs4, 2 hs5, 0x80 no CMD6/HS, 0x81 self-test
+  failed. Logged at mount: `[SD] high speed: hs4 47250 kHz OK`.
+- `Config::sdHighSpeed` (default on, nvs `sdHighSpeed`), Additional hardware > Overclock >
+  "SD card high speed (CMD6)", live both ways (`sdcard_set_high_speed`; the first mount runs
+  before the config is read, so boot switches to HS and an Off takes it back at Config load).
+  `[SD2]` line (PERF_TRACE): `hs %02x sck %lu` kHz.
+- Expected if it holds: a sector 163 -> ~87 us at 47 MHz (~108 at 37.8), a 32-sector
+  read-ahead burst ~6 -> ~3.5 ms; the 0.775 ms command latency is the card's and stays.
+  PF2026 car part had 3 ms of SD inside an 8-11 ms core1 draw.
+
+**hw round 1 (2026-11-24, DVp2w):** boot log `[SD] high speed: hs4 31500 kHz OK` three times (every
+disk_initialize: the mount, the SdVolumes scan, the SD2: mount). 31.5 MHz = hs4 at boot's 252 MHz:
+the card is mounted BEFORE the Config::cpu_mhz switch, and `sdcard_reclock()` then only
+recomputed the divider, i.e. jumped to 47.25 MHz with no self-test. Fixed the same day:
+`sd_pick_hs_program()` (the hs4/hs5 loop behind the self-test) is what reclock runs when the SM
+is on an HS program, so the rate at the live clk_sys passes the CRC check or falls back; the
+log line now carries `(clk_sys N MHz)`. Expect at the switch: `hs4 47250 kHz (clk_sys 378 MHz) OK`.
+
+**hw round 2 (2026-11-24, DVp2w at 504 MHz):** after the clock switch `hs4 42000 kHz CRC self-test
+FAILED`, then `hs5 33600 kHz ... FAILED`. hs5 at 33.6 samples 23.8 ns after the falling edge, LATER
+than the default program at 25.2 (19.8 ns) and the same point as hs4 at 31.5 (252 MHz), which
+passed three times at boot: by timing hs5 cannot fail where those pass. Likely story: hs4 at 42 MHz
+(sample 17.9 ns, against t_ODLY 14 + pad delays) failed for real, and its failure left the card
+mid-CMD18, so hs5 was judged on a confused card. Built the same day, hw owed: (1) `sd_resync()`
+after every failed program (default program, CMD12, 10 dummies, CMD13) before the next is tried;
+(2) one diagnostic line per failure: CMD18 R1 / no token / bad token / CRC, the sector, blocks OK
+before it, and for a CRC failure the block against the same sector re-read at 25 MHz: bytes
+differing, first offset, and how many bytes fit "good << 1 bit" / "good >> 1 bit" (sampling the
+neighbouring bit = late / early sample; a few random bytes = noise); (3) `spi_cpha0_hs6` (3 low,
+2 high, sample cycle 5): at 504 MHz idiv 2 = 42 MHz with the sample at 19.8 ns, the default
+program's own margin; candidates are now ordered by the SCK they reach at the live clk_sys, later
+sample first on a tie (504: hs6 42, hs4 42, hs5 33.6; 378: hs4 47.25, hs5 37.8, hs6 31.5; 252: hs6 42
+at idiv 1, then hs4 31.5). `g_sd_hs_mode` 3 = hs6.
+
+**hw round 3 (2026-11-24, DVp2w 504 MHz, with the diagnostics):** hs6 42 MHz: 22 blocks clean, then
+`1 bytes differ` at offset 340, `<<1 fits 343/512, >>1 fits 339/512` (the background from 00/FF
+bytes: no shift); hs4 42 MHz: the same, one byte at offset 48; hs5 33.6 MHz: `CMD18 @0 R1=09`
+(command CRC error + idle: the CARD did not take the command). So not the sample point: random
+single bytes at a BER ~1e-5 on MISO, and MOSI setup lost on hs5's 11.9 ns low phase — the pads.
+SCK and MOSI sat at the slow-slew 4 mA default. Built the same day, hw owed: HS programs set
+fast slew + 8 mA on SCK and MOSI in `pio_apply_mode` (the default program puts 4 mA slow back),
+the self-test reads 128 blocks (4 x 32; at 1/22 per block, 64 passed by luck 5 % of the time),
+the diagnostic line adds the bad/good byte values at the first difference.
+
+**hw round 4 (2026-11-24, fast-slew 8 mA pads):** unchanged — hs6: 30 clean then one byte `02 vs 03`
+at offset 44; hs4: `00 vs 01` at offset 340; hs5: `CMD18 R1=09`. Both bad bytes are the good byte
+with BIT 0 cleared: the LAST bit of the byte on the wire, and in `02 vs 03` bits 1 and 0 are both 1,
+the line never moved and we read 0. No sample-point theory does that; the last bit of a byte is
+where the PIO IN autopushes the ISR, and an IN whose push finds the RX FIFO full stalls (core0
+away in the HDMI line ISR). Two samples in one bit position of 64 is a hint, not a proof, so the
+next build is an A/B inside one test: per burst a line with bad blocks /32, the FDEBUG RXSTALL /
+TXSTALL flags of the SM, and the first bad block vs the 25 MHz re-read (CRC-checked) with the bit
+mask and the NEXT good byte (late sample = its bit 7); bursts 2-3 read with
+`pio_spi_repeat8_read8_limited` (<= 4 bytes in flight: the RX FIFO can never fill). An error that
+lives only in bursts 0-1 with rxstall 1 is the autopush stall, and the fix is that reader (or a
+deeper FIFO) on the HS path; errors in all four are the wire.
+
+**hw round 5 (2026-11-24, the A/B) — the mechanism found:** hs6 42 MHz: bursts 0-1 (normal reader)
+`32 clean, rxstall 1` then `5/32 bad ... 02 vs 03 mask 01 next 03, rxstall 1`; bursts 2-3 (<= 4 in
+flight) `32 clean, rxstall 0`. hs4: the same shape (burst 1: 2 bad then a bad token, rxstall 1;
+bursts 2-3 clean, rxstall 0). So: an IN whose autopush finds the RX FIFO full (core0 in the HDMI
+line ISR) stalls, and the bit it shifts in on resuming is wrong — the last bit of a byte, every
+time, and never without RXSTALL. Why the default program at 25 MHz has lived with the same stalls
+is not established (its IN is not the last cycle of the bit; the stalled IN may re-sample after
+the side-set edge of the NEXT instruction... not proven). Fix: `pio_spi_repeat8_read8_limited`
+(<= 4 bytes between the TX write and the RX read, the RX FIFO depth) is the block reader of every
+HS program (`s_rx_limit`, set by `pio_apply_mode`); the default program keeps the old reader. No
+throughput cost: the CPU loop is ~30 ns per byte against 190 ns on the wire. hs5 (2 low / 3 high)
+is a different fault: every R1 read 0x01 for 0x00 with ONE byte in flight (`CMD18 R1=01` on all
+bursts), no stall involved; the long-high shape is the one thing it did not share with hs4/hs6,
+so it is now 3 low / 2 high / sample cycle 4 (hs6 one cycle shorter) — the candidate that matters
+at 378 MHz (37.8 MHz) if hs4's 47.25 fails there. Clean bursts no longer log; a failing burst
+keeps its diagnostic line. txstall 1 everywhere is expected (the CPU feeds the TX FIFO).
+
+**A second card on the round-4 build, 252 MHz (2026-11-24):** both boot mounts `hs6 42000 kHz (clk_sys
+252 MHz) OK`, all four bursts clean with `rxstall 0` in the normal bursts too — at boot nothing
+interrupts core0 yet, so a boot-time pass says nothing about the stall. The round-4 build still
+reads HS data with the normal reader in use, so on it a card at 42 MHz corrupts reads once the
+system is live; the round-5 build is the one to run. Also: the 504 MHz stalls of rounds 2-5 were
+logged BEFORE `main: launching core1`, so the interrupter was not the HDMI line ISR — something
+on core0 at the clock switch (not identified; the mechanism does not depend on who interrupts).
+
+**hw-confirmed 2026-11-24 (round-5 build, DVp2w 504 MHz):** card 1, the one that gave 5/32 bad blocks
+at hs6 42 MHz with the normal reader, passes `hs6 42000 kHz (clk_sys 504 MHz) OK` with the limited
+reader; card 2 passes at 252 and 504 as well. Open: the 378 MHz run (hs4 47.25 vs hs5 37.8), the
+perf numbers (`[SD]` ph/c1 against the menu row off), and a long session at 42 MHz for errors the
+128-block test cannot see.
+
+**Perf, hw-confirmed 2026-11-24 (PF2026, DVp2w 504 MHz, card 1, the menu row toggled live, logs/
+devttyACM0_2026_11_24.18.19.07.166.txt, 20 s at 42 MHz vs 19 s at 25.2 on the same scene):**
+read-ahead on core1 7.47 -> 5.23 ms per 32-sector window (-30 %), 41 -> 55 reads/s, core1 on the
+card 310 -> 289 ms/s for more sectors served (946 -> 987/s), FPS 47.0 -> 49.0 (the 48.8 ceiling),
+negative-IDL frames 18.4 -> 13.8/s, fb 0 both. The 2.24 ms per window = 70 us/sector = the wire's
+163 -> 98 us: the clock gain transfers whole. What stays (~2.1 ms per window) is the card's command
+latency and the HDMI line ISR on core1 stopping the feed. `[SD3]` in these logs is the Next's
+token-poll batch diagnostics (zeros on the eLeMeNt); all three lines are PERF_TRACE.
+
+**378 MHz, hw 2026-11-24 (card 1, logs/devttyACM0_2026_11_24.18.29.53.543.txt):** the reclock picks
+the first candidate, `hs4 47250 kHz (clk_sys 378 MHz) OK`, `[SD2] hs 01 sck 47250`. That is the
+thinnest margin of the set (sample 15.9 ns after the falling edge against the spec's 14 ns t_ODLY
+plus pad delays), clean over the 128-block test; a long session at 378 is what would show a
+residual error rate, and the fallback for it is the menu row (then hs5 37.8 is never reached by
+itself: the picker stops at the first pass). All three clocks now: 252 hs6 42, 378 hs4 47.25,
+504 hs6 42.
+
+**Zip buffers hw-ok 2026-11-24:** SHOCKPEN.ZIP from the F5 browser (deflate, 84358 -> 94505 B,
+`largest=45772`, both 8 KB buffers granted), `extractFile ok=1`, the SCL inserted and ran. Not
+timed on hw; the host bench is where a before/after would be measured if ever wanted.
+
+**Test** (`debug/DVp2w-sdhs-1.1.3`, PERF_TRACE on): the mount line says which program held
+and at what rate; then anything that streams from the card (PF2026, TX-1696 intro, NextZXOS
+boot) with the `[SD]` `ph` field (block data us) and `c1` ms against a `hs 00` run (toggle
+the menu row live). A card that passes the self-test but misbehaves later: Off in the menu,
+and tell which card. Not done: hardware-SPI boards (CLK_FAST 30 MHz there already exceeds the
+25 MHz default-speed spec; CMD6 would make 37.5-50 legal); SDIO 4-bit (the DV base wires
+DAT1-3 on GPIO 20-22 but MIDI TX sits on 20).

@@ -85,6 +85,7 @@ NM_BOOL_ACCESS(ideLed,    ide_led)
 NM_INT_ACCESS (ledStyle,  led_style)
 NM_BOOL_ACCESS(rzxLoop,   rzx_loop)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
+NM_BOOL_ACCESS(sdHs,      sdHighSpeed)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
 NM_INT_ACCESS (mouseSens, mouse_sens)
 NM_INT_ACCESS (mouseSwap, mouse_swap)   // 0 Off / 1 On / 2 Auto
@@ -475,6 +476,10 @@ static bool hook_ledInd(int32_t nv, int32_t) {
 }
 static bool hook_sdLed(int32_t nv, int32_t) {
     sdcard_set_led_blink(nv ? 1 : 0);
+    return true;
+}
+static bool hook_sdHs(int32_t nv, int32_t) {
+    sdcard_set_high_speed(nv ? 1 : 0);
     return true;
 }
 static bool hook_palette(int32_t, int32_t) {

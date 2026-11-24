@@ -1340,6 +1340,10 @@ static const Node kOverclock[] = {
     NM_RADIO_D(TXT_OC_VREG, SET_VREG,      vregOpts,       nullptr),
     NM_RADIO(TXT_OC_FLASH, SET_FLASH_FREQ, opt_flash_freq, nullptr),
     NM_RADIO(TXT_OC_PSRAM, SET_PSRAM_FREQ, opt_psram_freq, nullptr),
+    // SD bus clock: CMD6 high-speed mode, live on a mounted card (sdcard.c keeps a
+    // rate only when its CRC16 self-test passes, so Off is for the card it
+    // misbehaves on in a way the test does not catch). PIO-SD boards only.
+    NM_BOOL (TXT_OC_SD_HS, SET_SD_HS,     nullptr),
 };
 // esxDOS variants: the value IS Config::esxdos, so the row order is free.
 static const Option opt_esxdos[] = {

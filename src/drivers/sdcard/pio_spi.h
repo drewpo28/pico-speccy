@@ -23,4 +23,6 @@ void pio_spi_write8_read8_blocking(const pio_spi_inst_t *spi, uint8_t *src, uint
 
 void pio_spi_repeat8_read8_blocking(const pio_spi_inst_t *spi, uint8_t src, uint8_t *dst, size_t len);
 
+void pio_spi_repeat8_read8_limited(const pio_spi_inst_t *spi, uint8_t src, uint8_t *dst, size_t len, unsigned max_inflight);
+
 #endif

@@ -14,8 +14,17 @@
 
 #include "ff.h"
 #include "diskio.h"
+#include <stdlib.h>	/* free(): the self-test buffer */
 
 void sd_async_quiesce(void);   /* below, with disk_read */
+#ifdef SDCARD_PIO
+static void sd_pick_hs_program(void);   /* below, with CMD6 */
+#endif
+
+/* Kept bare on purpose (this is a driver library): the non-panicking heap
+ * allocator of src/app/TryAlloc.h and the UART logger of src/app/Debug.cpp. */
+extern void* tryMalloc(size_t n);
+extern void debug_log(const char *fmt, ...);
 
 /* Physical drive 1 = USB mass-storage stick (FatFs volume "USB:"), served by
  * TinyUSB MSC host in src/drivers/usbhost/UsbMsc.cpp. Declared here to keep this file plain C.
@@ -37,6 +46,7 @@ extern DRESULT usb_disk_ioctl(BYTE cmd, void* buff);
 #define CMD0	(0)			/* GO_IDLE_STATE */
 #define CMD1	(1)			/* SEND_OP_COND (MMC) */
 #define	ACMD41	(0x80+41)	/* SEND_OP_COND (SDC) */
+#define CMD6	(6)			/* SWITCH_FUNC (SDC): access mode = high speed */
 #define CMD8	(8)			/* SEND_IF_COND */
 #define CMD9	(9)			/* SEND_CSD */
 #define CMD10	(10)		/* SEND_CID */
@@ -155,37 +165,108 @@ static inline void cs_deselect(uint cs_pin) {
     asm volatile("nop \n nop \n nop"); // FIXME
 }
 
+/* SD high-speed mode (CMD6 function 1, SCK up to 50 MHz) — PIO path only.
+ *   g_sd_hs_mode  0 = default speed (25 MHz program), 1 = spi_cpha0_hs4,
+ *                 2 = spi_cpha0_hs5, 3 = spi_cpha0_hs6, 0x80 = the card has no CMD6/HS,
+ *                 0x81 = the card switched but no HS program passed the CRC
+ *                 self-test (back at default speed, card switched back).
+ *   g_sd_sck_hz   the SCK the PIO path runs at now (0 on the hardware-SPI path).
+ * Read by DivMMC::sdStatTick for the [SD2] line. s_hs_enabled mirrors
+ * Config::sdHighSpeed (sdcard_set_high_speed), default on. */
+volatile uint8_t  g_sd_hs_mode = 0;
+volatile uint32_t g_sd_sck_hz = 0;
+static int s_hs_enabled = 1;
+
 #ifdef SDCARD_PIO
-/* The PIO program clocks one SPI bit per 4 SM cycles, so SCK = clk_sys/(4*div).
- * init_spi() computes the fast divider; the init sequence needs the slow one.
+/* Three programs, one state machine. spi_cpha0 clocks one bit per 4 SM cycles
+ * and samples MISO on cycle 2; the hs4/hs5 programs sample on the LAST cycle of
+ * the bit (3 of 4, 4 of 5), which is what a 14 ns t_ODLY needs above 25 MHz —
+ * spi.pio has the arithmetic. The programs are added once (init_spi), the active
+ * one is re-initialised on the SM by pio_apply_mode(), which is also the ONLY
+ * place the fast divider is computed: the init sequence needs the slow one.
  * Both are applied with the FIFOs empty (we only ever change speed between
  * transfers) and the divider counter restarted, which is what pio_sm_set_clkdiv
  * alone does NOT do. */
-static float pio_div_fast = 1.0f;
+static float   pio_div_fast = 1.0f;
+static uint    s_pio_offs[4];		/* program offsets: spi_cpha0, hs4, hs5, hs6 */
+static uint8_t s_pio_mode = 0;		/* the program on the SM: 0, 1 = hs4, 2 = hs5, 3 = hs6 */
+/* Bytes in flight the block reader may have between its TX write and RX read,
+ * 0 = unlimited (the default program, as always). The HS programs run at 4,
+ * the RX FIFO depth: an IN whose autopush finds the RX FIFO full (core0 away in
+ * an ISR) stalls, and the bit it shifts in when it resumes is wrong — hw
+ * 2026-11-24 at 42 MHz: bit 0 of a byte, 1 block in ~22, only in bursts with
+ * FDEBUG RXSTALL set, 128 blocks clean with the cap. */
+static unsigned s_rx_limit = 0;
+
+/* SM cycles per bit: 4 (default and hs4), 5 (hs5), 6 (hs6) */
+static inline uint32_t pio_bit_cycles(uint8_t mode) { return mode >= 2 ? mode + 3u : 4u; }
 
 /* The fast divider for the live clk_sys — the ONE formula, shared by init_spi()
  * and sdcard_reclock() (see the comment in init_spi for why it is an integer).
- * The target is 25.2 MHz, not 25.0: SD's default-speed maximum is 25 MHz and
- * 25.2 is the roundest way to reach it, which is what lets 504 MHz land exactly
- * on it (idiv 5) instead of rounding down to 21.0 (idiv 6). A sector is 195 us
- * of transfer at 21 MHz and 163 us at 25.2, and the read-ahead pays that for
- * every sector it reads, used or not. 252/378/540/630 cannot reach it and are
- * unchanged. */
-static float pio_fast_div(void)
+ * Default speed targets 25.2 MHz, not 25.0: SD's default-speed maximum is 25 MHz
+ * and 25.2 is the roundest way to reach it, which is what lets 504 MHz land
+ * exactly on it (idiv 5) instead of rounding down to 21.0 (idiv 6). A sector is
+ * 195 us of transfer at 21 MHz and 163 us at 25.2, and the read-ahead pays that
+ * for every sector it reads, used or not. 252/378/540/630 cannot reach it and are
+ * unchanged. High speed targets the 50 MHz ceiling the same way: hs4 lands on
+ * 47.25 at 378 (idiv 2), 42 at 504 (idiv 3), 31.5 at 252; hs5 on 37.8 / 33.6 /
+ * 25.2; hs6 on 31.5 / 42 / 21. Records the resulting SCK in g_sd_sck_hz. */
+static uint32_t pio_idiv(uint8_t mode, uint32_t *sck_hz)
 {
-    uint32_t sys = clock_get_hz(clk_sys);
-    uint32_t idiv = (sys + 4u * 25200000u - 1u) / (4u * 25200000u);
+    const uint32_t sys = clock_get_hz(clk_sys);
+    const uint32_t per = pio_bit_cycles(mode) * (mode ? 50000000u : 25200000u);
+    uint32_t idiv = (sys + per - 1u) / per;
     if (idiv < 1u) idiv = 1u;
+    *sck_hz = sys / (pio_bit_cycles(mode) * idiv);
+    return idiv;
+}
+
+static float pio_fast_div(uint8_t mode)
+{
+    uint32_t sck;
+    const uint32_t idiv = pio_idiv(mode, &sck);
+    g_sd_sck_hz = sck;
     return (float)idiv;
 }
 
 static void pio_set_sck(uint32_t hz)
 {
-    float div = (float)clock_get_hz(clk_sys) / (4.0f * (float)hz);
+    float div = (float)clock_get_hz(clk_sys) / ((float)pio_bit_cycles(s_pio_mode) * (float)hz);
     if (div < 1.0f) div = 1.0f;
     if (div > 65535.0f) div = 65535.0f;
     pio_sm_set_clkdiv(pio_spi.pio, pio_spi.sm, div);
     pio_sm_clkdiv_restart(pio_spi.pio, pio_spi.sm);
+}
+
+/* Put program `mode` on the SM at its fast divider. pio_sm_init (inside
+ * pio_spi_init_cfg) stops the SM, clears the FIFOs and restarts the divider,
+ * so this is safe whenever no transfer is in flight — every caller holds the
+ * card (core0, after sd_async_quiesce). */
+static void pio_apply_mode(uint8_t mode)
+{
+    pio_sm_config c = mode == 1 ? spi_cpha0_hs4_program_get_default_config(s_pio_offs[1])
+                    : mode == 2 ? spi_cpha0_hs5_program_get_default_config(s_pio_offs[2])
+                    : mode == 3 ? spi_cpha0_hs6_program_get_default_config(s_pio_offs[3])
+                    :             spi_cpha0_program_get_default_config(s_pio_offs[0]);
+    s_pio_mode = mode;
+    s_rx_limit = mode ? 4u : 0u;
+    pio_div_fast = pio_fast_div(mode);
+    pio_spi_init_cfg(pio_spi.pio, pio_spi.sm, s_pio_offs[mode], c,
+                     8,                 /* 8 bits per SPI frame */
+                     pio_div_fast,
+                     0,                 /* cpol */
+                     SDCARD_PIN_SPI0_SCK, SDCARD_PIN_SPI0_MOSI, SDCARD_PIN_SPI0_MISO);
+    /* The output pads. At 42 MHz the slow-slew 4 mA default (what the default
+     * program keeps) gave one bad byte in ~22 blocks on hs4 AND hs6 (two sample
+     * points, 17.9 and 19.8 ns) and command CRC errors on hs5 (hw 2026-11-24,
+     * DVp2w at 504 MHz): random single bytes, no bit shift — the edges, not the
+     * sample point. A slow SCK edge reaches the card late, so its data comes out
+     * late against our sample; a slow MOSI edge eats the card's 6 ns setup. */
+    const int hs = mode != 0;
+    gpio_set_slew_rate(SDCARD_PIN_SPI0_SCK,  hs ? GPIO_SLEW_RATE_FAST : GPIO_SLEW_RATE_SLOW);
+    gpio_set_slew_rate(SDCARD_PIN_SPI0_MOSI, hs ? GPIO_SLEW_RATE_FAST : GPIO_SLEW_RATE_SLOW);
+    gpio_set_drive_strength(SDCARD_PIN_SPI0_SCK,  hs ? GPIO_DRIVE_STRENGTH_8MA : GPIO_DRIVE_STRENGTH_4MA);
+    gpio_set_drive_strength(SDCARD_PIN_SPI0_MOSI, hs ? GPIO_DRIVE_STRENGTH_8MA : GPIO_DRIVE_STRENGTH_4MA);
 }
 #endif
 
@@ -287,39 +368,28 @@ void init_spi(void)
 	// behaviour rather than leaving the card unusable; it cannot happen on
 	// PICO_DV (the only SDCARD_PIO board), where pio1 carries the keyboard alone.
 	static bool  pio_ready = false;
-	static uint  pio_prog_offs = 0;
 	if (!pio_ready) {
 		int free_sm = pio_claim_unused_sm(pio_spi.pio, false);
 		if (free_sm >= 0) pio_spi.sm = (uint)free_sm;
-		pio_prog_offs = pio_add_program(pio_spi.pio, &spi_cpha0_program);
+		s_pio_offs[0] = pio_add_program(pio_spi.pio, &spi_cpha0_program);
+		s_pio_offs[1] = pio_add_program(pio_spi.pio, &spi_cpha0_hs4_program);
+		s_pio_offs[2] = pio_add_program(pio_spi.pio, &spi_cpha0_hs5_program);
+		s_pio_offs[3] = pio_add_program(pio_spi.pio, &spi_cpha0_hs6_program);
 		pio_ready = true;
 	}
 
-	// PIO program is 4 cycles per SPI bit (out/mov+[1]/in). Keep SCK ≤ 20 MHz
-	// so it works across 125–504 MHz clk_sys (SD SPI spec max is 25 MHz).
+	// The default-speed program (4 cycles per SPI bit, out/in+[1]), SCK <= 25.2 MHz.
 	// Re-derived on every call on purpose: clk_sys moves at the Config::cpu_mhz
-	// switch, and re-running pio_spi_init() on the same SM/offset is what puts
-	// the bus back into a known state after a failed probe or a hot swap.
+	// switch, and re-initialising the SM on the same offset is what puts the bus
+	// back into a known state after a failed probe or a hot swap — and what takes
+	// a card that was in high-speed mode back to the program CMD0 expects.
 	// An INTEGER divider, the smallest that keeps SCK <= 25.2 MHz (pio_fast_div):
 	// 4 at 378 MHz (23.6 MHz), 3 at 252 (21 MHz), 5 at 504 (25.2 MHz). The old fractional one
 	// (4.725 at 378 for a nominal 20 MHz) jittered between 4 and 5 sys clocks per
 	// PIO cycle, so its shortest SCK half-period was already the /4 one — this
 	// raises the average rate (+18 % at 378, the bus bounds every sector read)
 	// without shortening any edge the card has not already seen.
-	float clkdiv = pio_fast_div();
-	pio_div_fast = clkdiv;			/* what FCLK_FAST() goes back to */
-	int cpol = 0;
-	int cpha = 0;
-	pio_spi_init(pio_spi.pio, pio_spi.sm,
-				pio_prog_offs,
-				8,       // 8 bits per SPI frame
-				clkdiv,
-				cpha,
-				cpol,
-				SDCARD_PIN_SPI0_SCK,
-				SDCARD_PIN_SPI0_MOSI,
-				SDCARD_PIN_SPI0_MISO
-	);
+	pio_apply_mode(0);
 #endif
 }
 
@@ -331,7 +401,8 @@ void sdcard_reclock(void)
 	if (Stat & STA_NOINIT) return;
 	sd_async_quiesce();
 #ifdef SDCARD_PIO
-	pio_div_fast = pio_fast_div();
+	if (s_pio_mode) { sd_pick_hs_program(); return; }	/* HS: the new rate must pass the self-test too */
+	pio_div_fast = pio_fast_div(s_pio_mode);
 #endif
 	FCLK_FAST();
 }
@@ -363,7 +434,8 @@ void rcvr_spi_multi (
 #ifndef SDCARD_PIO
 	spi_read_blocking(SDCARD_SPI_BUS, 0xff, b, btr);
 #else
-	pio_spi_repeat8_read8_blocking(&pio_spi, 0xff, b, btr);
+	if (s_rx_limit) pio_spi_repeat8_read8_limited(&pio_spi, 0xff, b, btr, s_rx_limit);
+	else            pio_spi_repeat8_read8_blocking(&pio_spi, 0xff, b, btr);
 #endif
 }
 
@@ -441,10 +513,13 @@ static void rcvr_spi_rest (BYTE *buff, UINT btr, const BYTE *have, UINT haveLen)
 /* Receive a data packet from the MMC                                    */
 /*-----------------------------------------------------------------------*/
 
+static BYTE s_rx_bad_tok;	/* why the last rcvr_datablock() failed: the byte it took for a token, 0xFF = none within 200 ms */
+
 static
 int rcvr_datablock (	/* 1:OK, 0:Error */
 	BYTE *buff,			/* Data buffer */
-	UINT btr			/* Data block length (byte) */
+	UINT btr,			/* Data block length (byte) */
+	BYTE *crc			/* The block's two CRC bytes, MSB first; NULL = discard (every data path) */
 )
 {
 	/* The token search reads the stream in BURSTS, not a byte at a time: each
@@ -464,14 +539,15 @@ int rcvr_datablock (	/* 1:OK, 0:Error */
 		while (i < 16 && tok[i] == 0xFF) i++;
 		if (i < 16) {
 			g_sd_ph[2] += (uint32_t)(_micros() - ts);
-			if (tok[i] != 0xFE) return 0;	/* invalid DataStart token */
+			if (tok[i] != 0xFE) { s_rx_bad_tok = tok[i]; return 0; }	/* invalid DataStart token */
 			const uint32_t td = _micros();
 			rcvr_spi_rest(buff, btr, tok + i + 1, (UINT)(16 - (i + 1)));
-			xchg_spi(0xFF); xchg_spi(0xFF);			/* Discard CRC */
+			if (crc) { crc[0] = xchg_spi(0xFF); crc[1] = xchg_spi(0xFF); }
+			else     { xchg_spi(0xFF); xchg_spi(0xFF); }	/* Discard CRC */
 			g_sd_ph[3] += (uint32_t)(_micros() - td);
 			return 1;
 		}
-		if ((uint32_t)(_micros() - t0) > 200000u) { g_sd_ph[2] += (uint32_t)(_micros() - ts); return 0; }	/* 200 ms */
+		if ((uint32_t)(_micros() - t0) > 200000u) { g_sd_ph[2] += (uint32_t)(_micros() - ts); s_rx_bad_tok = 0xFF; return 0; }	/* 200 ms */
 	}
 }
 
@@ -522,6 +598,209 @@ BYTE send_cmd (		/* Return value: R1 resp (bit7==1:Failed to send) */
 	g_sd_ph[1] += (uint32_t)(_micros() - tr);
 
 	return res;							/* Return received response */
+}
+
+/*-----------------------------------------------------------------------*/
+/* High-speed mode (CMD6) — PIO path                                     */
+/*-----------------------------------------------------------------------*/
+#ifdef SDCARD_PIO
+/* CRC-16/XMODEM (poly 0x1021, init 0): the CRC the card appends to every data
+ * block, which every data path discards. Bitwise: it runs once per mount over
+ * 32 KB (~4 ms at 378 MHz), not worth a table in flash. */
+static WORD sd_crc16(const BYTE *p, UINT n)
+{
+	WORD crc = 0;
+	while (n--) {
+		crc ^= (WORD)(*p++ << 8);
+		for (int i = 0; i < 8; i++) crc = (crc & 0x8000) ? (WORD)((crc << 1) ^ 0x1021) : (WORD)(crc << 1);
+	}
+	return crc;
+}
+
+/* CMD6 SWITCH_FUNC. arg b31 = 1 switch / 0 check, b3..0 = group 1 (access
+ * mode) function: 0 default speed, 1 high speed, F keep. Answered by R1 and a
+ * 64-byte data block: byte 13 bit 1 = high speed supported, byte 16 low nibble
+ * = the group 1 function now selected (F = switch error). SDv1 and MMC cards
+ * answer illegal command, which send_cmd reports as R1 != 0. */
+static int sd_cmd6(DWORD arg, BYTE *st64)
+{
+	const int ok = send_cmd(CMD6, arg) == 0 && rcvr_datablock(st64, 64, NULL);
+	deselect();
+	return ok;
+}
+
+/* 1 = the card is now in the requested access mode. The card changes its
+ * timing 8 clocks after the switch block; deselect()'s dummy frame is those. */
+static int sd_switch_hs(int on)
+{
+	BYTE st[64];
+	if (on) {
+		if (!sd_cmd6(0x00FFFFF1, st)) return 0;	/* check: no CMD6 at all */
+		if (!(st[13] & 0x02)) return 0;			/* high speed not supported */
+	}
+	if (!sd_cmd6(on ? 0x80FFFFF1 : 0x80FFFFF0, st)) return 0;
+	return (st[16] & 0x0F) == (on ? 1 : 0);
+}
+
+/* The failing rate may have left the card streaming a CMD18 or half-way through
+ * a response. Back on the default program, stop it and get a valid R1 before
+ * anything else is tried at another rate — the second candidate must not be
+ * judged on a card the first one confused. */
+static void sd_resync(void)
+{
+	pio_apply_mode(0);
+	send_cmd(CMD12, 0);
+	deselect();
+	for (int i = 0; i < 10; i++) xchg_spi(0xFF);
+	send_cmd(CMD13, 0);
+	xchg_spi(0xFF);
+	deselect();
+}
+
+/* Read 128 sectors spread over the card with the program that is on the SM and
+ * check every block's CRC16: one bad block fails the program. This is the gate
+ * between "the card switched" and "we can sample it at that rate" — a wrong
+ * sample point shows up as CRC errors here, in milliseconds, not as a corrupt
+ * file an hour later. Every burst gets one log line (the diagnostic round of
+ * 2026-11-24, see storage-tape.md): bad blocks out of 32, the PIO stall flags
+ * (rxstall = an autopush found the RX FIFO full, txstall = the out waited for
+ * the CPU), and the first bad block against the same sector re-read at default
+ * speed: bytes differing, the first one with its value, the good value, the
+ * mask of the bits that differ (bit 0 = the LAST bit on the wire, the one whose
+ * IN pushes the ISR) and the good byte after it (a late sample reads its bit 7).
+ * Clean bursts are silent. Leaves the SM on the default program after a
+ * failure (sd_resync). 1 = clean. */
+static int sd_hs_selftest(uint8_t mode)
+{
+	BYTE *buf = (BYTE *)tryMalloc(1536);
+	if (!buf) return 0;
+	BYTE *bad = buf + 512, *good = buf + 1024;
+	const uint32_t khz = g_sd_sck_hz / 1000u;
+	const uint32_t stall_mask = (1u << pio_spi.sm) | (1u << (24 + pio_spi.sm));	/* FDEBUG RXSTALL | TXSTALL */
+	DWORD cap = 0;
+	if (disk_ioctl(0, GET_SECTOR_COUNT, &cap) != RES_OK || cap < 128) cap = 128;
+	const DWORD starts[4] = { 0, cap / 4, cap / 2, cap - cap / 4 };
+	int ok = 1;
+	for (int s = 0; s < 4; s++) {
+		DWORD sect = starts[s];
+		if (sect > cap - 32) sect = cap - 32;
+		const DWORD addr = (CardType & CT_BLOCK) ? sect : sect * 512;
+		if (s_pio_mode != mode) pio_apply_mode(mode);	/* a resync below leaves the default program */
+		pio_spi.pio->fdebug = stall_mask;			/* clear the sticky flags */
+		const BYTE r1 = send_cmd(CMD18, addr);
+		if (r1 != 0) {
+			debug_log("[SD] hs%u %lu kHz burst %d: CMD18 @%lu R1=%02x", (unsigned)(mode + 3), (unsigned long)khz, s, (unsigned long)sect, r1);
+			ok = 0; sd_resync(); continue;
+		}
+		int nbad = 0, badblk = -1, tokfail = -1;
+		WORD badgot = 0, badwant = 0;
+		for (int b = 0; b < 32; b++) {
+			BYTE crc[2];
+			if (!rcvr_datablock(buf, 512, crc)) { tokfail = b; break; }
+			const WORD want = (WORD)((crc[0] << 8) | crc[1]), got = sd_crc16(buf, 512);
+			if (want != got) {
+				if (badblk < 0) { badblk = b; badgot = got; badwant = want; for (int i = 0; i < 512; i++) bad[i] = buf[i]; }
+				nbad++;
+			}
+		}
+		const uint32_t fd = pio_spi.pio->fdebug & stall_mask;
+		const int rxstall = (fd & (1u << pio_spi.sm)) != 0, txstall = (fd & (1u << (24 + pio_spi.sm))) != 0;
+		if (tokfail >= 0) {
+			debug_log("[SD] hs%u %lu kHz burst %d: sector %lu (%d ok, %d bad before): %s (byte %02x) rxstall %d txstall %d",
+			          (unsigned)(mode + 3), (unsigned long)khz, s,
+			          (unsigned long)(sect + tokfail), tokfail, nbad, s_rx_bad_tok == 0xFF ? "no token in 200 ms" : "bad token",
+			          s_rx_bad_tok, rxstall, txstall);
+			ok = 0; sd_resync(); continue;
+		}
+		send_cmd(CMD12, 0);
+		deselect();
+		if (badblk < 0) continue;
+		ok = 0;
+		/* The first bad block again at default speed (CRC-checked), then the comparison */
+		sd_resync();
+		const DWORD a1 = (CardType & CT_BLOCK) ? sect + badblk : (sect + badblk) * 512;
+		BYTE gcrc[2];
+		int have = send_cmd(CMD17, a1) == 0 && rcvr_datablock(good, 512, gcrc);
+		deselect();
+		const int gok = have && sd_crc16(good, 512) == (WORD)((gcrc[0] << 8) | gcrc[1]);
+		unsigned diff = 0, first = 512;
+		if (have)
+			for (unsigned i = 0; i < 512; i++)
+				if (bad[i] != good[i]) { diff++; if (first == 512) first = i; }
+		const unsigned f = first < 512 ? first : 0;
+		debug_log("[SD] hs%u %lu kHz burst %d: %d/32 bad, first sector %lu CRC %04x want %04x; vs 25 MHz%s: %u bytes differ, first @%u: %02x vs %02x mask %02x next %02x; rxstall %d txstall %d",
+		          (unsigned)(mode + 3), (unsigned long)khz, s, nbad,
+		          (unsigned long)(sect + badblk), badgot, badwant, have ? (gok ? "" : " (re-read CRC BAD)") : " (re-read failed)",
+		          diff, first, bad[f], good[f], (unsigned)(bad[f] ^ good[f]), f + 1 < 512 ? good[f + 1] : 0, rxstall, txstall);
+	}
+	if (!ok) sd_resync();
+	free(buf);
+	return ok;
+}
+
+/* The card is in high-speed mode: the first HS program whose self-test passes
+ * at the LIVE clk_sys stays. Nothing passing puts both the SM and the card back
+ * exactly where they were. Also the re-check after a clk_sys change: the card
+ * is mounted at boot's 252 MHz (hs4 = 31.5 MHz there), the Config::cpu_mhz
+ * switch comes later, and a rate that passed at 31.5 says nothing about 47.25. */
+static void sd_pick_hs_program(void)
+{
+	const uint32_t sys_mhz = clock_get_hz(clk_sys) / 1000000u;
+	/* Candidates in the order worth trying at THIS clk_sys: the highest SCK first,
+	 * and of two programs reaching the same SCK the one with the later sample
+	 * (more cycles per bit) — at 504 MHz hs6 and hs4 both give 42 MHz, hs6 with
+	 * the sample 19.8 ns after the edge against hs4's 17.9. */
+	uint8_t order[3] = { 1, 2, 3 };
+	uint32_t sck[4];
+	for (uint8_t m = 1; m <= 3; m++) pio_idiv(m, &sck[m]);
+	for (int i = 0; i < 2; i++)
+		for (int j = i + 1; j < 3; j++) {
+			const uint8_t a = order[i], b = order[j];
+			if (sck[b] > sck[a] || (sck[b] == sck[a] && pio_bit_cycles(b) > pio_bit_cycles(a))) { order[i] = b; order[j] = a; }
+		}
+	for (int i = 0; i < 3; i++) {
+		const uint8_t m = order[i];
+		if (i && sck[m] <= 25200000u) break;		/* no faster than the default program: pointless */
+		pio_apply_mode(m);
+		const uint32_t khz = g_sd_sck_hz / 1000u;	/* before the test: a failure leaves the SM on the default program */
+		const int ok = sd_hs_selftest(m);
+		debug_log("[SD] high speed: hs%u %lu kHz (clk_sys %lu MHz) %s", (unsigned)(m + 3),
+		          (unsigned long)khz, (unsigned long)sys_mhz, ok ? "OK" : "self-test FAILED");
+		if (ok) { g_sd_hs_mode = m; return; }
+	}
+	pio_apply_mode(0);
+	sd_switch_hs(0);
+	g_sd_hs_mode = 0x81;
+}
+
+/* After a successful init at default speed: switch the card, pick the program. */
+static void sd_try_high_speed(void)
+{
+	g_sd_hs_mode = 0;
+	if (!s_hs_enabled || !(CardType & CT_SDC)) return;
+	if (!sd_switch_hs(1)) { g_sd_hs_mode = 0x80; return; }
+	sd_pick_hs_program();
+}
+#endif
+
+/* Config::sdHighSpeed. Live: off takes an HS card back to default speed at
+ * once (the SM first, so the CMD6 goes out at 25 MHz), on retries the switch
+ * on a mounted card; both from core0 with the card held. A card mounted later
+ * reads the flag in disk_initialize. */
+void sdcard_set_high_speed(int enable)
+{
+	s_hs_enabled = enable ? 1 : 0;
+#ifdef SDCARD_PIO
+	if ((Stat & STA_NOINIT) || get_core_num() != 0) return;
+	sd_async_quiesce();
+	if (!enable && s_pio_mode) {
+		pio_apply_mode(0);
+		sd_switch_hs(0);
+		g_sd_hs_mode = 0;
+	} else if (enable && !s_pio_mode) {
+		sd_try_high_speed();
+	}
+#endif
 }
 
 /*--------------------------------------------------------------------------
@@ -605,6 +884,9 @@ DSTATUS disk_initialize (
 	if (ty) {			/* OK */
 		FCLK_FAST();			/* Set fast clock */
 		Stat &= ~STA_NOINIT;	/* Clear STA_NOINIT flag */
+#ifdef SDCARD_PIO
+		sd_try_high_speed();	/* CMD6 + the hs4/hs5 program, behind the CRC self-test */
+#endif
 	} else {			/* Failed */
 		Stat = STA_NOINIT;
 	}
@@ -894,7 +1176,7 @@ static DRESULT disk_read_sd0(BYTE *buff, LBA_t sector, UINT count)
 
 	if (count == 1) {	/* Single sector read */
 		if ((send_cmd(CMD17, sector) == 0)	/* READ_SINGLE_BLOCK */
-			&& rcvr_datablock(buff, 512)) {
+			&& rcvr_datablock(buff, 512, NULL)) {
 			count = 0;
 			if (s_as_prog) { __dmb(); *s_as_prog = 1; }
 		}
@@ -903,7 +1185,7 @@ static DRESULT disk_read_sd0(BYTE *buff, LBA_t sector, UINT count)
 		if (send_cmd(CMD18, sector) == 0) {	/* READ_MULTIPLE_BLOCK */
 			UINT got = 0;
 			do {
-				if (!rcvr_datablock(buff, 512)) break;
+				if (!rcvr_datablock(buff, 512, NULL)) break;
 				buff += 512;
 				if (s_as_prog) {
 					__dmb(); *s_as_prog = ++got;
@@ -1078,7 +1360,7 @@ DRESULT disk_ioctl (
 		break;
 
 	case GET_SECTOR_COUNT :	/* Get drive capacity in unit of sector (DWORD) */
-		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {
+		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16, NULL)) {
 			if ((csd[0] >> 6) == 1) {	/* SDC ver 2.00 */
 				csize = csd[9] + ((WORD)csd[8] << 8) + ((DWORD)(csd[7] & 63) << 16) + 1;
 				*(DWORD*)buff = csize << 10;
@@ -1095,14 +1377,14 @@ DRESULT disk_ioctl (
 		if (CardType & CT_SD2) {	/* SDC ver 2.00 */
 			if (send_cmd(ACMD13, 0) == 0) {	/* Read SD status */
 				xchg_spi(0xFF);
-				if (rcvr_datablock(csd, 16)) {				/* Read partial block */
+				if (rcvr_datablock(csd, 16, NULL)) {				/* Read partial block */
 					for (n = 64 - 16; n; n--) xchg_spi(0xFF);	/* Purge trailing data */
 					*(DWORD*)buff = 16UL << (csd[10] >> 4);
 					res = RES_OK;
 				}
 			}
 		} else {					/* SDC ver 1.XX or MMC */
-			if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {	/* Read CSD */
+			if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16, NULL)) {	/* Read CSD */
 				if (CardType & CT_SD1) {	/* SDC ver 1.XX */
 					*(DWORD*)buff = (((csd[10] & 63) << 1) + ((WORD)(csd[11] & 128) >> 7) + 1) << ((csd[13] >> 6) - 1);
 				} else {					/* MMC */
@@ -1132,13 +1414,13 @@ DRESULT disk_ioctl (
 		break;
 
 	case MMC_GET_CID :		/* Get CID (16 bytes) */
-		if ((send_cmd(CMD10, 0) == 0) && rcvr_datablock((BYTE*)buff, 16)) {
+		if ((send_cmd(CMD10, 0) == 0) && rcvr_datablock((BYTE*)buff, 16, NULL)) {
 			res = RES_OK;
 		}
 		break;
 
 	case MMC_GET_CSD :		/* Get CSD (16 bytes) */
-		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock((BYTE*)buff, 16)) {
+		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock((BYTE*)buff, 16, NULL)) {
 			res = RES_OK;
 		}
 		break;

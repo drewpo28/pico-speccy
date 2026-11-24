@@ -106,3 +106,26 @@ void __time_critical_func(pio_spi_repeat8_read8_blocking)(const pio_spi_inst_t *
         if ((uint32_t)(pio_spi_us() - t0) > PIO_SPI_TIMEOUT_US) break;
     }
 }
+
+/* As pio_spi_repeat8_read8_blocking, but never more than max_inflight bytes
+ * between the TX write and the RX read: with max_inflight <= 4 (the RX FIFO
+ * depth) the RX FIFO can never fill, so the state machine never stalls on an
+ * autopush. A diagnostic reader (sdcard.c sd_hs_selftest), not a speed path. */
+void __time_critical_func(pio_spi_repeat8_read8_limited)(const pio_spi_inst_t *spi, uint8_t src, uint8_t *dst,
+                                                        size_t len, unsigned max_inflight) {
+    size_t tx_remain = len, rx_remain = len;
+    io_rw_8 *txfifo = (io_rw_8 *) &spi->pio->txf[spi->sm];
+    io_rw_8 *rxfifo = (io_rw_8 *) &spi->pio->rxf[spi->sm];
+    const uint32_t t0 = pio_spi_us();
+    while (tx_remain || rx_remain) {
+        if (tx_remain && (rx_remain - tx_remain) < max_inflight && !pio_sm_is_tx_fifo_full(spi->pio, spi->sm)) {
+            *txfifo = src;
+            --tx_remain;
+        }
+        if (rx_remain && !pio_sm_is_rx_fifo_empty(spi->pio, spi->sm)) {
+            *dst++ = *rxfifo;
+            --rx_remain;
+        }
+        if ((uint32_t)(pio_spi_us() - t0) > PIO_SPI_TIMEOUT_US) break;
+    }
+}

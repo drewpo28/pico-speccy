@@ -76,6 +76,7 @@ bool     Config::led_panel = false;
 bool     Config::ide_led = true;
 uint8_t  Config::led_style = 0;
 bool     Config::sdLedBlink = false;
+bool     Config::sdHighSpeed = true;
 int8_t   Config::temp_offset = 0;
 uint8_t  Config::gm_field = 0;      // Pico-Scwong options (see Config.h)
 uint8_t  Config::gm_pad   = 0;
@@ -1587,6 +1588,7 @@ void Config::load() {
         if (led_style > 1) led_style = 0;
         nvs_get_b("rzx_loop", rzx_loop, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
+        nvs_get_b("sdHighSpeed", sdHighSpeed, sts);
         nvs_get_i8("temp_offset", temp_offset, sts);
         nvs_get_u8("gm_field", gm_field, sts);
         nvs_get_u8("gm_pad",   gm_pad,   sts);
@@ -2169,6 +2171,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"ledStyle", led_style);
     nvs_set_str(buf,"rzx_loop", rzx_loop ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
+    nvs_set_str(buf,"sdHighSpeed", sdHighSpeed ? "true" : "false");
     nvs_set_i8(buf,"temp_offset", temp_offset);
     nvs_set_u8(buf,"gm_field", gm_field);
     nvs_set_u8(buf,"gm_pad",   gm_pad);

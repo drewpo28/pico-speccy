@@ -45,6 +45,12 @@ void sdcard_reclock(void);
 /* Enable/disable onboard LED (GPIO 25) blink on physical SD card access */
 void sdcard_set_led_blink(int enable);
 
+/* SD high-speed mode (CMD6, SCK up to 50 MHz on the PIO path; a no-op setting
+ * on the hardware-SPI boards). Live in both directions on a mounted card;
+ * default on. The driver only keeps a rate that passes its CRC16 self-test —
+ * g_sd_hs_mode / g_sd_sck_hz (sdcard.c) say what it settled on. */
+void sdcard_set_high_speed(int enable);
+
 /* FatFS hooks (called from ff.c): tag emulator-internal scratch files (under
  * "/tmp/") at open so their I/O does not blink the onboard LED. fp is the FIL*
  * (opaque here). set_active announces the FIL a read/write is about to serve;

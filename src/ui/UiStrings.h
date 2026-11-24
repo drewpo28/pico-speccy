@@ -135,6 +135,7 @@
 #define TXT_OC_VREG         "Core voltage"
 #define TXT_OC_FLASH        "Flash frequency"
 #define TXT_OC_PSRAM        "PSRAM frequency"
+#define TXT_OC_SD_HS        "SD card high speed (CMD6)"
 #define TXT_OC_WARN         " Overclocking can stop the board from booting "
 
 // ── Storage / Tape ─────────────────────────────────────────────────────────────

@@ -445,6 +445,17 @@ void Debug::log2SD_impl(const char* fmt, ...)
     log2SD_impl(std::string(buf));
 }
 
+/* Debug::log for the C driver libraries (src/drivers/sdcard/sdcard.c). */
+extern "C" void debug_log(const char* fmt, ...)
+{
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    Debug::log("%s", buf);
+}
+
 extern "C" void debug_log2sd(const char* fmt, ...)
 {
     if (!Debug::log_enabled) return;

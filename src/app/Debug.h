@@ -101,6 +101,7 @@ public:
 #ifdef __cplusplus
 extern "C" {
 #endif
+void debug_log(const char* fmt, ...);      // Debug::log for C code (the sdcard driver)
 void debug_log2sd(const char* fmt, ...);
 #ifdef __cplusplus
 }

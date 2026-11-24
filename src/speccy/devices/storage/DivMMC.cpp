@@ -2047,12 +2047,16 @@ void DivMMC::sdStatTick() {
                    (unsigned long)(s_miss[0] - ms0[0]), (unsigned long)(s_miss[1] - ms0[1]),
                    (unsigned long)(s_miss[2] - ms0[2]), (unsigned long)(s_miss[3] - ms0[3]));
         // Debug::log truncates at 256 bytes: the second half of the story.
-        Debug::log("[SD2] fps %lu idl min %ld neg %lu | qwait %lums skip %lu | cut %lu yield %lu | poll %lu/%lu/%lums ref %lu",
+        // hs = sdcard.c g_sd_hs_mode (0 default speed, 1/2 = hs4/hs5 program, 0x80 no
+        // CMD6, 0x81 self-test failed), sck = the PIO SCK in kHz (0 = hardware SPI).
+        extern volatile uint8_t g_sd_hs_mode; extern volatile uint32_t g_sd_sck_hz;
+        Debug::log("[SD2] fps %lu idl min %ld neg %lu | qwait %lums skip %lu | cut %lu yield %lu | poll %lu/%lu/%lums ref %lu | hs %02x sck %lu",
                    (unsigned long)fr, (long)idlMin, (unsigned long)neg,
                    (unsigned long)(SDD(q, q0) / 1000u), (unsigned long)(sk - sk0),
                    (unsigned long)(g_sd_as_cut_n - cut0), (unsigned long)(g_sd_as_yield_n - yl0),
                    (unsigned long)(g_sd_poll[0] - pl0[0]), (unsigned long)(g_sd_poll[1] - pl0[1]),
-                   (unsigned long)((g_sd_poll[2] - pl0[2]) / 1000u), (unsigned long)(g_sd_poll[3] - pl0[3]));
+                   (unsigned long)((g_sd_poll[2] - pl0[2]) / 1000u), (unsigned long)(g_sd_poll[3] - pl0[3]),
+                   (unsigned)g_sd_hs_mode, (unsigned long)(g_sd_sck_hz / 1000u));
         g_sd_as_c1_max = g_sd_as_c0wait_max = 0;
         // Why the token-poll batch skipped nothing, and who called the poll (calls /
         // passes skipped) — Z80_JLS.cpp nextSdPollBatch.

@@ -1220,6 +1220,9 @@ void ESPectrum::setup() {
   // Buffer::initPools() so the butter PSRAM arena exists — but still before
   // VIDEO::Init() (flash erase must precede the live HDMI DMA over XIP).
   sdcard_set_led_blink(Config::sdLedBlink); // onboard LED blink on SD access
+  // The card was mounted (and switched to high speed, the default) before this
+  // config could be read: an Off here takes it back to 25 MHz now.
+  sdcard_set_high_speed(Config::sdHighSpeed);
   VIDEO::loadCustomPalettes();
   Debug::log("setup: Config loaded");
   Debug::log2SD("setup: Config loaded, arch=%s romSet=%s", archToStr(Config::arch), romsetToStr(Config::romSet));

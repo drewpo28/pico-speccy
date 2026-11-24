@@ -175,6 +175,7 @@ public:
     static bool     ide_led;        // Interface > SD / HDD / CD icon: SD + HDD/CD icons in the top-right corner (LED::drawCornerIcons)
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
     static bool     sdLedBlink;     // blink onboard GPIO LED on physical SD card access (no-op on *_W: LED is on the radio)
+    static bool     sdHighSpeed;    // Additional hardware > Overclock > SD high speed: CMD6 + up to 50 MHz SCK (PIO-SD boards); default on
     // Chip temperature calibration, whole °C added to the ADC sensor reading.
     // The RP2350 sensor is uncalibrated and per-chip offsets are real: one z0p2
     // unit reads ~55-60 C low (Vbe 0.78 V vs the typical 0.706 @27 C) with a

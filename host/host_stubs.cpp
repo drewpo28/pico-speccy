@@ -157,6 +157,9 @@ void sdcard_led_set_active(const void*) {}
 void sdcard_led_tag(const void*, const char*) {}
 void sdcard_led_untag(const void*) {}
 void sdcard_set_led_blink(int) {}
+void sdcard_set_high_speed(int) {}
+volatile uint8_t g_sd_hs_mode = 0;      // sdcard.c: CMD6 high-speed state for the [SD2] line
+volatile uint32_t g_sd_sck_hz = 0;
 }
 BYTE* g_sd_as_buf = nullptr;
 LBA_t g_sd_as_sector = 0;

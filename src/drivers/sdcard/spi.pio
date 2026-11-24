@@ -31,6 +31,44 @@
     out pins, 1 side 0 [1] ; Stall here on empty (sideset proceeds even if
     in pins, 1  side 1 [1] ; instruction stalls, so we stall with SCK low)
 
+; High-speed variants (SD CMD6 function 1, SCK up to 50 MHz). The difference is
+; WHERE in the bit the MISO sample is taken. The card drives DO after the
+; falling SCK edge with t_ODLY <= 14 ns (SD spec, both modes); spi_cpha0 samples
+; 2 PIO cycles after that edge (the synchroniser is bypassed in pio_spi_init),
+; which is ~20 ns at 25 MHz and ~10 ns at 47 MHz — too early. These sample on the
+; last cycle of the bit instead: 3 of 4 cycles (hs4: 15.9 ns at 47.25 MHz on a
+; 378 MHz clk_sys) or 4 of 5 (hs5: 21.2 ns at 37.8 MHz — the same margin the
+; default-speed program has today, at 1.5x the rate). The card holds DO until
+; the next falling edge (+ t_OH 5 ns), so a late sample is always safe.
+; MOSI changes on the falling edge in all three programs (the card samples on
+; the rising one). sdcard.c tries hs4, then hs5, each behind a CRC16 self-test.
+.program spi_cpha0_hs4
+.side_set 1
+    out pins, 1 side 0 [1] ; falling edge, MOSI out, 2 cycles low
+    nop         side 1     ; rising edge
+    in pins, 1  side 1     ; sample at cycle 3
+
+; hs5 was first written 2 low / 3 high and read every command response with
+; bit 0 set (R1 0x00 came back 0x01: hw 2026-11-24, 504 MHz, one byte in
+; flight, so no FIFO stall involved) while hs4 and hs6 read theirs correctly.
+; The long-high shape is the one thing it did not share with them; it is now
+; the long-low shape of hs6, one cycle shorter.
+.program spi_cpha0_hs5
+.side_set 1
+    out pins, 1 side 0 [2] ; 3 cycles low
+    nop         side 1     ; rising edge
+    in pins, 1  side 1     ; sample at cycle 4
+
+; 6 cycles: the one that gives 504 MHz a 42 MHz SCK (idiv 2) with the sample at
+; 19.8 ns after the falling edge — the default program's own margin — where hs4
+; at the same 42 MHz (idiv 3) samples at 17.9 ns. sdcard.c orders the candidates
+; by the SCK they reach at the live clk_sys, later sample first on a tie.
+.program spi_cpha0_hs6
+.side_set 1
+    out pins, 1 side 0 [2] ; 3 cycles low
+    nop         side 1 [1] ; 2 cycles high
+    in pins, 1  side 1     ; sample at cycle 5
+
 .program spi_cpha1
 .side_set 1
 
@@ -43,9 +81,10 @@
 
 % c-sdk {
 #include "hardware/gpio.h"
-static inline void pio_spi_init(PIO pio, uint sm, uint prog_offs, uint n_bits,
-        float clkdiv, bool cpha, bool cpol, uint pin_sck, uint pin_mosi, uint pin_miso) {
-    pio_sm_config c = cpha ? spi_cpha1_program_get_default_config(prog_offs) : spi_cpha0_program_get_default_config(prog_offs);
+// The program is chosen by its default config: pio_spi_init() below for the
+// classic cpha0/cpha1 pair, sdcard.c passes spi_cpha0_hs4/hs5 configs here.
+static inline void pio_spi_init_cfg(PIO pio, uint sm, uint prog_offs, pio_sm_config c, uint n_bits,
+        float clkdiv, bool cpol, uint pin_sck, uint pin_mosi, uint pin_miso) {
     sm_config_set_out_pins(&c, pin_mosi, 1);
     sm_config_set_in_pins(&c, pin_miso);
     sm_config_set_sideset_pins(&c, pin_sck);
@@ -69,6 +108,12 @@ static inline void pio_spi_init(PIO pio, uint sm, uint prog_offs, uint n_bits,
 
     pio_sm_init(pio, sm, prog_offs, &c);
     pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void pio_spi_init(PIO pio, uint sm, uint prog_offs, uint n_bits,
+        float clkdiv, bool cpha, bool cpol, uint pin_sck, uint pin_mosi, uint pin_miso) {
+    pio_sm_config c = cpha ? spi_cpha1_program_get_default_config(prog_offs) : spi_cpha0_program_get_default_config(prog_offs);
+    pio_spi_init_cfg(pio, sm, prog_offs, c, n_bits, clkdiv, cpol, pin_sck, pin_mosi, pin_miso);
 }
 %}
 
