@@ -214,6 +214,7 @@ static volatile bool s_hamCubeLut;      // lut holds the cube tables (hamCubeLut
 struct HamBox { uint16_t lo, hi; uint32_t w; uint8_t mn[3], mx[3]; };
 static uint16_t* s_hamTmp;              // counts + bin order, then the boxes: PSRAM
 static uint8_t s_hamHold;
+static uint8_t s_hamLate;               // frames the due re-check has waited for slack (frameSetup)
 static bool s_hamCubeOn;                // the slots hold the cube
 static bool s_pair, s_zxPair, s_palValid, s_pairWant2;
 // HRXC: the pairs of the last frame by TABLE INDEX (64 x 64, the bottom screen's are
@@ -822,7 +823,7 @@ void reset() {
     s_sramRetry = 0; s_lagFrames = s_lagWindow = 0;
     s_hamCubeLut = false;
     free(s_ham); s_ham = nullptr;          // 4.8 KB of heap only while a program uses HAM
-    s_hamHold = 0; s_hamCubeOn = false;
+    s_hamHold = 0; s_hamLate = 0; s_hamCubeOn = false;
     if (s_buf) memset(s_buf, 0, BUF_SIZE);
     s_fullDraw = true; dirtyAll();
     mode = 0; g20 = 0; s_e20 = 0; rgbOrder = false;
@@ -3138,9 +3139,19 @@ static void frameSetup() {
         // 2.5 s that was still a 35-45 ms frame and a hiccup in the music (PF2026 at
         // 378 MHz, hw 2026-11-24, fdma2: 50 of 590 seconds had one, [NEG2] ef 20-30 ms).
         // A video keeps its last palette a little longer; the music keeps its beat.
-        const bool behind = VIDEO::skipLate || ESPectrum::idle < 3000;
-        if (need || (!s_hamHold && !behind)) {
-            s_hamHold = 25;
+        // The wait is bounded: a machine that is behind on every frame (PF2026's forest at
+        // 378 MHz) would otherwise keep the palette dealt on the part's first frame - from a
+        // picture not streamed in yet - for good: the forest came late or never (owner
+        // 2026-11-24). After HAM_LATE_MAX frames of waiting the re-check runs anyway.
+        enum { HAM_LATE_MAX = 50 };
+        bool behind = VIDEO::skipLate || ESPectrum::idle < 3000;
+#if HOST_BUILD
+        static const bool forceBehind = getenv("PICOSPECCY_ELM_BEHIND") != nullptr;   // bench: the hw's always-late frame
+        if (forceBehind) behind = true;
+#endif
+        if (!need && !s_hamHold && behind && s_hamLate < HAM_LATE_MAX) { s_hamLate++; return; }
+        if (need || !s_hamHold) {
+            s_hamHold = 25; s_hamLate = 0;
             s_palDirty = false; s_palValid = true;
             if (hamProgram(need)) {
                 s_hamCubeOn = false;
@@ -3151,7 +3162,7 @@ static void frameSetup() {
                 // 1513 bins, hw 2026-11-22) - ask again in 5 s, not 0.5 s.
                 s_hamHold = 250;
             }
-        } else s_hamHold--;
+        } else s_hamHold--;                  // never 0 here: 0 took one of the branches above
         return;
     }
     if (s_palDirty || !s_palValid) {

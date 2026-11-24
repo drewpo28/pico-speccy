@@ -1701,6 +1701,14 @@ void reset() {
     memset(s_z, 0, sizeof(s_z));
     s_active = s_wpSlots = s_lcuSlots = s_hgfxSlots = s_flashSlots = s_framSlots = 0;
     g_elm_hgfxSlots = 0;
+    // The split chunky windows go with them: a stale mask kept every read of slots 0-1 on
+    // chunkyReadByte, and the Z80 ran the HGFX buffer instead of the ROM - F11 during
+    // PF2026 froze a garbage screen at 15 FPS (hw 2026-11-24: PC #0002, the [PERF] loop
+    // 64 ms, core0 samples in splitRead -> chunkyReadByte). remap() is the one other writer.
+    if (s_chunkSplit) Debug::log("[ELM] reset: split chunky windows %02X dropped", (unsigned)s_chunkSplit);
+    s_chunkSplit = 0; g_elm_chunkSplit = 0;
+    g_elm_split = s_romWaitSlots;
+    elmMasksUpdate();
     s_gamaPage = 0;
     s_p4k1FFD = s_p4kDFFD = s_p4kFDFD = s_p4k7FFD = 0;
     if (s_flashOpen) { s_flashOpen = false; ElmFlash::windowClosed(); }
