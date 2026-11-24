@@ -4574,7 +4574,8 @@ static int64_t  s_postLast = 0;
 // that did skip, counts as not drawn (g_frame_skips: F8's DRW, the [SKIP] line).
 volatile uint32_t g_frame_skips = 0;            // frames not drawn (since boot)
 __attribute__((noinline)) bool ESPectrum::frameSkipDecide() {
-    enum { FS_MAX = 4, FS_LATE_US = 1000 };
+    enum { FS_LATE_US = 1000 };
+    const unsigned FS_MAX = Config::frame_skip_max;   // Video > Frame skip > Skip up to (4 / 8 / 16)
     static uint8_t s_skipped = 0;
     if (VIDEO::skipTaken) { VIDEO::skipTaken = false; g_frame_skips = g_frame_skips + 1; }
     const uint64_t now64 = time_us_64();
@@ -4633,6 +4634,9 @@ int16_t hdmi_live_lvl[4] = {0, 0, 0, 0};
 extern "C" void hdmi_audio_levels(int16_t out[4]);
 #endif
 
+#if PERF_TRACE
+static uint32_t s_post[8];   // the frame tail split, see POST_MARK
+#endif
 void ESPectrum::loop() {
 
   // Check if we're booting into a pending (unconfirmed) video mode
@@ -5028,6 +5032,16 @@ void ESPectrum::loop() {
     const uint64_t n3_c0 = time_us_64();   // [NEG3]: CPU::loop measured here (PERF resets cpu_frame_us mid-frame)
     CPU::loop();
     const uint64_t n3_c1 = time_us_64();
+#if PERF_TRACE
+    // Where the frame's tail (post in [NEG2]) goes, per frame: bg (ZiFi/RTC/overlays/
+    // NVRAM/FRAM flushes), net, stor (PiMusica, storage watch, notices), pre (to the
+    // mix), mixkbd, gs (NeoGS boot/SD/MP3 service), osd (stats, LED). The worst frame
+    // of each second prints them on the [NEG2+] line (eLeMeNt, Profi).
+    uint32_t post_t = (uint32_t)n3_c1;
+#define POST_MARK(i) do { const uint32_t _n = time_us_32(); s_post[i] = _n - post_t; post_t = _n; } while (0)
+#else
+#define POST_MARK(i) ((void)0)
+#endif
 #if NXNEG_PROF && !NEXT_TRACE
     NxFrameProf::frameEnd();
 #endif
@@ -5092,6 +5106,7 @@ void ESPectrum::loop() {
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     if (Z80Ops::isSam) SamClock::flush();   // the Dallas clock's user RAM, same contract
     if (Z80Ops::isElm) Elm::flush();        // eLeMeNt FlashRAM sectors + FRAM, same contract
+    POST_MARK(0);
 #if NEXT_TRACE
     wf_bg_mark(3);
 #endif
@@ -5102,6 +5117,7 @@ void ESPectrum::loop() {
 
     netBackgroundTick();      // radio poll + the boot join/SNTP FSM (also pumped
                               // from the OSD idle loops — see nm::uiIdle)
+    POST_MARK(1);
     if (g_pimus_on) PiMusica::frameTick();   // telemetry, file open, .mid render, ring top-up
 #if NEXT_TRACE
     wf_bg_mark(5);
@@ -5178,6 +5194,7 @@ void ESPectrum::loop() {
 #if NEXT_TRACE
     wf_post[1] = time_us_32() - wf_storage_start;
 #endif
+    POST_MARK(2);
 #if defined(VGA_HDMI)
     // HDMI-audio health heartbeat (1 Hz, no-op unless the driver is live).
     // Same rationale as the NGS_TRACE counters: dropouts in this pipeline
@@ -5238,6 +5255,7 @@ void ESPectrum::loop() {
     // uint64_t ay_start = time_us_64();
 
     // Process audio buffer
+    POST_MARK(3);
     uint64_t _mix_t0 = time_us_64();
     faudbufcnt = audbufcnt;
     faudioBit = lastaudioBit;
@@ -5489,6 +5507,7 @@ void ESPectrum::loop() {
       processKeyboard();
       g_kbd_us = (uint32_t)(time_us_64() - _kbd_t0);
     }
+    POST_MARK(4);
 #if NEXT_TRACE
     wf_post[3] = g_kbd_us;
     const uint32_t wf_tail_start = time_us_32();
@@ -5536,6 +5555,7 @@ void ESPectrum::loop() {
     // before the pacing wait below, so the cost lands in the frame budget we
     // then wait out rather than on top of it.
     if (GS::neogs) { GS::ngsBootRelease(); NgsSd::service(); NgsMp3::service(); }
+    POST_MARK(5);
 #if HOST_BUILD
     GS::pumpGuest();   // host: the card runs here, in step with the guest (GS.cpp)
 #endif
@@ -5710,6 +5730,7 @@ void ESPectrum::loop() {
                     (hasFdd && (Config::trdosSoundLed & 1)));
     // The floppy, plus the IDE drive's HDD / CD and the SD card icons beside it (LEDIndicators.cpp).
     LED::drawCornerIcons(lamp_on, fdd_write);
+    POST_MARK(6);
 
     elapsed = time_us_64() - ts_start;
     // frameSkipDecide's tail: this frame's work after its EndFrame (0 when none ran).
@@ -5773,9 +5794,14 @@ void ESPectrum::loop() {
       extern volatile uint32_t cpu_frame_us, fdd_step_us, endframe_us;
       extern volatile uint32_t g_frame_swap_us, g_frame_swap_idle_us, g_frame_accb;
       extern volatile uint32_t g_aud_write_us;
-      static uint32_t p_cpu = 0, p_fdd = 0, p_ports = 0, p_pcalls = 0;
+      static uint32_t p_fdd = 0, p_ports = 0, p_pcalls = 0;
       uint32_t c;
-      c = cpu_frame_us;        uint32_t d_cpu   = (c >= p_cpu)   ? c - p_cpu   : c; p_cpu = c;
+      // cpu = CPU::loop as measured around the call (n3_c0..n3_c1). It used to be the
+      // delta of cpu_frame_us, which PERF_TRACE's per-frame stats in VIDEO::EndFrame zero
+      // every frame - the delta was then the DIFFERENCE between two frames' loop times,
+      // and el - cpu put the missing part into "post" (2026-11-24: 25 ms of "tail" that
+      // the tail timers could not find; it was the Z80 + DMA of the frame itself).
+      uint32_t d_cpu = (uint32_t)(n3_c1 - n3_c0);
       c = fdd_step_us;         uint32_t d_fdd   = (c >= p_fdd)   ? c - p_fdd   : c; p_fdd = c;
       c = Ports::fdd_ports_us; uint32_t d_ports = (c >= p_ports) ? c - p_ports : c; p_ports = c;
       c = Ports::fdd_ports_calls; uint32_t d_pcalls = (c >= p_pcalls) ? c - p_pcalls : c; p_pcalls = c;
@@ -5785,14 +5811,37 @@ void ESPectrum::loop() {
       static uint32_t w_el = 0, w_cpu = 0, w_fdd = 0, w_ports = 0, w_pcalls = 0;
       static uint32_t w_swap = 0, w_swapidle = 0, w_accb = 0;
       static uint32_t w_ef = 0, w_aud = 0, w_kbd = 0, w_pmax = 0, w_mix = 0;
+#if PERF_TRACE
+      static uint32_t w_post[8];
+#endif
+#if PERF_TRACE
+      // The loop's own split for the worst frame: pre (ts_start -> CPU::loop), loop
+      // (CPU::loop as [NEG3] measures it) and inside it the slice timers of CPU.cpp
+      // (exec / HALT advance / INT / DMA; the Next's loop only - zeros elsewhere and on the host).
+      uint32_t d_hb[4] = { 0, 0, 0, 0 };
+#if !HOST_BUILD
+      extern volatile uint32_t g_hb_exec, g_hb_halt, g_hb_int, g_hb_dma;
+      static uint32_t p_hb[4];
+      { const uint32_t cur[4] = { g_hb_exec, g_hb_halt, g_hb_int, g_hb_dma };
+        for (int i = 0; i < 4; i++) { d_hb[i] = cur[i] - p_hb[i]; p_hb[i] = cur[i]; } }
+#endif
+      static uint32_t w_hb[4], w_pre, w_loop;
+#endif
       if ((int32_t)idle < w_idle) {
         w_idle = (int32_t)idle;   w_el = (uint32_t)elapsed;
+#if PERF_TRACE
+        memcpy(w_hb, d_hb, sizeof w_hb);
+        w_pre = (uint32_t)(n3_c0 - ts_start); w_loop = (uint32_t)(n3_c1 - n3_c0);
+#endif
         w_cpu = d_cpu;            w_fdd = d_fdd;   w_ports = d_ports;
         w_pcalls = d_pcalls;
         w_swap = g_frame_swap_us; w_swapidle = g_frame_swap_idle_us;
         w_accb = g_frame_accb;
         w_ef = endframe_us;       w_aud = g_aud_write_us;
         w_kbd = g_kbd_us;         w_mix = g_mix_us;
+#if PERF_TRACE
+        memcpy(w_post, s_post, sizeof w_post);
+#endif
       }
       if (pmax_win > w_pmax) w_pmax = pmax_win;
       if (idle < 0) neg_cnt++;
@@ -5828,6 +5877,12 @@ void ESPectrum::loop() {
                      (int)(w_el - w_cpu - w_aud - w_mix - w_kbd),
                      w_fdd, w_ports, w_pcalls, w_pmax,
                      w_swap, w_swapidle, w_accb);
+#if PERF_TRACE
+        if (neg_cnt)
+          Debug::log("[NEG2+] worst: pre %u loop %u (exec %u halt %u int %u dma %u) | post split: bg %u net %u stor %u pre %u mixkbd %u gs %u osd %u us",
+                     w_pre, w_loop, w_hb[0], w_hb[1], w_hb[2], w_hb[3],
+                     w_post[0], w_post[1], w_post[2], w_post[3], w_post[4], w_post[5], w_post[6]);
+#endif
         frame_cnt = 0; neg_cnt = 0; w_idle = INT32_MAX; w_pmax = 0;
       }
     }

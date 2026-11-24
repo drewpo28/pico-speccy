@@ -179,6 +179,7 @@ uint8_t  Config::joy2cursor = false;
 uint8_t  Config::secondJoy = 2; // NPAD#2
 uint8_t  Config::kempstonPort = 0x1F;
 bool     Config::frame_skip = false;
+uint8_t  Config::frame_skip_max = 4;
 bool     Config::CursorAsJoy = true;
 bool     Config::betadisk = true;
 bool     Config::trdosFastMode = true;
@@ -1702,6 +1703,8 @@ void Config::load() {
         // must not stay in force with no way to see or change it.
         Config::ngs_clock = 0;
         nvs_get_b("frame_skip", Config::frame_skip, sts);
+        nvs_get_u8("frame_skip_max", Config::frame_skip_max, sts);
+        if (Config::frame_skip_max != 4 && Config::frame_skip_max != 8 && Config::frame_skip_max != 16) Config::frame_skip_max = 4;
         nvs_get_b("CursorAsJoy", CursorAsJoy, sts);
         nvs_get_b("betadisk", betadisk, sts);
         nvs_get_b("trdosFastMode", trdosFastMode, sts);
@@ -2218,6 +2221,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"secondJoy",Config::secondJoy);
     nvs_set_u8(buf,"kempstonPort",Config::kempstonPort);
     nvs_set_str(buf,"frame_skip", Config::frame_skip ? "true" : "false");
+    nvs_set_u8(buf,"frame_skip_max", Config::frame_skip_max);
     nvs_set_str(buf,"CursorAsJoy", CursorAsJoy ? "true" : "false");
     nvs_set_str(buf,"betadisk", betadisk ? "true" : "false");
     nvs_set_str(buf,"trdosFastMode", trdosFastMode ? "true" : "false");

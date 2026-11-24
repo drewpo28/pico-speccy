@@ -107,6 +107,12 @@ endforeach ()
 if (PERF_HIST)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=1 PCPROF_SHIFT=${PCPROF_SHIFT}
         PCPROF_SLOTS=${PCPROF_SLOTS}u PCPROF_LINES=${PCPROF_LINES} PCPROF_CORE=${PCPROF_CORE} PCPROF_GSGAP=${PCPROF_GSGAP})
+    # -DPCPROF_LR_LO=0x... -DPCPROF_LR_HI=0x...: samples inside that code range are counted at
+    # their return address (who calls memcpy). Take the range from nm of the previous build
+    # and rebuild until it stops moving (two passes, 2026-11-24).
+    if (PCPROF_LR_LO AND PCPROF_LR_HI)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE PCPROF_LR_LO=${PCPROF_LR_LO}u PCPROF_LR_HI=${PCPROF_LR_HI}u)
+    endif()
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=0)
 endif()

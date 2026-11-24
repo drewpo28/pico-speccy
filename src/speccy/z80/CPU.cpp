@@ -76,8 +76,10 @@ uint32_t c16_rd[9], c16_wr[9], c16_fe[9], c16_flip, c16_bank;
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Next/NextVideo.h"
 #include "speccy/machines/Next/NextInt.h"
-// Z80_HWBENCH: where a Next frame's CPU::loop time goes ([NXNEG] hb=, NextNeg.cpp)
-#if Z80_HWBENCH && !HOST_BUILD
+// Z80_HWBENCH: where a Next frame's CPU::loop time goes ([NXNEG] hb=, NextNeg.cpp).
+// PERF_TRACE builds keep the four slice timers too (one timer read per slice): the
+// eLeMeNt's [NEG2+] line prints them for the worst frame of each second.
+#if (Z80_HWBENCH || PERF_TRACE) && !HOST_BUILD
 volatile uint32_t g_hb_exec, g_hb_halt, g_hb_int, g_hb_dma, g_hb_tick, g_hb_slow;
 #define HB_T0() const uint32_t hb_t0_ = time_us_32()
 #define HB_ADD(v) (v += time_us_32() - hb_t0_)

@@ -412,7 +412,9 @@ const char* romsetName(int32_t composite);
     X(SET_TFT_BRIGHT,     AC_LIVE,   F_PREVIEW,             get_tftBright,  put_tftBright, hook_tftBright, -1) \
     /* Additional hardware > Overclock > SD high speed (Config::sdHighSpeed): CMD6,    */ \
     /* live via sdcard_set_high_speed. Appended last per the APPEND ONLY rule.        */ \
-    X(SET_SD_HS,          AC_LIVE,   0,                     get_sdHs,       put_sdHs,      hook_sdHs,      -1)
+    X(SET_SD_HS,          AC_LIVE,   0,                     get_sdHs,       put_sdHs,      hook_sdHs,      -1) \
+    /* Video > Frame skip > Skip up to (Config::frame_skip_max): read live by frameSkipDecide. */ \
+    X(SET_FRAMESKIP_MAX,  AC_PURE,   0,                     get_frameSkipMax, put_frameSkipMax, nullptr,    -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

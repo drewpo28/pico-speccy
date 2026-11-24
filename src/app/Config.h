@@ -518,6 +518,7 @@ public:
     static uint8_t  secondJoy;
     static uint8_t  kempstonPort;
     static bool     frame_skip;   // Video > Frame skip (ESPectrum::frameSkipDecide)
+    static uint8_t  frame_skip_max;   // Video > Frame skip > Skip up to: frames not drawn in a row (4 / 8 / 16)
     static bool CursorAsJoy;
     static uint8_t scanlines;
     // CRT filter. 0=Off; 1..3 = Soft/Medium/Strong with a soft 4-pixel-pitch mask

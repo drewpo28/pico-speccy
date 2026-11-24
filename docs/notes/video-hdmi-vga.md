@@ -1489,6 +1489,55 @@ drawn, at most 4 in a row (then one is drawn whatever the delay).
   there is nothing to skip; F8 FPS 28.7 / DRW 26.4 is the emulation's own speed. Frame
   skip cannot help a CPU-bound frame; only a slower emulated clock would (pico-amiga's
   fast-RAM throttle), not done.
+- eLeMeNt HGFX, round 5 (2026-11-24, PF2026 at 378 MHz, hw): the frame end waited for
+  core1 whole when core1 was on a full redraw (the HAM re-check moves palette slots twice a
+  second, a full draw is 17-21 ms of core1): ef 25-36 ms behind a short Z80 frame, and the
+  skipLate branch never saw those frames (the lateness is decided at the frame start).
+  Now, with the option on, `Hgfx::frameEnd` waits at most what the frame still has of its
+  target and otherwise gives the draw up (s_fbDirty kept, VIDEO::skipTaken), at most 3 in
+  a row (now `Config::frame_skip_max - 1`); the HAM re-check sets `s_fullDraw` only when
+  slots actually moved (`s_hamWrote`), and while the machine is behind (skipLate or idle <
+  3 ms) it waits for a frame with slack instead of running every 0.5 s (a palette change
+  of the picture itself, `s_palDirty`, still runs at once). hw: ef of the worst frames 25-36 -> under 1 ms typical (one 24 ms), FPS
+  unchanged - because the frames are CPU-bound, see below.
+- **What a CPU-bound eLeMeNt frame is made of** (PERF_HIST core0 PC samples, PF2026 car part,
+  378 MHz, NeoGS off, 2026-11-24): exec_nocheck_elm 25 %, chunkyWriteRows 24 % + memcpy 9 % +
+  execRun 6 % + fdmaRun 3 % (the demo's FastDMA into VRAM), Ports::output 6 %, HDMI audio
+  sample write 5 %. CPU::loop 21 ms average of a 20.5 ms budget, peaks 34-43 ms, 33-37 late
+  frames/s, 9-14 skipped/s; identical with the SD at 25 or 42 MHz and with NeoGS off. Nothing
+  in it is picture work a skip could drop (the picture is core1's, 4-6 ms); the music breaks
+  up because the guest runs behind real time. 504 MHz runs the same part at 16.3 ms / 49 FPS.
+  The lever left on core0 is the FastDMA-to-VRAM path (~8 ms/frame here), or the guest slowed
+  evenly (pico-amiga's throttle) - the owner judged the even slowdown (frame skip off: 41.8 FPS)
+  worse than the skips.
+- **FastDMA rounds, PF2026 car part at 378 MHz (2026-11-24, hw DVp2w, PERF builds fdma1..fdma6):**
+  - Blit rows (`chunkyWriteRows`, 8 B, ~2 400 a frame) into PSRAM go through the
+    non-allocating alias (`psramRow8`: clean the line(s), two word stores to
+    XIP_NOCACHE_NOALLOC, invalidate): no line fill, no write-back. Gate on the ROW's address,
+    not the buffer's - a row in the SRAM half took a maintenance op on an SRAM address = bus
+    fault (fdma2 SIGBUS, BFAR = XIP_MAINTENANCE_BASE + SRAM). PERF self-check: every 64th row
+    read back cached, `[HGFX] nc: ... bad 0` on every run.
+  - COPY runs (`execRun`, whole mask) into PSRAM the same way (`psramCopyRun`), only when
+    source and destination do not overlap (HE2025's replicating copy reads what it wrote).
+  - The arena half follows the blits: their traffic counts x8 in `s_use` (scattered 8-byte
+    stores cost ~3x a sequential draw byte), and buffer 1's half ends on an 8 KB slot boundary
+    so a chunky window never straddles it (no `windows reach past the arena` bounces).
+    hw: `h1=1` after the first half-second, rows 2.0 -> 1.25 ms.
+  - FRAM / flash write-back (`ElmFlash::flush`, 20-27 ms of SD inside a frame) only on a frame
+    with 3 ms of slack, at the latest 30 s after the first dirty mark.
+  - Video > Frame skip > Skip up to: 4 / 8 / 16 frames in a row (`Config::frame_skip_max`,
+    nvs `frame_skip_max`), for frameSkipDecide and the eLeMeNt frame-end give-up alike.
+  - Tried and REVERTED (fdma3): the beeper tail in RAM + rdPtr / Elm::memRead in `.elmovl`
+    (owner: the sound got worse; not isolated which part).
+  - Verdict on the numbers: at 378 the car part is bound on BOTH cores (core0 loop 21-22 ms,
+    core1 busy 18-19 ms of 20.5: draw 10 + SD read-ahead 2-3); the rounds move PSRAM cost
+    between them. 504 MHz runs it at 17.8 ms / 49 FPS. A log with the heavy part at 504 is
+    not a 378 comparison - check `clk_sys` in the `[SD] high speed:` line of the boot that ran it.
+- [NEG2] cpu/post trap (fixed 2026-11-24): cpu was the delta of cpu_frame_us, which the PERF
+  stats zero every frame inside EndFrame - the delta was the difference of two frames' loop
+  times and "post" absorbed the rest (25 ms of phantom tail, chased with seven tail timers
+  before the PC sampler named the Z80). cpu is now n3_c1 - n3_c0; [NEG2+] prints pre/loop,
+  the Z80 slice timers (Next-shaped loops only - zeros on the eLeMeNt) and the tail split.
 - Cost: SRAM +313 B (EndFrame +216, MainScreen_Blank* +60, flags/veneers).
 - Host check: 48K TT48 with `PICOSPECCY_SKIP=1` - drawn frames correct, the shots
   differ from the no-skip run only in the FLASH phase (which emulated frame the shot

@@ -19,6 +19,7 @@
 #include "speccy/video/Video.h"
 #if !HOST_BUILD
 #include <hardware/xip_cache.h>   // the core1 queue through the uncached alias (ensure)
+#include <hardware/sync.h>        // __dsb: the blit rows through the non-allocating alias (psramRow8)
 #endif
 #include "speccy/z80/CPU.h"
 
@@ -558,6 +559,11 @@ static void h1Manage() {
         return;
     }
     s_h1Size = s_arenaSize < H1_END ? s_arenaSize : H1_END;
+    // Buffer 1 is the one the chunky windows map (8 KB slots): a window across the half's
+    // end sends the half back to PSRAM (chunkyRead), three of those and it stays there
+    // (s_h1Edge). With the end on a slot boundary no window can straddle it; the rows
+    // past it take the PSRAM path (chunkyWriteRun), which is what the whole buffer did.
+    if (n) s_h1Size &= ~0x1FFFu;
     s_h1Base = n ? BUF1 : 0;              // the picture first; the tail only as far as the arena goes
     drain();                              // core1 draws from the PSRAM copy until here
     memcpy(s_arena, s_buf + s_h1Base, s_h1Size);
@@ -848,6 +854,55 @@ static inline bool inWindow(int x, int y) {
 ELM_INL uint32_t rd32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 ELM_INL void wr32(uint8_t* p, uint32_t v) { memcpy(p, &v, 4); }
 
+#if !HOST_BUILD
+// A blit row into the PSRAM buffer WITHOUT the write-allocate. A cached 8-byte store into
+// PSRAM is a line fill (a QMI read of the 8 bytes about to be overwritten) and, later, the
+// dirty line's write-back: ~0.9 us a row, 2 400 rows a frame on PF2026 = 2.2 ms of core0
+// (hw PERF 2026-11-24, the [HGFX] io/fr chunkyWriteRun figure). The store goes through the
+// non-allocating alias instead (the HGFX queue and the Gigascreen prev-FB already do): one
+// QMI write, no fill, nothing left dirty. Coherence with the cached readers (core1's draw,
+// the COPY's source reads, chunkyWrite per byte): the line(s) are CLEANED first - a dirty
+// neighbour byte of a half-covered line would otherwise be dropped - and INVALIDATED after,
+// so the next cached read fetches the row from PSRAM. The maintenance ops are the SDK's
+// (xip_cache.c), inlined: one byte store to the maintenance alias per line and op.
+// Unaligned rows (x not a multiple of 4) keep the cached path: the QMI window takes word
+// accesses, and a split store is not worth a special case the demos do not hit.
+static inline bool bufInPsram(const void* p) {
+    const uintptr_t a = (uintptr_t)p;
+    return a >= XIP_BASE + 0x01000000u && a < XIP_NOCACHE_NOALLOC_BASE;
+}
+static inline void xipLineOp(uintptr_t off, uintptr_t op) { *(io_wo_8*)(XIP_MAINTENANCE_BASE + off + op) = 0; }
+static inline void psramRow8(uint8_t* d, uint32_t w0, uint32_t w1) {
+    const uintptr_t off = (uintptr_t)d - XIP_BASE;
+    const uintptr_t l0 = off & ~(uintptr_t)7, l1 = (off + 7) & ~(uintptr_t)7;
+    xipLineOp(l0, 3); if (l1 != l0) xipLineOp(l1, 3);          // clean by address
+    __dsb();
+    uint8_t* u = d + (XIP_NOCACHE_NOALLOC_BASE - XIP_BASE);
+    *(volatile uint32_t*)u = w0; *(volatile uint32_t*)(u + 4) = w1;
+    xipLineOp(l0, 2); if (l1 != l0) xipLineOp(l1, 2);          // invalidate by address
+    __dsb();
+}
+// A COPY run's destination the same way (execRun, m == 0xFF, d word-aligned, px a
+// multiple of 8): clean the lines it covers, the words through the alias, drop the lines.
+// PF2026's car part copies ~7 KB a frame from buffer 1 into the shown buffer 0 - with
+// the arena on buffer 1 that destination is PSRAM, 1.9 ms of core0 a frame as cached
+// stores (hw 2026-11-24, split/fr vram), the fill and the write-back of every line.
+static inline void psramCopyRun(uint8_t* d, const uint8_t* q, int px) {
+    const uintptr_t off = (uintptr_t)d - XIP_BASE;
+    const uintptr_t l0 = off & ~(uintptr_t)7, l1 = (off + (uintptr_t)px - 1) & ~(uintptr_t)7;
+    for (uintptr_t l = l0; l <= l1; l += 8) xipLineOp(l, 3);     // clean by address
+    __dsb();
+    volatile uint32_t* u = (volatile uint32_t*)(d + (XIP_NOCACHE_NOALLOC_BASE - XIP_BASE));
+    for (int i = 0; i < px; i += 4) *u++ = rd32(q + i);
+    for (uintptr_t l = l0; l <= l1; l += 8) xipLineOp(l, 2);     // invalidate by address
+    __dsb();
+}
+#if PERF_TRACE
+static uint32_t s_pNcRows, s_pNcChk, s_pNcBad, s_pNcCopy;   // rows / bytes through the alias; every 64th row read back cached and compared
+#endif
+#endif
+
+
 // The 8 pixels of a write at once, 8 bits per pixel, all on screen, no window.
 ELM_INL void put8(uint8_t* d, uint32_t lo, uint32_t hi, uint32_t bl, uint32_t bh, uint8_t m) {
     const uint32_t m8 = m * 0x01010101u, ml = bl & m8, mh = bh & m8;
@@ -983,7 +1038,20 @@ __attribute__((optimize("no-tree-loop-distribute-patterns"))) ELM_HOT static voi
             uint8_t* d = rowOf(dstE(), y) + x;
             const uint8_t* q = rowOf(srcE(), sy) + sx;
             const uint8_t m = s_e[REG_MASK];
-            if (m == 0xFF) for (int i = 0; i < px; i += 4) wr32(d + i, rd32(q + i));
+            if (m == 0xFF) {
+#if !HOST_BUILD
+                // Not for an overlapping copy (HE2025: the source two bytes behind the
+                // destination replicates): the reads of q would hit lines the alias wrote
+                // under the cache, stale until the invalidate at the run's end.
+                if (bufInPsram(d) && !((uintptr_t)d & 3) && (q + px <= d || d + px <= q)) {
+                    psramCopyRun(d, q, px);
+#if PERF_TRACE
+                    s_pNcCopy += (uint32_t)px;
+#endif
+                } else
+#endif
+                for (int i = 0; i < px; i += 4) wr32(d + i, rd32(q + i));
+            }
             else {
                 const uint32_t m8 = m * 0x01010101u;
                 for (int i = 0; i < px; i += 4)
@@ -1273,7 +1341,23 @@ ELM_OVL_CODE void chunkyWriteRows(const uint32_t* offs, const uint8_t* p, uint32
             if (len == 8) {
                 uint32_t w0, w1;
                 __builtin_memcpy(&w0, p, 4); __builtin_memcpy(&w1, p + 4, 4);
-                __builtin_memcpy(d, &w0, 4); __builtin_memcpy(d + 4, &w1, 4);
+#if !HOST_BUILD
+                // The ROW's address, not the buffer's: a row inside the SRAM half (h1) is a
+                // plain store, and the maintenance op on an SRAM address is a bus fault
+                // (hw 2026-11-24, fdma2: the half had just moved to buffer 1, BFAR =
+                // XIP_MAINTENANCE_BASE + the SRAM row).
+                if (bufInPsram(d) && !((uintptr_t)d & 3)) {
+                    psramRow8(d, w0, w1);
+#if PERF_TRACE
+                    s_pNcRows++;
+                    if (!(s_pNcRows & 63)) {   // the coherence check: the cached view must show the row
+                        uint32_t r0, r1; __builtin_memcpy(&r0, d, 4); __builtin_memcpy(&r1, d + 4, 4);
+                        s_pNcChk++; if (r0 != w0 || r1 != w1) s_pNcBad++;
+                    }
+#endif
+                } else
+#endif
+                { __builtin_memcpy(d, &w0, 4); __builtin_memcpy(d + 4, &w1, 4); }
             } else memcpy(d, p, len);
         } else {
             for (uint32_t i = 0; i < len; i++) { if (skip0 && !p[i]) continue; d[i] = planar(d[i], p[i], m); }
@@ -1282,7 +1366,12 @@ ELM_OVL_CODE void chunkyWriteRows(const uint32_t* offs, const uint8_t* p, uint32
         if (((a & 0xFF) + len) > 0x100) dirtyMark(a + len - 1);
         done += len;
     }
-    s_use[(s_r[REG_VP] >> 1) & 1] = s_use[(s_r[REG_VP] >> 1) & 1] + 2 * done;   // the fill and the write-back
+    // Scattered 8-byte stores: ~0.8 us each in PSRAM (a line fill + write-back, or the
+    // alias write + its maintenance), ~100 ns a byte against the draw's ~35 ns a byte of
+    // sequential reads on core1 - and core0 is the core that is short. x8, not x2, so the
+    // arena goes to the blits' buffer when core1 is not the limit (PF2026 at 378 MHz, hw
+    // 2026-11-24: h1=0 throughout, rows 2.0 ms of core0 a frame, core1 at half its budget).
+    s_use[(s_r[REG_VP] >> 1) & 1] = s_use[(s_r[REG_VP] >> 1) & 1] + 8 * done;
 }
 #if HOST_BUILD
 // Bench check (PICOSPECCY_ELM_BLITCHK): every byte of a whole-mask blit where chunkyWrite's
@@ -2288,6 +2377,7 @@ static bool hrcFlicker() {
 // Median cut over the picture's bins: split the box with the most weight x extent
 // along its longest axis at the weighted median, 168 boxes, each slot the box's
 // weighted mean. false: no memory (the cube then).
+static bool s_hamWrote;                 // hamProgram: slots were (re)written - a full draw is due
 static bool hamProgram(bool force) {
     if (!s_ham && (s_ham = (Ham*)tryMalloc(sizeof(Ham))) != nullptr) s_ham->n = 0;
     // The PSRAM fallback: counts, then the packed bins (4 B each), then the boxes.
@@ -2443,6 +2533,7 @@ static bool hamProgram(bool force) {
         nrgb[k] = pal[j]; taken[k] = true; live[k] = true; written++;
         VIDEO::elmPaletteSet(kSlots(k), pal[j]);
     }
+    s_hamWrote = written || force;       // no slot moved: the mapping stands, nothing to redraw
     if (!written && !force) return true;
 #if HOST_BUILD
     if (getenv("PICOSPECCY_ELMLOG")) Debug::log("[ELM] HAM refresh: %d colours, %d slots written, %d live slots moved, %d in use", nb, written, moved, nn);
@@ -3040,17 +3131,26 @@ static void frameSetup() {
     }
     if (hrcGiga() || (mode >= 3 && s_r[REG_FEATURE] == 2)) {   // HAM, HRC mixed: a palette of the picture, refreshed twice a second
         const bool need = s_palDirty || !s_palValid;
-        if (need || !s_hamHold) {
+        // Twice a second while the machine keeps up. Behind (the frame that just ended
+        // was late, or the next one is a skip) the re-check WAITS for a frame with slack:
+        // it is 5-12 ms of core0 (plus the drain of core1's last draw) and, when slots
+        // move, a 17-21 ms full draw on core1 that the next frame end waits for - every
+        // 2.5 s that was still a 35-45 ms frame and a hiccup in the music (PF2026 at
+        // 378 MHz, hw 2026-11-24, fdma2: 50 of 590 seconds had one, [NEG2] ef 20-30 ms).
+        // A video keeps its last palette a little longer; the music keeps its beat.
+        const bool behind = VIDEO::skipLate || ESPectrum::idle < 3000;
+        if (need || (!s_hamHold && !behind)) {
             s_hamHold = 25;
             s_palDirty = false; s_palValid = true;
-            if (hamProgram(need)) s_hamCubeOn = false;
-            else {
-                if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; }
+            if (hamProgram(need)) {
+                s_hamCubeOn = false;
+                if (s_hamWrote) s_fullDraw = true;   // slots were dealt: every row through the new mapping
+            } else {
+                if (need || !s_hamCubeOn) { cubeProgram(); s_hamCubeOn = true; s_fullDraw = true; }
                 // The cube again: the median cut is 15-18 ms of core0 (HAMCOLOR's
                 // 1513 bins, hw 2026-11-22) - ask again in 5 s, not 0.5 s.
                 s_hamHold = 250;
             }
-            s_fullDraw = true;               // slots were dealt: every row through the new mapping
         } else s_hamHold--;
         return;
     }
@@ -3244,17 +3344,43 @@ static void frameEndBody() {
         runFlush();
         goto posted;
     }
+    // The same way out when the frame was NOT late at its start but would be by waiting
+    // here: with Video > Frame skip on, the wait is bounded by what the frame still has
+    // of its target, and a core1 that is not done by then costs this frame its draw (the
+    // picture is dealt at the next frame end, s_fbDirty), up to Config::frame_skip_max - 1
+    // in a row - the next one waits whatever it takes, as before. PF2026 at 378 MHz (hw 2026-11-24): the
+    // HAM re-check's full redraw is 17-21 ms of core1 and the frame end after it waited
+    // for it whole - ef 25-36 ms behind a 3 ms Z80 frame, twice a second, and the music
+    // (Z80-timed) broke up on each. The skipLate branch above never saw those frames.
     if (s_drawDone != s_drawPosted) {
         const uint32_t t0 = time_us_32();
 #if PERF_TRACE
         s_pDrop++;
 #endif
-        const uint64_t lim = time_us_64() + 100000;
-        while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow | g_cowRelease) c0Poll(); }
+        static uint8_t s_noDrawRun;
+        bool give = false;
+        if (Config::frame_skip && !s_pair && s_noDrawRun + 1 < Config::frame_skip_max) {   // the same cap as frameSkipDecide
+            const int64_t slack = ESPectrum::ts_start + ESPectrum::target - (int64_t)time_us_64();
+            const uint64_t lim = time_us_64() + (slack > 0 ? (uint64_t)slack : 0);
+            while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow | g_cowRelease) c0Poll(); }
+            give = s_drawDone != s_drawPosted;
+        }
+        if (!give) {
+            const uint64_t lim = time_us_64() + 100000;
+            while (s_drawDone != s_drawPosted && time_us_64() < lim) { if (g_pairPushNow | g_cowRelease) c0Poll(); }
+        }
         s_waitedUs = time_us_32() - t0;
 #if PERF_TRACE
         s_pWaitUs += s_waitedUs;
 #endif
+        if (give) {
+            s_noDrawRun++;
+            VIDEO::skipTaken = true;
+            s_fbDirty = true;
+            runFlush();
+            goto posted;
+        }
+        s_noDrawRun = 0;
     }
     s_drawPosted = s_drawPosted + 1;
     runFlush();
@@ -3345,6 +3471,11 @@ posted:
                            Elm::g_elm_io_cnt[5] / 60,
                            g_elm_batch[0] / 60, g_elm_batch[1] / 60, g_elm_batch[2] / 60, g_elm_batch[3] / 60);
                 for (int i = 0; i < 4; i++) g_elm_batch[i] = 0;
+#if !HOST_BUILD
+                // rows through the non-allocating alias a frame, and the coherence check (bad must stay 0)
+                Debug::log("[HGFX] nc: rows %u/fr copy %u B/fr, checked %u bad %u", s_pNcRows / 60, s_pNcCopy / 60, s_pNcChk, s_pNcBad);
+                s_pNcRows = 0; s_pNcCopy = 0;
+#endif
                 {   // where the frame's FastDMA (core0) and core1's time go, us a frame
                     const uint32_t fw = Elm::g_elm_io_us[1], fr = Elm::g_elm_io_us[2], fv = Elm::g_elm_io_us[3], fc = Elm::g_elm_io_us[4];
                     const uint32_t frest = fw > fr + fv + fc ? fw - fr - fv - fc : 0;

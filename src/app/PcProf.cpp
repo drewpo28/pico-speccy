@@ -54,7 +54,13 @@ extern "C" void __not_in_flash_func(pcprof_sample)(const uint32_t* frame) {
 #if PCPROF_GSGAP
     if (time_us_32() - gs_pump_last_us < (uint32_t)PCPROF_GSGAP) return;
 #endif
-    const uint32_t k = (frame[6] >> PCPROF_SHIFT) + 1u;   // + 1: 0 means empty
+    // PCPROF_LR_LO/HI (CMake, hex): a sample inside that code range is counted at its
+    // RETURN address instead - who calls memcpy, not that memcpy runs (2026-11-24).
+    uint32_t pc = frame[6];
+#if defined(PCPROF_LR_LO) && defined(PCPROF_LR_HI)
+    if (pc - (uint32_t)PCPROF_LR_LO < (uint32_t)(PCPROF_LR_HI - PCPROF_LR_LO)) pc = frame[5];
+#endif
+    const uint32_t k = (pc >> PCPROF_SHIFT) + 1u;   // + 1: 0 means empty
     uint32_t h = (k * 2654435761u) >> 24;                  // 8 bits
     for (uint32_t i = 0; i < 16; i++, h = (h + 1) & (PCPROF_SLOTS - 1)) {
         if (s_key[h] == k) { s_cnt[h]++; s_total++; return; }

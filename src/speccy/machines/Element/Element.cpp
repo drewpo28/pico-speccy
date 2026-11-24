@@ -1330,7 +1330,11 @@ static void divRomApply() {
 
 void flush(bool force) {
     if (++s_onFrames >= 3000) { s_onFrames = 0; framCount(0x1FFC); }   // OnTime, minutes
-    ElmFlash::flush(force);
+    // The write-back is an SD write of 20-27 ms inside the frame (a CREATE_ALWAYS open,
+    // the data, the directory): on a machine already behind it was a 40 ms frame and a
+    // 10-20k-sample hold in the sound every 6-10 s (PF2026 at 378 MHz, hw 2026-11-24).
+    // Only a frame with 3 ms to spare takes it, and nothing dirty waits longer than 30 s.
+    ElmFlash::flush(force, ESPectrum::idle >= 3000);
 }
 
 // The personality at the reset that is starting: the live register once the session

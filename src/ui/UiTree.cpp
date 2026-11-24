@@ -1589,6 +1589,15 @@ static const Option opt_host_border[] = {
     { "Full (360x288)",       Config::VM_720x576_50, "Full" },
 };
 #endif
+static bool p_frameSkipOn() { return Stage::get(SET_FRAMESKIP) != 0; }
+// Frames not drawn in a row before one is drawn whatever the delay: pico-amiga's 4 keeps
+// the picture at >= 10 FPS; 8 / 16 buy the sound more on a machine whose frame is at the
+// budget (PF2026 on the eLeMeNt at 378 MHz, owner 2026-11-24: the music before the picture).
+static const Option opt_frame_skip_max[] = {
+    { "4 frames",  4 },
+    { "8 frames",  8 },
+    { "16 frames", 16 },
+};
 static const Node kVideo[] = {
 #if HOST_BUILD
     NM_RADIO(TXT_VID_BORDER_SIZE, SET_VIDEO_MODE, opt_host_border, nullptr),
@@ -1611,8 +1620,9 @@ static const Node kVideo[] = {
     // machine runs ~20% fast on a 60 Hz screen), off = the machine's own frame rate.
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
     // A frame that starts over 1 ms behind its time is emulated but not drawn, up to
-    // 4 in a row (ESPectrum::frameSkipDecide): the machine keeps its speed and sound.
+    // "Skip up to" in a row (ESPectrum::frameSkipDecide): the machine keeps its speed and sound.
     NM_BOOL (TXT_VID_FRAMESKIP,  SET_FRAMESKIP,  nullptr),
+    NM_RADIO_EN(NM_IND TXT_VID_FRAMESKIP_MAX, SET_FRAMESKIP_MAX, opt_frame_skip_max, nullptr, p_frameSkipOn),
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),

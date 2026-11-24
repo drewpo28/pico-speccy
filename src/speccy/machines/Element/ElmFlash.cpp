@@ -214,12 +214,16 @@ bool ensure() {
 
 static bool anyDirty() { return s_dirty[0] | s_dirty[1] | s_dirty[2] | s_dirty[3]; }
 
-void flush(bool force) {
+static uint32_t s_dirtyMs;             // when the pending write-back was first seen (0 = nothing pending)
+void flush(bool force, bool calm) {
     if (!FileUtils::fsMount) return;
     const bool want = (s_img && (s_fileMissing || anyDirty())) || (s_fram && s_framDirty);
-    if (!want) return;
+    if (!want) { s_dirtyMs = 0; return; }
     const uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!s_dirtyMs) s_dirtyMs = now ? now : 1;
     if (!force && s_flushMs && (now - s_flushMs) < 1500) return;
+    if (!force && !calm && (now - s_dirtyMs) < 30000) return;   // Elm::flush: the frame has no slack for an SD write
+    s_dirtyMs = 0;
     s_flushMs = now ? now : 1;
     FileUtils::mkdirParents(ELM_DIR);
     if (s_img && (s_fileMissing || anyDirty())) {
