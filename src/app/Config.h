@@ -518,7 +518,10 @@ public:
     static uint8_t  secondJoy;
     static uint8_t  kempstonPort;
     static bool     frame_skip;   // Video > Frame skip (ESPectrum::frameSkipDecide)
-    static uint8_t  frame_skip_max;   // Video > Frame skip > Skip up to: frames not drawn in a row (4 / 8 / 16)
+    // Frames not drawn in a row before one is drawn whatever the delay (frameSkipDecide and
+    // the eLeMeNt frame-end give-up). Was a 4/8/16 menu row; 8 fixed (owner 2026-11-24):
+    // 4 cost PF2026 its music at 378 MHz, 8 still keeps the picture at >= ~6 FPS.
+    static constexpr uint8_t frame_skip_max = 8;
     static bool CursorAsJoy;
     static uint8_t scanlines;
     // CRT filter. 0=Off; 1..3 = Soft/Medium/Strong with a soft 4-pixel-pitch mask

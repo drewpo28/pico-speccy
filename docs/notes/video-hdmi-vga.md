@@ -1538,8 +1538,9 @@ drawn, at most 4 in a row (then one is drawn whatever the delay).
     hw: `h1=1` after the first half-second, rows 2.0 -> 1.25 ms.
   - FRAM / flash write-back (`ElmFlash::flush`, 20-27 ms of SD inside a frame) only on a frame
     with 3 ms of slack, at the latest 30 s after the first dirty mark.
-  - Video > Frame skip > Skip up to: 4 / 8 / 16 frames in a row (`Config::frame_skip_max`,
-    nvs `frame_skip_max`), for frameSkipDecide and the eLeMeNt frame-end give-up alike.
+  - Frames skipped in a row: `Config::frame_skip_max`, for frameSkipDecide and the eLeMeNt
+    frame-end give-up alike. Was a "Skip up to" 4 / 8 / 16 menu row (nvs `frame_skip_max`);
+    removed 2026-11-24 (owner), now a constant 8. An old nvs key is simply ignored.
   - Tried and REVERTED (fdma3): the beeper tail in RAM + rdPtr / Elm::memRead in `.elmovl`
     (owner: the sound got worse; not isolated which part).
   - Verdict on the numbers: at 378 the car part is bound on BOTH cores (core0 loop 21-22 ms,

@@ -187,7 +187,7 @@ static int describeFrameSkip(int32_t v, DescLine* out, int max) {
     if (v != 1) return 0;
     int n = sub (out, 0, max, "Frame late > 1 ms", nullptr, DESC_PLAIN);
     n = rule(out, n, max, "emulated, not drawn", "");
-    n = rule(out, n, max, "up to 4 in a row", "");
+    n = rule(out, n, max, "up to 8 in a row", "");
     n = rule(out, n, max, "speed and sound kept", "");
     return n;
 }

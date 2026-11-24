@@ -4575,7 +4575,7 @@ static int64_t  s_postLast = 0;
 volatile uint32_t g_frame_skips = 0;            // frames not drawn (since boot)
 __attribute__((noinline)) bool ESPectrum::frameSkipDecide() {
     enum { FS_LATE_US = 1000 };
-    const unsigned FS_MAX = Config::frame_skip_max;   // Video > Frame skip > Skip up to (4 / 8 / 16)
+    const unsigned FS_MAX = Config::frame_skip_max;   // 8, fixed
     static uint8_t s_skipped = 0;
     if (VIDEO::skipTaken) { VIDEO::skipTaken = false; g_frame_skips = g_frame_skips + 1; }
     const uint64_t now64 = time_us_64();

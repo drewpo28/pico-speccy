@@ -79,7 +79,6 @@ namespace nm {
 NM_INT_ACCESS (aluTiming, AluTiming)
 NM_BOOL_ACCESS(issue2,    Issue2)
 NM_BOOL_ACCESS(frameSkip, frame_skip)
-NM_INT_ACCESS (frameSkipMax, frame_skip_max)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
 NM_BOOL_ACCESS(ledPanel,  led_panel)
 NM_BOOL_ACCESS(ideLed,    ide_led)
