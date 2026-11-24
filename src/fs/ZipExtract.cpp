@@ -712,30 +712,50 @@ bool ZipExtract::extractFileInner(FIL* zipFile, uint16_t compression, uint32_t c
     return false;
 }
 
+// The copy buffers of an extract. 512 bytes on the stack (the old size: core0's
+// stack is 8 KB) made every f_read a CMD17 and every f_write a CMD24 — one card
+// command and, for the write, one flash page program PER SECTOR, ~1.5-2 ms per
+// 512 B, i.e. ~0.3 MB/s, while a FatFs read/write of a whole chunk is a single
+// CMD18/CMD25 burst (~0.1 ms per sector after the command's latency). The
+// buffers now come from the Buffer pool and shrink until something fits, down to
+// the old 512 bytes, so a thin heap costs speed, never the extract. The read
+// target stays off PSRAM for the same reason as ZipWork above; the inflate output
+// is only ever written by the CPU and read by f_write, so it may go there.
+#define ZIP_IO_MAX 8192u
+static uint8_t* zipIoAlloc(uint32_t flags, uint32_t& cap)
+{
+    for (cap = ZIP_IO_MAX; cap >= ZIP_BUF_SIZE; cap >>= 1) {
+        uint8_t* p = (uint8_t*)Buffer::palloc(cap, Buffer::NEED_POINTER | Buffer::USE_NET_ARENA | flags);
+        if (p) return p;
+    }
+    cap = 0;
+    return nullptr;
+}
+
 bool ZipExtract::extractStored(FIL* zipFile, uint32_t size, const char* outPath) {
     FIL& outFile = s_work->out;
-    if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    uint32_t cap;
+    uint8_t* buf = zipIoAlloc(0, cap);
+    if (!buf) { s_zip_err = OSD_ZIP_NOMEM; return false; }
+    if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        Buffer::pfree(buf);
         return false;
+    }
 
-    uint8_t buf[ZIP_BUF_SIZE];
     UINT br, bw;
     uint32_t remaining = size;
+    bool ok = true;
 
     while (remaining > 0) {
-        uint32_t chunk = (remaining < ZIP_BUF_SIZE) ? remaining : ZIP_BUF_SIZE;
-        if (f_read(zipFile, buf, chunk, &br) != FR_OK || br != chunk) {
-            f_close(&outFile);
-            return false;
-        }
-        if (f_write(&outFile, buf, chunk, &bw) != FR_OK || bw != chunk) {
-            f_close(&outFile);
-            return false;
-        }
+        uint32_t chunk = (remaining < cap) ? remaining : cap;
+        if (f_read(zipFile, buf, chunk, &br) != FR_OK || br != chunk) { ok = false; break; }
+        if (f_write(&outFile, buf, chunk, &bw) != FR_OK || bw != chunk) { ok = false; break; }
         remaining -= chunk;
     }
 
     f_close(&outFile);
-    return true;
+    Buffer::pfree(buf);
+    return ok;
 }
 
 // Route miniz's inflate-state allocation (the ~11 KB tinfl_decompressor) through
@@ -754,11 +774,21 @@ static void zip_zfree(void* /*opaque*/, void* p) { Buffer::pfree(p); }
 
 bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const char* outPath) {
     FIL& outFile = s_work->out;
-    if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+    // Input (a read target: SRAM) and inflate output (PSRAM allowed), see zipIoAlloc.
+    uint32_t inCap, outCap;
+    uint8_t* s_inbuf = zipIoAlloc(0, inCap);
+    uint8_t* s_outbuf = s_inbuf ? zipIoAlloc(Buffer::PREFER_PSRAM, outCap) : nullptr;
+    if (!s_outbuf) {
+        if (s_inbuf) Buffer::pfree(s_inbuf);
+        s_zip_err = OSD_ZIP_NOMEM;
         return false;
+    }
+    if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        Buffer::pfree(s_outbuf);
+        Buffer::pfree(s_inbuf);
+        return false;
+    }
 
-    uint8_t s_inbuf[ZIP_BUF_SIZE];
-    uint8_t s_outbuf[ZIP_BUF_SIZE];
     z_stream stream;
 
     memset(&stream, 0, sizeof(stream));
@@ -767,7 +797,7 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
     stream.next_in = s_inbuf;
     stream.avail_in = 0;
     stream.next_out = s_outbuf;
-    stream.avail_out = ZIP_BUF_SIZE;
+    stream.avail_out = outCap;
 
     // compressedSize==0 with the data-descriptor flag (flags&0x08) means a
     // streaming packer wrote the file without back-patching the local header —
@@ -807,6 +837,8 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
         if (dictBorrowedRam) VIDEO::SaveRect.restore_ram(dict, TINFL_LZ_DICT_SIZE);
         else                 Buffer::pfree(dict);
         f_close(&outFile);
+        Buffer::pfree(s_outbuf);
+        Buffer::pfree(s_inbuf);
         return false;
     }
 
@@ -815,8 +847,8 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
 
     for (;;) {
         if (!stream.avail_in && !in_eof) {
-            uint32_t n = unbounded ? ZIP_BUF_SIZE
-                                   : ((infile_remaining < ZIP_BUF_SIZE) ? infile_remaining : ZIP_BUF_SIZE);
+            uint32_t n = unbounded ? inCap
+                                   : ((infile_remaining < inCap) ? infile_remaining : inCap);
             if (n > 0) {
                 if (f_read(zipFile, s_inbuf, n, &br) != FR_OK) {
                     success = false;
@@ -844,7 +876,7 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
         int status = inflate(&stream, finishing ? Z_FINISH : Z_SYNC_FLUSH);
 
         if ((status == Z_STREAM_END) || (!stream.avail_out)) {
-            uint32_t n = ZIP_BUF_SIZE - stream.avail_out;
+            uint32_t n = outCap - stream.avail_out;
             if (n > 0) {
                 if (f_write(&outFile, s_outbuf, n, &bw) != FR_OK || bw != n) {
                     success = false;
@@ -852,7 +884,7 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
                 }
             }
             stream.next_out = s_outbuf;
-            stream.avail_out = ZIP_BUF_SIZE;
+            stream.avail_out = outCap;
         }
 
         if (status == Z_STREAM_END) break;
@@ -872,6 +904,8 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
     f_close(&outFile);
     if (dictBorrowedRam) VIDEO::SaveRect.restore_ram(dict, TINFL_LZ_DICT_SIZE);
     else                 Buffer::pfree(dict);
+    Buffer::pfree(s_outbuf);
+    Buffer::pfree(s_inbuf);
 
     return success;
 }
