@@ -141,6 +141,91 @@ IF(MURM2)
 
         PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
+ELSEIF(PICO_PC2)
+    # Olimex RP2350pc (RP2350B, Rev.A1 netlist). HDMI-ONLY: the 8-pin block
+    # GPIO12-19 is the HSTX TMDS output with an IRREGULAR lane order
+    # (D0=12/13, CK=14/15, D2=16/17, D1=18/19 — the clock pair sits in the
+    # MIDDLE, so only the HSTX back-end can drive it; see hdmi.h/hdmi_word.h).
+    # No VGA, no NES pad: GPIO5/9/20/21 are UEXT/SD-CS/CEC/HPD.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
+        CPU_MHZ=${CPU_MHZ}
+
+        PICO_PC2=1
+
+        # Keyboard = USB (the board's internal hub, 4x USB-A) — KBDUSB (the
+        # default). NO PS/2 port on this board, but the Ps2Kbd object still needs
+        # a base pair to compile: GPIO40/41 (GPIO40 is the schematic's
+        # "Free_GPIO/ADC"; GPIO41 carries only the SD card-detect switch, which
+        # nothing in this firmware reads — pull-ups there are harmless).
+        KBD_CLOCK_PIN=40
+
+        # Debug > UART console: TX-only on GP0 (UART0 = UEXT1's TX pin). Yields
+        # to ZiFi when the NIC is on the same pair (BoardPins::PICO_PC2 pairs).
+        DBG_UART_TX_PIN=0
+
+        # Audio: PWM on the PWM5 slice — GP27 (R) / GP26 (L), netlist labels
+        # PWM_AUDIO-R / PWM_AUDIO-L (the DEFAULT driver). The on-board ES8311
+        # codec is also selectable (Audio > Driver = I2S): host-master PIO I2S,
+        # codec in slave mode, NO MCLK pin — the ES8311 derives its clock from
+        # SCLK/BCLK (GPOUT1 on GP23 kills DVI rendering, hw-verified by the port's
+        # author 2026-11-19).
+        I2S_DATA_PIO=31      # DSDIN (host -> codec data)
+        I2S_BCK_PIO=30       # SCLK / BCLK
+        I2S_LCK_PIO=29       # LRCK — BELOW BCLK: side-set base must be 29
+        I2S_LRCK_BELOW_BCK=1 # selects the swapped-side-set PIO program
+        PICO_PC2_I2S_64FS=1  # standard 64-BCLK frame: PIO 4 MHz -> BCLK 2 MHz,
+                             # LRCK 31250 Hz; ES8311 REG02 = 0x10 (hw-confirmed
+                             # by the port's author, v0.2+)
+
+        # ES8311 control (netlist RM1 / codec power tree):
+        CODEC_PWR_PIN=22     # 1 = codec LDO ON (R38 pulls it up at boot)
+        AMP_SHDN_PIN=35      # 0 = PAM8003 amp ON (/AMP-SHDN# tied high by R83)
+        AMP_VOL_PIN=34       # 1 = analog volume max; Hi-Z = VOL ~0.24 V ~ -75 dB
+        CODEC_I2C_SDA=32     # I2C0, addr 0x18. Shared with the HDMI DDC FETs —
+        CODEC_I2C_SCL=33     # open-drain I2C only, no push-pull
+        CODEC_MCLK_PIN=255   # absent on purpose (GP23 = GPOUT1 breaks DVI)
+
+        # No 595/AY shift-register chain wired on this board: 255 = absent
+        # (PinSerialData_595.c skips a 255 pin exactly like a claimed one).
+        CLK_AY_PIN1=255 # not in use
+        LATCH_595_PIN=255
+        CLK_595_PIN=255
+        DATA_595_PIN=255
+        CLK_AY_PIN2=255
+
+        PWM_PIN0=27 # R (netlist PWM_AUDIO-R)
+        PWM_PIN1=26 # L (netlist PWM_AUDIO-L)
+        BEEPER_PIN=26 # not implemented
+
+        # SDCARD: SPI1 on the microSD slot (netlist: CS=9/SCK=10/MOSI(CMD)=11,
+        # MISO(DAT0)=24, CD#=41 — CD not read by this firmware).
+        SDCARD_SPI_BUS=spi1
+        SDCARD_PIN_SPI0_CS=9
+        SDCARD_PIN_SPI0_SCK=10
+        SDCARD_PIN_SPI0_MOSI=11
+        SDCARD_PIN_SPI0_MISO=24
+
+        #PSRAM: butter QMI on CS1/GPIO8 (PSRAM_CS1_GPIO in cmake/board.cmake).
+        # PIO-SPI PSRAM off — no pins, no PIO programs.
+        PSRAM_SPINLOCK=255
+        PSRAM_ASYNC=255
+
+        PSRAM_PIN_CS=255
+        PSRAM_PIN_SCK=255
+        PSRAM_PIN_MOSI=255
+        PSRAM_PIN_MISO=255
+
+        # NO NES gamepad on this board: USE_NESPAD deliberately absent.
+        # GPIO5/9/20/21 are UEXT/SD-CS/CEC/HPD — NESPAD must never drive them.
+
+        # HDMI (and nominally VGA, unused): 8 pins from GPIO12.
+        VGA_BASE_PIN=12
+        HDMI_BASE_PIN=12
+
+        DEFAULT_THROTTLING=0
+        PICO_DEFAULT_LED_PIN=25
+    )
 ELSEIF(PICO_PC)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}

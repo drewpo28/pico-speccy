@@ -42,7 +42,7 @@ ELSE()
     # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
     # HDMI_HSTX_ON: 0 PIO, 1 raw serializer, 2 command expander + TMDS encoder.
     IF(HDMI_HSTX STREQUAL "AUTO")
-        IF(PICO_PC OR MURM2)
+        IF(PICO_PC OR MURM2 OR PICO_PC2)
             # TMDS is the intended back-end; RAW remains an explicit fallback.
             SET(HDMI_HSTX_ON 2)
         ELSE()
@@ -56,10 +56,19 @@ ELSE()
         SET(HDMI_HSTX_ON 0)
     ENDIF()
     IF(HDMI_HSTX_ON)
-        IF(NOT (PICO_PC OR MURM2))
+        IF(NOT (PICO_PC OR MURM2 OR PICO_PC2))
             message(FATAL_ERROR
                 "HDMI_HSTX needs the display on GPIO 12-19 (HDMI_BASE_PIN=12): "
-                "that is PICO_PC and MURM2 (and their W/WS variants) only")
+                "that is PICO_PC, MURM2 and PICO_PC2 (and their W/WS variants) only")
+        ENDIF()
+        # PICO_PC2's lane order (clock pair at base+2, in the middle of the data
+        # pairs) cannot be expressed by the PIO TMDS program's `out pins,6` —
+        # HDMI_HSTX is not a choice there, it is the only back-end.
+        IF(PICO_PC2 AND NOT HDMI_HSTX_ON)
+            message(FATAL_ERROR
+                "PICO_PC2 is HDMI-only and its lane order is HSTX-mandatory "
+                "(D0 at +0, CK at +2, D2 at +4, D1 at +6): build it with "
+                "-DHDMI_HSTX=TMDS (or AUTO), never -DHDMI_HSTX=OFF")
         ENDIF()
         target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=${HDMI_HSTX_ON})
         # The VGA half of the same board moves with it.  It is not a second
@@ -68,7 +77,12 @@ ELSE()
         # clocks in video_mode_table.h are chosen to be 126 MHz / k for exactly
         # this.  What it buys is the COLOUR — four PWM sub-samples per pixel
         # instead of one 2-bit-per-channel value plus a Bayer block.
-        target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HSTX=1)
+        # PICO_PC2 is the exception: HDMI-only, and its lane order (clock in the
+        # middle of the data pairs) breaks the VGA_HSTX pin model too — the VGA
+        # path stays compiled (PIO, unreachable) and SELECT_VGA is forced false.
+        IF(NOT PICO_PC2)
+            target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HSTX=1)
+        ENDIF()
         IF(HDMI_HSTX_TRACE)
             target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX_TRACE=1)
         ENDIF()

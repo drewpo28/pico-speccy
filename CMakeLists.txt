@@ -258,6 +258,12 @@ ENDIF()
 
 if (BUTTER_PSRAM_GPIO)
     target_compile_definitions(${PROJECT_NAME} PRIVATE BUTTER_PSRAM_GPIO=${BUTTER_PSRAM_GPIO})
+    if (PSRAM_CS1_GPIO)
+        # Per-board QMI CS1 pin for butter PSRAM on RP2350B silicon (main.cpp).
+        # Unset on the Pico-carrier boards: their RP2350B PSRAM is always on the
+        # Pico's GPIO47 pads (the historic `: 47` fallback stays authoritative).
+        target_compile_definitions(${PROJECT_NAME} PRIVATE PSRAM_CS1_GPIO=${PSRAM_CS1_GPIO})
+    endif()
 endif()
 # ZiFi (ESP-01S WiFi NIC emulation).
 # TX/RX pins are chosen at RUNTIME (Network → GPIO picker, stored in NVS) from a

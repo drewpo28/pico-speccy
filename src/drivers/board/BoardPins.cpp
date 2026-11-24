@@ -94,6 +94,17 @@ static const UartPair ZIFI_PAIRS[] = {
     {2, 3, "QWST1"},            // UART0 (free)
     {10, 11, ""},               // UART1 (free)
 };
+#elif defined(PICO_PC2)
+// Olimex RP2350pc — the two UEXT connectors are the only places an ESP-01S goes:
+// UEXT1 = GPIO0/1 (UART0) + GPIO2-7 (I2C1/SPI0), UEXT2 = GPIO36-45 (I2C0/UART1/
+// SPI1 pads). GP0 is also the UART-console TX (DBG_UART_TX_PIN=0) — a ZiFi on
+// 0/1 owns the same UART instance, and the console yields to it (both directions
+// handled: zifiOwnsPin makes the peripherals yield, dbgUartBlockedByZifi makes
+// the console yield back).
+static const UartPair ZIFI_PAIRS[] = {
+    {0, 1, ""},                 // UART0 (UEXT1)
+    {38, 39, ""},               // UART1 (UEXT2)
+};
 #elif defined(ZERO2)
 static const UartPair ZIFI_PAIRS[] = {
     {24, 25, ""},               // UART1 (free)
@@ -249,6 +260,8 @@ const char* dbgUartNote() {
     return "off: WAV input";
 #elif defined(PICO_PC)
     return "KBD -> GP10/11";
+#elif defined(PICO_PC2)
+    return "off: ZiFi (UEXT1)";   // GP0 is UEXT1's TX too
 #elif defined(ZERO2)
     return "off: PCM DAC";
 #elif defined(MURM2)

@@ -42,6 +42,85 @@ bitloop0:
 public entry_point:
     set x, 14         side 0b11
 
+; audio_i2s_lrck_low — Olimex RP2350pc variant for boards where the LRCK GPIO
+; sits BELOW the BCLK GPIO (PICO_PC2: LRCK=GP29, BCLK=GP30, DATA=GP31).
+;
+; Pin mapping with the ORIGINAL program (side-set base = BCK pin = 30):
+;   side-set bit0 -> GP30 (BCLK), bit1 -> GP31 (LRCK ... which is actually
+;   DSDIN on this board — the codec would get LRCK on its DATA pin).
+; Pin mapping with THIS program (side-set base = LCK pin = 29):
+;   side-set bit0 -> GP29 (LRCK), bit1 -> GP30 (BCLK), data stays on GP31.
+;
+; The side-set codings are therefore bit-swapped 0b10 <-> 0b01 so every
+; instruction still drives the SAME BCLK and LRCK levels as the original
+; program — identical I2S Philips timing, only the pin assignment differs:
+;   original 0b10 (BCLK=0, LRCK=1)  ->  here 0b01 (bit0=LRCK=1, bit1=BCLK=0)
+;   original 0b01 (BCLK=1, LRCK=0)  ->  here 0b10
+;   original 0b00 / 0b11            ->  unchanged
+; Load it with clock_pin_base = LRCK pin (29), data_pin unchanged.
+.program audio_i2s_lrck_low
+.side_set 2
+
+bitloop1:           ;        ||   bit0 = LRCLK (GP29), bit1 = BCLK (GP30)
+    out pins, 1       side 0b01
+    jmp x-- bitloop1  side 0b11
+    out pins, 1       side 0b00
+    set x, 14         side 0b10
+
+bitloop0:
+    out pins, 1       side 0b00
+    jmp x-- bitloop0  side 0b10
+    out pins, 1       side 0b01
+public entry_point:
+    set x, 14         side 0b11
+
+; audio_i2s_lrck_low_64fs — PICO_PC2-ONLY experimental variant (compile-time
+; define PICO_PC2_I2S_64FS, r7 A/B experiment vs r6). Standard Philips
+; 64-BCLK frame: 16 data + 16 idle BCLK per half-frame, BCLK = 64 x fs
+; (2 MHz @ fs = 31250 Hz), LRCK = 31250 Hz exact.
+;
+; Same side-set swap as audio_i2s_lrck_low (side-set base = LCK pin 29:
+; bit0 = LRCK GP29, bit1 = BCLK GP30, data stays on GP31), same wrap and
+; same entry point. The FIRST 32 PIO cycles of every half-frame are
+; instruction-for-instruction identical to audio_i2s_lrck_low, so the MSB
+; timing relative to the LRCK edge is unchanged. The difference: after the
+; 16 data bits, 32 more PIO cycles follow with LRCK held FIXED and BCLK
+; still toggling on every instruction — a y-counted loop, because 64 idle
+; cycles unrolled would exceed the 32-instruction PIO program limit:
+;   1 nop + "set y, 14" + 15 x { nop, jmp y-- } = 32 PIO cycles
+; -> 64 PIO cycles per half-frame, 128 per frame = 64 BCLK.
+; Load it with PIO clock 4 MHz (clkdiv int 63 at 252 MHz sys clock):
+; BCLK = 4 MHz / 2 = 2 MHz = 64 x fs, LRCK = 4 MHz / 128 = 31250 Hz.
+; The codec's REG02 must then be 0x10 (x4 -> dig_mclk 8 MHz = 256 x fs),
+; see es8311_init.c — 0x18 (x8) would feed 16 MHz and exceed the limit.
+.program audio_i2s_lrck_low_64fs
+.side_set 2
+
+bitloop1:           ;        ||   bit0 = LRCLK (GP29), bit1 = BCLK (GP30)
+    out pins, 1       side 0b01
+    jmp x-- bitloop1  side 0b11
+    ; 32 idle PIO cycles: LRCK stays HIGH, BCLK toggles every instruction
+    nop               side 0b01
+    set y, 14         side 0b11
+idle1:
+    nop               side 0b01
+    jmp y-- idle1     side 0b11
+    out pins, 1       side 0b00
+    set x, 14         side 0b10
+
+bitloop0:
+    out pins, 1       side 0b00
+    jmp x-- bitloop0  side 0b10
+    ; 32 idle PIO cycles: LRCK stays LOW, BCLK toggles every instruction
+    nop               side 0b00
+    set y, 14         side 0b10
+idle0:
+    nop               side 0b00
+    jmp y-- idle0     side 0b10
+    out pins, 1       side 0b01
+public entry_point:
+    set x, 14         side 0b11
+
 .program audio_i2s_cs4334
 .side_set 2
 public entry_point:
@@ -92,6 +171,45 @@ static inline void audio_i2s_program_init(PIO pio, uint sm, uint offset, uint da
     pio_sm_set_pins_with_mask64(pio, sm, 0, pin_mask); // clear pins
 
     pio_sm_exec(pio, sm, pio_encode_jmp(offset + audio_i2s_offset_entry_point));
+}
+
+// Same shape as audio_i2s_program_init, for the audio_i2s_lrck_low program:
+// clock_pin_base is the LRCK pin (the LOWER of the two clock GPIOs), the
+// side-set pins run LRCK=base, BCLK=base+1.
+static inline void audio_i2s_lrck_low_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clock_pin_base) {
+    pio_sm_config sm_config = audio_i2s_lrck_low_program_get_default_config(offset);
+
+    sm_config_set_out_pins(&sm_config, data_pin, 1);
+    sm_config_set_sideset_pins(&sm_config, clock_pin_base);
+    sm_config_set_out_shift(&sm_config, false, true, 32);
+
+    pio_sm_init(pio, sm, offset, &sm_config);
+
+    const uint64_t pin_mask = ((uint64_t)1 << data_pin) | ((uint64_t)3 << clock_pin_base);
+    pio_sm_set_pindirs_with_mask64(pio, sm, pin_mask, pin_mask);
+    pio_sm_set_pins_with_mask64(pio, sm, 0, pin_mask); // clear pins
+
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset + audio_i2s_lrck_low_offset_entry_point));
+}
+
+// Same shape as audio_i2s_lrck_low_program_init, for the experimental
+// audio_i2s_lrck_low_64fs program (PICO_PC2_I2S_64FS): clock_pin_base is the
+// LRCK pin, the side-set pins run LRCK=base, BCLK=base+1 — identical pin
+// mapping to r6, only the frame length and the PIO clock divider differ.
+static inline void audio_i2s_lrck_low_64fs_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clock_pin_base) {
+    pio_sm_config sm_config = audio_i2s_lrck_low_64fs_program_get_default_config(offset);
+
+    sm_config_set_out_pins(&sm_config, data_pin, 1);
+    sm_config_set_sideset_pins(&sm_config, clock_pin_base);
+    sm_config_set_out_shift(&sm_config, false, true, 32);
+
+    pio_sm_init(pio, sm, offset, &sm_config);
+
+    const uint64_t pin_mask = ((uint64_t)1 << data_pin) | ((uint64_t)3 << clock_pin_base);
+    pio_sm_set_pindirs_with_mask64(pio, sm, pin_mask, pin_mask);
+    pio_sm_set_pins_with_mask64(pio, sm, 0, pin_mask); // clear pins
+
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset + audio_i2s_lrck_low_64fs_offset_entry_point));
 }
 
 

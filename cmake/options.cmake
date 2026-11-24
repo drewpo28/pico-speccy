@@ -23,6 +23,13 @@ set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO OFF RAW TMDS ON)
 option(MURM "Murmulator 1.x + Pi Pico 2" OFF)
 option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
+# Olimex RP2350pc: a standalone RP2350B board (not a Pico carrier). HDMI HSTX
+# TMDS on GPIO12-19 with an IRREGULAR lane order (clock pair at base+2, in the
+# middle of the data lanes — see hdmi.h), so HSTX is MANDATORY there: no PIO TMDS
+# word can express the map. 8 MB butter PSRAM on QMI CS1 = GPIO8 (same QMI bus as
+# the 16 MB flash on CS0). PWM audio on GP26(L)/GP27(R). The ES8311 codec zone
+# (GPIO22/23/28-35) is left in reset — this build never touches it.
+option(PICO_PC2 "Olimex RP2350pc (RP2350B, HDMI-only HSTX, PSRAM on QMI CS1/GP8)" OFF)
 option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
 # W modules: the SAME carriers with a WiFi module plugged in. Each option turns its

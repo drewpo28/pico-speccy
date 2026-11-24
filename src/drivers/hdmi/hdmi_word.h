@@ -92,6 +92,12 @@ typedef struct {
     uint8_t rgb_notbgr;  // field order inside the PIO's 6-bit group
     uint8_t invert;      // differential pairs are wired N/P instead of P/N
     uint8_t swap_rg;     // the board swaps ch1 and ch2 onto each other's pin pair
+    // Per-channel pin-pair offset from HDMI_BASE_PIN, for boards whose lanes are
+    // NOT the contiguous group data_off..data_off+5. -1 (the default) derives
+    // the offset from data_off + hdmi_d6_shift, the shipped contiguous layout.
+    // Only the HSTX back-end can express a non-contiguous map (the PIO program's
+    // `out pins,6` cannot) — a board setting these MUST build HDMI_HSTX != 0.
+    int8_t lane_off[3];  // [0]=ch0 blue, [1]=ch1 green, [2]=ch2 red
 } hdmi_pinmap_t;
 
 // The board this firmware was compiled for. Expands hdmi.h's macros, so there is
@@ -101,12 +107,25 @@ typedef struct {
 #else
 #define HDMI_PINMAP_SWAP_RG 0
 #endif
+#ifdef PICO_PC2
+// Olimex RP2350pc: D0 (ch0 blue) on base+0, D1 (ch1 green) on base+6,
+// D2 (ch2 red) on base+4 — the clock pair at base+2/3 owns the middle.
+#define HDMI_PINMAP_LANE0 0
+#define HDMI_PINMAP_LANE1 6
+#define HDMI_PINMAP_LANE2 4
+#else
+// Contiguous layout: derive from data_off + hdmi_d6_shift (the legacy path).
+#define HDMI_PINMAP_LANE0 (-1)
+#define HDMI_PINMAP_LANE1 (-1)
+#define HDMI_PINMAP_LANE2 (-1)
+#endif
 #define HDMI_PINMAP_INIT {                                  \
     (uint8_t)(beginHDMI_PIN_data - HDMI_BASE_PIN),          \
     (uint8_t)(beginHDMI_PIN_clk  - HDMI_BASE_PIN),          \
     (uint8_t)(HDMI_PIN_RGB_notBGR),                         \
     (uint8_t)(HDMI_PIN_invert_diffpairs),                   \
-    (uint8_t)(HDMI_PINMAP_SWAP_RG) }
+    (uint8_t)(HDMI_PINMAP_SWAP_RG),                         \
+    { HDMI_PINMAP_LANE0, HDMI_PINMAP_LANE1, HDMI_PINMAP_LANE2 } }
 
 // Where a channel's pin PAIR sits inside the PIO's 6-bit output group.
 //
@@ -126,7 +145,10 @@ static inline int hdmi_d6_shift(const hdmi_pinmap_t *m, const int ch) {
 
 // HSTX bit[] index (= GPIO - HDMI_BASE_PIN) of a channel's pin pair. The pair's
 // FIRST pin; its partner is +1 and carries the same bits with INV flipped.
+// Boards with explicit per-lane offsets (PICO_PC2's clock-in-the-middle layout)
+// take those; the contiguous default derives the shift from the 6-bit group.
 static inline int hdmi_lane_bit(const hdmi_pinmap_t *m, const int ch) {
+    if (m->lane_off[ch] >= 0) return m->lane_off[ch];
     return m->data_off + hdmi_d6_shift(m, ch);
 }
 

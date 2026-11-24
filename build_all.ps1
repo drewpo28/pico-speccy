@@ -72,7 +72,7 @@ if (Get-Command ccache -ErrorAction SilentlyContinue) {
 }
 
 # RP2350 only — the RP2040 targets (MURM_P1/MURM2_P1/ZERO) were dropped.
-$AllTargets    = @("MURM", "MURM2", "PICO_PC", "PICO_DV", "ZERO2", "MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
+$AllTargets    = @("MURM", "MURM2", "PICO_PC", "PICO_DV", "ZERO2", "PICO_PC2", "MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
 $TftTargets    = @("MURM", "MURM2")
 $TftStTargets  = @()
 $SofttvTargets = @("MURM", "MURM2")
@@ -82,7 +82,7 @@ $PiousbTargets = @("ZERO2")
 # Display on GPIO 12-19 (the RP2350 HSTX pins): also ship an HSTX image
 # (-DHDMI_HSTX=TMDS). Their plain VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF),
 # or CMake's AUTO would make it HSTX too and the two images would be the same.
-$HstxTargets   = @("PICO_PC", "MURM2", "MURM2_W", "PICO_PC_W", "MURM2_WS", "PICO_PC_WS")
+$HstxTargets   = @("PICO_PC", "MURM2", "MURM2_W", "PICO_PC_W", "MURM2_WS", "PICO_PC_WS", "PICO_PC2")
 
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
@@ -91,12 +91,13 @@ if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 $WTargets = @("MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
-$Only16Targets = @()   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
+$Only16Targets = @("PICO_PC2")   # PICO_PC2 = Olimex RP2350pc, 16 MB on board. ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
 
 # Build list of (target, display) pairs, then expand each into its flash types
 $BasePairs = @()
 foreach ($Target in $Targets) {
-    $BasePairs += ,@{ Target = $Target; Display = "VGA_HDMI" }
+    # PICO_PC2 is HDMI-only with an HSTX-mandatory lane order: no PIO VGA_HDMI image.
+    if ($Target -ne "PICO_PC2") { $BasePairs += ,@{ Target = $Target; Display = "VGA_HDMI" } }
     if ($TftTargets -contains $Target) {
         $BasePairs += ,@{ Target = $Target; Display = "TFT_ILI9341" }
     }

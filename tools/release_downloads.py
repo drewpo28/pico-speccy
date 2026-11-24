@@ -20,6 +20,7 @@ BOARDS = [
     ("m1p2", "Murmulator 1.x"),
     ("m2p2", "Murmulator 2.0"),
     ("PCp2", "Olimex PICO-PC"),
+    ("PC2p2", "Olimex RP2350pc"),
     ("DVp2", "Pimoroni Pico DV"),
     ("z0p2", "ZERO2"),
 ]
