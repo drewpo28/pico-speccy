@@ -15,6 +15,9 @@
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/roms/plusd.h"
 #include "speccy/devices/disk/DiskSlots.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/Opus.h"
+#include "speccy/devices/storage/DivMMC.h"
 #include "app/ESPectrum.h"
 #include "app/MachineSwitch.h"
 #include "fs/FileUtils.h"
@@ -174,10 +177,17 @@ bool launchDisk(const char* path) {
     Config::last_ram_file = NO_RAM_FILE;
     // One disk interface at a time (the menu's rule, UiStage resolveConstraints).
     Config::plusd = 1;
+    Config::opus = 0;
     Config::esxdos = 0;
     Config::mb02 = 0;
     Config::betadisk = false;
     Config::save();
+    // Turn the others off live: a machine switch did that through MachineSwitch, but
+    // a launch that stays on this machine left them on (owner 2026-11-25: a 48K with
+    // the Opus, F5 on an MGT -> Opus and Plus D both on). init() reads the flags.
+    Opus::init();
+    if (DivMMC::enabled) DivMMC::init();
+    if (MB02::enabled) MB02::init();
     // A launch that turns the interface on is a power-on: with G+DOS still resident in
     // the RAM, RUN only says "O.K. G+DOS" instead of loading +SYS and the disk's AUTO
     // (owner, hw 2026-11-25). MachineSwitch::commit clears it too; this covers the reset

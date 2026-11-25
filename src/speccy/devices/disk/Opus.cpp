@@ -15,6 +15,9 @@
 #include "speccy/core/ArchRom.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/devices/disk/DiskSlots.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/storage/DivMMC.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/roms/opus.h"
 #include "speccy/z80/z80.h"
@@ -181,6 +184,11 @@ bool launchDisk(const char* path) {
     Config::mb02 = 0;
     Config::betadisk = false;
     Config::save();
+    // Turn the others off live (see PlusD::launchDisk): a launch that stays on this
+    // machine does not go through MachineSwitch. init() reads the flags.
+    PlusD::init();
+    if (DivMMC::enabled) DivMMC::init();
+    if (MB02::enabled) MB02::init();
     if (!machineOk(Config::arch, Config::romSet)) {
         const RomsetIdx r = machineOk(A_48K, Config::romSet48) ? Config::romSet48 : R_48K;
         MachineSwitch::commit(A_48K, r);   // resets (Opus::init runs there)

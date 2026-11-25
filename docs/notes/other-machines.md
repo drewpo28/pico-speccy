@@ -2408,6 +2408,11 @@ OpusDiscovery_Manual.pdf (Microdrive syntax: `FORMAT "m";1;"name"`, `CAT 1`,
   As for the Plus D: Opus already on = a disk change (no reset); a machine switch or a
   launch that turns it on = a power-on, `Opus::powerOn()` zeroes the 2K RAM (F11 keeps
   it). hw-confirmed DVp2w 2026-11-25 (owner).
+  Both launches now turn the other disk interfaces off LIVE (other `init()`, DivMMC /
+  MB02 `init()` when on): a launch that stays on the machine skips MachineSwitch, and a
+  48K with the Opus + F5 on an MGT left Opus AND Plus D on (owner hw 2026-11-25; the
+  forced 128K used to hide it). Fixed 2026-11-25, bench-ok (config ends opus=0 plusd=1,
+  RUN boots Elevator Action), hw-confirmed DVp2w 2026-11-25 (owner).
 - `.pss`: PSOP (paging, drive, nmiCnt, PIA, 2K RAM) + PSSF; Config key `opus` reboot-class.
 - Host bench 2026-11-25: blank .opd -> FORMAT "m";1;"test" -> CAT 1 ("test", 178K free) ->
   `10 BORDER 2`, SAVE *"m";1;"run" LINE 10 -> new session, RUN: red border, 0 OK, 10:1.
