@@ -1967,9 +1967,11 @@ static bool c17FetchBlocking(uint32_t sector, uint32_t count) {
 // NextZXOS's driver waits after each sector write until its 12800-pass timeout
 // (enNxtmmc 1FB9: busy ends at 0xFF, which its poll keeps waiting through), so
 // Z80::nextSdPollBatch skips those passes without a wait.
+uint8_t (*DivMMC::extSpiIn)() = nullptr;
+void    (*DivMMC::extSpiOut)(uint8_t) = nullptr;
 bool DivMMC::sdReadsIdleFF() {
+    if (!mmc_cs_active) return !extSpiIn;
     if (!s_med[s_card].present) return true;
-    if (!mmc_cs_active) return true;
     if ((mmc_r1 & 1) == 0) return false;
     if (mmc_wr_resp >= 0) return mmc_wr_resp == 2;
     return mmc_last_command == 0;
@@ -2404,8 +2406,8 @@ uint32_t DivMMC::spiReadBulk(uint8_t* dst, uint32_t n) {
 }
 
 DIVMMC_HOT uint8_t DivMMC::spiRead() {
+    if (!mmc_cs_active) return extSpiIn ? extSpiIn() : 0xFF;
     if (!s_med[s_card].present) return 0xFF;
-    if (!mmc_cs_active) return 0xFF;
 
     // If not idle, return R1
     if ((mmc_r1 & 1) == 0) {
@@ -2653,8 +2655,8 @@ DIVMMC_HOT uint8_t DivMMC::spiRead() {
 
 // Port 0xEB write — SD protocol command/data
 void DivMMC::spiWrite(uint8_t value) {
+    if (!mmc_cs_active) { if (extSpiOut) extSpiOut(value); return; }
     if (!s_med[s_card].present) return;
-    if (!mmc_cs_active) return;
 
     // CMD25 WRITE_MULTIPLE_BLOCK data phase — token-framed stream that must
     // be consumed BEFORE command parsing (payload bytes in 0x40-0x7F would

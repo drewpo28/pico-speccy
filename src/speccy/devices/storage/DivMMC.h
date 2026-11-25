@@ -151,6 +151,11 @@ public:
     // every following read of port 0xEB answers 0xFF with no side effect (the
     // write-busy timeout wait): nextSdPollBatch skips those passes without waiting
     static bool sdReadsIdleFF();
+    // Another slave on the same SPI bus while our card is deselected (the Next's
+    // FPGA flash, NextFlash): set by its select, null otherwise. Only the
+    // not-selected branches look at them.
+    static uint8_t (*extSpiIn)();
+    static void    (*extSpiOut)(uint8_t);
 
     // Z-Controller raw SD on ports 0x77 (config/status) / 0x57 (SPI data).
     // Reuses the DivMMC SPI state machine in SDHC mode without ROM or memory

@@ -24,6 +24,7 @@ pico-speccy: ZX Spectrum Next (TBBlue) NextReg register file
 #include "NextInt.h"
 #include "NextMf.h"
 #include "NextBoard.h"
+#include "NextFlash.h"
 #include "NextPorts.h"
 #include "speccy/devices/Z80DMA.h"
 #include "app/Debug.h"
@@ -745,6 +746,7 @@ void NextReg::reset(bool hard) {
     contendRecalc();
     NextRtc::reset();   // zxnext.vhd: i2c_scl_o / i2c_sda_o <= '1' on reset
     NextBoard::reset(hard);   // NR 0xF0 soft reset = 0x80 (select mode)
+    NextFlash::reset();       // port_e7_reg <= all ones: the flash deselected
 }
 
 // Raster line for reg 0x1E/0x1F and the line interrupt. Line 0 is the first
@@ -1173,6 +1175,9 @@ void NextReg::write(uint8_t r, uint8_t v) {
             write1FFD((uint8_t)(((v >> 2) & 0x01) | ((v & 0x03) << 1)));
             break;
         }
+        case 0x10:   // Core Boot: bit 7 = start the selected core (the FPGA reloads)
+            if (v & 0x80) NextFlash::coreBoot(MemESP::nextConfigMode ? v : old);
+            break;
         case 0xF0: case 0xF8: case 0xF9: case 0xFA:   // XDEV / XADC (KS2/KS3)
             NextBoard::write(r, v);
             break;

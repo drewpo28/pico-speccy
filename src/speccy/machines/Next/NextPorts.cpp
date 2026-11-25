@@ -8,6 +8,7 @@
 // in all of them. NextZXOS writes 0xFF to all four at boot (enNextZX ROM0
 // #00FB) and clears 7FFD & co. itself for its own 48K/128K modes (bank 2
 // #0DE0).
+#include "NextFlash.h"
 #include "NextPorts.h"
 #include "NextReg.h"
 #include "NextVideo.h"
@@ -514,6 +515,9 @@ uint8_t NextPorts::eff7() { return s_eff7; }
 // is selected only by bits 1:0 = 10 (01 with NR 0x0A bit 5 = SD swap); 01 /
 // FB / F7 / 7F pick SD1, the Pis or the flash, anything else deselects all.
 uint8_t NextPorts::e7Select(uint8_t v) {
+    // #7F = the FPGA flash, only in config mode (zxnext.vhd 3319; the power-on
+    // reset_type bit is the other gate — TBBLUE.FW runs in config mode anyway)
+    NextFlash::select(v == 0x7F && MemESP::nextConfigMode);
     const bool swap = NextReg::reg[0x0A] & 0x20;
     const bool sd0 = (v & 3) == (swap ? 1 : 2);
     return sd0 ? 0xFE : 0xFF;

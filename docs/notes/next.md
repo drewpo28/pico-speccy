@@ -1602,3 +1602,23 @@ KS3 carves 2 MB more butter PSRAM after the Next ROM region (`MemESP::nextCfgHi`
   on KS1 unchanged. Recipe: card root with TBBLUE.FW, machines, nextzxos, sys, dot + `/KS3TEST.NEX`,
   `next_board=2` in storage.nvs, `/tmp/next/.launch` = `N\n/KS3TEST.NEX` (NexLaunch pending file).
   Test ELF `debug/DVp2w-ks3-1.1.4.elf`.
+
+## FPGA config flash: a stub, "not supported" (2026-11-25, hw-confirmed DVp2w)
+
+Symptom: C at boot -> Select Core -> Sinclair QL -> Flash -> "Erasing" -> red "Flash timeout!"
+(no SPI flash behind port #E7 = #7F; RDSR read #FF = WIP for ever).
+Decision (owner 2026-11-25): other FPGA cores can never run here, so the flash is a STUB without
+storage. `machines/Next/NextFlash.{h,cpp}`: #E7 = #7F selects it in config mode only (zxnext.vhd
+3319); the #EB port pipelined as spi_master.vhd (IN returns the PREVIOUS transfer's byte, starts a
+#FF one). Answers JEDEC ID per board (KS1 W25Q128 EF 40 18, KS2/KS3 MX25L256 C2 20 19), RDSR never
+busy with WEL, EN4B/EX4B, RDCR/SR3; erase/program accepted and dropped, reads #FF except the LAST
+programmed page (256 B heap, freed at reset): TBBLUE.FW reads each page back and otherwise stops on
+red "Flash verify failed!". First erase or
+program of a run -> notify " Flashing FPGA cores is not supported "; NR 0x10 bit 7 (start core)
+-> " FPGA core N: not supported ". Hooked via DivMMC::extSpiIn/extSpiOut in the card-NOT-selected
+branches only. The firmware's menu then shows the core as "not yet" flashed again: expected.
+- Dead end, do not repeat: a file-backed store (`next-flash.bin`, sparse 64 KB then 32 KB slots)
+  worked on the folder bench but on hw (DVp2w) TBBLUE.FW stopped on "Error reading block!": our
+  writes on the SAME card left it slow, the guest's next CMD17 outlived its token poll while core1
+  was still reading ([SDABN] CMD17 c17=2 as=2, erases of old blocks 230-240 ms). The folder bench
+  (and --sd image mode, whose FatFs still uses the folder) cannot show card sharing.
