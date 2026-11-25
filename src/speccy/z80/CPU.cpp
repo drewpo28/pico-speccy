@@ -168,7 +168,9 @@ bool g_timex_machine = false;
 bool Z80Ops::isNext = false;
 bool Z80Ops::isSam = false;
 bool Z80Ops::isEnt = false;
+#if FLASH_16MB
 bool Z80Ops::isElm = false;
+#endif
 bool Z80Ops::idleHook = false;
 
 void CPU::updateStatesInFrame() {
@@ -222,7 +224,7 @@ void CPU::updateStatesInFrame() {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
-    } else if (Config::arch == A_P1024 || Config::arch == A_ELM) {
+    } else if (Config::arch == A_P1024 || Config::isElm()) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
@@ -352,8 +354,10 @@ void CPU::reset() {
     Z80Ops::isAtm = (Config::arch == A_ATM);
     Z80Ops::isSam = (Config::arch == A_SAM);
     Z80Ops::isEnt = (Config::arch == A_ENT);
-    Z80Ops::isElm = (Config::arch == A_ELM);
-    if (Z80Ops::isElm) Elm::armPersonality();   // e_zxi_000 -> the flag and timing chains below
+#if FLASH_16MB
+    Z80Ops::isElm = (Config::isElm());
+    if (Z80Ops::isElm) Elm::armPersonality();
+#endif   // e_zxi_000 -> the flag and timing chains below
     if (!Z80Ops::isAtm && !Z80Ops::isSam && !Z80Ops::isEnt && !Z80Ops::isElm) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
@@ -414,7 +418,7 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
-    } else if (Config::arch == A_ELM) {
+    } else if (Config::isElm()) {
         Elm::cpuFlags();                 // 48K / 128K / +2A / Pentagon 128-1024 by e_zxi_000
     } else if (Config::arch == A_P1024) {
         Z80Ops::isByte = false;
@@ -1510,7 +1514,9 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
     if (__builtin_expect(g_atm_ro != 0, 0)) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
+#if FLASH_16MB   // bit 0x20: set by the eLeMeNt only (Element.cpp GM_ELM)
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;  // eLeMeNt windows
+#endif
         if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;
     }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
@@ -1778,7 +1784,9 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     // a window showing ROM drops it (gsDmaPoke8's twin).
     if (g_atm_ro) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
+#if FLASH_16MB
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;
+#endif
         if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;
     }
     tsPoke8Store(address, value);

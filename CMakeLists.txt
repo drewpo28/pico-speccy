@@ -131,6 +131,10 @@ file(GLOB_RECURSE SRC CONFIGURE_DEPENDS
 # The driver libraries under src/drivers/ are separate CMake targets.
 string(REPLACE ";" "|" _drv_re "${PICO_DRIVER_LIBS}")
 list(FILTER SRC EXCLUDE REGEX "/src/drivers/(${_drv_re})/")
+# eLeMeNt ZX is 16 MB only (FLASH_16MB, cmake/board.cmake).
+if (NOT FLASH_16MB)
+    list(FILTER SRC EXCLUDE REGEX "/src/speccy/machines/Element/|/src/speccy/roms/element/")
+endif()
 
 message(STATUS "Add source files:")
 foreach (SRC_FILE IN LISTS SRC)

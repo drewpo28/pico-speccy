@@ -96,7 +96,7 @@ void MB02::init() {
         // The eLeMeNt ZX: the strip is its URAM, the card's 512 KB are the divSD's
         // (setExternalRam) - not zeroed here, esxDOS may be living in them.
         ram_base_idx = -1;
-    } else if (Config::arch == A_ELM) {
+    } else if (Config::isElm()) {
         // Never the strip there; Elm::bootSettings / applyRegs bring the external RAM
         // first and init again.
         Debug::log("MB02: eLeMeNt: no external 512 KB registered yet, stays off");
@@ -202,7 +202,9 @@ void MB02::applyMapping() {
     // boot EPROM came up over the SetUp ROM, so F11 / Alt+F11 showed the BS-DOS
     // loader instead of the SetUp. The register is kept; the next reset re-applies.
     g_mb02_page0 = false;
-    { extern uint8_t g_elm_nodiv; if (Config::arch == A_ELM && g_elm_nodiv) { MemESP::mb02_write_gate = true; MemESP::mb02_page_dirty = nullptr; return; } }
+#if FLASH_16MB
+    { extern uint8_t g_elm_nodiv; if (Config::isElm() && g_elm_nodiv) { MemESP::mb02_write_gate = true; MemESP::mb02_page_dirty = nullptr; return; } }
+#endif
     // Beside esxDOS, both want page 0 at reset and the one that maps first keeps it.
     // Rule (2026-11-04): the boot EPROM takes it only when drive A holds a disk - a
     // system disk in = BS-DOS boots, drive empty = esxDOS boots, instead of the loader

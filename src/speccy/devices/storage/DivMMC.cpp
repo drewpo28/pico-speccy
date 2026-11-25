@@ -141,7 +141,11 @@ uint8_t *DivMMC::esxdos_rom = nullptr;
 uint8_t *DivMMC::rom_flat = nullptr;
 // eLeMeNt ZX: esxDOS from block 4 of its FlashRAM (Element.cpp, e_zxi_02D bit 0);
 // romSync prefers it over the built-in builds while set.
+#if FLASH_16MB
 extern const uint8_t* g_elm_divrom;
+#else
+static constexpr const uint8_t* g_elm_divrom = nullptr;   // 4 MB images: no eLeMeNt
+#endif
 bool DivMMC::nmi_bypass = false;
 uint8_t* DivMMC::bank_ptr[DIVMMC_NUM_BANKS] = {};
 bool DivMMC::rom_loaded = false;
@@ -709,7 +713,7 @@ bool DivMMC::romSync() {
         rom_loaded = true;
         return true;
     }
-    if (Config::arch == A_ELM && g_elm_divrom) {
+    if (Config::isElm() && g_elm_divrom) {
         if (s_romKey == 0x80 && rom_loaded && esxdos_rom == g_elm_divrom) return true;
         esxdos_rom = (uint8_t*)g_elm_divrom;
         rom_loaded = true;
@@ -881,7 +885,7 @@ void DivMMC::applyMapping() {
     // it on every change (the window itself is in ramCurrent[0/1] while paged in).
     // eLeMeNt: the same - its slots 0-1 read plain only while no divMMC page is up
     // (Video.cpp elmFastSlotsUpdate).
-    if (Config::arch == A_NEXT || Config::arch == A_ELM) {
+    if (Config::arch == A_NEXT || Config::isElm()) {
         // The Next Multiface overlay beats the divMMC window (zxnext.vhd ~3030:
         // mf_mem_en selects first, override 000) — re-plug it over whatever
         // the divMMC just did; the automap state itself is kept underneath.

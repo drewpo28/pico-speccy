@@ -273,7 +273,7 @@ static int32_t get_machine() {
     // maps a running Profi with a Karabas romset onto the UI's "Karabas" row, whose
     // option table spells A_KARABAS (Config itself only ever holds A_PROFI).
     if (Config::arch >= ARCH_COUNT || Config::romSet >= ROMSET_COUNT) return -1;
-    if (Config::arch == A_ELM) return NM_MACH_P(A_ELM, Config::romSet, Elm::personality());
+    if (Config::isElm()) return NM_MACH_P(A_ELM, Config::romSet, Elm::personality());
     return NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
 }
 static void put_machine(int32_t v) { s_machinePick = v; }
@@ -419,7 +419,7 @@ static int32_t get_tsconfVdac2()          { return Config::tsconf_vdac2 ? 1 : 0;
 static void    put_tsconfVdac2(int32_t v) { Config::tsconf_vdac2 = v != 0; }
 static int32_t get_tsconfVdac2Smooth()          { return Config::tsconf_vdac2_smooth ? 1 : 0; }
 static void    put_tsconfVdac2Smooth(int32_t v) { Config::tsconf_vdac2_smooth = v != 0; }
-static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { Ft812::renderRequest(); return true; }   // the renderer reads Config per frame
+static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { if (Ft812::enabled) Ft812::renderRequest(); return true; }   // Ft812.cpp may sit in the traded .psramroms range   // the renderer reads Config per frame
 static int32_t get_tsconfVdac2Adapt()          { return Config::tsconf_vdac2_adapt ? 1 : 0; }
 static void    put_tsconfVdac2Adapt(int32_t v) { Config::tsconf_vdac2_adapt = v != 0; }
 static bool    hook_tsconfVdac2Adapt(int32_t, int32_t) { VIDEO::ftPaletteProgram(); return true; }   // cube back in, or the adaptive one rebuilt
@@ -2054,13 +2054,13 @@ void commit(CommitReport& rep) {
     // load-bearing (it is what makes the Profi-boundary reboot land on the new machine).
     // eLeMeNt ZX: the settings this menu shares with the board's SetUp go into its
     // registers and FRAM now, so the SetUp shows them and the next power-up keeps them.
-    if (Config::arch == A_ELM && rep.changed) Elm::syncFromSettings();
+    if (Config::isElm() && rep.changed) Elm::syncFromSettings();
 
     if (bmGet(g_dirty, SET_MACHINE) && s_machinePick >= 0) {
         const int a = (s_machinePick >> 8) & 0xFF;
         const int r = s_machinePick & 0xFF;
         const uint8_t pers = (uint8_t)((s_machinePick >> 16) & 0xFF);
-        if (a == A_ELM && Config::arch == A_ELM && r == Config::romSet) {
+        if (a == A_ELM && Config::isElm() && r == Config::romSet) {
             // Another personality of the running eLeMeNt: e_zxi_000 + FRAM, then the
             // board's restart (Elm::takeReset in the main loop), no machine switch.
             Elm::setPersonality(pers);

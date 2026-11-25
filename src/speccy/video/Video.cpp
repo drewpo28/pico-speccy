@@ -663,8 +663,14 @@ static inline void nextFastrdSet(bool on) {
 // The eLeMeNt loop's gate (elm_memory.h, Z80::exec_nocheck_elm): fastmem level 1 on
 // the eLeMeNt. A drop ends the slice the same way (the loop tests it after a shared
 // handler only).
+#if FLASH_16MB
 bool g_elm_fastrd = false;
+#else
+static constexpr bool g_elm_fastrd = false;   // 4 MB images: no eLeMeNt (cmake/board.cmake)
+#endif
+#if FLASH_16MB
 namespace Elm { extern volatile uint8_t g_elm_rdmask, g_elm_wrmask; }   // Element.cpp: slot bit set = generic access
+#endif
 // Slots 0-1 read plain only while nothing sits between the guest and ramCurrent
 // there: no divMMC page up (MemESP::readbyte serves page0_lo/hi then; DivMMC::
 // applyMapping re-runs this), no NeoGS ZX-DMA window (gsDmaPeek8), both slots
@@ -680,11 +686,15 @@ void elmFastSlotsUpdate() {
     g_z80_rd_all = rd == 0xFF;
 }
 static inline void elmFastrdSet(bool on) {
+#if FLASH_16MB
     on = on && CodeOverlay::elmResident();   // the loop lives in the .elmovl window: never without it
     if (g_elm_fastrd && !on && CPU::stFrame > CPU::tstates + 1) CPU::stFrame = CPU::tstates + 1;
     const bool was = g_elm_fastrd;
     g_elm_fastrd = on;
     if (was || on) elmFastSlotsUpdate();
+#else
+    (void)on;
+#endif
 }
 bool     VIDEO::ts_tsu_live = false;
 bool     VIDEO::ts_pal256_live = false;
@@ -2398,7 +2408,7 @@ void VIDEO::applyPalette() {
     graphics_set_palette(16, paletteFinal(0xFF7F00));
     if (Config::arch == A_SAM) samPaletteFlush();
     if (Config::arch == A_ENT) epPaletteFlush();
-    if (Config::arch == A_ELM) Hgfx::paletteLost();
+    if (Config::isElm()) Hgfx::paletteLost();
 
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
@@ -5674,7 +5684,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 || Config::arch == A_ELM ||
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 || Config::isElm() ||
                Config::isEvoPentRaster()) {    // (ZX Evolution BaseConf / ScorpEvo: the Pentagon raster)
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
@@ -7509,7 +7519,7 @@ static void samPairOff() {
     Graphics8BitPalette::ds80_active = false;
     // the machine's own slots back (SAM: the CLUT; Enterprise: the 128 Nick colours)
     if (Config::arch == A_ENT) epPaletteFlush();
-    else if (Config::arch == A_ELM) Hgfx::paletteLost();
+    else if (Config::isElm()) Hgfx::paletteLost();
     else samPaletteFlush();
     Debug::log("[VID] 512 px pair mode off");
 }

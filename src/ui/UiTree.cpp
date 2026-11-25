@@ -1082,7 +1082,7 @@ bool machineMenuName(const char*& family, const char*& romShort) {
 bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort, int pers) {
     // The eLeMeNt's rows differ by personality only (NM_MACH_P): without it every one
     // of them resolved to the first row, "48". Unknown = the running board's.
-    if (arch == A_ELM && pers < 0 && Config::arch == A_ELM) pers = Elm::personality();
+    if (arch == A_ELM && pers < 0 && Config::isElm()) pers = Elm::personality();
     const int32_t want = pers >= 0 && arch == A_ELM ? NM_MACH_P(A_ELM, romSet, pers)
                                                     : NM_MACH(archDisplay(arch, romSet), romSet);
     for (uint8_t i = 0; i < NM_COUNT(kMachine); i++) {

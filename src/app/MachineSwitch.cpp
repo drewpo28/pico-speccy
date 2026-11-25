@@ -400,7 +400,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // the arch boundary hard-reset re-inits DivMMC in the new mode.
         // Entry only: a romset change inside the machine keeps what the user
         // picked in Devices > esxDOS (owner, 2026-11-02).
-        if ((Config::arch == A_NEXT || Config::arch == A_ELM) && prevArch != Config::arch &&
+        if ((Config::arch == A_NEXT || Config::isElm()) && prevArch != Config::arch &&
             Config::esxdos != 3) {
             Config::esxdos = 3;
             OSD::osdCenteredMsg("DivSD (raw SD) enabled", LEVEL_WARN, 1500);

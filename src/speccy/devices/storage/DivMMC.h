@@ -90,7 +90,7 @@ public:
     // everywhere, 64 (512 KB) on the eLeMeNt ZX, whose divSD RAM is also the MB-02+
     // card's 512 KB (MB02::setExternalRam aliases it: "512 KB DivSD RAM is shared with
     // 512 KB MB02+ RAM", the Reference). Inline: Ports::output masks #E3 with it.
-    static inline uint8_t banks() { return Config::arch == A_ELM ? 64 : 16; }
+    static inline uint8_t banks() { return Config::isElm() ? 64 : 16; }
 
     static bool use_psram;            // true = all banks in butter PSRAM (direct pointers)
     static int8_t hi_slot;            // swap mode: slot index of page0_hi bank (-1 if none)
@@ -396,7 +396,9 @@ __attribute__((always_inline)) inline uint8_t DivMMC::nextOpcode(uint16_t pc) {
 __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
     if (!opcodeTrapPage(pc)) return;
     pend_after = 0;
+#if FLASH_16MB
     { extern uint8_t g_elm_nodiv; if (g_elm_nodiv && !automap) return; }   // eLeMeNt ZX: URAM on top
+#endif
     { extern bool g_mb02_page0; if (g_mb02_page0 && !automap && !conmem) { if (pc == DIVMMC_TRAP_0066) nmi_bypass = false; return; } }   // MB-02+ holds page 0 (its EPROM boots)
 
     // ZX Spectrum Next: the entry points are PROGRAMMABLE via nextreg

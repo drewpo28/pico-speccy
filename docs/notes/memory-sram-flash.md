@@ -460,6 +460,44 @@ the merged log strings (~21 KB) are spread over hundreds of calls. Still on the 
 `kbd_img` + `ui_logo128` deflated (~27 KB, ~30 KB transient heap in the menu),
 `gb_rom_esxide` as an overlay over esxDOS (771 B apart, ~7 KB).
 
+### 4 MB round 2026-11-25: eLeMeNt ZX is 16 MB only (`FLASH_16MB`; hw-confirmed 2026-11-25 on DVp2w 16 MB, owner "работает"; the 4 MB images link-checked only, NOT hw-tested)
+
+The 1.1.4 build_all failed every 4 MB image on the hard floor: m1p2 VGA-HDMI
+`__psramrom_start` 0x10281000 = **100 KB over** (0x10268000), ILI9341 52 KB over. Since 1.1.3
+(0x10263000, 20 KB under) the code below the range grew ~120 KB, and ~88 KB of it was the
+eLeMeNt: ElmHgfx 26.4 + Element 20.7 + ElmFlash 18.7 + ElmSid/ElmSdma 4.2 KB of code plus the
+18.2 KB `.elmovl` load image. Nobody had gated the machine on flash size (only its SetUp /
+esxDOS ROMs, `ELM_ROMS_BUILTIN`), and it needs 4 MB of butter PSRAM anyway. How to measure
+it: diff two .map files per object over `[0x10000000, __psramrom_start)` (each map with ITS
+own start), plus the overlay sections' `load address` lines - their content shows at its VMA.
+
+`FLASH_16MB` is now a C define (1/0, `cmake/board.cmake`; the host sets 1) - the general
+switch for 16 MB-only code, not a per-machine one (owner). On 0:
+
+- `src/speccy/machines/Element/` and `src/speccy/roms/element/` leave the glob (CMakeLists.txt),
+  `ELM_CODE_OVERLAY` goes off (no `.elmovl` window).
+- `Z80Ops::isElm`, `Config::isElm()` (every `Config::arch == A_ELM` now goes through it),
+  `g_elm_fastrd`, `g_elm_c1_live`, `g_elm_personality` / `g_elm_ff_off`, `g_elm_divrom` and the
+  gates in Element.h / ElmHgfx.h become `constexpr` 0 and the Elm:: / Hgfx:: calls inline
+  stubs: the shared callers stay unchanged and their branches fold away. `#if FLASH_16MB` only
+  where a stub cannot do it: the eLeMeNt Z80 loop + LDIR/INIR batch (Z80_JLS.cpp), the
+  `wrKind` store checks (CPU.cpp, g_atm_ro bit 0x20 = Element.cpp GM_ELM), the `g_elm_nodiv`
+  externs (DivMMC.h, MB02.cpp).
+- A saved A_ELM boots as Pentagon with a notice (Config.cpp, before the PSRAM gate).
+- Element.h / ElmHgfx.h default FLASH_16MB to 1 when undefined (tools/elm_*_test).
+
+After: m1p2 VGA-HDMI `__psramrom_start` exactly at the floor, code ends 0x102673a4 (~3 KB);
+z0p2 PIOUSB still 16 KB over. So, the same day (owner's pick of the reserves above):
+**TS-Conf VDAC2 code into `.psramroms`** - `*/src/speccy/machines/TsConf/Ft812*`
+(Ft812 14.2 + Ft812Render 23.4 + Ft812Video 4.1 KB of .text/.rodata; their `.ftovl` parts keep
+the window, whose load image already sat in the range) joined the player in
+`PSRAMROM_CODE_OBJECTS` (now a list; cmake/memory-layout.cmake). Reachable only while
+`Ft812::enabled`: init needs butter PSRAM and now `FlashRoms::romsUsable()` too; the one
+unconditional caller (UiStage `hook_tsconfVdac2Smooth`) tests `Ft812::enabled`. No static
+ctors in those objects. Margins to the hard floor after both (KB, all 14 4 MB pairs link):
+z0p2 PIOUSB 28, m1p2/z0p2/DVp2/PCp2/m2p2 VGA-HDMI 44, PCp2/m2p2 HSTX 52, TV 80-84, TFT 88-92.
+Next reserve, not done: NextVideo 28 KB + NextReg 10 KB (audit their unconditional callers first).
+
 ## A GM.DLS bank bigger than the flash partition is still playable in PSRAM (hw-confirmed 2026-09-09)
 
 "The picker does not see DLSbyXG.bin, not even the one it converted itself." Nothing

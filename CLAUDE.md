@@ -88,7 +88,9 @@ Each rule cost at least one hardware round; the story is in the notes file named
   the object whose code grew; resolve overlay addresses against section symbols, never
   addr2line.
 - **Flash ceiling:** 4 MB images sit near the hard GM.DLS floor; anything that does not
-  fit 4 MB goes behind a 16 MB-only flag (`memory-sram-flash.md`).
+  fit 4 MB goes behind `#if FLASH_16MB` (the C define, 1/0; eLeMeNt ZX is the first
+  machine there), or, if it needs butter PSRAM anyway, into `.psramroms`
+  (`PSRAMROM_CODE_OBJECTS`) (`memory-sram-flash.md`).
 - **Read the reference before guessing** (RTL, VHDL, the vendor's Reference, ROM
   disassembly, a memory dump) and **build the diagnostic before the second fix**: a
   counter, a per-frame invariant, a one-shot log. Traces that flood the UART lie.

@@ -127,6 +127,17 @@ if(FLASH_16MB)
 else()
     add_compile_definitions(HOBBIT_ALL_ROMS=0)
 endif()
+# FLASH_16MB (C define, 1/0): code that ships on 16 MB images only. `#if FLASH_16MB`
+# around a 16 MB-only machine's callers, and its sources out of the glob (CMakeLists.txt).
+# Since 2026-11-25: eLeMeNt ZX (src/speccy/machines/Element, ~88 KB of flash with its
+# .elmovl load image) - on 4 MB it pushed every image 50-100 KB under the hard GM.DLS
+# floor (memory-sram-flash.md); it needs 4 MB of butter PSRAM anyway. A saved A_ELM boots
+# as Pentagon on 4 MB (Config.cpp). The host build sets it to 1 (host/CMakeLists.txt).
+if(FLASH_16MB)
+    add_compile_definitions(FLASH_16MB=1)
+else()
+    add_compile_definitions(FLASH_16MB=0)
+endif()
 # GM_BANK_BUILTIN: the GM.DLS bank embedded in flash (src/speccy/roms/gmbank).
 add_compile_definitions(GM_BANK_BUILTIN=${GM_BANK_BUILTIN})
 

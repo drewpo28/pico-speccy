@@ -14,7 +14,11 @@
 #pragma once
 #include <stdint.h>
 
+#if FLASH_16MB
 extern bool g_elm_fastrd;   // the loop's gate: eLeMeNt at fastmem level 1 (Video.cpp tsFastMemRecalc)
+#else
+constexpr bool g_elm_fastrd = false;   // 4 MB images: no eLeMeNt (cmake/board.cmake)
+#endif
 // The slot masks the loop reads are the shared g_z80_rd_fast / g_z80_wr_fast
 // (next_memory.h; bit set = plain access), the complement of Element.cpp's
 // g_elm_rdmask / g_elm_wrmask while the gate is on. Video.cpp recomputes them

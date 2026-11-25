@@ -771,7 +771,7 @@ static bool elmCodeInPages57() {
 #if ELM_CODE_OVERLAY
   static int8_t decided = -1;
   if (decided < 0) {
-    const bool elm = Config::arch == A_ELM || (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM);
+    const bool elm = Config::isElm() || (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM);
     const size_t wanted = Config::wantedPages(Config::arch);
     decided = elm && butter_psram_size() && Buffer::pageBudgetButter() >= (wanted + 2) * (size_t)MEM_PG_SZ;
     Debug::log("setup: eLeMeNt code window on pages 5/7: %s", decided ? "yes" : "no");
@@ -788,7 +788,7 @@ static void donateZxPagesToFb() {
   // window, so Elm::tailAlloc runs on the pages57 tail as on the board (elm-sram-plan).
   const char* tailEnv = getenv("PICOSPECCY_ELM_TAIL");
   const size_t hostWin = tailEnv ? (size_t)atoi(tailEnv) : 0;
-  if (hostWin && Config::arch == A_ELM) s_elmPages57 = true;
+  if (hostWin && Config::isElm()) s_elmPages57 = true;
 #endif
   if (!butter_psram_size()) return;
   // The strip takes pages 8..wanted+1 out of the butter budget (assign_ram); pages
@@ -855,7 +855,7 @@ static void donateZxPagesToFb() {
     // eLeMeNt ZX has its own threshold too (ELM_SRAM46_MIN_FREE_KB): its HGFX buffer takes
     // 48 KB (+16 KB reserve) of heap lazily when core1 lags (ElmHgfx sramPromote); at the
     // ZX figure HGFXAGON lost it and ran at the all-PSRAM speed (2026-11-05).
-    const bool elm = Config::arch == A_ELM ||
+    const bool elm = Config::isElm() ||
                      (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM);
     const unsigned minKB = next ? NEXT_SRAM46_MIN_FREE_KB : elm ? ELM_SRAM46_MIN_FREE_KB : ZX_SRAM46_MIN_FREE_KB;
     if (minKB) {
@@ -1130,7 +1130,7 @@ void ESPectrum::setup() {
   // this decision — without it an MB-02+ boot with dma_mode 0 in NVS would leave
   // Z80DMA::writePort in a released window.
   // eLeMeNt ZX: its Z80 DMA is part of the board.
-  if (!Config::dma_mode && (Config::arch == A_ELM ||
+  if (!Config::dma_mode && (Config::isElm() ||
                             (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_ELM)))
     Config::dma_mode = 1;
   const bool dmaWin = Config::dma_mode != 0 || Config::mb02 != 0 || Config::arch == A_NEXT ||
@@ -1302,7 +1302,7 @@ void ESPectrum::setup() {
         Config::romSet = Config::romSetSam;
       } else if (Config::arch == A_ENT) {
         Config::romSet = Config::romSetEp;
-      } else if (Config::arch == A_ELM) {
+      } else if (Config::isElm()) {
         Config::romSet = R_ELM;
       } else {
         if (Config::pref_romSetPent != R_LAST)
@@ -1449,7 +1449,7 @@ void ESPectrum::setup() {
   // DivSD (raw card) on ENTRY, the mode NextZXOS boots from; a later Off / DivMMC /
   // DivIDE is the user's pick and survives the reboot (owner, 2026-11-02).
   // eLeMeNt ZX: no Beta; MB-02+ is the SetUp's call (e_zxi_001 = 02, Elm::bootSettings).
-  if (Config::arch == A_ELM) {
+  if (Config::isElm()) {
     Config::betadisk = false;
   }
 
@@ -1765,7 +1765,8 @@ void ESPectrum::setup() {
     Ft812::clockUs = []() -> uint64_t { return time_us_64(); };
     Ft812::intHook = TsConf::ftIntRaise;
     Ft812::swapPollHook = TsConf::ftSwapPoll;
-    const bool ok = butter_psram_size() != 0 &&
+    // FlashRoms::romsUsable(): the FT812 code lives in .psramroms (cmake/memory-layout.cmake).
+    const bool ok = butter_psram_size() != 0 && FlashRoms::romsUsable() &&
       Ft812::init(gb_rom_0_sinclair_48k + 0x3D00,
                   [](size_t n, bool psram) -> void* { return Buffer::palloc(n, Buffer::NEED_POINTER | (psram ? Buffer::PREFER_PSRAM : 0)); },
                   [](void* p) { Buffer::pfree(p); });
@@ -1826,7 +1827,7 @@ void ESPectrum::setup() {
     // cannot switch it off (the user's AY48 pick is left alone for other 48Ks).
     AY_emu = Config::AY48 || Config::isTc2068();
     if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
-    SAA_emu = Config::SAA1099 || Config::arch == A_ELM;
+    SAA_emu = Config::SAA1099 || Config::isElm();
     Midi::enabled = Config::midi;
 #if defined(MIDI_TX_PIN)
     // Yield the MIDI TX pin to ZiFi when it owns it (boot-time, after Config).
@@ -1959,9 +1960,9 @@ void ESPectrum::setup() {
   TurboSubsys::request(!Config::tape_player &&
                        (Config::twoAyChips() || Config::arch == A_NEXT));
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled() ||
-                       Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
+                       Config::arch == A_NEXT || Config::isElm());   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
-  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
+  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::isElm()));
   // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
   // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
   // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
@@ -2647,7 +2648,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   AY_emu = Config::AY48 || Config::isTc2068();   // built in on a TC2068 — see setup()
     if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
-    SAA_emu = Config::SAA1099 || Config::arch == A_ELM;
+    SAA_emu = Config::SAA1099 || Config::isElm();
     Midi::enabled = Config::midi;
     if (Midi::enabled) Midi::init();
     // dma.vhd: the DMA resets with the machine — on the Next even with
@@ -2741,9 +2742,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   TurboSubsys::request(!Config::tape_player &&
                        (Config::twoAyChips() || Config::arch == A_NEXT));
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled() ||
-                       Config::arch == A_NEXT || Config::arch == A_ELM);   // Next, Element DAC ports
+                       Config::arch == A_NEXT || Config::isElm());   // Next, Element DAC ports
   PitSubsys::request(Z80Ops::isByte);
-  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::arch == A_ELM));
+  SaaSubsys::request(!Config::tape_player && (Config::SAA1099 || Config::isElm()));
   // Not on the Next: its three AYs have no FM half and NextPorts::ayWrite never
   // reaches one, but an enabled TSFM still ran both YM2203s (flash code) at every
   // AY catch-up — ~13 us per AY data write under a CTC "SID" player (Fluid, hw
@@ -3302,7 +3303,7 @@ void ESPectrum::processKeyboard() {
           // From the LIVE clock, not the user's pick — see the HK_TURBO handler
           // in OSDMain.cpp: a guest-set clock (TS-Conf ZCLK, EFF7 D4, #028B)
           // is what the user sees and what the cycle must continue from.
-          if (Config::arch == A_ELM) { Elm::setSpeed((uint8_t)((Elm::speed() + 1) & 7)); return; }   // its eight clocks
+          if (Config::isElm()) { Elm::setSpeed((uint8_t)((Elm::speed() + 1) & 7)); return; }   // its eight clocks
           ESPectrum::multUser = (ESPectrum::multiplicator + 1) % 3;
           ESPectrum::multiplicator = ESPectrum::multUser;
           CPU::updateStatesInFrame();

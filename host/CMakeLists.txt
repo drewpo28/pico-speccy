@@ -163,6 +163,8 @@ if(WIN32)
 endif()
 # PK Hobbit: every ROM dump (the firmware keeps V2.9 / FORTH for 16 MB images).
 target_compile_definitions(pico-speccy PRIVATE HOBBIT_ALL_ROMS=1)
+# 16 MB-only code (eLeMeNt ZX, ...: cmake/board.cmake) is always on the host.
+target_compile_definitions(pico-speccy PRIVATE FLASH_16MB=1)
 target_compile_definitions(pico-speccy PRIVATE ZIFI_NET_CLIENT=${HOST_NET_CLIENT}
     "MBEDTLS_CONFIG_FILE=\"${ROOT}/src/drivers/board/mbedtls_config_picospeccy.h\"")
 # GS per-second perf counters ([GS PERF] lines), as on the board: -DGS_PERF_TRACE=ON.

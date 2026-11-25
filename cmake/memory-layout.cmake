@@ -365,6 +365,9 @@ if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})
 endif()
+if (NOT FLASH_16MB)
+    set(ELM_CODE_OVERLAY OFF)   # no eLeMeNt on 4 MB images (cmake/board.cmake): no window
+endif()
 if (NOT ELM_CODE_OVERLAY)
     set(ELMOVL_WIN_SIZE_EFFECTIVE 0)
 endif()
@@ -668,10 +671,16 @@ message(STATUS "GM.DLS bank region: >= ${GM_BANK_MIN_KB} KB (dynamic: firmware e
 # never reach it, and the hard GM.DLS floor counts only from __psramrom_start up. The
 # patterns match by path ('*' crosses '/' in ld file patterns); PicoPlayer.cpp, which the
 # browser and menu call unconditionally, does NOT match "Player*".
-set(PSRAMROM_CODE_OBJECTS "*/src/player/Player* */external/libxmp/*")
-set(PSRAMROM_CODE_EXCLUDE "${PSRAMROM_CODE_OBJECTS}")
+#
+# TS-Conf VDAC2 (Ft812.cpp, Ft812Render.cpp, Ft812Video.cpp, ~45 KB; 2026-11-25): reached
+# only while Ft812::enabled, which needs butter PSRAM (ESPectrum::setup) and
+# FlashRoms::romsUsable(); the one unconditional caller (the menu's VDAC2 smoothing hook)
+# tests Ft812::enabled. Its .ftovl load image already sat in this range; FtInflate.c is
+# .ftovl's own and keeps its own rule.
+set(PSRAMROM_CODE_OBJECTS "*/src/player/Player*" "*/external/libxmp/*" "*/src/speccy/machines/TsConf/Ft812*")
+string(REPLACE ";" " " PSRAMROM_CODE_EXCLUDE "${PSRAMROM_CODE_OBJECTS}")
 set(PSRAMROM_CODE_KEEP "")
-foreach(_pat IN ITEMS "*/src/player/Player*" "*/external/libxmp/*")
+foreach(_pat IN LISTS PSRAMROM_CODE_OBJECTS)
     string(APPEND PSRAMROM_CODE_KEEP "${_pat}(.text* .rodata*) ")   # no KEEP: gc-sections must still drop dead libxmp code
 endforeach()
 

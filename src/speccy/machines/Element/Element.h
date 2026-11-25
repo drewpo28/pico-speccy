@@ -7,8 +7,62 @@
 // and URAM with LCU1. Registers of what is not built yet are stored only.
 #pragma once
 #include <stdint.h>
+#ifndef FLASH_16MB
+#define FLASH_16MB 1   // tools/elm_*_test builds: the whole machine (the firmware / host always define it)
+#endif
 
 namespace Elm {
+
+enum { EK_NONE = 0, EK_TAKEN, EK_RESET, EK_SETUP };   // extraKey's answers (below)
+enum { WK_VRAM = 1, WK_REG = 2, WK_LCU = 5, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / register / LCU / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
+
+#if !FLASH_16MB
+// 4 MB images: no eLeMeNt (cmake/board.cmake, Element*.cpp not built). The callers in
+// the shared code stay as they are; these constants fold their branches away.
+inline void reset() {}
+inline bool portIn(uint16_t, uint8_t*) { return false; }
+inline bool portOut(uint16_t, uint8_t) { return false; }
+inline void frameEnd() {}
+inline void flush(bool = false) {}
+inline bool enterSetup() { return false; }
+inline void rst0(uint16_t) {}
+inline int  takeReset() { return 0; }
+inline void bootSettings() {}
+inline uint8_t personality() { return 0; }
+inline void setPersonality(uint8_t) {}
+inline void syncFromSettings() {}
+inline uint8_t speed() { return 0; }
+inline const char* speedName(uint8_t) { return ""; }
+inline void setSpeed(uint8_t) {}
+inline int  extraKey(uint16_t, bool, bool, bool, uint16_t) { return EK_NONE; }
+inline bool rebootWanted() { return false; }
+inline void armPersonality() {}
+inline void cpuFlags() {}
+inline void remap() {}
+inline bool memWrite(uint16_t, uint8_t) { return false; }
+inline void masksRefresh() {}
+inline void memRead(uint16_t) {}
+constexpr uint8_t g_elm_hgfxSlots = 0, g_elm_vram_rd = 0, g_elm_split = 0, g_elm_chunkSplit = 0;
+constexpr uint8_t g_elm_romWait = 0, g_elm_rdmask = 0, g_elm_wrmask = 0;
+constexpr uint32_t g_elm_stretchK = 0;
+inline uint8_t splitRead(uint16_t) { return 0xFF; }
+inline void leave() {}
+inline bool fastReadOk() { return false; }
+inline void busWrite(uint16_t, uint8_t) {}
+inline uint8_t busRead(uint16_t) { return 0xFF; }
+inline uint32_t dmaCopy(uint16_t, uint16_t, uint32_t, uint32_t) { return 0; }
+inline uint32_t dmaFromCard(uint16_t, uint16_t, uint32_t, uint32_t) { return 0; }
+inline void keyWaitSkip() {}
+inline bool idleFetchOk(uint16_t) { return false; }
+inline bool idleReadOk(uint16_t) { return false; }
+inline void idleAdvanceTo(uint32_t) {}
+#if PERF_TRACE
+inline uint32_t g_elm_idle[2];
+#endif
+inline bool nmiBlocked() { return false; }
+inline void nmiTaken(uint16_t) {}
+static inline bool isPort(uint16_t) { return false; }
+#else
 
 void reset();                                 // from CPU::reset
 bool portIn(uint16_t address, uint8_t* out);  // true = claimed
@@ -49,8 +103,7 @@ void        setSpeed(uint8_t sel);    // apply + FRAM + Config::turbo + the cloc
 // CPU speed (5-8 with OverClock, e_zxi_031). RESET = the hard-reset hot key
 // (`resetVk`, F11): released within 1.5 s = the reset, held longer = the SetUp
 // firmware, as on the board. The CPU is held while either button is down.
-// Returns what the caller has to do; EK_NONE = not ours, the key goes on.
-enum { EK_NONE = 0, EK_TAKEN, EK_RESET, EK_SETUP };
+// Returns what the caller has to do; EK_NONE = not ours, the key goes on (enum at the top).
 int  extraKey(uint16_t vk, bool down, bool gui, bool plain, uint16_t resetVk);
 bool rebootWanted();                          // the SetUp changed the URAM size (AA-SRAM): the strip is laid out at boot
 // The personality e_zxi_000 names, applied at reset only (the SetUp restarts, FLASH6
@@ -61,8 +114,7 @@ void armPersonality();
 void cpuFlags();
 void remap();                                 // URAM back over the legacy paging
 bool memWrite(uint16_t address, uint8_t v);   // true = the store is consumed
-bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM)
-enum { WK_VRAM = 1, WK_REG = 2, WK_LCU = 5, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / register / LCU / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
+bool memWriteCold(uint16_t address, uint8_t v);   // memWrite's flash part (memWrite itself: ElmHgfx.cpp, RAM); WK_*: the enum at the top
 extern volatile uint8_t g_elm_hgfxSlots;      // the chunky (HGFX Area) 8K slots
 extern uint8_t s_gIdx;                       // the g file index (#7C3B) behind #7D3B reads
 extern uint8_t* lcuRegs;                      // the LCU block (8K, registers at its start) once mapped
@@ -136,5 +188,6 @@ static inline bool isPort(uint16_t address) {
            (address & 0xFEFF) == 0x9EFD || address == 0xEFF7 ||
            (lo == 0xFD && ((address >> 8) == 0x7F || (address >> 8) == 0x1F || (address >> 8) == 0xDF || (address >> 8) == 0xFD));
 }
+#endif // FLASH_16MB
 
 }

@@ -52,7 +52,11 @@ public:
     static bool isTc2068;   // Timex TC2068 (SCLD MMU on #F4, EX-ROM/DOCK, AY on #F5/#F6)
     static bool isNext;
     static bool isEnt;      // Enterprise 64/128 (src/speccy/machines/Enterprise owns the memory map)
+#if FLASH_16MB
     static bool isElm;      // eLeMeNt ZX (Pentagon 1024 flags + src/speccy/machines/Element)
+#else
+    static constexpr bool isElm = false;   // 4 MB images: no eLeMeNt (cmake/board.cmake), every branch folds away
+#endif
     static bool isSam;      // MGT SAM Coupe (src/speccy/machines/Sam owns the memory map)
     // isNext || isElm: the memory-poll idle-loop fast-forward (NextIdle.h) is hooked on
     // taken backward JRs - one flag, so the shared decoders pay one load as before.

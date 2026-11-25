@@ -2607,7 +2607,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         // Pentagon 1024 + NeoGS boot fell 104 B short of one page (hw: TheLink's dragon
         // without the cache, core0 IDL -2 400 against -1 400 with it).
         #define NGS_SH_RESERVE (56u * 1024u)
-        const bool shNext = Config::arch == A_NEXT || Config::arch == A_ELM;   // final here: setup's requestMachine ran
+        const bool shNext = Config::arch == A_NEXT || Config::isElm();   // final here: setup's requestMachine ran
         memset(s_sh_page, 0, sizeof s_sh_page);
         memset(s_hot_pg, 0, sizeof s_hot_pg);
         memset(s_hot_hits, 0, sizeof s_hot_hits);

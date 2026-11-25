@@ -218,7 +218,7 @@ void Z80DMA::resetAttrShadow() {
 
 bool Z80DMA::ensureAttrShadow() {
     if (!g_dma_buf) {
-        if (!g_dma_bytes_buf && Config::arch == A_ELM) {
+        if (!g_dma_bytes_buf && Config::isElm()) {
             g_dma_bytes_buf = (DmaAttrBytes*)Buffer::palloc(sizeof(DmaAttrBytes), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
             g_dma_bytes_buffer = g_dma_bytes_buf != nullptr;
         }

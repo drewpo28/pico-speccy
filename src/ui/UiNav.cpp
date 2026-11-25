@@ -981,7 +981,7 @@ void runFastMenu() {
         sel = uiFastPick("Fast menu", items, on, FAST_COUNT, from);
         if (sel != FAST_CPU) break;
         static const char* const mhz[4] = { "3.5 MHz", "7 MHz", "14 MHz", "28 MHz" };
-        const bool elm = Config::arch == A_ELM;      // the eLeMeNt's eight SetUp clocks (Element.h)
+        const bool elm = Config::isElm();      // the eLeMeNt's eight SetUp clocks (Element.h)
         const int n = elm ? 8 : 4;
         const int cur = elm ? Elm::speed() : (ESPectrum::multiplicator & 3);
         const char* rows[8];

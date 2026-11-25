@@ -443,7 +443,7 @@ void OSD::esp_hard_reset() {
     // it has to happen before close_all() and long before IRQs go off.
     RTC::flushNVRAM(true);
     Nvram24::flush(true);
-    if (Config::arch == A_ELM) Elm::flush(true);   // the eLeMeNt FlashRAM image and FRAM
+    if (Config::isElm()) Elm::flush(true);   // the eLeMeNt FlashRAM image and FRAM
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
     // PARK CORE1 BEFORE close_all(). close_all() zeroes the whole butter arena
     // through the CACHED XIP alias and then takes the QSPI CS1 pin away from the
@@ -2327,7 +2327,7 @@ void OSD::bootTrdos() {
 // persist and announce it the same way.
 void OSD::setTurbo(uint8_t m) {
     m &= 3;
-    if (Config::arch == A_ELM) { Elm::setSpeed(m == 3 ? 5 : m); return; }   // its own eight clocks (Element.h)
+    if (Config::isElm()) { Elm::setSpeed(m == 3 ? 5 : m); return; }   // its own eight clocks (Element.h)
     ESPectrum::multUser = m;
     ESPectrum::multiplicator = m;
     CPU::updateStatesInFrame();
@@ -2924,7 +2924,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // multUser alone), Pentagon-1024 EFF7 D4 and Profi #028B pull it
             // down — so stepping the user's pick restarted the cycle at 3.5 MHz
             // instead of continuing from what the machine is actually running.
-            if (Config::arch == A_ELM) Elm::setSpeed((uint8_t)(Elm::speed() + 1));   // 3.5 .. 30 (Element.h)
+            if (Config::isElm()) Elm::setSpeed((uint8_t)(Elm::speed() + 1));   // 3.5 .. 30 (Element.h)
             else setTurbo((ESPectrum::multiplicator + 1) & 3);
         } else
         if (hkIdx == Config::HK_DEBUG) {
@@ -3253,7 +3253,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 notify(kGs[Config::gigascreen_onoff], LEVEL_INFO, 1200);
                 return;
             }
-            if (Config::arch == A_ELM && VIDEO::paper_hold) {
+            if (Config::isElm() && VIDEO::paper_hold) {
                 // eLeMeNt extra video (HRC, HGFX): no prev-FB and no blend slots there,
                 // HRC mixes on its own from the setting (Hgfx::giga); the generic
                 // machinery arms itself when the ZX screen is back (gigascreenModeGate).
@@ -3309,7 +3309,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                              : OSD_GIGASCREEN_OFF;
             notify(menu, LEVEL_INFO, 900);
             Config::save();
-            if (Config::arch == A_ELM) Elm::syncFromSettings();   // the SetUp's e_zxi_01D follows the hot key
+            if (Config::isElm()) Elm::syncFromSettings();   // the SetUp's e_zxi_01D follows the hot key
         } else if (hkIdx == Config::HK_MAX_SPEED || KeytoESP == fabgl::VK_NUMLOCK) {
         ESPectrum::maxSpeed = !ESPectrum::maxSpeed;
         std::string menu = ESPectrum::maxSpeed ? OSD_MAXSPEED_ON : OSD_MAXSPEED_OFF;
