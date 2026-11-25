@@ -229,6 +229,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             if (arch != A_SAM) { SamFdc::eject(0); SamFdc::eject(1); }
         }
         PlusD::init();
+        PlusD::powerOn();   // a machine switch is a power cycle: a resident G+DOS is gone
         // Opus Discovery: the 48K only (Opus.h: the 128's IM1 path trips 0x0048 twice).
         if (Config::opus && !Opus::machineOk(arch, romset)) {
             Config::opus = 0;

@@ -77,6 +77,13 @@ bool init() {
     return true;
 }
 
+// A power-on for the interface (a machine switch, a disk launch that turns it on): the
+// 8K RAM zeroed, so the boot ROM's #3DE4 check initialises it and RUN loads +SYS again.
+// A reset (F11) keeps it, as on the real interface.
+void powerOn() {
+    if (s_ram) memset(s_ram, 0, 8192);
+}
+
 void reset() {
     if (!enabled) { if (paged) pageOut(); return; }
     s_ctrl = 0;
@@ -170,12 +177,11 @@ bool launchDisk(const char* path) {
     Config::mb02 = 0;
     Config::betadisk = false;
     Config::save();
-    // A launch is a power-on for the interface: its 8K RAM survives a reset (F11, as on
-    // the real one), and with G+DOS still resident there RUN only says "O.K. G+DOS"
-    // instead of loading +SYS, which is what runs the disk's AUTO file (owner, hw
-    // 2026-11-25: F11 then F5 stopped in BASIC). init() zeroes a fresh allocation.
-    // NOT hw-tested.
-    if (s_ram) memset(s_ram, 0, 8192);
+    // A launch that turns the interface on is a power-on: with G+DOS still resident in
+    // the RAM, RUN only says "O.K. G+DOS" instead of loading +SYS and the disk's AUTO
+    // (owner, hw 2026-11-25). MachineSwitch::commit clears it too; this covers the reset
+    // on the same machine. init() zeroes a fresh allocation.
+    powerOn();
     // Always a 128K: Plus D titles run there from 128 BASIC, and the 128K-only ones
     // (The Secret of Monkey Island, OutSoftware 2026) reset a 48K after their intro.
     if (Config::arch != A_128K || !machineOk(Config::arch, Config::romSet)) {

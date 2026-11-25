@@ -34,6 +34,7 @@ namespace PlusD {
     // Config::plusd -> the interface (allocates / frees the 8K RAM). False = no RAM.
     bool init();
     void reset();                // machine reset: controller reset, paged in on the 48K, disks stay
+    void powerOn();              // power cycle (machine switch, launch): the 8K RAM zeroed, G+DOS gone
 
     // Ports: the low byte has A7-A5 and A1-A0 high ((port & 0xE3) == 0xE3, Ports.cpp).
     uint8_t portIn(uint8_t lo);

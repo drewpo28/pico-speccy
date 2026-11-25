@@ -2324,6 +2324,8 @@ distribution). Name in the UI and notes: **Plus D** (owner's request, not "+D").
   still resident, RUN only prints `O.K. G+DOS` and the disk's AUTO does not start
   (owner hw 2026-11-25: F11 then F5 -> BASIC, only `LOAD d1"AUTO"` ran it). An F11 by
   hand keeps the RAM: then `LOAD d1"AUTO"` (faithful). Clear hw-confirmed DVp2w 2026-11-25 (owner).
+  A machine switch is a power cycle too: `PlusD::powerOn()` (RAM zeroed) after
+  `PlusD::init()` in MachineSwitch::commit (owner 2026-11-25; hw-confirmed DVp2w 2026-11-25).
   Why, from the boot ROM (1.A): the system state is `#3DE4` in the interface RAM —
   "D" = +SYS loaded (set at 0x03C9 after the load), "X" = RAM initialised (0x02D9, the
   init at 0x02A2 that zeroes the 8K when #3DE4 is neither). `#3DE5` = "G" is only a
