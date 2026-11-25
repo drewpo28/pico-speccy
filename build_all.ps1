@@ -67,7 +67,12 @@ if (Get-Command ccache -ErrorAction SilentlyContinue) {
         "-DCMAKE_ASM_COMPILER_LAUNCHER=ccache"
     )
     if (-not $env:CCACHE_DIR) { $env:CCACHE_DIR = Join-Path $env:USERPROFILE ".ccache" }
-    try { & ccache --max-size=5G | Out-Null } catch {}
+    # Same as build_all.sh: 5G thrashed across ~40 build dirs; relative paths +
+    # no CWD hash let one object serve every sibling dir under build-all/.
+    $MaxSize = if ($env:CCACHE_MAXSIZE) { $env:CCACHE_MAXSIZE } else { "20G" }
+    try { & ccache --max-size=$MaxSize | Out-Null } catch {}
+    if (-not $env:CCACHE_BASEDIR) { $env:CCACHE_BASEDIR = $PSScriptRoot }
+    if (-not $env:CCACHE_NOHASHDIR) { $env:CCACHE_NOHASHDIR = "1" }
     $HaveCCache = $true
 }
 

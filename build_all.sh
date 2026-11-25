@@ -81,8 +81,16 @@ if command -v ccache &>/dev/null; then
         -DCMAKE_ASM_COMPILER_LAUNCHER=ccache
     )
     export CCACHE_DIR="${CCACHE_DIR:-$HOME/.ccache}"
-    # Enlarge cache; arm-none-eabi objects are small but numerous across 13 builds.
-    ccache --max-size=5G >/dev/null 2>&1 || true
+    # ~40 build dirs x ~800 objects: 5G thrashed (a full run evicted the previous
+    # one). CCACHE_MAXSIZE overrides.
+    ccache --max-size="${CCACHE_MAXSIZE:-20G}" >/dev/null 2>&1 || true
+    # Every build dir is a sibling under build-all/, so with paths made relative to
+    # the repo and the CWD left out of the hash, one SDK / external / src object
+    # serves every dir that compiles it with the same flags (direct-mode hits, no
+    # preprocessor run). Debug info then says ../../src/x.c with the comp_dir of
+    # whichever dir compiled it first -- the same depth, so gdb still finds it.
+    export CCACHE_BASEDIR="${CCACHE_BASEDIR:-$SCRIPT_DIR}"
+    export CCACHE_NOHASHDIR="${CCACHE_NOHASHDIR:-1}"
     HAVE_CCACHE=1
 else
     HAVE_CCACHE=0
@@ -487,7 +495,8 @@ fi
 
 if [ $HAVE_CCACHE = 1 ]; then
     echo ""
-    ccache -s 2>/dev/null | grep -E 'cache hit|cache miss|cache size' || true
+    # ccache 4.x prints "Hits:/Misses:/Cache size", 3.x "cache hit/miss/size"
+    ccache -s 2>/dev/null | grep -E -i 'hits:|direct:|misses:|cache size|cache hit|cache miss' || true
 fi
 
 echo ""
