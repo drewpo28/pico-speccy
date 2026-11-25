@@ -87,7 +87,13 @@ void deinit();
 // (+ the renderer's pre-scaled bitmap cache, MIP_POOL_BYTES, which the display
 // glue allocates when the output is first switched to the board)
 constexpr size_t MIP_POOL_BYTES = 256u << 10;
-constexpr size_t configuredBytes() { return RAM_G_SIZE + (160u << 10) + MIP_POOL_BYTES; }
+// The pool is counted at HALF: its allocation halves down to 64 KB on its own
+// (Video.cpp), while this figure is a hard gate - donateZxPagesToFb refuses to send
+// the ZX pages to butter when the budget is short, and on TS-Conf + VDAC2 (its code
+// window resident, heap ceiling 30 KB lower) the framebuffer then cannot fit the heap:
+// "Out of memory" panic at MEMORY SETUP (hw 2026-11-25, DVp2w + NeoGS: budget 4120 KB
+// against 4128 for 258 pages, after the esxDOS 0.9.0 ROM page took 8 KB, 68b69e7d).
+constexpr size_t configuredBytes() { return RAM_G_SIZE + (160u << 10) + MIP_POOL_BYTES / 2; }
 // Chip reset (power-on / host command RST_PULSE): registers to their reset
 // values, coprocessor cold start. RAM_G is not cleared — the real chip's is
 // undefined at power-up and preserved by RST_PULSE.

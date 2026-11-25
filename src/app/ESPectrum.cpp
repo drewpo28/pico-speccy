@@ -781,6 +781,18 @@ static bool elmCodeInPages57() {
   return false;
 #endif
 }
+// The strip takes pages 8..wanted+1 out of the butter budget (assign_ram); pages
+// 0-7 come on top. A short budget would push the tail onto SD swap — the "degraded"
+// TS-Conf, or a Murmuzavr count past the chip — which is worse than 128 KB of heap,
+// so donateZxPagesToFb refuses instead and keeps the SRAM pages. 0 = the budget
+// holds; otherwise how many KB it is short. The VDAC2 guard in setup() asks the
+// same question before it loads its code window (see there).
+static unsigned zxDonationShortKB() {
+  const size_t need   = (Config::wantedPages(Config::arch) + 2) * (size_t)MEM_PG_SZ;
+  const size_t budget = Buffer::pageBudgetButter();
+  return budget >= need ? 0u : (unsigned)((need - budget + 1023) >> 10);
+}
+
 static void donateZxPagesToFb() {
   s_elmPages57 = elmCodeInPages57();   // whatever happens below, the window's pages leave SRAM
 #if HOST_BUILD
@@ -791,16 +803,9 @@ static void donateZxPagesToFb() {
   if (hostWin && Config::isElm()) s_elmPages57 = true;
 #endif
   if (!butter_psram_size()) return;
-  // The strip takes pages 8..wanted+1 out of the butter budget (assign_ram); pages
-  // 0-7 come on top. A short budget would push the tail onto SD swap — the "degraded"
-  // TS-Conf, or a Murmuzavr count past the chip — which is worse than 128 KB of heap,
-  // so refuse instead and keep the SRAM pages.
-  const size_t wanted = Config::wantedPages(Config::arch);
-  const size_t need   = (wanted + 2) * (size_t)MEM_PG_SZ;
-  if (Buffer::pageBudgetButter() < need) {
-    Debug::log2SD("setup: ZX pages stay in SRAM: butter budget %uKB < %uKB for %u pages",
-                  (unsigned)(Buffer::pageBudgetButter() >> 10), (unsigned)(need >> 10),
-                  (unsigned)(wanted + 2));
+  if (zxDonationShortKB()) {
+    Debug::log("setup: ZX pages stay in SRAM: butter budget %uKB short", zxDonationShortKB());
+    Debug::log2SD("setup: ZX pages stay in SRAM: butter budget %uKB short", zxDonationShortKB());
     return;
   }
   // The three static arrays behind the pages (MemESP.cpp): pages0123, pages46,
@@ -1141,6 +1146,22 @@ void ESPectrum::setup() {
   // both — and the MB-02+ half has to be in this test, because its deferred
   // transfer calls Z80DMA::executeTransfer() from the FDC port write.
   bool dmaClassic = Config::dma_mode != 0 || Config::mb02 != 0;
+  // VDAC2 budget guard. With the VDAC2 code window resident the heap ceiling is ~30 KB
+  // lower, and the framebuffer then fits only on the ZX pages' SRAM - which
+  // donateZxPagesToFb gives up when the butter budget is short. Both together were an
+  // "Out of memory" panic at MEMORY SETUP (hw 2026-11-25: TS-Conf + NeoGS + VDAC2,
+  // 8 KB short after the esxDOS 0.9.0 ROM page). The board's own 1.4 MB reserve is
+  // part of that budget, so switching it off for this boot fixes both halves.
+  // Config::vdac2BootOff keeps the user's choice in NVS (Config::save).
+  if (Config::tsconf_vdac2 && Config::arch == A_TSCONF && butter_psram_size()) {
+    if (const unsigned shortKB = zxDonationShortKB()) {
+      Config::tsconf_vdac2 = false;
+      Config::vdac2BootOff = true;
+      Debug::log("setup: VDAC2 off for this boot - butter budget %uKB short", shortKB);
+      Debug::log2SD("setup: VDAC2 off for this boot - butter budget %uKB short", shortKB);
+      OSD::bootNotice("VDAC2 off: not enough PSRAM (GS / MoonSound RAM)");
+    }
+  }
   const bool vdac2Win = Config::tsconf_vdac2   // VDAC2 window (with TS-Conf only); its load
                         && FlashRoms::intact(); // image is in .psramroms, gone once traded
   // .dmaovl shares its addresses with .ftovl (rp2350-memmap.ld: it sits under

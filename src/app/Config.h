@@ -241,6 +241,10 @@ public:
     // VDAC2 (FT812) video board on the Z-Controller SPI (Ft812.h). Reboot-class:
     // its 1 MB RAM_G is carved out of the butter PSRAM at boot (Buffer::pageBudget).
     static bool     tsconf_vdac2;
+    // Boot-only: setup() switched VDAC2 off because the butter budget could not hold it
+    // (ESPectrum.cpp, VDAC2 budget guard). save() writes the user's "on" back, so the
+    // board returns once GS / MoonSound leave it room.
+    static bool     vdac2BootOff;
     // VDAC2 renderer: true = 2x2 box filter for 2:1 cells (Ft812Render RenderCfg::smooth)
     static bool     tsconf_vdac2_smooth;
     // VDAC2 renderer: true = per-frame adaptive palette (median cut) instead of the fixed RGB cube

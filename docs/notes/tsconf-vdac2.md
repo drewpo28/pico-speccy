@@ -1158,3 +1158,29 @@ exactly the FT81x input format: MJPEG 512x384 24 fps + PCM u8 44.1 kHz mono.
     show here) and poll fast-forward ms. That is the split of the 8.5 ms to read before
     touching the feed rate itself.
   - Test ELF `debug/DVp2-vdac2-feed1-trace-1.0.8.elf`.
+
+### Boot panic "Out of memory" at MEMORY SETUP: VDAC2 budget 8 KB short (2026-11-25, hw-confirmed DVp2w)
+
+- **Symptom:** TS-Conf + NeoGS + VDAC2, DVp2w: `VIDEO: main FB 101KB in 4 chunks
+  (fragmented heap)`, `freeHeap=2208`, then `*** PANIC *** Out of memory` from
+  `new mem_desc_t[]` (ESPectrum.cpp MEMORY SETUP). No `pages 4/6` line = the donation
+  returned early.
+- **Cause:** `Buffer::pageBudget` reserves `Ft812::configuredBytes()` (1 MB RAM_G +
+  160 KB + MIP pool). With NeoGS (1984 KB) and DivMMC (136 KB since the esxDOS 0.9.0 ROM
+  page, 68b69e7d) the butter budget came to 4120 KB against 4128 KB for 258 pages, so
+  `donateZxPagesToFb` kept the ZX pages in SRAM and the FB went to the heap. The resident
+  `.ftovl` window (28.7 KB) puts the heap ceiling 30 KB lower, so the 103 KB FB used up
+  the heap.
+- **Fix:** `configuredBytes()` counts the MIP pool at half (128 KB). The pool already
+  halves down to 64 KB on its own (Video.cpp), and the physical butter still has ~1.9 MB
+  above the pages. Test ELF `debug/DVp2w-vdac2budget-1.1.4.elf`.
+- **Guard (same day):** `zxDonationShortKB()` (ESPectrum.cpp) is the one budget test.
+  `donateZxPagesToFb` and a new check before `CodeOverlay::apply` both call it. With
+  TS-Conf + VDAC2 and a short budget, setup switches VDAC2 off for that boot (UART
+  `setup: VDAC2 off for this boot - butter budget NKB short` + boot notice). Dropping
+  the board's 1.4 MB reserve lets the donation through, and its window goes back to
+  the heap. `Config::vdac2BootOff` makes `save()` keep writing `tsconf_vdac2=true`.
+  Host-tested 2026-11-25 (TS-Conf + NeoGS + MoonSound + VDAC2: 904 KB short, guard
+  fired, NVS kept true). That bench root then segfaulted after NGS start, the same with
+  VDAC2 off in the config, so the crash is not the guard. Test ELF
+  `debug/DVp2w-vdac2guard-1.1.4.elf`, hw-confirmed 2026-11-25 (DVp2w).
