@@ -24,6 +24,7 @@
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/disk/Opus.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "Buffer.h"
 #include "speccy/devices/zifi/ZiFi.h"
@@ -228,6 +229,14 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             if (arch != A_SAM) { SamFdc::eject(0); SamFdc::eject(1); }
         }
         PlusD::init();
+        // Opus Discovery: the 48K only (Opus.h: the 128's IM1 path trips 0x0048 twice).
+        if (Config::opus && !Opus::machineOk(arch, romset)) {
+            Config::opus = 0;
+            Debug::log("[MACH switch] Opus Discovery disabled: not available on %s", archToStr(arch));
+            OSD::osdCenteredMsg("Opus Discovery disabled", LEVEL_WARN, 2000);
+            if (arch != A_SAM && !Config::plusd) { SamFdc::eject(0); SamFdc::eject(1); }
+        }
+        Opus::init();
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
         if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || isP3)) {

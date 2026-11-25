@@ -419,7 +419,10 @@ const char* romsetName(int32_t composite);
     /* Additional hardware > Plus D (Config::plusd): the MGT Plus D's ROM + 8K RAM over */ \
     /* page 0. Live (8K, no Subsystems binding), the Z80 restarted in G+DOS (F_ZXRESET). */ \
     /* APPEND ONLY.                                                                    */ \
-    X(SET_PLUSD,          AC_LIVE,   F_ZXRESET,             get_plusd,      put_plusd,     hook_plusd,     -1)
+    X(SET_PLUSD,          AC_LIVE,   F_ZXRESET,             get_plusd,      put_plusd,     hook_plusd,     -1) \
+    /* Additional hardware > Opus Discovery (Config::opus): ROM + 2K RAM + memory-mapped */ \
+    /* WD1770/6821 over page 0, 48K only. Same shape as the Plus D. APPEND ONLY.        */ \
+    X(SET_OPUS,           AC_LIVE,   F_ZXRESET,             get_opus,       put_opus,      hook_opus,      -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

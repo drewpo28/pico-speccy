@@ -2334,3 +2334,50 @@ distribution). Name in the UI and notes: **Plus D** (owner's request, not "+D").
   pageIn from exec_nocheck / fetchOpcode targets 0x2002xxxx. Re-measure with 14.2.
 - Not done: printer output, the snapshot button as a hotkey (an NMI from the usual NMI
   key reaches 0x0066 and pages G+DOS in), DISCiPLE (same G+DOS, other ports), UNI-DOS.
+
+## Opus Discovery disk interface (2026-11-25, host-tested, NOT hw-tested)
+
+`src/speccy/devices/disk/Opus.*`, model = Fuse 1.6.0 `peripherals/disk/opus.c`; ROM
+`src/speccy/roms/opus.h` = Opus 2.22 ("(c) 1984-86 Dave Corne"), supplied by the owner
+(Fuse does not distribute it; md5 3beeddbf0aa716b7aba7deec2bfb3028). Manual: the owner's
+OpusDiscovery_Manual.pdf (Microdrive syntax: `FORMAT "m";1;"name"`, `CAT 1`,
+`SAVE *"m";1;"run" LINE 10`, `RUN` after power-on / NEW loads "run").
+
+- **Memory while paged:** ROM 0x0000-0x1FFF, 2K RAM 0x2000-0x27FF, WD1770 regs at
+  0x2800-0x2803, 6821 PIA at 0x3000-0x3003 (A: bit 1 drive 2, bit 4 side, bit 6 printer
+  busy - cleared on read; CRA read | 0x40; B: printer data, dropped), 0x3800-0x3FFF = #FF.
+  Page-0 window (page0_lo = flash ROM, page0_hi = an 8K buffer: 2K RAM + #FF) + the I/O
+  through `g_opus_io` in CPU.cpp `gsDmaPeek8/gsDmaPoke8` — every Z80 data access below
+  the fast paths funnels there (peek8/16_generic, poke8/16_generic); fetches from the I/O
+  area see the buffer.
+- **Paging = Fuse's LATE check:** the opcode at 0x0008 / 0x0048 / 0x1708 is fetched from
+  the Spectrum ROM, THEN the Opus pages in; the opcode at 0x1748 (a RET) is fetched from
+  the Opus ROM, then it pages out. Hooked after the fetch in `Z80::exec_nocheck` (hoisted
+  `opus` flag) and `Z80::execute`; `m1Late` / `pageIn` / `pageOut` / `nmiTick` RAM-resident.
+  Not paged at reset.
+- **DRQ -> NMI:** the Opus wires the WD1770's DRQ to /NMI; 0x0066 is `JP (HL)` and the ROM
+  points HL at its byte handler (#1886 read, #1895 write, #189F format: 4-8 instructions
+  from the data access to RETN) while the main code polls BUSY. The core's own NMI is
+  taken only at frame boundaries, so the Opus has its own: `Opus::nmiCnt` counts
+  instructions (12) after DRQ rises — on a status/data access, `SamFdc::drq` (executes a
+  pending command like a status read, no lost-data poll count) — and `nmiTick` calls
+  `Z80::doNMI` at an instruction start with no DD/FD prefix pending. 12 > any handler,
+  so a second NMI never lands before the RETN (NMIs are not masked by an NMI).
+- **48K only** (`Opus::machineOk`): on a 128K the IM1 path through ROM 0 returns to ROM 0's
+  0x0048 (POP HL) after ROM 1's 0x0048, the trap fires twice and the Opus handler's
+  PUSH BC emulation breaks the stack (128 ROM 0 disassembly). MachineSwitch turns it off.
+- **Media:** SamFdc `K_OPD` by extension (.opd/.opu): 184320 = 40x1, 368640 = 80x1 (Fuse:
+  the size cannot tell 40x2), 737280 = 80x2; 18 x 256 B, sector IDs 0-17, sides
+  interleaved per cylinder; WRITE TRACK accepts base-0 IDs. `createEmptyOpd` (40x1, #E5).
+  Drives = the SAM pair (samDiskFile/samWP), Devices > Opus Discovery > Drives 1-2.
+- F5 on .opd/.opu -> `Opus::launchDisk`: drive 1, Opus on (Plus D / esxDOS / MB-02+ /
+  Betadisk off), a 48K (`romSet48` if usable), reset, R + Enter typed from the frame tail.
+- `.pss`: PSOP (paging, drive, nmiCnt, PIA, 2K RAM) + PSSF; Config key `opus` reboot-class.
+- Host bench 2026-11-25: blank .opd -> FORMAT "m";1;"test" -> CAT 1 ("test", 178K free) ->
+  `10 BORDER 2`, SAVE *"m";1;"run" LINE 10 -> new session, RUN: red border, 0 OK, 10:1.
+  Exolon.OPD (owner's): RUN -> Hewson/OPUS loading screen -> menu -> 1 = in game.
+  F5 from a 128K with the Opus off: switches to 48K, Opus on, Exolon loads.
+- Cost (same GCC 13.2 build as the Plus D line, on top of it): .data +728 B (exec_nocheck
+  +124, poke16_generic +112, pageIn 112, peek16_generic +104, execute +76, poke8_generic
+  +64, m1Late 40, peek8_generic +36, pageOut 28, two veneers to memRead/memWrite), .bss +20.
+- Not done: printer, a format-new-disk action in the UI (createEmptyOpd exists).

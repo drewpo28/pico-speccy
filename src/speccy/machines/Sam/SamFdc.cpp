@@ -36,7 +36,7 @@ static constexpr uint32_t MAX_TRACK_SIZE = 6250;
 static constexpr uint16_t MOTOR_TIMEOUT = 100;   // (10 / (300 / 60)) * 50 frames
 static constexpr uint8_t  ACTIVE_FRAMES = 5;
 
-enum Kind : uint8_t { K_NONE, K_MGT, K_SAD, K_EDSK };
+enum Kind : uint8_t { K_NONE, K_MGT, K_SAD, K_EDSK, K_OPD };   // K_OPD: Opus Discovery, sectors 0-17 x 256 B
 
 struct Id { uint8_t cyl, head, sector, size, crc1, crc2; };
 
@@ -137,8 +137,9 @@ static uint8_t getSector(Media* m, uint8_t cyl, uint8_t head, uint8_t index, Id&
         return 0;
     }
     if (cyl >= m->cyls || head >= m->heads || index >= m->spt) return RECORD_NOT_FOUND;
-    id.cyl = cyl; id.head = head; id.sector = (uint8_t)(index + 1);
-    id.size = (m->kind == K_SAD) ? sizeCode(m->secSize) : 2;
+    id.cyl = cyl; id.head = head;
+    id.sector = (uint8_t)(m->kind == K_OPD ? index : index + 1);   // Opus numbers from 0 (Fuse disk.c)
+    id.size = (m->kind == K_SAD || m->kind == K_OPD) ? sizeCode(m->secSize) : 2;
     idCrc(id);
     return 0;
 }
@@ -302,12 +303,13 @@ static uint8_t writeTrack(uint8_t d) {
     }
     // Flat images: the track must be exactly the image's own layout.
     if (sc != m->spt) return WRITE_PROTECT;
+    const uint8_t base = (m->kind == K_OPD) ? 0 : 1;
     for (uint8_t i = 0; i < sc; i++) {
         if (list[i].c != r.headCyl || list[i].h != r.head || (128u << (list[i].n & 3)) != m->secSize ||
-            list[i].r < 1 || list[i].r > m->spt) return WRITE_PROTECT;
+            list[i].r < base || list[i].r >= m->spt + base) return WRITE_PROTECT;
     }
     for (uint8_t i = 0; i < sc; i++)
-        if (!fsWr(m->fp, flatOffset(m, r.headCyl, r.head, (uint8_t)(list[i].r - 1)), data[i], m->secSize))
+        if (!fsWr(m->fp, flatOffset(m, r.headCyl, r.head, (uint8_t)(list[i].r - base)), data[i], m->secSize))
             return WRITE_PROTECT;
     return 0;
 }
@@ -434,6 +436,12 @@ void out(uint8_t d, uint16_t port, uint8_t v) {
 }
 
 void setSide(uint8_t d, uint8_t side) { s_r[d & 1].head = side & 1; }
+
+bool drq(uint8_t d) {
+    Regs& r = s_r[d & 1];
+    if ((r.status & (BUSY | DRQ)) == BUSY) executeNext(d & 1);
+    return (r.status & DRQ) != 0;
+}
 
 void shareRegs(uint8_t from, uint8_t to) {
     from &= 1; to &= 1;
@@ -612,6 +620,28 @@ bool wroteRecently() {
 
 static const char SAD_SIG[] = "Aley's disk backup";   // 18 bytes
 
+bool isOpdPath(const std::string& path) {
+    const size_t n = path.size();
+    if (n < 4 || path[n - 4] != '.') return false;
+    const char a = (char)(path[n - 3] | 0x20), b = (char)(path[n - 2] | 0x20), c = (char)(path[n - 1] | 0x20);
+    return a == 'o' && b == 'p' && (c == 'd' || c == 'u');
+}
+
+bool createEmptyOpd(const std::string& path) {
+    FIL* f = fopen2(path.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!f) return false;
+    uint8_t z[1024]; memset(z, 0xE5, sizeof(z));
+    bool ok = true;
+    for (uint32_t off = 0; ok && off < 184320u; off += sizeof(z)) {
+        UINT bw = 0;
+        ok = f_write(f, z, sizeof(z), &bw) == FR_OK && bw == sizeof(z);
+    }
+    if (ok) ok = f_sync(f) == FR_OK;
+    fclose2(f);
+    if (!ok) f_unlink(path.c_str());
+    return ok;
+}
+
 bool mounted(uint8_t d) { return d < 2 && s_m[d]; }
 const std::string& fname(uint8_t d) { return (d < 2 && s_m[d]) ? s_m[d]->path : s_empty; }
 
@@ -654,7 +684,8 @@ bool mount(uint8_t d, const std::string& path) {
     UINT br = 0;
     f_lseek(fp, 0);
     if (f_read(fp, hdr, sizeof(hdr), &br) != FR_OK) br = 0;
-    const Kind k = classify(fp, size, hdr, br);
+    Kind k = classify(fp, size, hdr, br);
+    if (isOpdPath(path) && (size == 184320u || size == 368640u || size == 737280u)) k = K_OPD;
     if (k == K_NONE) { fclose2(fp); Debug::log("[SAM FDC] %s: not a SAM disk image", path.c_str()); return false; }
 
     Media* m = new (std::nothrow) Media();
@@ -665,7 +696,13 @@ bool mount(uint8_t d, const std::string& path) {
     if (!m->buf) { fclose2(fp); delete m; return false; }
 
     bool ok = true;
-    if (k == K_MGT) {
+    if (k == K_OPD) {
+        // Fuse open_img_mgt_opd: 40 x 1, 80 x 1 (not 40 x 2: the size cannot tell), 80 x 2;
+        // sides interleaved per cylinder ("alt"), 18 x 256 B.
+        m->heads = (size == 737280u) ? 2 : 1;
+        m->cyls = (size == 184320u) ? 40 : 80;
+        m->spt = 18; m->secSize = 256; m->dataOff = 0;
+    } else if (k == K_MGT) {
         m->cyls = 80; m->heads = 2; m->secSize = 512;
         m->spt = (size == 737280u) ? 9 : 10;
         m->dataOff = 0;
@@ -695,7 +732,7 @@ bool mount(uint8_t d, const std::string& path) {
     }
     s_m[d] = m;
     Debug::log("[SAM FDC] drive %u = %s (%s%s)", (unsigned)(d + 1), path.c_str(),
-               k == K_MGT ? "MGT" : k == K_SAD ? "SAD" : "EDSK", m->wp ? ", write-protected" : "");
+               k == K_MGT ? "MGT" : k == K_SAD ? "SAD" : k == K_OPD ? "OPD" : "EDSK", m->wp ? ", write-protected" : "");
     return true;
 }
 

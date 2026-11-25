@@ -54,6 +54,7 @@
 #include "speccy/devices/Z80DMA.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/disk/Opus.h"
 #include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd/read8 (TC2068 SCLD window, exec_nocheck fetch)
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/core/Rzx.h"     // Rzx::mode / onIn: RZX playback substitutes every IN
@@ -1589,7 +1590,11 @@ IRAM_ATTR void Z80::execute() {
 #if NEO8_TRAP
     Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
 #endif
+    // Opus Discovery (exec_nocheck twin): the DRQ NMI before the fetch, paging after it.
+    if (__builtin_expect(Opus::enabled, 0) && Opus::nmiCnt && prefixOpcode == 0 && !--Opus::nmiCnt)
+        Opus::nmiTick();
     opCode = Z80Ops::fetchOpcode();
+    if (__builtin_expect(Opus::enabled, 0) && Opus::trapPc(REG_PC)) Opus::m1Late(REG_PC);
 
     regR++;
 
@@ -2223,6 +2228,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
     // MGT Plus D: the same kind of flag (Config, from the menu only). Its M1 traps are
     // tested below 0x0300 only, so code in RAM pays one register test.
     const bool plusd = PlusD::enabled;
+    const bool opus = Opus::enabled;      // Opus Discovery: DRQ NMI countdown + late M1 traps
 
     while (CPU::tstates < CPU::stFrame) {
 
@@ -2284,6 +2290,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
 #if NEO8_TRAP
         Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
 #endif
+        // Opus Discovery: the WD1770's DRQ NMI, at an instruction boundary (Opus.h).
+        if (__builtin_expect(opus, 0) && Opus::nmiCnt && prefixOpcode == 0 && !--Opus::nmiCnt)
+            Opus::nmiTick();
         uint8_t pg = REG_PCh >> 5;
         if (g_ts_fastmem > tsFastLo8(REG_PC)) {   // TsFastMem.h: TS-Conf / Next above 0x4000, plain POINTER banks, counter video
             tsFastTick(4);
@@ -2342,6 +2351,8 @@ IRAM_ATTR void Z80::exec_nocheck() {
         } else
         opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC);
         }
+        // Opus Discovery: paging follows the fetch (Fuse's late check).
+        if (__builtin_expect(opus, 0) && Opus::trapPc(REG_PC)) Opus::m1Late(REG_PC);
         C16_FE(REG_PC);
 
         regR++;
