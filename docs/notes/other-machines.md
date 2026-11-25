@@ -616,6 +616,13 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
   hold Caps Shift for a cold one. Original 64 (CP/M): its NMI (Alt+F10) boots the disk —
   quorum48.rom #0066 loads track 0 sector 1 to #8800 and runs it if #8820 = JP.
 - Gluk clock #EFF7/#DFF7/#BFF7 on every Quorum while Devices > CMOS + NVRAM (else #FF / swallowed).
+- **ZXM-MoonSound vs the #7E keyboard (2026-11-26, hw-confirmed DVp2w 2026-11-26 by the owner, `debug/DVp2w-qumoon-1.1.4`):**
+  the card's #7E/#7F branch in `Ports::input` runs before the Quorum dispatch, so with Audio >
+  ZXM-MoonSound on (and yrw801.rom present) ROM-MENU read the OPL status as extended keys and
+  F11 > "ROM-MENU" landed in the BASIC-48 "Main menu: Tape loader / Restart / ..." instead of
+  the 4-row menu. Now a #7E READ on a Quorum (not the Navigator, which has no #7E keyboard)
+  yields to `extRead` (`Quorum::ownsMoonRead`, flash; Ports::input +28 B RAM). #7F reads and all
+  writes stay the card's (Quorum swallows #7E/#7F writes anyway).
 - **Navigator 256 (2026-11-15, host-tested; hw-confirmed DVp2w 2026-11-15 by the owner):** romset `R_NAV256` of A_PENT (appended
   at the END of the romset table), menu row after Quorum 256 behind the same extended-RAM gate. It is the
   SpeccyP emulator's `NOVA256` machine ("Navigator 256") and its ROM set ('NAVIGATOR' v5.08 (C) NOVA 01.04.98);

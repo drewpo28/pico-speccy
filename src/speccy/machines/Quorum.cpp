@@ -321,6 +321,10 @@ static inline bool betaPort64(uint8_t lo) {
 // only while Devices > CMOS + NVRAM fits it; #EFF7 D7 is not gated (as on Pentagon).
 static inline bool glukPort(uint8_t lo) { return lo == 0xF7 && Config::rtc_enabled; }
 
+bool ownsMoonRead(uint16_t address) {
+    return g_quorum && !s_nav && !(address & 1);
+}
+
 bool portIn(uint16_t address, uint8_t* out) {
     const uint8_t lo = (uint8_t)address;
     if (betaPort64(lo)) return false;

@@ -135,6 +135,9 @@ uint32_t ramPages();
 // Port dispatch ahead of the generic decode. true = handled.
 bool portIn(uint16_t address, uint8_t* out);
 bool portOut(uint16_t address, uint8_t data);
+// #7E read = the extended keyboard (not on the Navigator): a ZXM-MoonSound read of
+// its address port yields to it, or ROM-MENU scans the OPL status as keys.
+bool ownsMoonRead(uint16_t address);
 // Z80::check_trdos edges: PC at #3Dxx with DOS down, or PC >= #4000 with DOS up.
 void trdosEdge(uint8_t pch);
 // Z80::doNMI: the NMI acknowledge clears #00 (the SYS ROM appears at #0066 on the 128).

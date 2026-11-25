@@ -1252,7 +1252,10 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // is up — #7F is the WD1793 data register under TR-DOS. Before the ULA branch:
   // #7E is even, and the card's IORQG keeps it off the rest of the bus. A read
   // of #7E answers the FM status, as the chip's status port does.
-  if (moonpcm && (address & 0xFE) == 0x7E && !ESPectrum::trdos) {
+  // Quorum: #7E reads are its extended keyboard (Quorum::ownsMoonRead, flash; only
+  // reached with the card on and a Quorum running).
+  if (moonpcm && (address & 0xFE) == 0x7E && !ESPectrum::trdos
+      && !(__builtin_expect(g_quorum != 0, 0) && Quorum::ownsMoonRead(address))) {
     if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::OPLGetSample();
     return (address & 1) ? ESPectrum::MoonWaveRead() : (oplfm ? oplfm->status() : 0x00);
   }
