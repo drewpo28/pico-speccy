@@ -147,6 +147,12 @@ bool init() {
     return true;
 }
 
+// A power-on (a machine switch, a launch that turns the interface on): the 2K RAM zeroed
+// as init() leaves a fresh one. A reset (F11) keeps it, as on the real interface.
+void powerOn() {
+    if (s_hi) memset(s_hi, 0, 2048);
+}
+
 void reset() {
     nmiCnt = 0;
     if (paged) pageOut();
@@ -178,8 +184,9 @@ bool launchDisk(const char* path) {
     if (!machineOk(Config::arch, Config::romSet)) {
         const RomsetIdx r = machineOk(A_48K, Config::romSet48) ? Config::romSet48 : R_48K;
         MachineSwitch::commit(A_48K, r);   // resets (Opus::init runs there)
-    } else {
+    } else {                             // this 48K carries it: stays (owner 2026-11-25)
         init();
+        powerOn();
         ESPectrum::resetForLoad();
     }
     return enabled;

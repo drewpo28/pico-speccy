@@ -2315,8 +2315,9 @@ distribution). Name in the UI and notes: **Plus D** (owner's request, not "+D").
 - **Disk vs SAM disk:** `PlusD::looksPlusD` = 819200-byte flat image whose directory
   (tracks 0-3 side 0, type = byte 0 & 0x1F) has more Spectrum types (1-11) than SAM ones
   (16+). F5 (OSDMain + OSDFile) sends those to `PlusD::launchDisk`: drive 1, Plus D on,
-  always a 128K (a 48K ran Monkey Island's intro and then reset: the game is 128K-only;
-  48K titles run from 128 BASIC too), the 8K RAM cleared, reset = a power-on. With the
+  the running machine when it carries the Plus D, else a 128K (owner 2026-11-25; it was
+  always a 128K while the launch typed RUN: Monkey Island is 128K-only and a 48K resets
+  after its intro, now the user's pick), the 8K RAM cleared, reset = a power-on. With the
   Plus D already on a machine that carries it, F5 is a disk change: drive 1 only, no
   reset, a resident G+DOS stays (owner 2026-11-25, hw-confirmed DVp2w 2026-11-25 (owner); Opus
   the same). **No autorun** (owner 2026-11-25; the typed RUN and `bootTick` are gone).
@@ -2402,8 +2403,11 @@ OpusDiscovery_Manual.pdf (Microdrive syntax: `FORMAT "m";1;"name"`, `CAT 1`,
   interleaved per cylinder; WRITE TRACK accepts base-0 IDs. `createEmptyOpd` (40x1, #E5).
   Drives = the SAM pair (samDiskFile/samWP), Devices > Opus Discovery > Drives 1-2.
 - F5 on .opd/.opu -> `Opus::launchDisk`: drive 1, Opus on (Plus D / esxDOS / MB-02+ /
-  Betadisk off), a 48K (`romSet48` if usable), reset. No autorun since 2026-11-25 (owner):
-  the user types RUN.
+  Betadisk off), the running machine when it carries the Opus (a 48K romset), else a 48K
+  (`romSet48` if usable), reset. No autorun since 2026-11-25 (owner): the user types RUN.
+  As for the Plus D: Opus already on = a disk change (no reset); a machine switch or a
+  launch that turns it on = a power-on, `Opus::powerOn()` zeroes the 2K RAM (F11 keeps
+  it). hw-confirmed DVp2w 2026-11-25 (owner).
 - `.pss`: PSOP (paging, drive, nmiCnt, PIA, 2K RAM) + PSSF; Config key `opus` reboot-class.
 - Host bench 2026-11-25: blank .opd -> FORMAT "m";1;"test" -> CAT 1 ("test", 178K free) ->
   `10 BORDER 2`, SAVE *"m";1;"run" LINE 10 -> new session, RUN: red border, 0 OK, 10:1.

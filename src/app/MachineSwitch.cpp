@@ -238,6 +238,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             if (arch != A_SAM && !Config::plusd) { SamFdc::eject(0); SamFdc::eject(1); }
         }
         Opus::init();
+        Opus::powerOn();    // the same power cycle for the Opus's 2K RAM
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
         if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || arch == A_ENT || isP3)) {

@@ -162,8 +162,9 @@ bool looksPlusD(const char* path) {
 // Disk launch, as on the real interface (owner 2026-11-25):
 // - the Plus D already on this machine: a disk change. Drive 1 only, no reset; a
 //   resident G+DOS stays (CAT 1, LOAD d1"..."), F12 + RUN starts the disk afresh;
-// - otherwise plugging the interface in = a power-on: the interface on, a 128K,
-//   the 8K RAM cleared, reset. No RUN typed: the user boots G+DOS with RUN.
+// - otherwise plugging the interface in = a power-on: the interface on, the 8K RAM
+//   cleared, reset, on this machine when it carries the Plus D (48K / 128K / +2),
+//   else on a 128K. No RUN typed: the user boots G+DOS with RUN.
 
 bool launchDisk(const char* path) {
     DiskSlots::slotMount(IFACE_SAM, 0, path);
@@ -182,9 +183,10 @@ bool launchDisk(const char* path) {
     // (owner, hw 2026-11-25). MachineSwitch::commit clears it too; this covers the reset
     // on the same machine. init() zeroes a fresh allocation.
     powerOn();
-    // Always a 128K: Plus D titles run there from 128 BASIC, and the 128K-only ones
-    // (The Secret of Monkey Island, OutSoftware 2026) reset a 48K after their intro.
-    if (Config::arch != A_128K || !machineOk(Config::arch, Config::romSet)) {
+    // The machine stays when it carries the interface (owner 2026-11-25: the user picks
+    // it; a 128K-only title such as The Secret of Monkey Island, OutSoftware 2026,
+    // resets a 48K after its intro). Otherwise a 128K: 48K titles run there too.
+    if (!machineOk(Config::arch, Config::romSet)) {
         const RomsetIdx r = machineOk(A_128K, Config::romSet128) ? Config::romSet128 : R_128K;
         MachineSwitch::commit(A_128K, r);                    // resets (PlusD::init runs there)
     } else {

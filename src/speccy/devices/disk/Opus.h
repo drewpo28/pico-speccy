@@ -41,6 +41,7 @@ namespace Opus {
 
     bool init();                 // Config::opus -> the interface (ROM + RAM buffers)
     void reset();                // machine reset: paged out, PIA + controller reset
+    void powerOn();              // power cycle (machine switch, launch): the 2K RAM zeroed
     void frameEnd();
     bool machineOk(uint8_t arch, uint8_t romset);
 
