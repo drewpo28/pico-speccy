@@ -57,6 +57,7 @@ BOARDS=(
     "PICO_PC-16M|build-all/PICO_PC-16MB/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
     "PICO_DV-16M|build-all/PICO_DV-16MB/bin/MinSizeRel/DVp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
     "ZERO2-16M|build-all/ZERO2-16MB/bin/MinSizeRel/z0p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "PICO_PC2-16M|build-all/PICO_PC2-HSTX-16MB/bin/MinSizeRel/PC2p2-speccy-VGA-HDMI-HSTX-16MB-*.elf|532480|RP2350"
     "MURM_W|build-all/MURM_W/bin/MinSizeRel/m1p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "MURM2_W|build-all/MURM2_W/bin/MinSizeRel/m2p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "PICO_DV_W|build-all/PICO_DV_W/bin/MinSizeRel/DVp2w-speccy-VGA-HDMI-*.elf|532480|RP2350"

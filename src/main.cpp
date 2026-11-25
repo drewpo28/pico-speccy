@@ -2060,7 +2060,14 @@ int main() {
     #if BUTTER_PSRAM_GPIO == 255
         psram_pin = 255;   // PSRAM disabled via CMake kill-switch (set(PSRAM OFF))
     #else
+        #if defined(PSRAM_CS1_GPIO)
+        // Per-board QMI CS1 pin (cmake/board.cmake): the Olimex RP2350pc's 8 MB
+        // APS6404L hangs off CS1/GPIO8 — NOT the Pico-carrier GPIO47 pads the
+        // historic `: 47` fallback assumes. Same QMI bus as the flash on CS0.
+        psram_pin = chip_is_rp2350a() ? BUTTER_PSRAM_GPIO : PSRAM_CS1_GPIO;
+        #else
         psram_pin = chip_is_rp2350a() ? BUTTER_PSRAM_GPIO : 47;
+        #endif
         Debug::log("main: psram_init begin");
         psram_init(psram_pin);
         butter_psram_size();
@@ -2088,9 +2095,18 @@ int main() {
 #endif
 
     #ifdef VGA_HDMI
+    #if defined(PICO_PC2)
+    // HDMI-only board: the probe pair (VGA_BASE_PIN, +1) is the LIVE TMDS lane
+    // D0+/D0-, and autodetect on it would read the differential pair's bias and
+    // could flip the boot into VGA. Skip testPins (linkVGA01 stays 0) —
+    // resolveVideoOutput() and graphics_init() force SELECT_VGA=false on this
+    // board, so the value is never consulted.
+    Debug::log("main: testPins skipped (HDMI-only board, lanes in use by HSTX)");
+    #else
     Debug::log("main: testPins begin");
     linkVGA01 = testPins(VGA_BASE_PIN, VGA_BASE_PIN + 1);
     { extern size_t getFreeHeap(void); Debug::log("main: testPins=%02X, freeHeap=%u largest=%u", linkVGA01, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
+    #endif
     #endif
 
     { extern size_t getFreeHeap(void);

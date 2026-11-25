@@ -916,6 +916,14 @@ static void resolveVideoOutput() {
   extern bool SELECT_VGA;
   extern uint8_t linkVGA01;
   extern uint8_t video_driver;
+  #if defined(PICO_PC2)
+  // Olimex RP2350pc: HDMI-only. The pin block is the HSTX TMDS lanes (clock pair
+  // in the middle), there is no VGA connector path behind them, and the boot
+  // autodetect never ran (testPins skipped in main) — so whatever Config::video_
+  // driver says, the output is HDMI. See graphics_init() for the same rule on
+  // core1.
+  SELECT_VGA = false;
+  #else
   // W boards (RP2350B-Plus-W) take either output: the block the display does not
   // use — pio0 on HDMI, pio2 on VGA — is where the radio, I2S and NESPAD go at
   // gpio_base 16 (BoardPins::auxPio). Everything below therefore also runs there.
@@ -928,6 +936,7 @@ static void resolveVideoOutput() {
   } else {
       SELECT_VGA = video_driver == 1;
   }
+  #endif
 #endif
 }
 

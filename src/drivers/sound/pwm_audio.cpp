@@ -20,6 +20,9 @@
 #ifdef PCM5122_I2S_DATA
 #include "drivers/audio/pcm5122_init.h"
 #endif
+#ifdef PICO_PC2
+#include "drivers/audio/es8311_init.h"
+#endif
 
 // connection is possible 00->00 (external pull down)
 static int test_0000_case(uint32_t pin0, uint32_t pin1, int res) {
@@ -198,6 +201,13 @@ extern "C" int testPins(uint32_t pin0, uint32_t pin1) {
 
 #define VOLUME_0DB          (16)
 
+#ifdef PICO_PC2
+// PICO_PC2 (Olimex RP2350pc) I2S: the loudest slider step maps to codec arg 4
+// (REG32 191, ~-32 dB) — 0 dB and -16 dB were both reported far too loud on
+// headphones by the port's author (hw 2026-11-22). Slider min still mutes.
+#define I2S_CODEC_VOL_MIN_ARG 4
+#endif
+
 static volatile uint8_t vol = VOLUME_0DB;
 uint8_t link_i2s_code = 0xFF;
 bool is_i2s_enabled = false;
@@ -211,6 +221,15 @@ esp_err_t pwm_audio_set_volume(int8_t volume) {
         volume = VOLUME_0DB;
     }
     vol = volume + VOLUME_0DB;
+#ifdef PICO_PC2
+    // The menu volume must reach the ES8311 too. Scales are inverted: firmware
+    // vol 0 (silent)..16 (loudest), codec arg 16 (mute)..0 (0 dB).
+    if (is_i2s_enabled) {
+        int cv = 16 - vol;
+        if (cv < I2S_CODEC_VOL_MIN_ARG) cv = I2S_CODEC_VOL_MIN_ARG;
+        es8311_set_dac_volume((uint8_t)cv);
+    }
+#endif
     return ESP_OK;
 }
 
@@ -405,6 +424,11 @@ void init_sound() {
     // pair. The GP29 PWM path (audio_driver==3) is unaffected (different pin).
     bool zifi_owns_audio = BoardPins::zifiOwnsPin(PWM_PIN0) ||
                            BoardPins::zifiOwnsPin(I2S_DATA_PIO);
+#ifdef PICO_PC2
+    // GP29/30/31 are hard-wired to the ES8311, not a DAC-detect header: the
+    // testPins probe must never pull them around. Default driver = PWM.
+    if (link_i2s_code == 0xFF) link_i2s_code = 0;
+#endif
     if (Config::audio_driver == 3) {
         Init_PWM_175(TSPIN_MODE_GP29);
     } else if (zifi_owns_audio) {
@@ -451,7 +475,35 @@ void init_sound() {
         Debug::log("init_sound: audio_driver=%d, link_i2s=%02X, i2s_en=%d", Config::audio_driver, link_i2s_code, (int)is_i2s_enabled);
         if (is_i2s_enabled) {
             Debug::log("init_sound: I2S mode");
+#ifdef PICO_PC2
+            // Power the ES8311 tree and configure the codec over I2C BEFORE
+            // i2s_init() (pcm_setup) starts the bit clocks.
+            gpio_init(CODEC_PWR_PIN);
+            gpio_set_dir(CODEC_PWR_PIN, GPIO_OUT);
+            gpio_put(CODEC_PWR_PIN, 1);   // codec LDO ON
+            gpio_init(AMP_SHDN_PIN);
+            gpio_set_dir(AMP_SHDN_PIN, GPIO_OUT);
+            gpio_put(AMP_SHDN_PIN, 0);    // PAM8003 ON (active low)
+            gpio_init(AMP_VOL_PIN);
+            gpio_set_dir(AMP_VOL_PIN, GPIO_OUT);
+            gpio_put(AMP_VOL_PIN, 1);     // analog volume max
+            sleep_ms(10);                 // LDO + analog rails settle
+            const int es = es8311_init(CODEC_I2C_SDA, CODEC_I2C_SCL);
+            if (es != 0) {
+                Debug::log("init_sound: ES8311 %s (err=%d, rb reg %02X=%02X)",
+                           es == -1 ? "not detected (no 2x ACK)" : "init readback FAIL",
+                           es, (unsigned)es8311_last_rb_reg, (unsigned)es8311_last_rb_val);
+            } else {
+                Debug::log("init_sound: ES8311 ready (I2C 0x18, slave, clocked from SCLK)");
+            }
+            {
+                int cv = 16 - vol;
+                if (cv < I2S_CODEC_VOL_MIN_ARG) cv = I2S_CODEC_VOL_MIN_ARG;
+                i2s_volume(&i2s_config, (uint8_t)cv);
+            }
+#else
             i2s_volume(&i2s_config, 0);
+#endif
         } else {
             Debug::log("init_sound: PWM mode, pins %d/%d", PWM_PIN0, PWM_PIN1);
             PWM_init_pin(PWM_PIN0, (1 << 8) - 1);
@@ -786,7 +838,12 @@ void pcm_cleanup(void) {
         // TODO:
     }
     else if (is_i2s_enabled) {
+#ifndef PICO_PC2
+        // Not on PICO_PC2: there i2s_volume() writes the ES8311 DAC register,
+        // which survives i2s_deinit/i2s_init and pcm_setup never restores it,
+        // so every pause would mute the codec for good.
         i2s_volume(&i2s_config, 16);
+#endif
         i2s_deinit(&i2s_config);
     } else {
         uint16_t o = 0;

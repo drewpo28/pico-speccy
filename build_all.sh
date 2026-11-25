@@ -29,7 +29,7 @@ Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 
 Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR,
           FLASH_TYPES ("4 16" = both flash types, the default; "4" or "16" = one)
-Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS (default: all)
+Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 PICO_PC2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS (default: all)
           HOST = the SDL2 PC build in build-all/host (not part of "all")
 EOF
             exit 0 ;;
@@ -89,7 +89,7 @@ else
 fi
 
 # All available targets (RP2350 only — RP2040 boards were dropped)
-ALL_TARGETS="MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
+ALL_TARGETS="MURM MURM2 PICO_PC PICO_DV ZERO2 PICO_PC2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
 
 # Targets that support TFT+ILI9341 display variant
 TFT_TARGETS="MURM MURM2"
@@ -111,7 +111,9 @@ PIOUSB_TARGETS="ZERO2"
 # lives: they also ship an HSTX image (-DHDMI_HSTX=TMDS, named ...-VGA-HDMI-HSTX-*).
 # Their plain VGA_HDMI image is pinned to the PIO back-end (-DHDMI_HSTX=OFF), or
 # CMake's AUTO would make it HSTX too and the two images would be the same.
-HSTX_TARGETS="PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS"
+# PICO_PC2 ships ONLY an HSTX image (HDMI-only board, HSTX-mandatory lane order):
+# it is in ONLY16_TARGETS, so build_all never emits a PIO variant of it.
+HSTX_TARGETS="PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS PICO_PC2"
 
 # Flash types: every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON,
 # "-16MB" in the file name, adds ZXM-MoonSound with its embedded ROM). The W/WS
@@ -121,7 +123,7 @@ FLASH_TYPES="${FLASH_TYPES:-4 16}"
 W_TARGETS="MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
-ONLY16_TARGETS=""   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
+ONLY16_TARGETS="PICO_PC2"   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
 
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
@@ -227,6 +229,10 @@ BUILD_PAIRS=()
 for PAIR in "${BASE_PAIRS[@]}"; do
     IS_W=false
     for W_T in $W_TARGETS $ONLY16_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
+    # PICO_PC2 is HDMI-only and its lane order (clock pair in the middle) makes
+    # the PIO TMDS back-end impossible: no plain VGA_HDMI image exists for it,
+    # only the HSTX one (below).
+    if [ "$PAIR" = "PICO_PC2:VGA_HDMI" ]; then continue; fi
     for FT in $FLASH_TYPES; do
         if $IS_W && [ "$FT" != "16" ]; then continue; fi
         BUILD_PAIRS+=("${PAIR}:${FT}")

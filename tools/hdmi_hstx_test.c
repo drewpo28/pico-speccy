@@ -112,14 +112,21 @@ static int arg_of_ch(int ch) { return ch == 2 ? 1 : ch == 1 ? 2 : 3; }
 // ---------------------------------------------------------------------------
 // Boards. data_off / clk_off are derived from hdmi.h exactly as HDMI_PINMAP_INIT
 // does: base+2 data, base+0 clock everywhere but ZERO2, which is base+0 data,
-// base+6 clock, BGR and not inverted.
+// base+6 clock, BGR and not inverted. lane_off is the per-channel pin-pair
+// offset (HDMI_PINMAP_LANE*): {-1,-1,-1} = the contiguous derivation, and the
+// PICO_PC2 board sets its clock-in-the-middle map explicitly.
+//
+// hstx: 0 = no HSTX on this board (PIO oracle only); 1 = HSTX, PIO oracle
+// applicable; 2 = HSTX but the lanes are NOT contiguous, so the PIO word cannot
+// express the map and only the HSTX-side checks run.
 // ---------------------------------------------------------------------------
 typedef struct { const char *name; hdmi_pinmap_t map; int hstx; const char *note; } board_t;
 static const board_t boards[] = {
-    { "PCp2  (PICO_PC)", { 2, 0, 1, 1, 1 }, 1, "GPIO 12-19, lanes 1/2 swapped" },
-    { "m2p2  (MURM2)",   { 2, 0, 1, 1, 0 }, 1, "GPIO 12-19" },
-    { "m1p2  (MURM1)",   { 2, 0, 1, 1, 0 }, 0, "GPIO 6-13  - no HSTX" },
-    { "z0p2  (ZERO2)",   { 0, 6, 0, 0, 0 }, 0, "GPIO 32-39 - no HSTX, BGR, non-inverted" },
+    { "PCp2  (PICO_PC)",   { 2, 0, 1, 1, 1, { -1, -1, -1 } }, 1, "GPIO 12-19, lanes 1/2 swapped" },
+    { "m2p2  (MURM2)",     { 2, 0, 1, 1, 0, { -1, -1, -1 } }, 1, "GPIO 12-19" },
+    { "m1p2  (MURM1)",     { 2, 0, 1, 1, 0, { -1, -1, -1 } }, 0, "GPIO 6-13  - no HSTX" },
+    { "z0p2  (ZERO2)",     { 0, 6, 0, 0, 0, { -1, -1, -1 } }, 0, "GPIO 32-39 - no HSTX, BGR, non-inverted" },
+    { "PC2p2 (PICO_PC2)",  { 0, 2, 1, 0, 0, {  0,  6,  4 } }, 2, "GPIO 12-19, CK at +2 (middle), HSTX-only" },
 };
 #define NBOARDS ((int)(sizeof boards / sizeof boards[0]))
 
@@ -144,7 +151,13 @@ static uint32_t rng(void) {
 static void check_triple(const board_t *b, uint16_t ch2, uint16_t ch1, uint16_t ch0,
                          const char *what) {
     const hdmi_pinmap_t *m = &b->map;
+    // hstx == 2: non-contiguous lanes — no PIO word can express this map, so the
+    // PIO oracle and the PIO-vs-HSTX pin equivalence do not apply. Everything
+    // the HSTX back-end itself depends on (lane map, pin model, pair-flip mask
+    // on the HSTX word) still runs.
+    const int pio_oracle = b->hstx != 2;
 
+    if (pio_oracle) {
     // 1. regression against the shipped body
     const uint64_t got = hdmi_pack3_pio(m, ch2, ch1, ch0);
     const uint64_t ref = ref_get_ser_diff_data(m->swap_rg, m->invert, m->rgb_notbgr, ch2, ch1, ch0);
@@ -187,6 +200,16 @@ static void check_triple(const board_t *b, uint16_t ch2, uint16_t ch1, uint16_t 
         hdmi_pins_pio(m, hdmi_pack3_pio(m, ch2, ch1, ch0) ^ HDMI_PAIR_FLIP_MASK_PIO, via_mask);
         if (memcmp(want, via_mask, sizeof want))
             FAIL("%s %s PIO pair-flip mask is not D0-7+D9 on the pins", b->name, what);
+    }
+    } // pio_oracle
+
+    // 4b. the HSTX half of the pair-flip property, on this board's own pin model
+    //     (runs for every board, contiguous lanes or not)
+    {
+        const uint16_t f2 = ch2 ^ 0x2FF, f1 = ch1 ^ 0x2FF, f0 = ch0 ^ 0x2FF;
+        hdmi_hstx_bit_t bits[8];
+        hdmi_hstx_bits(m, bits);
+        uint8_t want[10], via_mask[10];
         hdmi_pins_hstx(bits, hdmi_pack3_hstx(f2, f1, f0), want);
         hdmi_pins_hstx(bits, hdmi_pack3_hstx(ch2, ch1, ch0) ^ HDMI_PAIR_FLIP_MASK_HSTX, via_mask);
         if (memcmp(want, via_mask, sizeof want))
@@ -197,11 +220,13 @@ static void check_triple(const board_t *b, uint16_t ch2, uint16_t ch1, uint16_t 
 
 static void check_one_channel(const board_t *b, uint16_t v, int ch) {
     const hdmi_pinmap_t *m = &b->map;
-    const uint64_t got = hdmi_pack1_pio(m, v, ch);
-    const uint64_t ref = ref_hdmi_ser_one_arg(m->swap_rg, m->invert, m->rgb_notbgr, v, arg_of_ch(ch));
-    if (got != ref)
-        FAIL("%s pack1_pio(ch%d, %03x) %016llx != shipped %016llx",
-             b->name, ch, v, (unsigned long long)got, (unsigned long long)ref);
+    if (b->hstx != 2) {
+        const uint64_t got = hdmi_pack1_pio(m, v, ch);
+        const uint64_t ref = ref_hdmi_ser_one_arg(m->swap_rg, m->invert, m->rgb_notbgr, v, arg_of_ch(ch));
+        if (got != ref)
+            FAIL("%s pack1_pio(ch%d, %03x) %016llx != shipped %016llx",
+                 b->name, ch, v, (unsigned long long)got, (unsigned long long)ref);
+    }
     if (hdmi_pack1_hstx(v, ch) != ((uint32_t)v << (ch * 10)))
         FAIL("%s pack1_hstx(ch%d, %03x) is not the plain field", b->name, ch, v);
     checks++;
@@ -369,12 +394,14 @@ int main(void) {
         if (!first_high) FAIL("bit order is not LSB first");
     }
 
-    for (int bi = 0; bi < 2; bi++) {
+    for (int bi = 0; bi < NBOARDS; bi++) {
+        if (!boards[bi].hstx) continue;
         const board_t *b = &boards[bi];
         hdmi_hstx_bit_t bits[8];
         hdmi_hstx_bits(&b->map, bits);
         printf("\nhstx_ctrl_hw->bit[] for %s (index = GPIO - %s):\n", b->name,
-               b->map.data_off == 2 ? "12" : "base");
+               b->map.clk_off == 0 ? (b->map.data_off == 2 ? "12" : "base")
+                                   : (b->map.data_off == 0 ? "12" : "base"));
         for (int i = 0; i < 8; i++) {
             if (bits[i].clk)
                 printf("  bit[%d] = CLK%s\n", i, bits[i].inv ? " | INV" : "");

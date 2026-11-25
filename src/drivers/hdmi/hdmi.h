@@ -58,6 +58,18 @@ extern "C" {
 	#define HDMI_PIN_invert_diffpairs (0)
 	#define beginHDMI_PIN_data (HDMI_BASE_PIN)
 	#define beginHDMI_PIN_clk (HDMI_BASE_PIN + 6)
+#elif defined(PICO_PC2)
+	// Olimex RP2350pc (Rev.A1 netlist): an IRREGULAR lane order — D0 on base+0,
+	// the CLOCK pair on base+2 (in the MIDDLE of the data lanes), D2 on base+4,
+	// D1 on base+6. The 6 data pins are NOT consecutive (base+2/3 are the clock),
+	// so no PIO TMDS word can express this map: HSTX is the ONLY back-end here,
+	// and the per-lane offsets live in hdmi_word.h's hdmi_pinmap_t::lane_off.
+	// No differential-pair inversion and no R/G swap unless the schematic says
+	// otherwise — starting clean.
+	#define HDMI_PIN_RGB_notBGR (1)
+	#define HDMI_PIN_invert_diffpairs (0)
+	#define beginHDMI_PIN_data (HDMI_BASE_PIN)
+	#define beginHDMI_PIN_clk (HDMI_BASE_PIN + 2)
 #else
 	#define HDMI_PIN_RGB_notBGR (1)
 	#define HDMI_PIN_invert_diffpairs (1)

@@ -33,6 +33,9 @@
 #include <hardware/clocks.h>
 
 #include "audio.h"
+#ifdef PICO_PC2
+#include "es8311_init.h"
+#endif
 
 /**
  * Initialize the I2S driver. Must be called before calling i2s_write or i2s_dma_write
@@ -68,19 +71,48 @@ void i2s_init(i2s_config_t *i2s_config) {
         i2s_config->sm = pio_claim_unused_sm(i2s_config->pio, true);
 
         /* Set PIO clock */
+        #ifdef PICO_PC2_I2S_64FS
+        // Experimental 64-BCLK frame (PICO_PC2 only, r7): PIO at 4 MHz
+        // (252 MHz sys / clkdiv int 63) -> BCLK 2 MHz = 64 x fs,
+        // LRCK = 4 MHz / 128 PIO cycles per frame = 31250 Hz exact.
+        // The 32fs divider computed below is skipped in this mode: it would
+        // give clkdiv 126 (PIO 2 MHz, BCLK 1 MHz) instead of 63 (PIO 4 MHz).
+        #else
         uint32_t system_clock_frequency = clock_get_hz(clk_sys);
         uint32_t divider = system_clock_frequency * 4 / i2s_config->sample_freq; // avoid arithmetic overflow
+        #endif
 
         #ifdef I2S_CS4334
         i2s_config->program_offset = pio_add_program(i2s_config->pio, &audio_i2s_cs4334_program);
         audio_i2s_cs4334_program_init(i2s_config->pio, i2s_config->sm , offset, i2s_config->data_pin , i2s_config->bck_pin);
         divider >>= 3;
+        #elif defined(I2S_LRCK_BELOW_BCK)
+        // PICO_PC2: LRCK(GP29) sits BELOW BCLK(GP30), so the standard
+        // audio_i2s program (side-set base = BCK) would put LRCK on GP31 —
+        // the codec's DATA pin. Load the swapped-side-set program instead and
+        // base the side-set on the LRCK pin: bit0=LRCK(29), bit1=BCLK(30).
+        #ifdef PICO_PC2_I2S_64FS
+        // r7 experiment: standard 64-BCLK frame (16 data + 16 idle BCLK per
+        // half-frame), BCLK 2 MHz = 64 x fs. Same pin mapping and side-set
+        // swap as r6, only the program body and the clock divider differ.
+        i2s_config->program_offset = pio_add_program(i2s_config->pio, &audio_i2s_lrck_low_64fs_program);
+        audio_i2s_lrck_low_64fs_program_init(i2s_config->pio, i2s_config->sm, i2s_config->program_offset,
+                                             i2s_config->data_pin, i2s_config->lck_pin);
+        #else
+        i2s_config->program_offset = pio_add_program(i2s_config->pio, &audio_i2s_lrck_low_program);
+        audio_i2s_lrck_low_program_init(i2s_config->pio, i2s_config->sm, i2s_config->program_offset,
+                                        i2s_config->data_pin, i2s_config->lck_pin);
+        #endif
         #else
         i2s_config->program_offset = pio_add_program(i2s_config->pio, &audio_i2s_program);
         audio_i2s_program_init(i2s_config->pio, i2s_config->sm , i2s_config->program_offset, i2s_config->data_pin , i2s_config->bck_pin);
         #endif
 
+        #ifdef PICO_PC2_I2S_64FS
+        pio_sm_set_clkdiv_int_frac(i2s_config->pio, i2s_config->sm, 63, 0);
+        #else
         pio_sm_set_clkdiv_int_frac(i2s_config->pio, i2s_config->sm , divider >> 8u, divider & 0xffu);
+        #endif
 
         pio_sm_set_enabled(i2s_config->pio, i2s_config->sm, false);
     }
@@ -130,7 +162,17 @@ void i2s_deinit(i2s_config_t *i2s_config) {
     dma_channel_abort(i2s_config->dma_channel);
     dma_channel_unclaim(i2s_config->dma_channel);
     pio_sm_set_enabled(i2s_config->pio, i2s_config->sm, false);
+#ifdef I2S_LRCK_BELOW_BCK
+    // Must match the program added in i2s_init: the r7 64-BCLK experiment
+    // (PICO_PC2_I2S_64FS) loads audio_i2s_lrck_low_64fs, not audio_i2s_lrck_low.
+    #ifdef PICO_PC2_I2S_64FS
+    pio_remove_program(i2s_config->pio, &audio_i2s_lrck_low_64fs_program, i2s_config->program_offset);
+    #else
+    pio_remove_program(i2s_config->pio, &audio_i2s_lrck_low_program, i2s_config->program_offset);
+    #endif
+#else
     pio_remove_program(i2s_config->pio, &audio_i2s_program, i2s_config->program_offset);
+#endif
     pio_sm_unclaim(i2s_config->pio, i2s_config->sm);
     free(i2s_config->dma_buf);
     i2s_config->dma_buf = 0;
@@ -188,6 +230,12 @@ void i2s_dma_write(i2s_config_t *i2s_config,const int16_t *samples) {
 void i2s_volume(i2s_config_t *i2s_config,uint8_t volume) {
     if(volume>16) volume=16;
     i2s_config->volume=volume;
+#ifdef PICO_PC2
+    // Samples reaching the PIO are already scaled by vol8 in pwm_audio_write;
+    // es8311_set_dac_volume only adds the codec's own DAC attenuation
+    // (REG32 = 255-16v, 0 dB at max, mute at 0).
+    es8311_set_dac_volume(volume);
+#endif
 }
 
 /**

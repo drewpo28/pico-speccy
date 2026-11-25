@@ -142,7 +142,7 @@ if (TSOVL_WIN_SIZE STREQUAL "AUTO")
     # .tsovl_bss 9348 B against 9036 on the PIO variant (2026-09-28, m2p2 HSTX
     # overflowed the window by 48 B). Same predicate as HDMI_HSTX_ON in cmake/display.cmake, which
     # is computed too late for this block.
-    if (HDMI_HSTX STREQUAL "TMDS" OR (HDMI_HSTX STREQUAL "AUTO" AND (PICO_PC OR MURM2)))
+    if (HDMI_HSTX STREQUAL "TMDS" OR (HDMI_HSTX STREQUAL "AUTO" AND (PICO_PC OR MURM2 OR PICO_PC2)))
         math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 512")
     endif()
     # 23 040 B against ~22 500 B in use (2026-09-22: Video ~8.1 K + TsConf 5116 +

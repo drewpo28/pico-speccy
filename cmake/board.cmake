@@ -48,7 +48,7 @@ if(MURM_W OR MURM2_W OR PICO_DV_W OR PICO_PC_W OR PICOSPECCY_WIFI_WS)
 endif()
 
 # Target board (default: MURM2; override with -D flags, e.g. cmake -DPICO_DV=ON)
-if(NOT MURM AND NOT MURM2 AND NOT PICO_PC AND NOT PICO_DV AND NOT ZERO2)
+if(NOT MURM AND NOT MURM2 AND NOT PICO_PC AND NOT PICO_DV AND NOT ZERO2 AND NOT PICO_PC2)
     set(MURM2 ON)
 endif()
 
@@ -95,6 +95,16 @@ message(STATUS "PICO_BOARD: ${PICO_BOARD}")
 if(PICOSPECCY_WIFI)
     set(FLASH_16MB ON)
 endif()
+# The PICO_PC2 carries 16 MB flash on the board itself (netlist: W25Q128 on CS0)
+# and its images embed the YRW801 ROM + GM.DLS bank like every other 16 MB target.
+# Escape hatch: -DFLASH_16MB=OFF alone cannot win against this board default
+# (option() makes OFF and "not given" indistinguishable), so pass
+# -DFLASH_16MB_FORCED=OFF to build the 4 MB footprint explicitly (the YRW801
+# ROM and the GM bank are then read from the SD card at runtime — the same
+# behaviour the other boards' 4 MB images have).
+if(PICO_PC2 AND NOT DEFINED FLASH_16MB_FORCED)
+    set(FLASH_16MB ON)
+endif()
 if(FLASH_16MB)
     set(FLASH_SIZE 16384)
     set(PICO_FLASH_SIZE_BYTES "16 * 1024 * 1024")
@@ -125,6 +135,14 @@ add_compile_definitions(GM_BANK_BUILTIN=${GM_BANK_BUILTIN})
 IF(MURM2_WS)
     set(BOARD_TAG "m2p2ws")
     set (BUTTER_PSRAM_GPIO 47)      # module pads; 0 until a chip is soldered on
+ELSEIF(PICO_PC2)
+    # Olimex RP2350pc (Rev.A1): 8 MB APS6404L on QMI CS1 = GPIO8 — the SAME QMI
+    # bus as the 16 MB flash on CS0 (netlist: GPIO8/QMI_CS1n). PSRAM_CS1_GPIO is
+    # what main() passes to psram_init() on the RP2350B package: the generic
+    # `: 47` fallback is the Pico-Plus-2 pads, NOT this board's chip.
+    set(BOARD_TAG "PC2p2")
+    set (BUTTER_PSRAM_GPIO 8)
+    set (PSRAM_CS1_GPIO 8)
 ELSEIF(MURM_WS)
     set(BOARD_TAG "m1p2ws")
     set (BUTTER_PSRAM_GPIO 47)

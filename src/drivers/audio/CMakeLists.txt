@@ -3,6 +3,8 @@ add_library(audio INTERFACE)
 target_sources(audio INTERFACE
 		${CMAKE_CURRENT_LIST_DIR}/audio.c
 		${CMAKE_CURRENT_LIST_DIR}/audio.h
+		${CMAKE_CURRENT_LIST_DIR}/es8311_init.c
+		${CMAKE_CURRENT_LIST_DIR}/es8311_init.h
 		${CMAKE_CURRENT_LIST_DIR}/pcm5122_init.c
 		${CMAKE_CURRENT_LIST_DIR}/pcm5122_init.h
 )

@@ -237,6 +237,40 @@ On RP2350, UART TX available via two funcsel:
 | 28 | Audio LCK/BEEPER/DATA_595 | REASSIGN | |
 | 29 | CLK_AY_PIN2 | REASSIGN | also ADC3/VSYS on a standard Pico |
 
+### PICO_PC2 = PC2p2 — Olimex RP2350pc (RP2350B-A4 on board, 16 MB flash, 8 MB PSRAM) — 2026-11-25
+
+Ported from Nicolae Muntean's fork (github.com/nicolaebizi/OLIMEXRP2350PC-speccy-1.1.3,
+target `RP2350PC`/`OLPC`, based on our 262f9ec5). **hw-confirmed by the fork's author
+(2026-11-19..22, picture + PWM + ES8311 I2S); our PC2p2 build NOT hw-tested.** Pins
+re-checked against the KiCad netlist (OLIMEX/RP2350pc, HARDWARE/RP2350pc-Rev.A1).
+Only the board-specific part was taken; the fork's global changes (HDMI-audio x3
+soft-knee gain on every board, MIDI soft-sat in the player, yrw801.rom out of git,
+`pcm_cleanup` volume on every I2S board) were left out.
+
+| GPIO | Function | Notes |
+|------|----------|-------|
+| 0/1 | UART0 (UEXT1), DBG console TX on 0 | ZiFi pair 0/1 or 38/39 (UEXT2) |
+| 8 | PSRAM APS6404L, QMI CS1 | `PSRAM_CS1_GPIO=8`: the RP2350B probe would otherwise try 47 |
+| 9/10/11/24 | SD on spi1: CS/SCK/MOSI/MISO | CD# on 41 (not read) |
+| 12-19 | HDMI, HSTX ONLY | D0 12/13, **CK 14/15**, D2 16/17, D1 18/19, P on the even pin. Data pins are not contiguous -> no PIO TMDS, no VGA (`hdmi_pinmap_t::lane_off`) |
+| 20/21 | HDMI CEC / HPD | unused |
+| 22 | ES8311 LDO enable (1 = on, R38 pull-up) | |
+| 23 | ES8311 MCLK — left unused | GPOUT1 on GP23 kills DVI (author, hw) |
+| 25 | LED | |
+| 26/27 | PWM audio L / R | RC -> headphone jack + PAM8003 input |
+| 29/30/31 | I2S LRCK / BCLK / DIN | LRCK BELOW BCLK -> `audio_i2s_lrck_low*` PIO programs (`I2S_LRCK_BELOW_BCK`) |
+| 32/33 | I2C0 to ES8311 (0x18) | shared with HDMI DDC FETs: open-drain only |
+| 34 | PAM8003 VOL (1 = max) | Hi-Z = ~0.24 V ~ -75 dB: speakers near-silent unless driven |
+| 35 | PAM8003 SHDN (1 = off) | /SHDN pulled up by R83, also by the headphone switch |
+| 40/41 | PS/2 placeholder (no PS/2 on the board) | keyboard = USB via FE1.1s hub, 4 ports |
+| 46/47 | PWR / BAT sense (ADC) | unused |
+
+- The HSTX clock pair comes out inverted (CK+ on GP14 carries the INV half): the
+  clock polarity in `hdmi_hstx_bits` is board-independent. Receivers tolerate it (author's
+  hw picture); do not "fix" without a monitor test.
+- Open: in the default PWM driver GP34 stays Hi-Z, so the speakers (amp) are
+  near-mute and only the headphones play. Driving GP34=1 in PWM mode is untested.
+
 ### Summary
 
 | Board | MCU | GPIO | FIXED | REASSIGN | FREE | MIDI | NESPAD |

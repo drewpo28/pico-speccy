@@ -1363,6 +1363,11 @@ void graphics_set_crt(uint8_t level) {
 uint8_t linkVGA01;
 void graphics_init_hdmi();
 void graphics_init() {
+#if defined(PICO_PC2)
+    // Olimex RP2350pc: HDMI-only (HSTX lanes, clock pair in the middle) — same
+    // rule as resolveVideoOutput() on core0. No autodetect, no Config override.
+    SELECT_VGA = false;
+#else
     if (video_driver == 0) {
         #if defined(ZERO2) || defined(PICO_DV)
             SELECT_VGA = linkVGA01 == 0x1F;
@@ -1372,6 +1377,7 @@ void graphics_init() {
     } else {
         SELECT_VGA = video_driver == 1;
     }
+#endif
     if (!SELECT_VGA) {
         graphics_init_hdmi();
         return;
