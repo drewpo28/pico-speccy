@@ -66,4 +66,6 @@ namespace SamFdc {
 
     // Diagnostic: last command / status / registers of drive 1, commands so far.
     void    diag(char* out, int n);
+    // F8 stats line (24 chars): drive of the last command, state, head cylinder, sector.
+    void    statLine(char* out, int n);
 }

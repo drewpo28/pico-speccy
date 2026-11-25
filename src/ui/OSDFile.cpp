@@ -631,7 +631,8 @@ static bool rfd_launch_tmp(string path) {
     }
     if (FileUtils::ifaceForPath(path) == IFACE_SAM && PlusD::looksPlusD(path.c_str())) {
         // An MGT disk with Spectrum (G+DOS) files: the MGT Plus D, not the SAM. Drive 1,
-        // the interface on (a 128K when this machine cannot carry it), reset, RUN.
+        // a disk change when the interface is on already, else the interface on (a 128K)
+        // and a reset; no RUN typed.
         FileUtils::DSK_Path = dir;
         if (!PlusD::launchDisk(path.c_str())) {
             OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);

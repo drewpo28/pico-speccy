@@ -44,10 +44,9 @@ namespace Opus {
     void frameEnd();
     bool machineOk(uint8_t arch, uint8_t romset);
 
-    // F5 launch of an .opd/.opu: drive 1, the interface on (a 48K), reset, RUN typed
-    // (the ROM loads the file "run").
+    // F5 launch of an .opd/.opu: drive 1, the interface on (a 48K), reset. No autorun:
+    // RUN typed by the user loads the file "run".
     bool launchDisk(const char* path);
-    void bootTick();
 
     static constexpr uint32_t SNAP_MAX = 12 + 2048;
     uint32_t snapSave(uint8_t* out);

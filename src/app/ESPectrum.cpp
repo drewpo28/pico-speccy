@@ -5708,6 +5708,10 @@ void ESPectrum::loop() {
                      ESPectrum::mb02_fdd.track, ESPectrum::mb02_fdd.sector,
                      ESPectrum::mb02_fdd.side);
             OSD::drawStats();
+          } else if (Z80Ops::isSam || PlusD::enabled || Opus::enabled) {
+            // The SamFdc pair (VL1772 / WD1772): not the Betadisk's WD1793.
+            SamFdc::statLine(OSD::stats_lin2, sizeof(OSD::stats_lin2));
+            OSD::drawStats();
           } else if (Z80Ops::isP3) {
             // The +3's uPD765, in the WD1793 line's own format: state, the selected
             // unit's head position (physical cylinder) and the sector ID. The
@@ -5989,8 +5993,8 @@ void ESPectrum::loop() {
     // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
     // sitting in HALT would never see a seek complete.
     Plus3Fdc::frameTick();
-    if (Opus::enabled) { Opus::frameEnd(); Opus::bootTick(); }     // Opus Discovery, the same
-    if (PlusD::enabled) { PlusD::frameEnd(); PlusD::bootTick(); }   // MGT Plus D: motor timeout, write-back, disk launch typing
+    if (Opus::enabled) Opus::frameEnd();     // Opus Discovery, the same
+    if (PlusD::enabled) PlusD::frameEnd();   // MGT Plus D: motor timeout, write-back
     Plus3Fdc::traceFlush();   // no-op unless FDD_PORT_TRACE
     plus3AutoBootTick();
     tsBootKeyTick();

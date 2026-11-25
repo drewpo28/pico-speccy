@@ -159,28 +159,14 @@ void reset() {
 void frameEnd() { SamFdc::frameEnd(); }
 
 // ---------------------------------------------------------------------------
-// Disk launch: 48K, K mode: R = RUN, Enter. The ROM loads "run" from drive 1.
-
-static constexpr int16_t BOOT_DELAY = 150, KEY_HOLD = 4, KEY_STEP = 12;
-static const fabgl::VirtualKey kBoot[2] = { fabgl::VK_r, fabgl::VK_RETURN };
-static int16_t s_bootT = -1;
-
-void bootTick() {
-    if (s_bootT < 0) return;
-    if (!enabled || !SamFdc::mounted(0)) { s_bootT = -1; return; }
-    fabgl::Keyboard* kbd = ESPectrum::PS2Controller.keyboard();
-    if (!kbd) { s_bootT = -1; return; }
-    const int16_t t = s_bootT++ - BOOT_DELAY;
-    if (t < 0) return;
-    const int i = t / KEY_STEP, ph = t % KEY_STEP;
-    if (i >= 2) { s_bootT = -1; return; }
-    if (ph == 0) kbd->injectVirtualKey(kBoot[i], true);
-    else if (ph == KEY_HOLD) kbd->injectVirtualKey(kBoot[i], false);
-}
+// Disk launch, as on the real interface (owner 2026-11-25): the Opus already on this
+// machine = a disk change (drive 1, no reset); otherwise a power-on: the interface on,
+// a 48K, reset. No RUN typed: RUN loads "run" from drive 1 when the user types it.
 
 bool launchDisk(const char* path) {
     DiskSlots::slotMount(IFACE_SAM, 0, path);
     if (!SamFdc::mounted(0)) return false;
+    if (enabled && Config::opus && machineOk(Config::arch, Config::romSet)) return true;
     Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
     Config::opus = 1;                    // one disk interface at a time
@@ -196,9 +182,7 @@ bool launchDisk(const char* path) {
         init();
         ESPectrum::resetForLoad();
     }
-    if (!enabled) return false;
-    s_bootT = 0;
-    return true;
+    return enabled;
 }
 
 // PSOP v1: u8 ver, paged, drive, nmiCnt, the PIA's six registers, 2048 RAM bytes.

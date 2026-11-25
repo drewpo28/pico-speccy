@@ -152,51 +152,16 @@ bool looksPlusD(const char* path) {
 }
 
 // ---------------------------------------------------------------------------
-// Disk launch: the keys RUN takes. 48K: K mode, so R is the RUN keyword. 128K: the
-// boot menu first (Down = 128 BASIC, Enter), then the letters, which 128 BASIC
-// tokenises. In guest frames from the reset, like the +3's auto-start.
-
-static constexpr int16_t BOOT_DELAY = 150;   // the 128 menu / the copyright screen is up
-static constexpr int16_t KEY_HOLD = 4, KEY_STEP = 12;
-static fabgl::VirtualKey s_seq[12];   // VK_NONE = a step with no key (a pause)
-static uint8_t s_seqN = 0;
-static int16_t s_bootT = -1;
-
-void bootTick() {
-    if (s_bootT < 0) return;
-    if (!enabled || !SamFdc::mounted(0)) { s_bootT = -1; return; }
-    fabgl::Keyboard* kbd = ESPectrum::PS2Controller.keyboard();
-    if (!kbd) { s_bootT = -1; return; }
-    const int16_t t = s_bootT++ - BOOT_DELAY;
-    if (t < 0) return;
-    const int i = t / KEY_STEP, ph = t % KEY_STEP;
-    if (i >= s_seqN) { s_bootT = -1; return; }
-    if (s_seq[i] == fabgl::VK_NONE) return;
-    if (ph == 0) kbd->injectVirtualKey(s_seq[i], true);
-    else if (ph == KEY_HOLD) kbd->injectVirtualKey(s_seq[i], false);
-}
-
-static void bootArm() {
-    s_seqN = 0;
-    if (Config::arch == A_128K) {
-        s_seq[s_seqN++] = fabgl::VK_DOWN;
-        s_seq[s_seqN++] = fabgl::VK_RETURN;
-        // 128 BASIC clears the screen and sets its editor up first: a letter typed one
-        // step after the Enter was lost ("un" -> Nonsense in G+DOS, host 2026-11-25).
-        for (int k = 0; k < 4; k++) s_seq[s_seqN++] = fabgl::VK_NONE;
-        s_seq[s_seqN++] = fabgl::VK_r;
-        s_seq[s_seqN++] = fabgl::VK_u;
-        s_seq[s_seqN++] = fabgl::VK_n;
-    } else {
-        s_seq[s_seqN++] = fabgl::VK_r;
-    }
-    s_seq[s_seqN++] = fabgl::VK_RETURN;
-    s_bootT = 0;
-}
+// Disk launch, as on the real interface (owner 2026-11-25):
+// - the Plus D already on this machine: a disk change. Drive 1 only, no reset; a
+//   resident G+DOS stays (CAT 1, LOAD d1"..."), F12 + RUN starts the disk afresh;
+// - otherwise plugging the interface in = a power-on: the interface on, a 128K,
+//   the 8K RAM cleared, reset. No RUN typed: the user boots G+DOS with RUN.
 
 bool launchDisk(const char* path) {
     DiskSlots::slotMount(IFACE_SAM, 0, path);
     if (!SamFdc::mounted(0)) return false;
+    if (enabled && Config::plusd && machineOk(Config::arch, Config::romSet)) return true;
     Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
     // One disk interface at a time (the menu's rule, UiStage resolveConstraints).
@@ -205,6 +170,12 @@ bool launchDisk(const char* path) {
     Config::mb02 = 0;
     Config::betadisk = false;
     Config::save();
+    // A launch is a power-on for the interface: its 8K RAM survives a reset (F11, as on
+    // the real one), and with G+DOS still resident there RUN only says "O.K. G+DOS"
+    // instead of loading +SYS, which is what runs the disk's AUTO file (owner, hw
+    // 2026-11-25: F11 then F5 stopped in BASIC). init() zeroes a fresh allocation.
+    // NOT hw-tested.
+    if (s_ram) memset(s_ram, 0, 8192);
     // Always a 128K: Plus D titles run there from 128 BASIC, and the 128K-only ones
     // (The Secret of Monkey Island, OutSoftware 2026) reset a 48K after their intro.
     if (Config::arch != A_128K || !machineOk(Config::arch, Config::romSet)) {
@@ -214,9 +185,7 @@ bool launchDisk(const char* path) {
         init();
         ESPectrum::resetForLoad();
     }
-    if (!enabled) return false;
-    bootArm();
-    return true;
+    return enabled;
 }
 
 // PSPD v1: u8 ver, u8 paged, u8 ctrl, u8 drive, 8192 RAM bytes.

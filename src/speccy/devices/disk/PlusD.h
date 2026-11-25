@@ -49,11 +49,9 @@ namespace PlusD {
     bool looksPlusD(const char* path);
 
     // F5 / catalog launch of a Plus D disk: drive 1, the interface on (switching to a
-    // 128K when the running machine cannot carry it), reset, then RUN typed — G+DOS's
-    // boot ROM loads the system file and the disk's autoload program. bootTick runs
-    // the typing, once a frame (ESPectrum's frame tail).
+    // 128K when the running machine cannot carry it), the 8K RAM cleared, reset. No
+    // autorun: RUN typed by the user makes the boot ROM load +SYS and the disk's AUTO.
     bool launchDisk(const char* path);
-    void bootTick();
 
     // .pss: paged flag, control register, the 8K RAM, the controller of each drive.
     static constexpr uint32_t SNAP_MAX = 4 + 8192;

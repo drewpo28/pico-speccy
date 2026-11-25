@@ -57,6 +57,7 @@ struct Regs {
 };
 static Regs s_r[2];
 static uint32_t s_cmds = 0;
+static uint8_t  s_lastDrive = 0;   // the drive the last command went to (F8 stats)
 
 // Media: heap, only while a disk is in.
 struct Media {
@@ -465,6 +466,7 @@ void outReg(uint8_t d, uint8_t reg, uint8_t v) {
     case 0: {
         r.command = v;
         s_cmds++;
+        s_lastDrive = d;
         const uint8_t cmd = v & CMD_MASK;
         if ((r.status & BUSY) && cmd != FORCE_INTERRUPT) return;
         r.activeFrames = ACTIVE_FRAMES;
@@ -773,6 +775,28 @@ void diag(char* out, int n) {
     snprintf(out, n, "fdc cmd=%02X st=%02X trk=%u head=%u sec=%u side=%u buf=%u/%u cmds=%lu",
              r.command, r.status, r.cyl, r.headCyl, r.sector, r.head, r.bufPos, r.bufLen,
              (unsigned long)s_cmds);
+}
+
+// F8 stats, the Betadisk line's format plus the drive: a command is executed lazily
+// and a seek at once, so a recent command (the lamp's window) names the state too.
+void statLine(char* out, int n) {
+    const uint8_t d = s_lastDrive & 1;
+    const Regs& r = s_r[d];
+    const char* st;
+    if ((r.status & BUSY) || r.activeFrames) {
+        switch (r.command & CMD_MASK) {
+        case RESTORE:                          st = "RESTOR"; break;
+        case SEEK:                             st = "SEEK";   break;
+        case READ_1SECTOR: case READ_MSECTOR:  st = "READ";   break;
+        case WRITE_1SECTOR: case WRITE_MSECTOR: st = "WRITE"; break;
+        case READ_ADDRESS:                     st = "RDADR";  break;
+        case READ_TRACK:                       st = "RDTRK";  break;
+        case WRITE_TRACK:                      st = "FORMAT"; break;
+        case FORCE_INTERRUPT:                  st = "INTRQ";  break;
+        default:                               st = "STEP";   break;
+        }
+    } else st = r.motorOff ? "IDLE" : "STOP";
+    snprintf(out, n, "D%u %-6sTR:#%02X/SEC:#%02X ", (unsigned)(d + 1), st, r.headCyl, r.sector);
 }
 
 } // namespace SamFdc

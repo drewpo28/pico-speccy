@@ -2316,8 +2316,37 @@ distribution). Name in the UI and notes: **Plus D** (owner's request, not "+D").
   (tracks 0-3 side 0, type = byte 0 & 0x1F) has more Spectrum types (1-11) than SAM ones
   (16+). F5 (OSDMain + OSDFile) sends those to `PlusD::launchDisk`: drive 1, Plus D on,
   always a 128K (a 48K ran Monkey Island's intro and then reset: the game is 128K-only;
-  48K titles run from 128 BASIC too), reset, then types RUN (48K: R, Enter;
-  128K: Down + Enter = 128 BASIC, then r u n Enter), `PlusD::bootTick` from the frame tail.
+  48K titles run from 128 BASIC too), the 8K RAM cleared, reset = a power-on. With the
+  Plus D already on a machine that carries it, F5 is a disk change: drive 1 only, no
+  reset, a resident G+DOS stays (owner 2026-11-25, hw-confirmed DVp2w 2026-11-25 (owner); Opus
+  the same). **No autorun** (owner 2026-11-25; the typed RUN and `bootTick` are gone).
+  The RAM clear is because the interface RAM survives F11 (as on the real one): with G+DOS
+  still resident, RUN only prints `O.K. G+DOS` and the disk's AUTO does not start
+  (owner hw 2026-11-25: F11 then F5 -> BASIC, only `LOAD d1"AUTO"` ran it). An F11 by
+  hand keeps the RAM: then `LOAD d1"AUTO"` (faithful). Clear hw-confirmed DVp2w 2026-11-25 (owner).
+  Why, from the boot ROM (1.A): the system state is `#3DE4` in the interface RAM —
+  "D" = +SYS loaded (set at 0x03C9 after the load), "X" = RAM initialised (0x02D9, the
+  init at 0x02A2 that zeroes the 8K when #3DE4 is neither). `#3DE5` = "G" is only a
+  transient in-DOS flag (set before leaving through the page-out stub, cleared by the NMI
+  entry 0x0066 -> 0x0053). The error hook at 0x018C: ERR_NR = #FF -> CALL 0x0527
+  (`CP "D"`): loaded -> report (O.K. G+DOS); not loaded + a RUN token in E_LINE -> 0x037B,
+  which loads "+SYS*" (0x035B) and then always "AUTO*" (0x03F2, `LD IX,#0365`).
+  Reset = 0x0000 -> JP 0x0533 (border, I, SP, IM 1) -> 0x004F page-out -> 0x11CB: it never
+  reads or writes #3DE4, never enters RAM code. So no "double reset clears the system"
+  logic exists (a claim seen online; bench: F11 twice + RUN = `O.K. G+DOS, 0:1`).
+  That double reset is the DISCiPLE's: port #7B ROM/RAM flip-flop reset by /RESET, two
+  resets without a DOS call clear #3DE4 and rebuild a minimal system. Alan Pearson, "The
+  MGT Disciple and Plus D PALs" (spectrumcomputing ZXDB 1000117, DISCiPLEInterface(EN)
+  (Updated)_TechDoc.pdf): "The Plus D does not do this"; on the Plus D /RESET only clears
+  the 74LS175 control port. Needed if a DISCiPLE model is ever written.
+  Fuse: RAM zeroed on a hard reset only. 1.0 and 1.A s/n 321901 have the same boot path;
+  no Plus D / DISCiPLE / Uni-DOS ROM holds "boot" (`RUN boot` stops at Variable not found).
+  Host bench, cold start: one RUN on a 48K boots Elevator Action; a key in the bench's
+  first ~270 frames is lost (the CPU sits at PC=0000 then), so start typing after 400.
+- F8 page 3 (also SAM, Opus): `SamFdc::statLine` = `D1 READ  TR:#07/SEC:#02`, the drive
+  of the last command, state (BUSY or the lamp window names the command, else IDLE /
+  STOP by the motor), head cylinder, sector register. The F8 page gate (OSDMain) did not
+  let page 3 open for Plus D / Opus / SAM / Betadisk on a 48K-128K; now it does. Host-ok.
   The disk must carry the G+DOS system file (`+SYS`): the boot ROM says
   `No "+SYS " file, 0:1` on a blank disk (expected, checked on the host).
 - `.pss`: PSPD (paging, #EF, drive, the 8K RAM) + PSSF per drive (SamFdc), applied after
@@ -2371,7 +2400,8 @@ OpusDiscovery_Manual.pdf (Microdrive syntax: `FORMAT "m";1;"name"`, `CAT 1`,
   interleaved per cylinder; WRITE TRACK accepts base-0 IDs. `createEmptyOpd` (40x1, #E5).
   Drives = the SAM pair (samDiskFile/samWP), Devices > Opus Discovery > Drives 1-2.
 - F5 on .opd/.opu -> `Opus::launchDisk`: drive 1, Opus on (Plus D / esxDOS / MB-02+ /
-  Betadisk off), a 48K (`romSet48` if usable), reset, R + Enter typed from the frame tail.
+  Betadisk off), a 48K (`romSet48` if usable), reset. No autorun since 2026-11-25 (owner):
+  the user types RUN.
 - `.pss`: PSOP (paging, drive, nmiCnt, PIA, 2K RAM) + PSSF; Config key `opus` reboot-class.
 - Host bench 2026-11-25: blank .opd -> FORMAT "m";1;"test" -> CAT 1 ("test", 178K free) ->
   `10 BORDER 2`, SAVE *"m";1;"run" LINE 10 -> new session, RUN: red border, 0 OK, 10:1.
