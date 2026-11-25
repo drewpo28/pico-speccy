@@ -54,6 +54,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/zifi/ZiFi.h"
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/disk/Opus.h"
 #include "speccy/devices/gs/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 #include "speccy/machines/TsConf/TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 #include "speccy/machines/If2.h"
@@ -1425,6 +1427,9 @@ static __attribute__((noinline)) void atmPgTableReadTrace(uint16_t address) {
 }
 #endif
 static inline uint8_t gsDmaPeek8(uint16_t address) {
+    // Opus Discovery paged: its WD1770 / 6821 are memory at 0x2800-0x3FFF (Opus.h).
+    if (__builtin_expect(g_opus_io != 0, 0) && (uint16_t)(address - 0x2800) < 0x1800)
+        return Opus::memRead(address);
 #if ATM_PAGE_TRACE
     if (Z80Ops::isAtm && (address == 0xC044 || address == 0xC04A || address == 0xC050))
         atmPgTableReadTrace(address);
@@ -1468,6 +1473,10 @@ static IRAM_ATTR __attribute__((noinline)) bool romWindowDrops(uint16_t address)
 }
 
 static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
+    if (__builtin_expect(g_opus_io != 0, 0) && (uint16_t)(address - 0x2800) < 0x1800) {
+        Opus::memWrite(address, value);   // Opus Discovery I/O (see gsDmaPeek8)
+        return;
+    }
 #if ZC_PORT_TRACE || ATM_PAGE_TRACE
     if (Z80Ops::isAtm) {
         const uint16_t off = address & 0x3FFF;
@@ -1664,6 +1673,9 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
         const uint32_t w = TsConf::cpuMemMiss(pc, true);
         if (w) VIDEO::Draw(w, false);
     }
+    // MGT Plus D: its M1 traps page G+DOS in before this fetch (Z80::exec_nocheck twin).
+    if (__builtin_expect(PlusD::enabled, 0) && pc < 0x0300 && !MemESP::divmmc_mapped && PlusD::trapPc(pc))
+        PlusD::pageIn();
     if (DivMMC::enabled) {
         DivMMC::preOpcFetch(pc);
         pg = pc >> 13; // re-read in case instant map changed it

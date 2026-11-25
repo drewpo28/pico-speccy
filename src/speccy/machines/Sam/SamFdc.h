@@ -20,6 +20,17 @@
 namespace SamFdc {
     uint8_t in(uint8_t drive, uint16_t port);              // drive 0/1
     void    out(uint8_t drive, uint16_t port, uint8_t v);
+    // The same by register number (0 command/status, 1 track, 2 sector, 3 data), for a
+    // host whose side line is not A2: the MGT Plus D (devices/disk/PlusD) sets it from its
+    // control register with setSide, and shares ONE controller between the two drives
+    // (shareRegs on a drive switch: the registers follow, each head stays where it is).
+    uint8_t inReg(uint8_t drive, uint8_t reg);
+    void    outReg(uint8_t drive, uint8_t reg, uint8_t v);
+    void    setSide(uint8_t drive, uint8_t side);
+    void    shareRegs(uint8_t from, uint8_t to);
+    // DRQ up (a pending command is executed first, as a status read would; the poll
+    // does not count towards SimCoupe's lost-data timeout). The Opus's NMI line.
+    bool    drq(uint8_t drive);
     void    reset();                                       // machine reset: controllers, not disks
     void    frameEnd();                                    // motor timeout, activity decay
 
@@ -40,6 +51,10 @@ namespace SamFdc {
     // A blank, unformatted MGT image (819200 zero bytes): SAMDOS/MasterDOS FORMAT
     // lays the tracks down, or sees an empty directory as it is.
     bool    createEmpty(const std::string& path);
+    // Opus Discovery images (.opd / .opu, by extension: 40 x 1, 80 x 1 or 80 x 2 cylinders
+    // of 18 x 256 B sectors numbered from 0) mount on the same drives (devices/disk/Opus).
+    bool    isOpdPath(const std::string& path);
+    bool    createEmptyOpd(const std::string& path);   // 40 x 1, 0xE5: FORMAT lays it out
 
     // .pss (PSSF, one record per drive): the controller registers and, for a
     // transfer in progress, the sector/track buffer. snapLoad needs the same

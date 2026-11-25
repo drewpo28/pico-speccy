@@ -114,7 +114,7 @@ Each rule cost at least one hardware round; the story is in the notes file named
 | `pentagon.md` | Pentagon 1024SL turbo, 16col, Murmuzavr RAM, screen position |
 | `plus3.md` | +3 / +3e / +3 divIDE, uPD765, .dsk, IDEDOS, mouse |
 | `timex.md` | Timex SCLD, TC2048, TC2068 |
-| `other-machines.md` | Didaktik, Leningrad, Byte ROM test, Quorum, IF2, SAM Coupe, Enterprise, PK Hobbit, eLeMeNt |
+| `other-machines.md` | Didaktik, Leningrad, Byte ROM test, Quorum, IF2, SAM Coupe, Enterprise, PK Hobbit, eLeMeNt, MGT Plus D, Opus Discovery |
 | `neogs-gs.md` | General Sound / NeoGS, host interface, ZX-DMA, mixer |
 | `sound.md` | AY/TSFM, OPL3/OPLL/SN/CMS (VGM), SAA1099, MoonSound, PI-CARD MUSICA |
 | `video-hdmi-vga.md` | HDMI PIO/HSTX, VGA, TMDS, audio islands, Gigascreen, borders, 630 MHz |

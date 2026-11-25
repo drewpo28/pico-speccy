@@ -85,6 +85,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/devices/storage/Nvram24.h"
 #include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/PlusD.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Next/NextVideo.h"
@@ -1068,6 +1069,13 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // Wiki: ULA port non-contended addr = N:1,C:3; contended addr = C:1,C:3
     //        Non-ULA contended addr = C:1,C:1,C:1,C:1; non-contended = N:4
     VIDEO::Draw(1, MemESP::busContended[rambank]); // I/O Contention (Early)
+  }
+
+  // MGT Plus D (#E3 #EB #F3 #FB #EF #E7 #F7: A7-A5 and A1-A0 high). Kept off beside
+  // DivMMC (#E3/#EB) by setup and the menu. Flash handler: disk-time traffic only.
+  if (!PROFI && __builtin_expect(PlusD::enabled, 0) && (address & 0xE3) == 0xE3) {
+    ioContentionLate(MemESP::busContended[rambank]);
+    return PlusD::portIn(address & 0xFF);
   }
 
   // TS-Conf register file: any port #nnAF, register = high address byte.
@@ -3105,6 +3113,12 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   }
   uint8_t a8 = (address & 0xFF);
   p_states = CPU::tstates;
+  // MGT Plus D (see Ports::input).
+  if (!PROFI && __builtin_expect(PlusD::enabled, 0) && (a8 & 0xE3) == 0xE3) {
+    PlusD::portOut(a8, data);
+    ioContentionLate(MemESP::busContended[rambank]);
+    return;
+  }
 
   // «Байт»: any access to the Kempston-decoded port (#1F/#9F) toggles the
   // DD71 доп. ПЗУ overlay (the built-in test's switch stub at #387A is

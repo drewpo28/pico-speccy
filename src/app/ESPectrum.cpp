@@ -111,6 +111,8 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/disk/Opus.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/sound/Midi.h"
 #include "speccy/devices/sound/MidiSynth.h"
@@ -1415,6 +1417,26 @@ void ESPectrum::setup() {
     Config::ide_scheme = IDE::OFF;
   }
 
+  // MGT Plus D: it owns page 0 (ROM + RAM over 0x0000-0x3FFF, the M1 traps at 0x0008 /
+  // 0x003A / 0x0066 / 0x028E) and the ports #E3/#EB, so the other page-0 interfaces stay
+  // off for this boot. Not persisted: turning the Plus D off brings the user's picks back.
+  // Opus Discovery: the same page-0 window and the late M1 traps; one of the two.
+  if (Config::opus && Opus::machineOk(Config::arch, Config::romSet)) {
+    if (Config::esxdos || Config::mb02 || Config::betadisk || Config::plusd)
+      Debug::log("setup: Opus on - esxDOS / MB-02+ / Betadisk / Plus D off");
+    Config::esxdos = 0;
+    Config::mb02 = false;
+    Config::betadisk = false;
+    Config::plusd = 0;
+  }
+  if (Config::plusd && PlusD::machineOk(Config::arch, Config::romSet) &&
+      (Config::esxdos || Config::mb02 || Config::betadisk)) {
+    Debug::log("setup: Plus D on - esxDOS / MB-02+ / Betadisk off");
+    Config::esxdos = 0;
+    Config::mb02 = false;
+    Config::betadisk = false;
+  }
+
   // The live page count is derived from the persisted pick HERE and nowhere else: the arch
   // for this boot is final and nothing has sized a page strip yet. Murmuzavr extended RAM
   // is Pentagon-only hardware (the #AFF7 plane latch), and it is expensive — 2048 pages
@@ -2004,6 +2026,12 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: Subsystems::applyPending begin, freeHeap=%u", (unsigned)getFreeHeap());
   Subsystems::applyPending();
   Debug::log2SD("setup: Subsystems::applyPending done, freeHeap=%u", (unsigned)getFreeHeap());
+  // MGT Plus D: after the page-0 interfaces settled (MB02::init / DivMMC drop the
+  // page-0 window when off); paged in, so the machine starts in G+DOS as on hardware.
+  PlusD::init();
+  PlusD::reset();
+  Opus::init();
+  Opus::reset();
 
   // Init tape
   Debug::log("setup: Tape init begin, freeHeap=%u", getFreeHeap());
@@ -2580,6 +2608,12 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Init disk controller
   rvmWD1793Reset(&fdd);
   if (MB02::enabled) MB02::reset();
+  // Plus D: controller reset, G+DOS paged in on the 48K (PlusD::reset). Not for a
+  // loader's reset (snapshot / tape / disk launch): what it loads runs in the
+  // Spectrum ROM, and a .pss puts the interface's own paging back afterwards.
+  PlusD::reset();
+  if (s_reset_keeps_card) PlusD::pageOut();
+  Opus::reset();    // Opus Discovery: paged out, PIA + controller reset
   // A machine reset resets the controller but not the drives — the disks stay in,
   // exactly as they do when the reset button on a real +3 is pressed.
   Plus3Fdc::reset();
@@ -5738,7 +5772,7 @@ void ESPectrum::loop() {
         fdd_active = Plus3Fdc::fdc.activity != 0;
         fdd_write  = Plus3Fdc::fdc.wroteRecently;
     }
-    if (Z80Ops::isSam) {                      // SAM Coupe: its VL1772 pair
+    if (Z80Ops::isSam || PlusD::enabled || Opus::enabled) {   // SAM / Plus D / Opus: the SamFdc pair
         fdd_active = SamFdc::active();
         fdd_write  = SamFdc::wroteRecently();
     }
@@ -5757,7 +5791,7 @@ void ESPectrum::loop() {
     // the black DS80 right border).
     bool lamp_on = fdd_active &&
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
-                    ((Z80Ops::isP3 || Z80Ops::isSam) && (Config::trdosSoundLed & 1)) ||
+                    ((Z80Ops::isP3 || Z80Ops::isSam || PlusD::enabled || Opus::enabled) && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
     // The floppy, plus the IDE drive's HDD / CD and the SD card icons beside it (LEDIndicators.cpp).
     LED::drawCornerIcons(lamp_on, fdd_write);
@@ -5955,6 +5989,8 @@ void ESPectrum::loop() {
     // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
     // sitting in HALT would never see a seek complete.
     Plus3Fdc::frameTick();
+    if (Opus::enabled) { Opus::frameEnd(); Opus::bootTick(); }     // Opus Discovery, the same
+    if (PlusD::enabled) { PlusD::frameEnd(); PlusD::bootTick(); }   // MGT Plus D: motor timeout, write-back, disk launch typing
     Plus3Fdc::traceFlush();   // no-op unless FDD_PORT_TRACE
     plus3AutoBootTick();
     tsBootKeyTick();

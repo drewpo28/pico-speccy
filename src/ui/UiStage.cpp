@@ -29,6 +29,9 @@
 #include "speccy/machines/Element/Element.h"   // the eLeMeNt's personality + SetUp register sync
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/PlusD.h"
+#include "speccy/devices/disk/Opus.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/core/Ports.h"
@@ -204,6 +207,8 @@ NM_INT_ACCESS (esxdos,    esxdos)
 NM_INT_ACCESS (esxdosVer, esxdos_ver)
 NM_INT_ACCESS (ideScheme, ide_scheme)
 NM_INT_ACCESS (mb02,      mb02)
+NM_INT_ACCESS (plusd,     plusd)
+NM_INT_ACCESS (opus,      opus)
 NM_BOOL_ACCESS(zc,        zcontroller)
 NM_INT_ACCESS (gsMode,    gs_enabled)
 NM_INT_ACCESS (gsClock,   gs_clock)
@@ -790,6 +795,28 @@ static bool hook_tabFire(int32_t nv, int32_t) {
         ESPectrum::VK_ESPECTRUM_FIRE2 = fabgl::VK_NONE;
         ESPectrum::VK_ESPECTRUM_TAB   = fabgl::VK_TAB;
         ESPectrum::VK_ESPECTRUM_GRAVEACCENT = fabgl::VK_GRAVEACCENT;
+    }
+    return true;
+}
+// MGT Plus D: the 8K RAM comes and goes with the setting; the reset F_ZXRESET asks
+// for pages G+DOS in (PlusD::reset). Its drives are the SAM pair: the remembered images
+// are mounted on the way in and closed on the way out (a SAM machine keeps them).
+static bool hook_plusd(int32_t nv, int32_t) {
+    if (!PlusD::init()) { Config::plusd = 0; return false; }
+    for (uint8_t i = 0; i < 2; i++) {
+        if (nv && !SamFdc::mounted(i) && !Config::samDiskFile[i].empty())
+            SamFdc::mount(i, Config::samDiskFile[i]);
+        if (!nv && Config::arch != A_SAM) SamFdc::eject(i);
+    }
+    return true;
+}
+// Opus Discovery: the same shape as the Plus D (the 8K window buffer, the SAM drives).
+static bool hook_opus(int32_t nv, int32_t) {
+    if (!Opus::init()) { Config::opus = 0; return false; }
+    for (uint8_t i = 0; i < 2; i++) {
+        if (nv && !SamFdc::mounted(i) && !Config::samDiskFile[i].empty())
+            SamFdc::mount(i, Config::samDiskFile[i]);
+        if (!nv && Config::arch != A_SAM && !Config::plusd) SamFdc::eject(i);
     }
     return true;
 }
@@ -1505,6 +1532,44 @@ static void resolveConstraints(CommitReport& rep) {
                     if (Config::forcesVsyncOff((uint8_t)staged(SET_VIDEO_MODE), (uint16_t)staged(SET_CPU_MHZ))
                         && staged(SET_VSYNC))
                         changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display is not 50 Hz");
+                }
+            }
+        }
+
+        // MGT Plus D: a 48K / 128K bus only, and it owns page 0 and #E3/#EB, so esxDOS,
+        // MB-02+ and Betadisk go off with it. Whichever the user touched LAST wins.
+        // Opus Discovery: the 48K only, and the same page-0 owner as the Plus D.
+        if (staged(SET_OPUS)) {
+            const int32_t m = staged(SET_MACHINE);
+            const uint8_t ar = m >= 0 ? (uint8_t)((m >> 8) & 0xFF) : (uint8_t)Config::arch;
+            const uint8_t rs = m >= 0 ? (uint8_t)(m & 0xFF) : (uint8_t)Config::romSet;
+            if (!Opus::machineOk(ar, rs)) {
+                changed |= force(SET_OPUS, 0, rep, "Opus Discovery needs a 48K");
+            } else {
+                static const uint16_t other[4] = { SET_ESXDOS, SET_MB02, SET_BETADISK, SET_PLUSD };
+                for (int i = 0; i < 4 && staged(SET_OPUS); i++) {
+                    if (!staged(other[i])) continue;
+                    if (bmGet(g_dirty, other[i]) && g_seq[other[i]] > g_seq[SET_OPUS])
+                        changed |= force(SET_OPUS, 0, rep, "Opus off: one disk interface at a time");
+                    else
+                        changed |= force(other[i], 0, rep, "Off: the Opus owns page 0");
+                }
+            }
+        }
+        if (staged(SET_PLUSD)) {
+            const int32_t m = staged(SET_MACHINE);
+            const uint8_t ar = m >= 0 ? (uint8_t)((m >> 8) & 0xFF) : (uint8_t)Config::arch;
+            const uint8_t rs = m >= 0 ? (uint8_t)(m & 0xFF) : (uint8_t)Config::romSet;
+            if (!PlusD::machineOk(ar, rs)) {
+                changed |= force(SET_PLUSD, 0, rep, "Plus D needs a 48K or 128K machine");
+            } else {
+                static const uint16_t other[3] = { SET_ESXDOS, SET_MB02, SET_BETADISK };
+                for (int i = 0; i < 3 && staged(SET_PLUSD); i++) {
+                    if (!staged(other[i])) continue;
+                    if (bmGet(g_dirty, other[i]) && g_seq[other[i]] > g_seq[SET_PLUSD])
+                        changed |= force(SET_PLUSD, 0, rep, "Plus D off: one disk interface at a time");
+                    else
+                        changed |= force(other[i], 0, rep, "Off: the Plus D owns page 0");
                 }
             }
         }
