@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 
 */
+#include "speccy/devices/disk/PlusD.h"
 #include "speccy/core/Pss.h"
 #include <malloc.h>
 #include <hardware/watchdog.h>
@@ -2619,7 +2620,7 @@ void OSD::loadAnyFile() {
                 OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
         }
         else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
-            // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,
+            // A SAM Coupe or Plus D disk: Enter mounts it in drive 1 and boots it,
             // F5 opens the slot picker.
             if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
             if (forcePopup) {
@@ -2627,7 +2628,9 @@ void OSD::loadAnyFile() {
                 forcePopup = false;
                 goto f5_retry;
             }
-            if (!Sam::launchDisk(fname))
+            // An MGT disk with Spectrum (G+DOS) files is a Plus D disk (PlusD::launchDisk).
+            const bool plusd = PlusD::looksPlusD(fname.c_str());
+            if (!(plusd ? PlusD::launchDisk(fname.c_str()) : Sam::launchDisk(fname)))
                 OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
         }
         else if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {

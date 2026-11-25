@@ -20,6 +20,14 @@
 namespace SamFdc {
     uint8_t in(uint8_t drive, uint16_t port);              // drive 0/1
     void    out(uint8_t drive, uint16_t port, uint8_t v);
+    // The same by register number (0 command/status, 1 track, 2 sector, 3 data), for a
+    // host whose side line is not A2: the MGT Plus D (devices/disk/PlusD) sets it from its
+    // control register with setSide, and shares ONE controller between the two drives
+    // (shareRegs on a drive switch: the registers follow, each head stays where it is).
+    uint8_t inReg(uint8_t drive, uint8_t reg);
+    void    outReg(uint8_t drive, uint8_t reg, uint8_t v);
+    void    setSide(uint8_t drive, uint8_t side);
+    void    shareRegs(uint8_t from, uint8_t to);
     void    reset();                                       // machine reset: controllers, not disks
     void    frameEnd();                                    // motor timeout, activity decay
 

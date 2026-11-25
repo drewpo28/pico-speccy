@@ -299,7 +299,7 @@ bool isVisible(Id i) {
         case ZCTRL:    return Config::zcontroller || DivMMC::zc_enabled;
         // DivIDE (esxDOS in IDE mode) is an IDE drive too: DivMMC notes its sectors.
         case IDE:      return ::IDE::present() || (DivMMC::enabled && DivMMC::divide_mode);
-        case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled
+        case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled || Config::plusd
                            || Config::isPlus3();   // the +3's drive is not optional
         case MIDI:     return Config::midi > 0;
         // The CMS pair (2x SAA1099, VGM card) touches the same SAA glyph as the

@@ -54,6 +54,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/zifi/ZiFi.h"
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/disk/PlusD.h"
 #include "speccy/devices/gs/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 #include "speccy/machines/TsConf/TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 #include "speccy/machines/If2.h"
@@ -1664,6 +1665,9 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
         const uint32_t w = TsConf::cpuMemMiss(pc, true);
         if (w) VIDEO::Draw(w, false);
     }
+    // MGT Plus D: its M1 traps page G+DOS in before this fetch (Z80::exec_nocheck twin).
+    if (__builtin_expect(PlusD::enabled, 0) && pc < 0x0300 && !MemESP::divmmc_mapped && PlusD::trapPc(pc))
+        PlusD::pageIn();
     if (DivMMC::enabled) {
         DivMMC::preOpcFetch(pc);
         pg = pc >> 13; // re-read in case instant map changed it

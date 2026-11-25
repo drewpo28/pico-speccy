@@ -53,6 +53,7 @@
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/Z80DMA.h"
 #include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/disk/PlusD.h"
 #include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd/read8 (TC2068 SCLD window, exec_nocheck fetch)
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/core/Rzx.h"     // Rzx::mode / onIn: RZX playback substitutes every IN
@@ -2219,6 +2220,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
     // (VIDEO::Draw_Opcode canNOT be hoisted: the video state machine swaps it
     // mid-frame at blank/paper boundaries.)
     const bool divmmc = DivMMC::enabled;
+    // MGT Plus D: the same kind of flag (Config, from the menu only). Its M1 traps are
+    // tested below 0x0300 only, so code in RAM pays one register test.
+    const bool plusd = PlusD::enabled;
 
     while (CPU::tstates < CPU::stFrame) {
 
@@ -2309,6 +2313,8 @@ IRAM_ATTR void Z80::exec_nocheck() {
             const uint32_t w = TsConf::cpuMemMiss(REG_PC, true);
             if (w) VIDEO::Draw(w, false);
         }
+        if (__builtin_expect(plusd, 0) && REG_PC < 0x0300 && !MemESP::divmmc_mapped && PlusD::trapPc(REG_PC))
+            PlusD::pageIn();   // the fetch below reads G+DOS (Fuse z80_ops.c CHECK(plusd))
         if (divmmc) {
             DivMMC::preOpcFetch(REG_PC);
             // Fetch opcode from currently mapped memory

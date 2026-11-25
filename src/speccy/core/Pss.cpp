@@ -52,6 +52,7 @@
 #include "speccy/machines/Next/NextPorts.h"
 #include "speccy/machines/Next/NextMf.h"
 #include "speccy/devices/Z80DMA.h"
+#include "speccy/devices/disk/PlusD.h"
 
 using std::string;
 using std::vector;
@@ -184,7 +185,7 @@ static void flushMedia() {
     if (Config::isPlus3()) Plus3Fdc::flush();
     if (IDE::scheme != IDE::OFF) IDE::flush();
     if (DivMMC::enabled) DivMMC::flush();
-    if (Z80Ops::isSam) SamFdc::sync();
+    if (Z80Ops::isSam || PlusD::enabled) SamFdc::sync();
     if (Z80Ops::isEnt) EpFdc::sync();
 }
 
@@ -454,6 +455,23 @@ bool save(const string& path, const string& name) {
         uint8_t b[Sam::SNAP_MAX];
         const uint32_t n = Sam::snapSave(b);
         w.begin("PSSM"); w.raw(b, n); w.end();
+        uint8_t* fb = (uint8_t*)tryMalloc(SamFdc::SNAP_MAX);
+        if (fb) {
+            for (uint8_t d = 0; d < 2 && w.ok; d++) {
+                const uint32_t fn = SamFdc::snapSave(d, fb);
+                w.begin("PSSF"); w.raw(fb, fn); w.end();
+            }
+            free(fb);
+        }
+    }
+
+    if (PlusD::enabled) {  // PSPD: the Plus D (paging, #EF, 8K RAM); PSSF: its VL1772 per drive
+        uint8_t* pb = (uint8_t*)tryMalloc(PlusD::SNAP_MAX);
+        if (pb) {
+            const uint32_t n = PlusD::snapSave(pb);
+            w.begin("PSPD"); w.raw(pb, n); w.end();
+            free(pb);
+        }
         uint8_t* fb = (uint8_t*)tryMalloc(SamFdc::SNAP_MAX);
         if (fb) {
             for (uint8_t d = 0; d < 2 && w.ok; d++) {
@@ -881,7 +899,7 @@ static void liveMedia(vector<MediaSlot>& out) {
     for (uint8_t i = 0; i < 2; i++) {
         snprintf(k, sizeof(k), "samd%u.file", i);
         out.push_back({ k, string("SAM ") + (char)('1' + i) + ":",
-                        Z80Ops::isSam && SamFdc::mounted(i) ? SamFdc::fname(i) : "" });
+                        (Z80Ops::isSam || PlusD::enabled) && SamFdc::mounted(i) ? SamFdc::fname(i) : "" });
     }
     for (uint8_t i = 0; i < 2; i++) {
         snprintf(k, sizeof(k), "epd%u.file", i);
@@ -1020,7 +1038,7 @@ static void applyLiveMedia(const vector<string>& lines) {
             Plus3Fdc::setWriteProtect(i, Config::p3WP[i]);
         }
     }
-    if (Z80Ops::isSam) {
+    if (Z80Ops::isSam || PlusD::enabled) {   // the Plus D's drives are the SAM pair
         for (uint8_t i = 0; i < 2; i++) {
             snprintf(key, sizeof(key), "samd%u.wp", i);
             if (cfgValue(lines, key, v)) Config::samWP[i] = v == "true";
@@ -1262,7 +1280,7 @@ bool load(const string& path) {
             p = (uint8_t*)tryMalloc(n);
             if (p) r.raw(p, n); else n = 0;
         }
-    } ide, sdc, ngs, ftState, samFdc[2], epFdc;
+    } ide, sdc, ngs, ftState, samFdc[2], epFdc, plusd;
     // VDAC2: a blank, reset chip first, so a file without its blocks (saved before
     // they existed, or with the board off) does not keep the previous session's.
     const bool ftOn = Z80Ops::isTsconf && Ft812::enabled;
@@ -1330,7 +1348,8 @@ bool load(const string& path) {
         else if (idIs(id, "PSEP") && sz >= 1 && Z80Ops::isEnt) { epSize = sz < sizeof(ep) ? sz : sizeof(ep); r.raw(ep, epSize); }
         else if (idIs(id, "PSEF") && sz >= 1 && Z80Ops::isEnt) epFdc.take(r, sz, EpFdc::SNAP_MAX);
         else if (idIs(id, "PSSM") && sz >= 1 && Z80Ops::isSam) { samSize = sz < sizeof(sam) ? sz : sizeof(sam); r.raw(sam, samSize); }
-        else if (idIs(id, "PSSF") && sz >= 2 && Z80Ops::isSam) {
+        else if (idIs(id, "PSPD") && sz >= 1 && PlusD::enabled) plusd.take(r, sz, PlusD::SNAP_MAX);
+        else if (idIs(id, "PSSF") && sz >= 2 && (Z80Ops::isSam || PlusD::enabled)) {
             // byte 1 = the drive; the record is taken whole
             const FSIZE_t here = f_tell(f);
             r.u8(); const uint8_t d = r.u8() & 1;
@@ -1518,10 +1537,15 @@ bool load(const string& path) {
     if (upSize && Config::isPlus3()) Plus3Fdc::snapLoad(up, upSize);
     if (Z80Ops::isEnt && epFdc.n && !EpFdc::snapLoad(epFdc.p, epFdc.n))
         Debug::log("[PSS] Enterprise FDC record refused");
-    if (Z80Ops::isSam)
+    if (Z80Ops::isSam || PlusD::enabled)
         for (uint8_t d = 0; d < 2; d++)
             if (samFdc[d].n && !SamFdc::snapLoad(d, samFdc[d].p, samFdc[d].n))
                 Debug::log("[PSS] SAM drive %u record refused", (unsigned)(d + 1));
+    // Plus D: after the page-0 restore above (recoverPage0 leaves its window alone).
+    // No record = saved without the interface: G+DOS out, as after a 128K reset.
+    if (PlusD::enabled) {
+        if (!plusd.n || !PlusD::snapLoad(plusd.p, plusd.n)) PlusD::pageOut();
+    }
 
     // Border, #FE.
     VIDEO::borderColor = border & 7;

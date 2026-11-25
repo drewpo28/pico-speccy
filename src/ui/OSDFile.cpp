@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "speccy/devices/disk/PlusD.h"
 #include "app/LastRun.h"
 #include <string>
 #include <algorithm>
@@ -612,6 +613,16 @@ static bool rfd_launch_tmp(string path) {
         // An Enterprise disk image: A:, switch to the Enterprise if needed, reset.
         FileUtils::DSK_Path = dir;
         if (!Ep::launchDisk(path)) {
+            OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+            return false;
+        }
+        return true;
+    }
+    if (FileUtils::ifaceForPath(path) == IFACE_SAM && PlusD::looksPlusD(path.c_str())) {
+        // An MGT disk with Spectrum (G+DOS) files: the MGT Plus D, not the SAM. Drive 1,
+        // the interface on (a 128K when this machine cannot carry it), reset, RUN.
+        FileUtils::DSK_Path = dir;
+        if (!PlusD::launchDisk(path.c_str())) {
             OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
             return false;
         }

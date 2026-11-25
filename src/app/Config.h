@@ -601,6 +601,7 @@ public:
     // decodes US0 alone, so there is no third unit to remember.
     static bool p3WP[2];         // per-drive write protect
     static string p3DiskFile[2]; // remembered paths; survive the machine being switched away
+    static uint8_t plusd;        // 0=OFF 1=ON: MGT Plus D (48K/128K; its drives are the SAM pair, samWP/samDiskFile)
     static bool samWP[2];        // SAM Coupe drives 1/2: write protect
     static string samDiskFile[2]; // SAM Coupe drives 1/2: remembered paths
     static bool samKeepTmp;      // a /tmp disk launch must survive the reboot of a machine switch

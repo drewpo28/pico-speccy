@@ -7,6 +7,7 @@
 //
 // Leaves reach the existing modal dialogs through UiActions.cpp.
 
+#include "speccy/devices/disk/PlusD.h"
 #include "OSDNewMenu.h"
 
 
@@ -1304,6 +1305,9 @@ static bool p_esxVerRow() {
     return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
+// MGT Plus D: a 48K / 128K / +2 bus (PlusD::machineOk), its drives the SAM pair.
+static bool p_plusdRow() { return PlusD::machineOk(devArch(), devRomset()); }
+static bool p_plusdOn()  { return Stage::get(SET_PLUSD) != 0; }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
 // IDE/HDD scheme: the value IS Config::ide_scheme. "IDEDOS" and "DivIDE" are not cards
@@ -1432,6 +1436,10 @@ static const Node kMb02[] = {
     NM_DYN_EN  (TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
 };
+static const Node kPlusD[] = {
+    NM_BOOL    (TXT_PLUSD,         SET_PLUSD, nullptr),
+    NM_DYN_EN  (TXT_PLUSD_DRIVES,  slots_buildSam, slots_keySam, p_hasSD, p_plusdOn),
+};
 // The Z-Controller's card: the whole SD card, one of its partitions, a typed window
 // or an image file — picked on the one row of its slot level (UiActions buildSlots).
 static const Node kZc[] = {
@@ -1448,6 +1456,7 @@ static const Node kIde[] = {
 static const char* vl_beta()  { return p_betaBuiltIn() ? nullptr : nodeValueLabel(kDiskBeta[0]); }
 static const char* vl_esx()   { return nodeValueLabel(kEsx[0]); }
 static const char* vl_mb02()  { return nodeValueLabel(kMb02[0]); }
+static const char* vl_plusd() { return nodeValueLabel(kPlusD[0]); }
 static const char* vl_zc()    { return nodeValueLabel(kZc[0]); }
 static const char* vl_ide()   { return nodeValueLabel(kIde[0]); }
 static const Node kHardware[] = {
@@ -1458,6 +1467,7 @@ static const Node kHardware[] = {
     NM_DYN     (TXT_EP_DRIVES,     slots_buildEp,  slots_keyEp,  p_epOn),
     NM_SUBV    (TXT_HW_ESXDOS,     kEsx,  vl_esx,  p_esxRow),
     NM_SUBV    (TXT_MB02,          kMb02, vl_mb02, p_mb02Row),
+    NM_SUBV    (TXT_PLUSD,         kPlusD, vl_plusd, p_plusdRow),
     NM_SUBV    (TXT_HW_ZC,         kZc,   vl_zc,   p_zcRow),
     NM_SUBV    (TXT_HW_IDE,        kIde,  vl_ide,  p_ideRow),
     NM_BOOL    (TXT_HW_RTC,        SET_RTC,   p_rtcRow),
@@ -2188,7 +2198,8 @@ const Node* slotNodeFor(int iface) {
         case IFACE_MB02: return findDyn(kMb02, NM_COUNT(kMb02), slots_buildMb02);
         case IFACE_ESX:  return findDyn(kEsx, NM_COUNT(kEsx), slots_buildEsx);
         case IFACE_PLUS3: return findDyn(kDiskP3, NM_COUNT(kDiskP3), slots_buildP3);
-        case IFACE_SAM:   return findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam);
+        case IFACE_SAM:   return devArch() == A_SAM ? findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam)
+                                                    : findDyn(kPlusD, NM_COUNT(kPlusD), slots_buildSam);
         case IFACE_EP:    return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEp);
         case IFACE_ZC:    return findDyn(kZc, NM_COUNT(kZc), slots_buildZc);
         default:         return nullptr;

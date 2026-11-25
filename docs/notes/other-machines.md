@@ -2278,3 +2278,59 @@ bit and NO coordinate system, and its eINT has its own Video Line types (#02/#03
   mode); GIGASCRS writes m_zxi_00B = 01 (MB03+ GigaScreen) next to e_zxi_01D. Both are no-ops on the eZX.
 - Open before implementing: does a non-zero 01C/01D replace the ULA INT on the eZX or add one; HDMI or mode lines;
   needs an eZX hw test (an IM 2 handler that reads g_zxi_01E/01F and counts INTs per frame) or the author's answer.
+
+## MGT Plus D disk interface (2026-11-25, host-tested, NOT hw-tested)
+
+`src/speccy/devices/disk/PlusD.*`, model = Fuse 1.6.0 `peripherals/disk/plusd.c`; ROM
+`src/speccy/roms/plusd.h` = Fuse's `plusd.rom` (G+DOS 1a boot ROM, 8K, Datel allow
+distribution). Name in the UI and notes: **Plus D** (owner's request, not "+D").
+
+- **Memory:** ROM 0x0000-0x1FFF + 8K RAM 0x2000-0x3FFF through MemESP's page-0 window
+  (`page0_lo/hi`, `divmmc_mapped`, `divmmc_lo_rom` = true, `mb02_write_gate` = true) — the
+  one DivMMC / MB-02+ use, so those two and Betadisk are kept off while the Plus D is on
+  (setup backstop, UiStage resolveConstraints: the setting touched last wins,
+  `PlusD::launchDisk`). RAM = `Buffer::palloc` 8K (butter first), only while on.
+- **Paging:** M1 at 0x0008 / 0x003A / 0x0066 / 0x028E pages in (Fuse z80_ops.c CHECK(plusd)),
+  IN #E7 pages in, OUT #E7 pages out. Hooked in `Z80::exec_nocheck` (hoisted `plusd` flag,
+  tested only for PC < 0x0300) and `Z80Ops::fetchOpcode`; `PlusD::pageIn/pageOut` are
+  `__not_in_flash("plusd")`. Not in exec_nocheck_ts / the eLeMeNt / Next loops: the
+  interface is limited to A_48K / A_128K minus +3, Timex, Hobbit, Quorum 64
+  (`PlusD::machineOk`; MachineSwitch turns it off elsewhere).
+- **Reset — deliberate deviation from Fuse:** Fuse pages in at every reset. G+DOS's reset
+  code (0x0000 -> 0x0533) leaves through OUT #E7 into 0x11CB = START/NEW of the 48K ROM;
+  on a 128K/+2 ROM 0 (the editor) is paged there and 0x11CB is inside its tape-out loop,
+  so the 128K crashed at power-on (host bench, red border + garbage). G+DOS never touches
+  #7FFD. Now: paged in at reset on the 48K only; on the 128K the ROM boots and the traps
+  bring G+DOS in from 48 BASIC's ROM 1 (in ROM 0 none of the four trap addresses is an
+  instruction start, except 0x0066 for a forced NMI = the snapshot button).
+- **Ports** (`(port & 0xE3) == 0xE3`, in `inputImpl/outputImpl` after the early contention):
+  #E3/#EB/#F3/#FB = WD1772 regs, #EF control (drive = bits 0-1 == 2 ? 2 : 1, side = bit 7,
+  bit 6 printer strobe ignored), #F7 printer (IN = 0x7F never busy, OUT dropped).
+- **FDC + drives = the SAM's `SamFdc`** (VL1772 lazy model, MGT/SAD/EDSK). New entry points
+  `inReg/outReg` (register number, side not from A2), `setSide`, `shareRegs` (one controller
+  for two drives: the registers move with a drive switch, each head stays). Drives, WP and
+  remembered paths are the SAM pair (`samDiskFile`, `samWP`, "SAM drives" slot rows reused
+  under Devices > Plus D > Drives 1-2): the SAM machine and a Spectrum with the Plus D never
+  run together. Mounts at boot when `Config::plusd` (Config::loadDiskMounts).
+- **Disk vs SAM disk:** `PlusD::looksPlusD` = 819200-byte flat image whose directory
+  (tracks 0-3 side 0, type = byte 0 & 0x1F) has more Spectrum types (1-11) than SAM ones
+  (16+). F5 (OSDMain + OSDFile) sends those to `PlusD::launchDisk`: drive 1, Plus D on,
+  always a 128K (a 48K ran Monkey Island's intro and then reset: the game is 128K-only;
+  48K titles run from 128 BASIC too), reset, then types RUN (48K: R, Enter;
+  128K: Down + Enter = 128 BASIC, then r u n Enter), `PlusD::bootTick` from the frame tail.
+  The disk must carry the G+DOS system file (`+SYS`): the boot ROM says
+  `No "+SYS " file, 0:1` on a blank disk (expected, checked on the host).
+- `.pss`: PSPD (paging, #EF, drive, the 8K RAM) + PSSF per drive (SamFdc), applied after
+  the page-0 restore; Config key `plusd` is in kSnapRebootKeys ("Plus D").
+- Host bench 2026-11-25: 128K + Plus D + "The Secret of Monkey Island" (OutSoftware 2026,
+  3 x .mgt, Disc 1) — 128 BASIC, RUN: "SYSTEM" loads (+D ROM Ver 1.A), OutSoftware /
+  Lucasfilm intros, the Melee title and the credits play (frame 6000). Gameplay and disk
+  swaps not tried. 48K: G+DOS boot ROM, RUN on a blank disk gives the No "+SYS" error.
+- Cost (PICO_DV 4 MB, MinSizeRel, measured 2026-11-25 with the distro's arm-none-eabi GCC 13.2
+  + SDK 2.3.1, both trees re-linked with -DGSOVL_WIN_SIZE=40960: GCC 13 overflows .gsovl on
+  the BASE tree too, the project's 14.2 does not): .data +512 B (fetchOpcode +152,
+  PlusD::pageIn 104, exec_nocheck +88, Ports::input +84 / output +48, pageOut 20, two
+  flash veneers to portIn/portOut), .bss +32 B, flash +12 KB (8 KB ROM). Every `bl` to
+  pageIn from exec_nocheck / fetchOpcode targets 0x2002xxxx. Re-measure with 14.2.
+- Not done: printer output, the snapshot button as a hotkey (an NMI from the usual NMI
+  key reaches 0x0066 and pages G+DOS in), DISCiPLE (same G+DOS, other ports), UNI-DOS.

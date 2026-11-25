@@ -372,12 +372,14 @@ static void executeNext(uint8_t d) {
     }
 }
 
-uint8_t in(uint8_t d, uint16_t port) {
+uint8_t in(uint8_t d, uint16_t port) { return inReg(d, (uint8_t)(port & 3)); }
+
+uint8_t inReg(uint8_t d, uint8_t reg) {
     Regs& r = s_r[d & 1];
     Media* m = s_m[d & 1];
     if ((r.status & (BUSY | DRQ)) == BUSY) executeNext(d & 1);
 
-    switch (port & 3) {
+    switch (reg & 3) {
     default:
     case 0: {
         uint8_t st = r.status;
@@ -427,12 +429,31 @@ uint8_t in(uint8_t d, uint16_t port) {
 }
 
 void out(uint8_t d, uint16_t port, uint8_t v) {
+    s_r[d & 1].head = (uint8_t)((port >> 2) & 1);
+    outReg(d, (uint8_t)(port & 3), v);
+}
+
+void setSide(uint8_t d, uint8_t side) { s_r[d & 1].head = side & 1; }
+
+void shareRegs(uint8_t from, uint8_t to) {
+    from &= 1; to &= 1;
+    if (from == to) return;
+    const Regs& a = s_r[from];
+    Regs& b = s_r[to];
+    b.command = a.command; b.status = a.status; b.cyl = a.cyl; b.sector = a.sector;
+    b.data = a.data; b.dirOut = a.dirOut; b.state = a.state; b.dataStatus = a.dataStatus;
+    b.motorOff = a.motorOff;
+    b.pollsWithData = 0; b.bufPos = 0; b.bufLen = 0;
+    // A transfer cannot move to the other drive's buffer: end it as lost data.
+    if (b.status & (BUSY | DRQ)) { b.status = (uint8_t)((b.status & ~(BUSY | DRQ)) | LOST_DATA); b.state = 0; }
+}
+
+void outReg(uint8_t d, uint8_t reg, uint8_t v) {
     d &= 1;
     Regs& r = s_r[d];
     Media* m = s_m[d];
-    r.head = (uint8_t)((port >> 2) & 1);
 
-    switch (port & 3) {
+    switch (reg & 3) {
     case 0: {
         r.command = v;
         s_cmds++;

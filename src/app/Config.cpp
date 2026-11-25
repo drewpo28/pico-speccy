@@ -203,6 +203,7 @@ uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
 // image is not written to until the user says so.
 bool     Config::p3WP[2] = { true, true };
 string   Config::p3DiskFile[2] = { "", "" };
+uint8_t  Config::plusd = 0;
 bool     Config::samWP[2] = { false, false };
 string   Config::samDiskFile[2] = { "", "" };
 bool     Config::samKeepTmp = false;
@@ -1295,7 +1296,7 @@ void Config::loadDiskMounts() {
                 if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
                     std::string fn = s.substr(plen);
                     samDiskFile[i] = fn;
-                    if (!fn.empty() && Config::arch == A_SAM && FileUtils::waitVolumeReady(fn))
+                    if (!fn.empty() && (Config::arch == A_SAM || Config::plusd) && FileUtils::waitVolumeReady(fn))
                         SamFdc::mount(i, fn);
                 }
                 snprintf(prefix, sizeof(prefix), "epd%u.file=", (unsigned)i);
@@ -1762,6 +1763,7 @@ void Config::load() {
             }
         }
         nvs_get_u8("mb02", mb02, sts);
+        nvs_get_u8("plusd", plusd, sts);
         for (int i = 0; i < 4; i++) {
             char k[16]; snprintf(k, sizeof(k), "mb02d%d.wp", i);
             nvs_get_b(k, mb02WP[i], sts);
@@ -2259,6 +2261,7 @@ void Config::writeKeys(NvsWriter& buf) {
         nvs_set_str(buf, k, w);
     }
     nvs_set_u8(buf,"mb02", mb02);
+    nvs_set_u8(buf,"plusd", plusd);
     for (int i = 0; i < 4; i++) {
         char k[12]; snprintf(k, sizeof(k), "mb02d%d.wp", i);
         nvs_set_str(buf, k, mb02WP[i] ? "true" : "false");
@@ -2332,8 +2335,8 @@ void Config::writeKeys(NvsWriter& buf) {
                 if (Config::isPlus3())
                     p3DiskFile[i] = Plus3Fdc::fname(i);
                 persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
-                // SAM Coupe drives, the same rule.
-                if (Config::arch == A_SAM)
+                // SAM Coupe drives, the same rule (the Plus D drives are the same pair).
+                if (Config::arch == A_SAM || Config::plusd)
                     samDiskFile[i] = SamFdc::fname(i);
                 // A Web-catalog launch reaches the SAM through a reboot: the /tmp image
                 // has to come back for that one boot (Sam::launchDisk sets the flag,
@@ -2588,7 +2591,7 @@ static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",
     "Issue2", "timex_video", "ulaplus", "betadisk", "trdosBios", "mode16col_onoff",
     "esxdos", "esxdos_ver", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
-    "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
+    "mb02d2.file", "mb02d3.file", "plusd", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
     "ide_raw0", "ide_raw1", "ide_rwin0", "ide_rwin1",
     "esx_raw", "esx_rwin", "zc_rwin", "zc_img",
@@ -2628,6 +2631,7 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "esxdos_ver", "esxDOS ROM" },
         { "esxdos_hdf", "esxDOS image" },   { "esxdos_hd1", "esxDOS image" },
         { "mb02", "MB-02+" },               { "zcontroller", "Z-Controller" },
+        { "plusd", "Plus D" },
         { "byte_cobmect_mode", "Byte COBMECT" }, { "AluTiming", "ULA timing" },
         { "rtc_enabled", "CMOS + NVRAM" },  { "ide_scheme", "IDE interface" },
         { "ide_img0", "IDE image" },        { "ide_img1", "IDE image" },
