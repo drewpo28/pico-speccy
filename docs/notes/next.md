@@ -1567,3 +1567,38 @@ armed, the automap-reset gate open or nothing to reset; any doubt = the old path
 frame cpu 24.6-25.0 -> 23.6 ms (interp 22.4 -> 21.3); NextZXOS boot, Fluid + its save, card
 writes fine. `.nxovl` -200 B, `.data` +140 B. Left for the boot: writes into divMMC RAM and
 per-byte LDIRs through the generic accessors (host: `pclog ... | wlo` = writes below #4000 by 4K).
+
+## KS3 (Issue 5) board profile and NEXTEST-KS3 (2026-11-25, hw-confirmed DVp2w 2026-11-25)
+
+Issue 5 per the local VHDL (core 3.02.03, `zxnext_top_issue5.vhd`, nextreg.txt): NR 0x0F = 3,
+FPGA XC7A35T-2CSG324 (Issue 4: XC7A15T-1), same 256 Mbit flash; SRAM A21 wired (4 MB space,
+`zxnext.vhd` says "in config mode") and NR 0x04 takes all 8 bits (bit 7 ignored on Issues 2-4);
+NR 0x81 bit 3 = +3 FDC signals on the expansion bus. Distro 26.11a: core 3.03.03 for Issues 2/4/5,
+we still report 3.02.03.
+
+`extras/nextest/NEXTEST-KS3.nex` is the KS3 *factory* test, not the user NEXTEST 2.0A:
+- it streams from its own file by the name `KS3TEST.NEX` (the 2.0A build: `NEXTEST.NEX`), so
+  under any other name it should stop on FILE ERROR;
+- at start (#6003 `NEXTREG 3,7`) it re-enters config mode, then #6034 calls the routine at #74F8:
+  NR 0x04 = 0..255, writes the page number over each 16K page (= 4 MB), verifies, any mismatch ->
+  "4MB MEMORY TEST FAILED". Any 2 MB Next (KS1/KS2, and us: pages >= 128 are unbacked, writes
+  drop) fails there. It also overwrites config pages 0-5 (the ROM images): reset afterwards;
+- screen has XADC temperature (Temp/Min/Max, NR 0xF8-0xFA: we only store the registers), JOY1/
+  JOY2 with ABC buttons, no E-BUS line; NEX header byte 142 (expansion bus) = 0 (2.0A: 1).
+
+**Board profile done (2026-11-25, hw-confirmed DVp2w: KS3TEST runs):** Machine > Spectrum Next >
+Options > Board = KS1 / KS2 / KS3 (`Config::next_board`, NVS `next_board`, reboot-class, default
+KS1 = the old behaviour). `machines/Next/NextBoard.{h,cpp}`: NR 0x0F (0/2/3), NR 0x04 bit 7 masked
+below Issue 5, NR 0xF0 XDEV (select / DNA stream / XADC status) and 0xF8-0xFA XADC DRP on KS2/KS3
+(UG480 map: 0x00 temp from `chipTempX10`, 5 Hz, min/max tracked; rails nominal; 0x40-0x4F stored).
+KS3 carves 2 MB more butter PSRAM after the Next ROM region (`MemESP::nextCfgHi`, config pages
+0x80-0xFF; "NOT carved" log line when the budget is short). RAM +64 B, all code in flash.
+- **The bug that made the test stop on "SD CARD NOT READY" (all boards, fixed):** banks 5 and 7
+  are BRAM for the CPU (zxnext.vhd ~3038 `sram_pre_active = not bank5 and not bank7`); the config
+  window reaches the SRAM cells UNDER them, a separate 32 KB. We aliased config pages 0x15/0x17 to
+  the CPU's banks 5/7, so the 4 MB fill wrote 0x15 over the test's own variables in bank 5 (garbled
+  stop screen). Now `MemESP::nextSramB57` (32 KB in the Next carve, romExtra 15 -> 19 x 8K).
+- Bench: KS3TEST runs (SD0 streams, CRC/DMA/RAM PASS, Temp 27.1 = the host ADC stub); NEXTEST 2.0A
+  on KS1 unchanged. Recipe: card root with TBBLUE.FW, machines, nextzxos, sys, dot + `/KS3TEST.NEX`,
+  `next_board=2` in storage.nvs, `/tmp/next/.launch` = `N\n/KS3TEST.NEX` (NexLaunch pending file).
+  Test ELF `debug/DVp2w-ks3-1.1.4.elf`.

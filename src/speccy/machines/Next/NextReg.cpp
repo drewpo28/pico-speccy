@@ -23,6 +23,7 @@ pico-speccy: ZX Spectrum Next (TBBlue) NextReg register file
 #include "NextRtc.h"
 #include "NextInt.h"
 #include "NextMf.h"
+#include "NextBoard.h"
 #include "NextPorts.h"
 #include "speccy/devices/Z80DMA.h"
 #include "app/Debug.h"
@@ -743,6 +744,7 @@ void NextReg::reset(bool hard) {
     MemESP::applyNextConfigWindow();
     contendRecalc();
     NextRtc::reset();   // zxnext.vhd: i2c_scl_o / i2c_sda_o <= '1' on reset
+    NextBoard::reset(hard);   // NR 0xF0 soft reset = 0x80 (select mode)
 }
 
 // Raster line for reg 0x1E/0x1F and the line interrupt. Line 0 is the first
@@ -1025,8 +1027,9 @@ void NextReg::write(uint8_t r, uint8_t v) {
             reg[0x03] = reg03Compose();
             break;
         }
-        case 0x04: // Config-mode RAMPAGE: 16K page at 0x0000-0x3FFF
-            MemESP::nextConfigPage = v;
+        case 0x04: // Config-mode RAMPAGE: 16K page at 0x0000-0x3FFF; bit 7
+                   // only on Issue 5 (zxnext.vhd gen_romram_234 / gen_romram_5)
+            MemESP::nextConfigPage = NextBoard::issue5() ? v : (uint8_t)(v & 0x7F);
             MemESP::applyNextConfigWindow();
             break;
         case 0x0A: // zxnext.vhd 5191-5198: MF type (7:6) and SD swap (5) only in
@@ -1170,6 +1173,9 @@ void NextReg::write(uint8_t r, uint8_t v) {
             write1FFD((uint8_t)(((v >> 2) & 0x01) | ((v & 0x03) << 1)));
             break;
         }
+        case 0xF0: case 0xF8: case 0xF9: case 0xFA:   // XDEV / XADC (KS2/KS3)
+            NextBoard::write(r, v);
+            break;
         default:
             // Remaining registers are latched; video/sprite/palette consumers
             // read NextReg::reg[] directly as they are implemented.
@@ -1250,7 +1256,8 @@ uint8_t NextReg::read(uint8_t r) {
         // Read masks for the registers kept raw in reg[] (zxnext.vhd read mux
         // 5880-6290): bits a register does not hold read 0.
         case 0x0A: return reg[0x0A] & 0xFB;
-        case 0x0F: return reg[0x0F] & 0x0F;
+        case 0x0F: return NextBoard::boardId();   // Config::next_board (KS1/KS2/KS3)
+        case 0xF0: case 0xF9: case 0xFA: return NextBoard::read(r);
         case 0x11: return reg[0x11] & 0x07;
         case 0x12: case 0x13: return reg[r] & 0x7F;
         case 0x2F: return reg[0x2F] & 0x03;
@@ -1269,7 +1276,7 @@ uint8_t NextReg::read(uint8_t r) {
         case 0xA0: return reg[0xA0] & 0x39;
         case 0xA2: return (uint8_t)((reg[0xA2] & 0xDD) | 0x02);
         case 0xA8: return reg[0xA8] & 0x01;
-        case 0xF8: return reg[0xF8] & 0x7F;
+        case 0xF8: return NextBoard::read(0xF8);
         case 0x98: case 0x99: case 0x9A: case 0x9B:   // Pi GPIO inputs: no Pi
         case 0xA9:                                    // ESP GPIO inputs
         case 0xB2:                                    // MD extra buttons: none

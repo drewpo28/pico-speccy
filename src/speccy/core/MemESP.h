@@ -546,6 +546,11 @@ public:
     // Alt-ROM (nextreg 0x8C): two hidden 16K RAM banks that can replace the
     // machine ROM for reads or capture its writes (NextZXOS patches itself
     // through this). 32K carved right after the ROM region.
+    // KS3 (Issue 5, Config::next_board == 2): SRAM pages 0x80-0xFF (2..4 MB), reachable only
+    // through the config-mode NR 0x04 window. Null when the profile is off or the butter
+    // budget had no 2 MB left (the window then falls through as an unbacked page).
+    static uint8_t* nextCfgHi;
+    static uint8_t* nextSramB57;   // 32K: the SRAM cells under banks 5 and 7 (config window only)
     static uint8_t* altRomBase;      // 2 x 16K (bank 0 = 128k-style, 1 = 48k-style)
     static bool altrom_rd;           // reads of slots 0/1 come from alt-rom
     static bool altrom_wr;           // writes to slots 0/1 go into alt-rom

@@ -412,7 +412,10 @@ const char* romsetName(int32_t composite);
     X(SET_TFT_BRIGHT,     AC_LIVE,   F_PREVIEW,             get_tftBright,  put_tftBright, hook_tftBright, -1) \
     /* Additional hardware > Overclock > SD high speed (Config::sdHighSpeed): CMD6,    */ \
     /* live via sdcard_set_high_speed. Appended last per the APPEND ONLY rule.        */ \
-    X(SET_SD_HS,          AC_LIVE,   0,                     get_sdHs,       put_sdHs,      hook_sdHs,      -1)
+    X(SET_SD_HS,          AC_LIVE,   0,                     get_sdHs,       put_sdHs,      hook_sdHs,      -1) \
+    /* Machine > Spectrum Next options > Board (Config::next_board: KS1/KS2/KS3).    */ \
+    /* Reboot-class: KS3's extra 2 MB is carved in setup(). APPEND ONLY.             */ \
+    X(SET_NEXT_BOARD,     AC_REBOOT, 0,                     get_nextBoard,  put_nextBoard, nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

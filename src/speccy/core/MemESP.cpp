@@ -929,6 +929,8 @@ uint8_t* MemESP::nextRomBase = nullptr;
 uint8_t* MemESP::nextDivRomBase = nullptr;
 uint8_t  MemESP::next_rom_mask = 0;
 uint8_t* MemESP::altRomBase = nullptr;
+uint8_t* MemESP::nextCfgHi = nullptr;
+uint8_t* MemESP::nextSramB57 = nullptr;
 uint8_t* MemESP::mfRomBase = nullptr;
 uint8_t* MemESP::mfRamBase = nullptr;
 bool     MemESP::next_rom3 = false;
@@ -959,7 +961,8 @@ static constexpr OpenBusPage open_bus_page;
 // pages — so the carve can never eat DivMMC's banks, GS sample RAM or the
 // minimum arena.
 bool MemESP::buildNextRam() {
-    size_t romExtra = 15 * 0x2000;   // 64K ROM set + 8K MMC + 32K Alt-ROM + 16K Multiface
+    // 64K ROM set + 8K MMC + 32K Alt-ROM + 16K Multiface + 32K SRAM under banks 5/7
+    size_t romExtra = 19 * 0x2000;
     size_t needed = (size_t)(NEXT_PAGES - 16) * 0x2000 + romExtra;
     size_t used = (size_t)butter_pages * MEM_PG_SZ;
     if (Buffer::pageBudgetButter() < used + needed) return false;
@@ -978,7 +981,21 @@ bool MemESP::buildNextRam() {
     mfRomBase = nullptr;                          // set once enNextMf.rom is in
     mfRamBase = altRomBase + 0x8000 + 0x2000;     // Multiface RAM after its ROM
     memset(mfRamBase, 0, 0x2000);
-    butter_pages += (NEXT_PAGES - 16 + 15 + 1) / 2; // account in 16K units
+    nextSramB57 = mfRamBase + 0x2000;
+    memset(nextSramB57, 0, 0x8000);
+    butter_pages += (NEXT_PAGES - 16 + 19 + 1) / 2; // account in 16K units
+    // KS3: the upper 2 MB of the Issue 5 SRAM, after the ROM region. Best effort: without
+    // the room the machine still runs, only config pages 0x80-0xFF stay unbacked.
+    nextCfgHi = nullptr;
+    if (Config::next_board == 2) {
+        const size_t hi = (size_t)128 * MEM_PG_SZ;
+        const size_t at = (size_t)butter_pages * MEM_PG_SZ;
+        if (Buffer::pageBudgetButter() >= at + hi) {
+            nextCfgHi = (uint8_t*)PSRAM_DATA + at;
+            butter_pages += 128;
+        }
+        Debug::log("Next KS3: config SRAM 2-4 MB %s", nextCfgHi ? "carved" : "NOT carved (butter budget)");
+    }
     nextRamReady = true;
     return true;
 }
@@ -1407,10 +1424,19 @@ uint8_t* MemESP::configBackingHalf(uint8_t page, uint8_t half) {
         int bank = (page - 0x08) * 2 + half;     // divMMC 8K banks
         return (bank < DIVMMC_NUM_BANKS) ? DivMMC::bank_ptr[bank] : nullptr;
     }
+    // Banks 5 and 7 live in FPGA BRAM for the CPU, the ULA and the MMU
+    // (zxnext.vhd ~3038: sram_pre_active = not bank5 and not bank7); the config
+    // window addresses the SRAM chip itself, whose cells under those banks the
+    // CPU never sees. NEXTEST-KS3 fills all 4 MB through this window while it
+    // runs from bank 5 — aliasing them wiped its own variables.
+    if ((page == 0x15 || page == 0x17) && nextSramB57)
+        return nextSramB57 + (page == 0x17 ? 0x4000u : 0u) + (uint32_t)half * 0x2000;
     if (page >= 0x10 && page <= 0x7F) {
         int pg = (page - 0x10) * 2 + half;
         return nextPgPtr(pg);
     }
+    if (page >= 0x80 && nextCfgHi)               // KS3: SRAM 2-4 MB
+        return nextCfgHi + (uint32_t)(page - 0x80) * 0x4000 + (uint32_t)half * 0x2000;
     return nullptr;
 }
 

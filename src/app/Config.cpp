@@ -104,6 +104,7 @@ bool     Config::tsconf_vdac2 = false;
 bool     Config::tsconf_vdac2_smooth = false;
 bool     Config::tsconf_vdac2_adapt = true;
 uint8_t  Config::next_clk_cap = 3;     // nextreg 0x07 cap: none (28 MHz); no menu row, not loaded from NVS
+uint8_t  Config::next_board = 0;       // KS1 (Issue 2): the board id the emulator always reported
 bool     Config::rtc_enabled = false;
 uint8_t  Config::mouse_swap = 2;
 uint16_t Config::mouse_sens = 64;        // Q8: 64 = x1/4, the historical divisor
@@ -1637,6 +1638,7 @@ void Config::load() {
         nvs_get_b("tape_player", tape_player, sts);
         nvs_get_b("profi_ext_keys", profi_ext_keys, sts);
         nvs_get_b("next_ext_keys", next_ext_keys, sts);
+        { int nb = 0; nvs_get_i("next_board", nb, sts); next_board = (nb >= 0 && nb <= 2) ? (uint8_t)nb : 0; }
         bool b; nvs_get_b("real_player", b, sts);
 #if LOAD_WAV_PIO
         if (real_player && !b) {
@@ -2183,6 +2185,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"tape_player", tape_player ? "true" : "false");
     nvs_set_str(buf,"profi_ext_keys", profi_ext_keys ? "true" : "false");
     nvs_set_str(buf,"next_ext_keys", next_ext_keys ? "true" : "false");
+    nvs_set_i(buf,"next_board", next_board);
     nvs_set_str(buf,"real_player", real_player ? "true" : "false");
     nvs_set_str(buf,"rightSpace", rightSpace ? "true" : "false");
     nvs_set_str(buf,"wasd", wasd ? "true" : "false");

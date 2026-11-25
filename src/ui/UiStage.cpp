@@ -442,6 +442,8 @@ static bool    hook_tsconfClk(int32_t, int32_t) {
     if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
     return true;
 }
+static int32_t get_nextBoard()          { return (int32_t)Config::next_board; }
+static void    put_nextBoard(int32_t v) { Config::next_board = (uint8_t)v; }
 static int32_t get_nextClk()          { return (int32_t)Config::next_clk_cap; }
 static void    put_nextClk(int32_t v) { Config::next_clk_cap = (uint8_t)v; }
 static bool    hook_nextClk(int32_t, int32_t) {

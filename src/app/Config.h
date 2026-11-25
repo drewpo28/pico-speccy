@@ -244,6 +244,9 @@ public:
     // next_clk_cap bounds the guest's nextreg 0x07 speed (0/1/2/3 = 3.5/7/14/
     // 28 MHz). Fixed at 3 (no cap): the menu row is gone and it is not persisted.
     static uint8_t  next_clk_cap;
+    // Spectrum Next board (NextBoard.h): 0 = KS1 (Issue 2), 1 = KS2 (Issue 4),
+    // 2 = KS3 (Issue 5: +2 MB config-mode SRAM carved in buildNextRam). Reboot-class.
+    static uint8_t  next_board;
     // The page-strip length the NEXT boot of `a` needs. The single source for
     // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
     // boundary in requestMachine()/MachineSwitch::commit() — the two must

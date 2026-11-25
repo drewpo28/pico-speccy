@@ -651,6 +651,11 @@ static bool p_evoBaseActive() {
     return ((m >> 8) & 0xFF) == A_ATM && (m & 0xFF) == R_EVO_BASE;
 }
 
+static bool p_nextActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m < 0) return Config::arch == A_NEXT;
+    return ((m >> 8) & 0xFF) == A_NEXT;
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -969,6 +974,17 @@ static const Node kTsconf[] = {
     NM_BOOL (TXT_MACH_TSCONF_VDAC2_ADAPT, SET_TSCONF_VDAC2_ADAPT, nullptr),
 };
 
+// Spectrum Next board (NextBoard.h): the NR 0x0F id, XADC/DNA on the Artix boards,
+// and on KS3 the 4 MB config-mode SRAM (+2 MB butter PSRAM, carved at boot).
+static const Option opt_next_board[] = {
+    { "KS1 (Issue 2)", 0 },
+    { "KS2 (Issue 4)", 1 },
+    { "KS3 (Issue 5)", 2 },
+};
+static const Node kNext[] = {
+    NM_RADIO(TXT_MACH_NEXT_BOARD, SET_NEXT_BOARD, opt_next_board, nullptr),
+};
+
 static const Node kEvoBase[] = {
     NM_RADIO(TXT_MACH_EVO_RASTER, SET_EVO_RASTER, opt_evo_raster, nullptr),
 };
@@ -1020,6 +1036,7 @@ static const Node kMachine[] = {
     NM_SUB  (NM_IND TXT_MACH_OPTS, kTsconf, p_tsconfActive),
     NM_SUB  (NM_IND TXT_MACH_EVO_OPTS, kEvoBase, p_evoBaseActive),
     NM_RADIO(TXT_MACH_NEXT,  SET_MACHINE, opt_mach_next,  p_showNext),
+    NM_SUB  (NM_IND TXT_MACH_OPTS, kNext, p_nextActive),
     NM_RADIO(TXT_MACH_ELM,   SET_MACHINE, opt_mach_elm,   p_showElm),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
