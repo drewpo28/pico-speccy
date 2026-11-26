@@ -1397,6 +1397,12 @@ void ESPectrum::setup() {
     Debug::log("setup: Profi - DivMMC off");
     Config::esxdos = 0;
   }
+  // Quorum / Navigator / Hobbit: the same, a persisted esxDOS gave a dead boot
+  // (isNoEsxdosRomset, ArchRom.h).
+  if (isNoEsxdosRomset(Config::romSet) && Config::esxdos) {
+    Debug::log("setup: Quorum/Hobbit - DivMMC off");
+    Config::esxdos = 0;
+  }
 
   // ATM-Turbo: boot-time twin of the MachineSwitch / CPU::reset rules — DivMMC and MB-02+
   // would page over a BIOS that runs from all four windows, and the IDE scheme follows

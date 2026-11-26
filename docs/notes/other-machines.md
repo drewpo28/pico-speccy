@@ -648,6 +648,14 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
   hw-confirmed by the owner 2026-11-15 as well: Restart after an NMI from a live BASIC, disk work from the
   Navigator, booting a real disk image.
   With esxDOS (DivSD) enabled the machine never reaches the service menu (bench: esxDOS init loops) — turn it off.
+- **esxDOS is forced off on every Quorum, the Navigator and the PK Hobbit (2026-11-26, owner's decision; hw-confirmed DVp2w 2026-11-26,
+  owner "работает" on `debug/DVp2w-noesx-quorum-1.1.4`).** hw (owner) + bench: Quorum 128+ + esxDOS = black screen,
+  Navigator = its menu without esxDOS ever booting. Causes: the Quorum disk board decodes #E3 as the WD1793 DATA
+  register (`(port & 0x9C) == 0x80`, Unreal/ZXMAK2 mask, i.e. the hardware) ahead of DivMMC, so esxDOS never pages;
+  window 0 is `Quorum::remap`'s / Hobbit's and `check_trdos` returns for them before the `DivMMC::enabled` branch;
+  Quorum's NMI ack clears #00; the Hobbit takes an NMI into SHADOW-A #0066 on every IN (#FE) — an automap entry.
+  `isNoEsxdosRomset` (ArchRom.h) drives the Devices row (`p_esxRow`), `resolveConstraints`, MachineSwitch,
+  `ESPectrum::setup` and the machine description ("Turns off: esxDOS"). Not to be re-proposed (same as Profi).
 
 ## eLeMeNt ZX (A_ELM, 2026-11-01, phase 0, hw-confirmed DVp2w: boots, owner "загрузилось", not itemised)
 

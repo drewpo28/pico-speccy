@@ -89,6 +89,11 @@ static const MachFx* machineFx(ArchIdx a, RomsetIdx r) {
     if (a == A_KARABAS || (a == A_PROFI && isKarabasRomset(r)))
         return butter ? &kKarab : &kKarabN;
     if (a == A_PROFI) return butter ? &kProfi : &kProfiN;
+    // Quorum family / Navigator (romsets of A_PENT), Quorum 64 / Hobbit (A_48K, Beta
+    // forced on by CPU::reset): esxDOS off (isNoEsxdosRomset).
+    static const MachFx kBetaEsx = { { "Betadisk" }, { "MB-02+, esxDOS" } };
+    static const MachFx kEsxOff  = { { "Betadisk" }, { "esxDOS" } };
+    if (isNoEsxdosRomset(r)) return a == A_PENT ? &kBetaEsx : &kEsxOff;
     if (a == A_PENT || a == A_P512 || a == A_P1024) return &kBeta;
     if (a == A_SCORP) {
         if (isScorpEvoRomset(r)) return &kZcBeta;

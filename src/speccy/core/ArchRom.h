@@ -261,6 +261,15 @@ inline uint8_t quorumRamPages(RomsetIdx r) {
 // dumps are in the tree but not built (tools/rom_pack.py HOBBIT_IMAGES).
 // Appended at the END of the table (Pss writes the index).
 inline bool isHobbitRomset(RomsetIdx r) { return r >= R_48K_HBMAIN && r <= R_48K_HBFORTH; }
+// No esxDOS (DivMMC/DivIDE/DivSD) on the Quorum family (Navigator included) and the
+// Hobbit: their machine module owns window 0 (Quorum::remap / Hobbit) and check_trdos
+// leaves before the DivMMC branch, the Quorum disk board decodes #E3 as the WD1793
+// DATA register ((port & 0x9C) == 0x80, ahead of DivMMC), Quorum's NMI clears #00 and
+// the Hobbit takes an NMI on every IN (#FE) into SHADOW-A #0066 — the automap's entry.
+// hw 2026-11-26 (owner): Quorum / Navigator + esxDOS do not start.
+inline bool isNoEsxdosRomset(RomsetIdx r) {
+    return isQuorum64Romset(r) || isQuorum128Romset(r) || isHobbitRomset(r);
+}
 
 // "Is the GMX firmware live?" — one romset today (ProfRom GMX v5.44), but the question
 // is asked from a dozen places (CPU::reset's g_scorp_gmx, the butter/traded fallbacks

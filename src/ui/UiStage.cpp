@@ -1106,6 +1106,10 @@ static bool stagedIsPlus3Div() {
     if (m >= 0) return isPlus3DivRomset((RomsetIdx)(m & 0xFF));
     return Config::isPlus3Div();
 }
+static bool stagedIsNoEsxdos() {
+    const int32_t m = staged(SET_MACHINE);
+    return isNoEsxdosRomset(m >= 0 ? (RomsetIdx)(m & 0xFF) : Config::romSet);
+}
 static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
 static bool stagedIsAtm()    { return stagedArchIs(A_ATM); }
 static bool stagedIsTimex() {
@@ -1243,6 +1247,10 @@ static void resolveConstraints(CommitReport& rep) {
         // staged esxDOS the Devices menu no longer shows on Profi.
         if (staged(SET_ESXDOS) && stagedIsProfi())
             changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on Profi");
+        // Quorum family / Navigator / Hobbit: window 0 is the machine module's, #E3 is
+        // Quorum's WD1793 (isNoEsxdosRomset, ArchRom.h).
+        if (staged(SET_ESXDOS) && stagedIsNoEsxdos())
+            changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on this machine");
 
         // The +3 has no Beta Disk (its FDC is the uPD765 on #2FFD/#3FFD) and no SCLD;
         // both claim ports the +3 uses, and Beta's 0x3D00 trap would fire inside the

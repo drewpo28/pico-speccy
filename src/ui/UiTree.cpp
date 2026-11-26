@@ -1281,7 +1281,7 @@ static bool p_esxRow() {
     if (!p_hasSD()) return false;
     if (a == A_NEXT || a == A_ELM) return true;
     return !devOwnBus() && !devProfi() && !p_plus3On() &&
-           a != A_TSCONF && a != A_ATM;
+           a != A_TSCONF && a != A_ATM && !isNoEsxdosRomset(devRomset());
 }
 // The eLeMeNt's "divSD + MB02+" (SetUp e_zxi_001 = 02): the card's 512 KB come from
 // butter PSRAM there, not from the URAM strip (MB02::setExternalRam), so its row shows.

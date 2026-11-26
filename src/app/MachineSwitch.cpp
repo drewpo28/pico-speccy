@@ -410,7 +410,9 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // (Profi forces ~80 KB of SRAM pages and OOMs otherwise).
         // ATM: its memory manager can put RAM or ROM in any window and its BIOS
         // runs from all four at reset — DivMMC's automap would page over it.
-        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF || Config::arch == A_ATM || Config::arch == A_SAM || Config::arch == A_ENT) && Config::esxdos) {
+        // Quorum / Navigator / Hobbit: isNoEsxdosRomset (ArchRom.h).
+        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF || Config::arch == A_ATM || Config::arch == A_SAM || Config::arch == A_ENT ||
+             isNoEsxdosRomset(Config::romSet)) && Config::esxdos) {
             Config::esxdos = 0;
             DivMMC::init();   // teardown path frees buffers
             OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);
