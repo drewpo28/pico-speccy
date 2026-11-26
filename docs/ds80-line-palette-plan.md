@@ -91,6 +91,17 @@ checksum.
 Timed shows the Palette Test's h/v-blank output (14 rows on top, ~56 px on the right): real.
 Build `debug/DVp2w-lpal-1.1.4` 14:4x, hw owed: the three modes, mcprofi2016, F8 box over DS80.
 
+## VGA (2026-11-26, hw-confirmed m1p2 2026-11-26; builds `debug/m1p2-lpal-{16MB,4MB}-1.1.4`)
+
+vga.c: the pair table is read by the line ISR at RENDER time (one line ahead, the DMA plays
+finished pixels), so no second set and no page switch: `vga_lpal_row(y)` runs before the
+render of every line, applies fb row y's entries to its running palette once per row
+(base at the first row of a frame, detected by y going down) and re-encodes changed cells
+in place for both Bayer parities, max 6 a row. Pairs built by RAM copies of vga_bayer4 /
+vga_make_pair / vga_pwm_word (GCC outlined the header's vga_pwm_word into flash): narrow,
+PWM and wide-flat. Refused with the CRT mask on and in the big x2/x3/x4 modes.
+`vga_lpal_row` 1.9 KB RAM (cell encoder inlined), no bl out of RAM.
+
 ## Hw check: DONE 2026-11-26 (owner, DVp2w: "проверено на железе")
 
 Everything below was on the owner's list for that run; kept as the record of what it covered.

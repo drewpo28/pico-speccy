@@ -140,7 +140,7 @@ static void vga_flags_init(void) {
 // entry, never per pixel.
 typedef struct { uint32_t w[2]; uint16_t flat; } vga_pairv_t;
 
-static inline void vga_pal_put(void *arr, unsigned i, vga_pairv_t v) {
+static inline __attribute__((always_inline)) void vga_pal_put(void *arr, unsigned i, vga_pairv_t v) {
     if (vga_wide) {
         uint32_t *d = (uint32_t *)arr + 2u * i;
         d[0] = v.w[0]; d[1] = v.w[1];
@@ -426,6 +426,11 @@ static void vga_pio_set_pixel_clk(uint32_t pixel_hz) {
 }
 #endif
 
+static volatile bool vga_lpal_on = false;
+static void __attribute__((noinline)) vga_lpal_row(int y);
+static uint32_t vga_lp_pal_last[16];            // tentative: defined with the row palette
+static const uint8_t *vga_lp_pair_lut;
+
 void __time_critical_func() dma_handler_VGA() {
     dma_hw->ints0 = 1u << dma_chan_ctrl;
 #if VGA_HSTX && HDMI_HSTX_TRACE
@@ -684,6 +689,10 @@ if (!text_buffer) return;
 
     int width = MIN((visible_line_size - ((graphics_buffer_shift_x > 0) ? (graphics_buffer_shift_x) : 0)), max_width);
     if (width < 0) return; // TODO: detect a case
+
+    // DS80 row palette: the pair table is read here, at render time (the DMA plays a
+    // finished line), so row y's colours go into it in place, before its first line.
+    if (vga_lpal_on && profi_ds80_active) vga_lpal_row(y);
 
     // Индекс палитры в зависимости от настроек чередования строк и кадров
 ///    uint16_t* current_palette = palette[(y & is_flash_line) + (frame_number & is_flash_frame) & 1];
@@ -1087,7 +1096,7 @@ static uint32_t dim_rgb888(uint32_t color888) {
 // while the PWM one gets the COLOURS and spreads each over four sub-samples — no
 // dither, no 4-level grid, and no need for the solid / grid-snap fork the 16 flat
 // ZX colours have always needed.  Runs per palette entry, never per pixel.
-static inline vga_pairv_t vga_make_pair(uint32_t c_lo, uint32_t c_hi,
+static inline __attribute__((always_inline)) vga_pairv_t vga_make_pair(uint32_t c_lo, uint32_t c_hi,
                                         uint8_t lo, uint8_t hi) {
     const uint8_t sync = (uint8_t)(palette16_mask & 0xff);
     vga_pairv_t v;
@@ -1205,19 +1214,189 @@ void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
 //   The even-line pair is low(even_x,even_y)/high(odd_x,even_y), the odd-line one
 //   low(even_x,odd_y)/high(odd_x,odd_y) — Bayer positions 0/1 and 2/3 of vga_bayer4(),
 //   packed by vga_pack_pair().
-// DS80 row palette (graphics.h): not on VGA yet — the pair colours come from
-// vga_crt_subpixels (dither, grille), which the line ISR cannot call. The render is
-// line-ahead here, so it is race-free once a RAM-side colour cache exists (owed).
-// Refusing keeps the per-frame palette.
-bool vga_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
-    (void)rows; (void)cnt; (void)nrows;
-    return !on;
+// ============================================================
+// DS80 palette per fb row (graphics.h, docs/ds80-line-palette-plan.md).
+// Unlike HDMI, the VGA pair table is read by the line ISR when it RENDERS a line
+// (one line ahead; the DMA plays finished pixels), so there is no scanout race and
+// no second table set: before the first output line of fb row y the ISR applies the
+// row's entries to its running palette and re-encodes the cells that changed, in
+// place, for both Bayer parities. A pair is built by the same vga_make_pair as the
+// whole-table path (narrow dither, PWM and wide-flat alike). Off: CRT mask (phase B
+// tables), the big x2/x3/x4 modes (their own render path).
+// ============================================================
+typedef struct {
+    uint16_t owner[256];      // (ink << 4) | paper that wrote the slot, 0xFFFF = none
+    uint32_t cur[16];         // the colours the table holds
+    uint32_t run[16];         // the palette of the row being rendered
+    uint8_t  sub[16][4];      // Bayer 2x2 6-bit samples of cur[] (narrow pairs)
+    int      last_y;          // last fb row applied (-1 = none this frame)
+} vga_lp_state_t;
+
+static vga_lp_state_t *vga_lp = NULL;
+static const uint16_t *volatile vga_lp_rows = NULL;
+static const uint8_t *volatile vga_lp_cnt = NULL;
+static volatile int vga_lp_n = 0;
+static uint32_t vga_lp_base[2][16];
+static volatile uint8_t vga_lp_base_ix = 0;
+
+// Profi 3-bit level -> 8 bits {0,43,85,128,170,213,255,255}, as arithmetic (no flash table).
+static inline __attribute__((always_inline)) uint32_t vga_lp_lv(uint32_t v) {
+    const uint32_t x = (v * 85u + 1u) >> 1;
+    return x > 255u ? 255u : x;
 }
-void vga_lpal_base(const uint32_t *pal) { (void)pal; }
+
+// vga_bayer4, RAM copy for the ISR (the flash one is for the palette setters).
+static inline __attribute__((always_inline)) void vga_lp_bayer4(uint32_t c, uint8_t p[4]) {
+    const uint32_t rl = ((c >> 16) & 0xff) / 21, gl = ((c >> 8) & 0xff) / 21, bl = (c & 0xff) / 21;
+    const uint32_t r0 = rl >> 2, rs = rl & 3, r1 = r0 + (r0 < 3 && rs);
+    const uint32_t g0 = gl >> 2, gs = gl & 3, g1 = g0 + (g0 < 3 && gs);
+    const uint32_t b0 = bl >> 2, bs = bl & 3, b1 = b0 + (b0 < 3 && bs);
+    p[0] = (uint8_t)(((rs >= 1 ? r1 : r0) << 4) | ((gs >= 1 ? g1 : g0) << 2) | (bs >= 1 ? b1 : b0));
+    p[1] = (uint8_t)(((rs >= 3 ? r1 : r0) << 4) | ((gs >= 3 ? g1 : g0) << 2) | (bs >= 3 ? b1 : b0));
+    p[2] = (uint8_t)((r0 << 4) | (g0 << 2) | b0);
+    p[3] = (uint8_t)(((rs >= 2 ? r1 : r0) << 4) | ((gs >= 2 ? g1 : g0) << 2) | (bs >= 2 ? b1 : b0));
+}
+
+// vga_pwm_word, RAM copy: GCC outlines the header's into flash, and this runs in the ISR.
+static inline __attribute__((always_inline)) uint32_t vga_lp_pwm_word(uint32_t rgb888, uint8_t sync) {
+    const vga_pwm_tab_t *t = vga_pwm_tab;
+    const uint8_t *r = t->ph[(rgb888 >> 16) & 0xff];
+    const uint8_t *g = t->ph[(rgb888 >>  8) & 0xff];
+    const uint8_t *b = t->ph[ rgb888        & 0xff];
+    uint32_t w = 0;
+    for (int i = 0; i < VGA_PWM_PHASES; i++)
+        w |= ((uint32_t)((r[i] << 4) | (g[i] << 2) | b[i]) | (uint32_t)(sync & VGA_PWM_SYNC_MASK)) << (8 * i);
+    return w;
+}
+
+// vga_make_pair + vga_pal_put for one slot, RAM-resident (same three shapes).
+static inline __attribute__((always_inline)) void vga_lp_store(void *row, uint8_t slot, uint32_t c_lo,
+                                                               uint32_t c_hi, uint8_t lo, uint8_t hi) {
+    const uint8_t sync = (uint8_t)(palette16_mask & 0xff);
+    if (!vga_wide) {
+        ((uint16_t *)row)[slot] = (uint16_t)((((uint16_t)hi << 8) | lo) & 0x3f3f) | palette16_mask;
+        return;
+    }
+    uint32_t *d = (uint32_t *)row + 2u * slot;
+    if (vga_pwm_live) {
+        d[0] = vga_pwm_rotr(vga_lp_pwm_word(c_lo, sync), 8 * vga_pwm_phase);
+        d[1] = vga_pwm_rotr(vga_lp_pwm_word(c_hi, sync), 8 * vga_pwm_phase);
+    } else {
+        d[0] = vga_pwm_flat_word((uint8_t)((lo & 0x3f) | sync));
+        d[1] = vga_pwm_flat_word((uint8_t)((hi & 0x3f) | sync));
+    }
+}
+
+// The pair (ink, paper) into slot, both parities — vga_set_profi_ds80_mode's formula.
+static inline __attribute__((always_inline)) void vga_lp_put(vga_lp_state_t *st, uint8_t slot, int ink, int pap) {
+    vga_lp_store(pal_row(palette_vga_ds80, 0), slot, st->cur[ink], st->cur[pap], st->sub[ink][0], st->sub[pap][1]);
+    vga_lp_store(pal_row(palette_vga_ds80, 1), slot, st->cur[ink], st->cur[pap], st->sub[ink][2], st->sub[pap][3]);
+}
+
+static void __not_in_flash_func(vga_lp_cell)(vga_lp_state_t *st, int c, uint32_t rgb) {
+    st->cur[c] = rgb;
+    vga_lp_bayer4(rgb, st->sub[c]);
+    const uint8_t *lut = vga_lp_pair_lut;
+    for (int p = 0; p < 16; p++) {
+        const uint8_t slot = lut[c * 16 + p];
+        if (st->owner[slot] == (uint16_t)(c << 4 | p)) vga_lp_put(st, slot, c, p);
+    }
+    for (int i = 0; i < 16; i++) {
+        if (i == c) continue;
+        const uint8_t slot = lut[i * 16 + c];
+        if (st->owner[slot] == (uint16_t)(i << 4 | c)) vga_lp_put(st, slot, i, c);
+    }
+}
+
+// From the line ISR before it renders fb row y (every output line; the second line
+// of a row returns at once).
+static void __attribute__((noinline)) __not_in_flash_func(vga_lpal_row)(int y) {
+    vga_lp_state_t *st = vga_lp;
+    if (!st || y == st->last_y) return;
+    int r = st->last_y + 1;
+    if (y < st->last_y || st->last_y < 0) {          // a new frame: from the base
+        const uint32_t *b = vga_lp_base[vga_lp_base_ix & 1];
+        for (int i = 0; i < 16; i++) st->run[i] = b[i];
+        r = 0;
+    }
+    const uint16_t *tab = vga_lp_rows;
+    const uint8_t *cnt = vga_lp_cnt;
+    const int n = vga_lp_n;
+    for (; r <= y; r++) {
+        if (!tab || !cnt || r >= n) break;
+        int k = cnt[r];
+        if (k > LPAL_K) k = LPAL_K;
+        for (int j = 0; j < k; j++) {
+            const uint16_t e = tab[r * LPAL_K + j];
+            st->run[(e >> 9) & 15] = (vga_lp_lv((e >> 3) & 7) << 16)
+                                   | (vga_lp_lv((e >> 6) & 7) << 8) | vga_lp_lv(e & 7);
+        }
+    }
+    st->last_y = y;
+    // At most 6 cells a row: a whole-palette swap in one row would stretch this
+    // line's ISR; the rest follow on the next rows (each compares the whole palette).
+    int budget = 6;
+    for (int c = 0; c < 16 && budget; c++)
+        if (st->run[c] != st->cur[c]) { vga_lp_cell(st, c, st->run[c]); budget--; }
+}
+
+bool vga_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
+    if (!on) {
+        if (!vga_lpal_on) return true;
+        vga_lpal_on = false;
+        // Let an ISR inside vga_lpal_row finish (it runs once per line).
+        const uint32_t l0 = vga_current_line, t0 = time_us_32();
+        while (vga_current_line == l0 && time_us_32() - t0 < 2000) tight_loop_contents();
+        const uint32_t l1 = vga_current_line;
+        while (vga_current_line == l1 && time_us_32() - t0 < 2000) tight_loop_contents();
+        vga_lp_rows = NULL; vga_lp_cnt = NULL; vga_lp_n = 0;
+        free(vga_lp); vga_lp = NULL;
+        return true;
+    }
+    if (vga_lpal_on) return true;
+    if (!profi_ds80_active || !vga_lp_pair_lut || !rows || !cnt || nrows <= 0
+        || !palette_vga_ds80 || vga_crt_level || vga_crt_phaseb || vga_big_scale)
+        return false;
+    extern void* tryMalloc(size_t n);
+    vga_lp_state_t *st = (vga_lp_state_t *)tryMalloc(sizeof *st);
+    if (!st) return false;
+    for (int i = 0; i < 256; i++) st->owner[i] = 0xFFFF;
+    for (int ink = 0; ink < 16; ink++)
+        for (int paper = 0; paper < 16; paper++) {
+            const uint8_t slot = vga_lp_pair_lut[ink * 16 + paper];
+            if (st->owner[slot] == 0xFFFF) st->owner[slot] = (uint16_t)(ink << 4 | paper);
+        }
+    for (int i = 0; i < 16; i++) {
+        st->cur[i] = st->run[i] = vga_lp_base[0][i] = vga_lp_base[1][i] = vga_lp_pal_last[i];
+        vga_lp_bayer4(st->cur[i], st->sub[i]);
+    }
+    st->last_y = -1;
+    vga_lp_rows = rows; vga_lp_cnt = cnt; vga_lp_n = nrows;
+    vga_lp = st;
+    __dmb();
+    vga_lpal_on = true;
+    return true;
+}
+
+void vga_lpal_base(const uint32_t *pal) {
+    if (!pal) return;
+    const uint8_t ix = (uint8_t)((vga_lp_base_ix & 1) ^ 1);
+    for (int i = 0; i < 16; i++) vga_lp_base[ix][i] = pal[i] & 0x00ffffff;
+    __dmb();
+    vga_lp_base_ix = ix;
+}
 
 void vga_set_profi_ds80_mode(bool active,
                               const uint32_t *palette16_rgb888,
                               const uint8_t  *pair_lut) {
+    // The row palette owns the pair table; a whole-table write takes it back.
+    if (vga_lpal_on) vga_lpal_enable(false, NULL, NULL, 0);
+    if (active && palette16_rgb888 && pair_lut) {
+        for (int i = 0; i < 16; i++) vga_lp_pal_last[i] = palette16_rgb888[i] & 0x00ffffff;
+        vga_lp_pair_lut = pair_lut;
+    } else if (!active) {
+        vga_lp_pair_lut = NULL;
+    }
     if (active && palette16_rgb888 && pair_lut && vga_buffers_ready()) {
         // Dithered VGA pixel values for each of 16 Profi colors.
         uint8_t vga_even_left[16];   // even scan-line, left  pixel (even screen x)
