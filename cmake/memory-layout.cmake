@@ -665,6 +665,53 @@ message(STATUS "Code overlays: .nxovl ${NXOVL_WIN_SIZE_EFFECTIVE} B, .elmovl ${E
 # installed" instead of a build failure. Raise it to 1632 to get the old wall back.
 set(GM_BANK_MIN_KB 0 CACHE STRING "Minimum GM.DLS bank region, KB (rp2350-memmap.ld __gm_bank_min)")
 message(STATUS "GM.DLS bank region: >= ${GM_BANK_MIN_KB} KB (dynamic: firmware end .. top of flash)")
+# The HARD floor (rp2350-memmap.ld __gm_bank_hard_min): a stock gm.dls (1632 KB) must
+# fit even after the ROM trade. Off for the 4 MB stock-W image (Raspberry Pi Pico 2 W,
+# owner 2026-11-26): the radio stack does not fit above it, and with no PSRAM on that
+# module a GM.DLS bank is simply refused at runtime when the tail is too small.
+#
+# PSRAMROMS_ABSENT (same image): removing the floor alone was not enough — the image
+# overflowed 4 MB by 229 KB (2026-11-26). So .psramroms (GMX/ATM/ProfROM/ScorpEvo/EP/
+# SAM/TS-BIOS/NeoGS ROMs, esxDOS 0.8.9, the player, FT812 code: ~1.43 MB) is linked
+# NOLOAD at a dummy address and is NOT in the UF2 (its CODE part — player, libxmp,
+# FT812, ~210 KB — stays in FLASH as .psramcode: ld puts linker stubs into a code
+# section, which turns NOLOAD back into PROGBITS, and a UF2 block at 0x104xxxxx would
+# wrap onto the firmware on a 4 MB chip), and FlashRoms::intact() is false
+# for good: the board boots in the "traded" state every no-PSRAM board can already be
+# in (every consumer gates on FlashRoms::romsUsable()), and the whole flash tail above
+# the firmware is the GM.DLS window. Lost on a Pico 2 W versus a plain 4 MB board:
+# Enterprise, ProfROM/ScorpEvo (fall back to ZS-1024), esxDOS 0.8.9; the rest needs
+# butter PSRAM, which a Pico 2 W does not have.
+set(PSRAMROMS_ABSENT 0)
+set(PSRAMROMS_NOLOAD "")
+set(PSRAMROMS_REGION "FLASH =0xaa")
+set(PSRAMROMS_START_SYM "__psramrom_start = ADDR(.psramroms);")
+set(PSRAMROMS_ABSENT_SYMS "")
+set(PSRAMROMS_EXTRA_MEMORY "")
+if(PICOSPECCY_WIFI AND NOT PICOSPECCY_WIFI_WS AND NOT FLASH_16MB)
+    set(GM_BANK_HARD_MIN_KB 0)
+    set(PSRAMROMS_ABSENT 1)
+    set(PSRAMROMS_NOLOAD "(NOLOAD)")
+    # In the CS0 XIP window above 4 MB: a 4 MB chip mirrors there, so a stray read
+    # returns flash bytes instead of faulting — the same "garbage, never a fault" a
+    # traded range gives. Nothing is ever programmed here.
+    set(PSRAMROMS_REGION "PSRAMROM_VOID")
+    set(PSRAMROMS_EXTRA_MEMORY "PSRAMROM_VOID(r)          : ORIGIN = 0x10400000, LENGTH = 12M")
+    set(PSRAMROMS_START_SYM "")
+    # .ftovl's load image (if any) is the last thing in FLASH; the "traded" window
+    # starts on the next 4 KB boundary. 4 KB of nominal region keeps regionSize() >= 16.
+    if(VDAC2_CODE_OVERLAY)
+        string(REPLACE "__psramrom_end =" "__psramrom_lma_end =" FTOVL_SECTION "${FTOVL_SECTION}")
+    else()
+        set(FTOVL_SECTION "${FTOVL_SECTION}    __psramrom_lma_end = ADDR(.psramcode) + SIZEOF(.psramcode);\n")
+        string(REPLACE "    __psramrom_end = ADDR(.psramroms) + SIZEOF(.psramroms);\n" "" FTOVL_SECTION "${FTOVL_SECTION}")
+    endif()
+    set(PSRAMROMS_ABSENT_SYMS "__psramrom_start = ALIGN(__psramrom_lma_end, 4096);\n    __psramrom_end = __psramrom_start + 4096;")
+else()
+    set(GM_BANK_HARD_MIN_KB 1632)
+endif()
+target_compile_definitions(${PROJECT_NAME} PRIVATE PSRAMROMS_ABSENT=${PSRAMROMS_ABSENT})
+message(STATUS "GM.DLS hard floor: ${GM_BANK_HARD_MIN_KB} KB, .psramroms ${PSRAMROMS_REGION}")
 
 # Pico-Zx-Player code (src/player/Player* + libxmp, ~177 KB) lives in .psramroms with the
 # butter-only ROMs: the player needs butter PSRAM, so a board that trades that range can
@@ -683,6 +730,12 @@ set(PSRAMROM_CODE_KEEP "")
 foreach(_pat IN LISTS PSRAMROM_CODE_OBJECTS)
     string(APPEND PSRAMROM_CODE_KEEP "${_pat}(.text* .rodata*) ")   # no KEEP: gc-sections must still drop dead libxmp code
 endforeach()
+# PSRAMROMS_ABSENT (above): the code goes to an ordinary FLASH section of its own.
+set(PSRAMCODE_SECTION "")
+if(PSRAMROMS_ABSENT)
+    set(PSRAMCODE_SECTION ".psramcode : ALIGN(4) { ${PSRAMROM_CODE_KEEP} . = ALIGN(4); } > FLASH")
+    set(PSRAMROM_CODE_KEEP "")
+endif()
 
 if (PICOSPECCY_WIFI)
     set(BT_FLASH_RESERVE 12288)   # BTstack flash bank: 2 x 4 KB + the RP2350 top sector

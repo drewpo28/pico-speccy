@@ -40,14 +40,18 @@ module plugged into the carrier):
 | Murmulator 2.0 + Pimoroni Pico Plus 2 W | RP2350B + CYW43439 | `-DMURM2_W=ON` | `m2p2w-speccy-VGA-HDMI-16MB-<ver>.uf2`, `-VGA-HDMI-HSTX-16MB-` |
 | Pico DV Demo Base + Pimoroni Pico Plus 2 W | RP2350B + CYW43439 | `-DPICO_DV_W=ON` | `DVp2w-speccy-VGA-HDMI-16MB-<ver>.uf2` |
 | Olimex PICO-PC + Pimoroni Pico Plus 2 W | RP2350B + CYW43439 | `-DPICO_PC_W=ON` | `PCp2w-speccy-VGA-HDMI-16MB-<ver>.uf2`, `-VGA-HDMI-HSTX-16MB-` |
+| Murmulator 1.x / 2.0, Pico DV, Olimex PICO-PC + Raspberry Pi Pico 2 W | RP2350A + CYW43439 | same `*_W` option, `-DFLASH_16MB=OFF` | `m1p2w`/`m2p2w`/`DVp2w`/`PCp2w-speccy-...-4MB-<ver>.uf2` |
 | Murmulator 1.x + Waveshare RP2350B-Plus-W | RP2350B + CYW43439 | `-DMURM_WS=ON` | `m1p2ws-speccy-VGA-HDMI-16MB-<ver>.uf2` |
 | Murmulator 2.0 + Waveshare RP2350B-Plus-W | RP2350B + CYW43439 | `-DMURM2_WS=ON` | `m2p2ws-speccy-VGA-HDMI-16MB-<ver>.uf2`, `-VGA-HDMI-HSTX-16MB-` |
 | Pico DV Demo Base + Waveshare RP2350B-Plus-W | RP2350B + CYW43439 | `-DPICO_DV_WS=ON` | `DVp2ws-speccy-VGA-HDMI-16MB-<ver>.uf2` |
 | Olimex PICO-PC + Waveshare RP2350B-Plus-W | RP2350B + CYW43439 | `-DPICO_PC_WS=ON` | `PCp2ws-speccy-VGA-HDMI-16MB-<ver>.uf2`, `-VGA-HDMI-HSTX-16MB-` |
 
 `*p2w` and `*p2ws` images are NOT interchangeable: the two W modules wire the radio,
-audio and LED to different pins. A `*p2w` image needs 16 MB of flash, so a plain 4 MB
-Raspberry Pi Pico 2 W is not supported.
+audio and LED to different pins. A `*p2w` image comes in two flash types: `-16MB` for
+the Pimoroni Pico Plus 2 W and `-4MB` for the Raspberry Pi Pico 2 W. The Pico 2 W has
+no PSRAM and its 4 MB image leaves out the PSRAM-only ROM set to fit the radio stack:
+no Enterprise, ProfROM/ScorpEvo (Scorpion falls back to ZS-1024), esxDOS 0.8.9, and
+a GM.DLS bank must fit the ~1 MB of flash above the firmware.
 
 Every board without WiFi ships in two flash types: the plain image for a 4 MB module
 (Raspberry Pi Pico 2, Waveshare RP2350-PiZero...) and a `-16MB` one
@@ -55,7 +59,7 @@ Every board without WiFi ships in two flash types: the plain image for a 4 MB mo
 as the Pimoroni Pico Plus 2. The 16 MB image has the ZXM-MoonSound card's 2 MB
 YRW801 ROM built in (the 4 MB image reads it from `/pico-speccy/roms/yrw801.rom` on
 the SD card) and a much bigger GM.DLS bank region. A 16 MB image does not fit a 4 MB
-module. The `*p2w` / `*p2ws` images are 16 MB only (hence their `-16MB` tag).
+module. The `*p2ws` images are 16 MB only; `*p2w` has both types.
 
 ## Features
 
@@ -363,7 +367,7 @@ Your filesystem tree must be look like:
 | `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC carrier board |
 | `-DPICO_DV=ON` | Build for Pimoroni Pico DV Demo Base |
 | `-DZERO2=ON` | Build for Waveshare RP2350-PiZero |
-| `-DFLASH_16MB=ON` | 16 MB flash type of the board (`-16MB` in the file name): embeds the ZXM-MoonSound YRW801 ROM (the 4 MB image reads it from SD). Default OFF = the 4 MB image; the W/WS boards turn it on themselves. |
+| `-DFLASH_16MB=ON` | 16 MB flash type of the board (`-16MB` in the file name): embeds the ZXM-MoonSound YRW801 ROM (the 4 MB image reads it from SD). Default OFF = the 4 MB image; the WS boards turn it on themselves (`*_W`: OFF = Raspberry Pi Pico 2 W, ON = Pimoroni Pico Plus 2 W). |
 | `-DMURM_W=ON` / `-DMURM2_W=ON` / `-DPICO_DV_W=ON` / `-DPICO_PC_W=ON` | Build for the same carrier + Pimoroni Pico Plus 2 W (m1p2w / m2p2w / DVp2w / PCp2w, on-chip CYW43439 WiFi on GP23/24/25/29, 16 MB flash, 8 MB PSRAM on GPIO47). Every carrier pin stays where it is on the plain board; the LED is on the radio and the GP29 AY clock output is dropped. A 4 MB Raspberry Pi Pico 2 W has the same pins but these images do not fit its flash. |
 | `-DMURM_WS=ON` | Build for Murmulator 1.x + Waveshare RP2350B-Plus-W (m1p2ws, on-chip CYW43439 WiFi). Same carrier as `-DMURM=ON`; the module moves audio to GPIO40/41/42, the LED to GPIO23 and PSRAM to GPIO47, and the carrier's PIO SPI PSRAM is dropped so the radio fits on pio0. |
 | `-DMURM2_WS=ON` | Build for Murmulator 2.0 + Waveshare RP2350B-Plus-W (m2p2ws). Same carrier as `-DMURM2=ON`; audio is unchanged, the gamepad data pins move to GPIO40/41, the LED to GPIO23 and PSRAM to GPIO47. |

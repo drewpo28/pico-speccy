@@ -5,6 +5,7 @@ MEMORY
     RAM(rwx)               : ORIGIN = 0x20020000, LENGTH = 384k
     SCRATCH_X(rwx)         : ORIGIN = 0x20080000, LENGTH = 4k
     SCRATCH_Y(rwx)         : ORIGIN = 0x20081000, LENGTH = 4k
+    @PSRAMROMS_EXTRA_MEMORY@
 }
 
 ENTRY(_entry_point)
@@ -424,7 +425,7 @@ SECTIONS
      * image so the eaten range is contiguous with the bank partition. .flash_end's
      * marker deliberately sits BELOW it — it must survive being eaten — and
      * __flash_binary_end covers the ROMs so the UF2 and the overflow ASSERT do. */
-    .psramroms : ALIGN(4096) {
+    .psramroms @PSRAMROMS_NOLOAD@ : ALIGN(4096) {
         KEEP(*(.psramrom_magic))
         KEEP(*scorpion_gmx_rom.c.o*(.rodata*))
         KEEP(*scorpion_prof_rom.c.o*(.rodata*))
@@ -451,8 +452,13 @@ SECTIONS
          * run from a traded range at boot. */
         @PSRAMROM_CODE_KEEP@
         . = ALIGN(4);
-    } > FLASH =0xaa
-    __psramrom_start = ADDR(.psramroms);
+    } > @PSRAMROMS_REGION@
+    /* PSRAMROMS_ABSENT (4 MB stock-W image, cmake/memory-layout.cmake): NOLOAD in a
+     * dummy region, and __psramrom_start/_end are set below to the flash right after
+     * the firmware instead; its code part is .psramcode, in FLASH (linker stubs make a
+     * NOLOAD code section PROGBITS again). */
+    @PSRAMROMS_START_SYM@
+    @PSRAMCODE_SECTION@
     /* The VDAC2 window's LOAD image follows the ROMs, inside the traded range: it is
      * copied to RAM only on a TS-Conf boot with VDAC2 on, and TS-Conf needs these
      * ROMs (FlashRoms::romsUsable), so on a board that traded them it is never read
@@ -460,6 +466,7 @@ SECTIONS
      * Its VMA is the fixed window under .tsovl; only the LMA lives here. The template
      * (cmake/memory-layout.cmake) also sets __psramrom_end, which has to cover it. */
 @FTOVL_SECTION@
+    @PSRAMROMS_ABSENT_SYMS@
     PROVIDE(__flash_binary_end = __psramrom_end);
 
     /* ── GM.DLS wavetable bank flash region ──────────────────────────────────
@@ -526,8 +533,12 @@ SECTIONS
      * it (or set it to 0) to hand the slack to the firmware instead; what that costs
      * is in the comment above __gm_bank_end. Between the two floors a no-butter board
      * simply trades its unreachable ROMs sooner, which is free, and a butter board
-     * never notices because its bank lives in the arena. */
-    __gm_bank_hard_min = 1632 * 1024;
+     * never notices because its bank lives in the arena.
+     *
+     * Exception (GM_BANK_HARD_MIN_KB, cmake/memory-layout.cmake): the 4 MB stock-W
+     * image (Raspberry Pi Pico 2 W) builds with the hard floor at 0 — the radio stack
+     * does not fit above it, and that module simply goes without a flash GM.DLS bank. */
+    __gm_bank_hard_min = @GM_BANK_HARD_MIN_KB@ * 1024;
     ASSERT(__gm_bank_start <= __gm_bank_end,
         "ERROR: firmware filled the whole flash - nothing left for the GM.DLS bank")
     ASSERT(__gm_bank_end - __psramrom_start >= __gm_bank_hard_min,

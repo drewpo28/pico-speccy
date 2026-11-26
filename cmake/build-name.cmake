@@ -21,14 +21,15 @@ ELSEIF(HDMI_HSTX_ON)
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
 
-# Flash type: DVp2-speccy-VGA-HDMI-16MB-<version>, "+16MB" on screen. The W/WS
+# Flash type: DVp2-speccy-VGA-HDMI-16MB-<version>, "+16MB" on screen. The WS
 # boards are 16 MB only (board.cmake forces FLASH_16MB on for them) and carry the tag
-# as well — DVp2w-speccy-VGA-HDMI-16MB-<version> — so every 16 MB image is named
-# alike (owner, 2026-10-23; they were tagless before).
+# as well — DVp2ws-speccy-VGA-HDMI-16MB-<version> — so every 16 MB image is named
+# alike (owner, 2026-10-23; they were tagless before). The stock *_W boards have both
+# types since 2026-11-26 (-4MB = Raspberry Pi Pico 2 W, -16MB = Pimoroni Pico Plus 2 W).
 # The 4 MB image says so in the FILE name too (DVp2-speccy-VGA-HDMI-4MB-<version>,
 # owner 2026-10-27) so the two flash types cannot be confused on disk; on screen it
 # stays untagged (Hardware Info's short name has no room to spare).
-IF(FLASH_16MB OR PICOSPECCY_WIFI)
+IF(FLASH_16MB)
     SET(BUILD_NAME "${BUILD_NAME}-16MB")
     SET(VARIANT_TAG "${VARIANT_TAG}+16MB")
     SET(DISPLAY_TAG "${DISPLAY_TAG}+16MB")

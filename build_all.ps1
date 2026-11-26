@@ -3,7 +3,7 @@ param(
     [string]$BuildType = $env:BUILD_TYPE,
     [int]$JobsPerBuild = 0,
     [int]$MaxParallel = 0,
-    # Flash types to build: 4 and 16 (default both). The W/WS boards are 16 MB only.
+    # Flash types to build: 4 and 16 (default both). The WS boards are 16 MB only.
     [int[]]$FlashTypes = @(4, 16),
     [switch]$Clean
 )
@@ -92,8 +92,10 @@ $HstxTargets   = @("PICO_PC", "MURM2", "PICO_PC2")
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
 # Every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON, "-16MB" in the
-# file name, adds ZXM-MoonSound with its embedded ROM); the W/WS boards are 16 MB only.
+# file name, adds ZXM-MoonSound with its embedded ROM); the WS boards are 16 MB only.
 $WTargets = @("MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
+# 16 MB only: the Waveshare module. The stock *_W boards also ship a 4 MB image (Pico 2 W).
+$WsTargets = @("MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
 $Only16Targets = @("PICO_PC2")   # PICO_PC2 = Olimex RP2350pc, 16 MB on board. ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
@@ -123,12 +125,13 @@ foreach ($Target in $Targets) {
 $BuildPairs = @()
 foreach ($P in $BasePairs) {
     $IsW = $WTargets -contains $P.Target
-    $Only16 = $IsW -or ($Only16Targets -contains $P.Target)
+    $Only16 = ($WsTargets -contains $P.Target) -or ($Only16Targets -contains $P.Target)
     foreach ($Ft in $FlashTypes) {
         if ($Only16 -and $Ft -ne 16) { continue }
         # 4 MB images keep the historic dir/log names; a 16 MB one appends -16MB
-        # (the W/WS boards keep their plain names: they have no 4 MB twin).
-        $Sfx = if ($Ft -eq 16 -and -not $IsW) { "-16MB" } else { "" }
+        # (the W/WS boards keep their plain names for 16 MB; the 4 MB stock-W image,
+        # Raspberry Pi Pico 2 W, takes -4MB instead).
+        $Sfx = if ($Ft -eq 16) { if ($IsW) { "" } else { "-16MB" } } elseif ($IsW) { "-4MB" } else { "" }
         $BuildPairs += ,@{ Target = $P.Target; Display = $P.Display; Flash = $Ft; Suffix = $Sfx }
     }
 }

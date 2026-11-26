@@ -36,10 +36,11 @@ option(ZERO2 "Waveshare RP2350-PiZero" OFF)
 # carrier on and then overrides the handful of pins the module moves
 # (cmake/board-pins.cmake). There are two module layouts, and they need separate images:
 #
-#   *_W  (tag *p2w)  — Pimoroni Pico Plus 2 W: the stock Pico 2 W layout, radio
-#        (CYW43439) on GP23/24/25/29, LED on the radio, audio stays on GP26/27/28,
-#        16 MB flash, 8 MB PSRAM on GPIO47. A plain Raspberry Pi Pico 2 W has the same
-#        pins but only 4 MB of flash, which these images do not fit.
+#   *_W  (tag *p2w)  — the stock Pico 2 W layout, radio (CYW43439) on GP23/24/25/29,
+#        LED on the radio, audio stays on GP26/27/28. Two flash types like a plain
+#        board: -DFLASH_16MB=ON for the Pimoroni Pico Plus 2 W (16 MB flash, 8 MB PSRAM
+#        on GPIO47), OFF (4 MB) for the Raspberry Pi Pico 2 W (no PSRAM; built without
+#        the hard GM.DLS floor, so a flash GM.DLS bank usually does not fit there).
 #        See src/drivers/board/boards/picospeccy_rp2350_w.h.
 #   *_WS (tag *p2ws) — Waveshare RP2350B-Plus-W: radio on GPIO36-39, LED on GPIO23,
 #        the Pico GP26/27/28 header positions carry GPIO40/41/42, 16 MB flash, PSRAM
@@ -63,8 +64,9 @@ option(PICO_PC_WS "Olimex PICO-PC + Waveshare RP2350B-Plus-W (on-chip CYW43439 W
 # 16 MB module (Pimoroni Pico Plus 2, Waveshare RP2350B-Plus...). The 16 MB image adds
 # what does not fit 4 MB: the ZXM-MoonSound YRW801 ROM embedded (YRW801_BUILTIN=1; the
 # 4 MB image reads /pico-speccy/roms/yrw801.rom from SD instead), the built-in GM.DLS
-# bank, and the GM.DLS bank region grows to ~14 MB by itself (rp2350-memmap.ld). The W/WS
-# boards are 16 MB only and turn this on themselves (cmake/board.cmake).
+# bank, and the GM.DLS bank region grows to ~14 MB by itself (rp2350-memmap.ld). The WS
+# boards are 16 MB only and turn this on themselves (cmake/board.cmake); the *_W ones
+# build both types.
 option(FLASH_16MB "Build for a 16 MB flash module (built-in YRW801 + GM.DLS)" OFF)
 # OFF by default and shipped as a SEPARATE z0p2 firmware ("-PIOUSB" in the file name):
 # Pico-PIO-USB costs 17.7 KB of SRAM that cannot be reclaimed at runtime — 11.0 KB of

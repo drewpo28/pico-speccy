@@ -6,7 +6,7 @@ Usage: release_downloads.py REPO TAG FILE.uf2 [FILE.uf2 ...]
 Rows are carrier boards, columns are video outputs, each cell lists the
 module variants that were built (m1p2 / m1p2w / m1p2ws) as direct links to
 the release assets. A column that has both 4 MB and 16 MB images is split in
-two ("... 4 MB" / "... 16 MB"); the W modules are 16 MB boards. Only the files
+two ("... 4 MB" / "... 16 MB"); the WS modules are 16 MB boards. Only the files
 passed in appear; an empty cell is "—".
 A board tag or display missing from the tables below still gets a row or
 column of its own, named after the raw token.
@@ -63,18 +63,20 @@ def main():
             print(f"release_downloads: skipping {name}", file=sys.stderr)
             continue
         board, module = split_tag(m.group("tag"))
-        disp, flash = m.group("disp"), ""
+        disp, flash, small = m.group("disp"), "", False
         if disp.endswith("-16MB"):          # the 16 MB flash type
             disp, flash = disp[:-5], "-16MB"
         elif disp.endswith("-4MB"):         # the 4 MB flash type
-            disp = disp[:-4]
+            disp, small = disp[:-4], True
         col, suffix = DISPLAYS.get(disp, (disp, ""))
         if board not in rows:
             rows.append(board)
         if col not in cols:
             cols.append(col)
-        big = 16 if (flash or module) else 4    # W / WS modules are 16 MB only
-        if not flash and module:
+        # Untagged W / WS names are pre-1.0.10 16 MB images; a -4MB *p2w is the
+        # Raspberry Pi Pico 2 W image (2026-11-26).
+        big = 16 if (flash or (module and not small)) else 4
+        if not flash and big == 16:
             flash = "-16MB"
         key = (1 if suffix else 0, MODULE_ORDER.get(module, 9), module)
         cells.setdefault((board, col, big), []).append(
@@ -110,7 +112,7 @@ def main():
         out.append("| " + " | ".join(line) + " |")
     out += ["",
             "`*p2` — Raspberry Pi Pico 2 / Pimoroni Pico Plus 2, "
-            "`*p2w` — Pimoroni Pico Plus 2 W, "
+            "`*p2w` — Pimoroni Pico Plus 2 W (16 MB) / Raspberry Pi Pico 2 W (4 MB), "
             "`*p2ws` — Waveshare RP2350B-Plus-W. "
             "`*p2w` and `*p2ws` firmwares are not interchangeable. "
             "**16 MB** columns — images for a 16 MB flash module (built-in YRW801 "
