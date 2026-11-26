@@ -83,10 +83,10 @@ set "SOFTTV_TARGETS=MURM MURM2"
 :: Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
 :: Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
 set "PIOUSB_TARGETS=ZERO2"
-:: Display on GPIO 12-19 (the RP2350 HSTX pins): also ship an HSTX image
-:: (-DHDMI_HSTX=TMDS). Their plain VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF),
-:: or CMake's AUTO would make it HSTX too and the two images would be the same.
-set "HSTX_TARGETS=PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS PICO_PC2"
+:: Display on GPIO 12-19 (the RP2350 HSTX pins). Base names: _W/_WS count as their base
+:: board. They ship ONLY the HSTX image (-DHDMI_HSTX=TMDS), which drives VGA too (owner
+:: 2026-11-26; PICO_PC2 cannot run PIO at all). Other VGA_HDMI images are pinned to PIO.
+set "HSTX_TARGETS=PICO_PC MURM2 PICO_PC2"
 
 if "%POSARGS%"=="" (
     set "TARGETS=%ALL_TARGETS%"
@@ -97,13 +97,16 @@ if "%POSARGS%"=="" (
 :: Build PAIRS list as "TARGET:DISPLAY TARGET:DISPLAY ..."
 set "PAIRS="
 for %%T in (%TARGETS%) do (
-    :: PICO_PC2 (Olimex RP2350pc): HDMI-only, HSTX-mandatory lane order - no PIO image
-    if not "%%T"=="PICO_PC2" set "PAIRS=!PAIRS! %%T:VGA_HDMI"
+    set "BASE_BOARD=%%T"
+    set "BASE_BOARD=!BASE_BOARD:_WS=!"
+    set "BASE_BOARD=!BASE_BOARD:_W=!"
+    set "IS_HSTX=0"
+    for %%M in (%HSTX_TARGETS%) do ( if "!BASE_BOARD!"=="%%M" set "IS_HSTX=1" )
+    if "!IS_HSTX!"=="1" ( set "PAIRS=!PAIRS! %%T:HSTX" ) else ( set "PAIRS=!PAIRS! %%T:VGA_HDMI" )
     for %%M in (%TFT_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:TFT_ILI9341" )
     for %%M in (%TFT_ST_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:TFT_ST7789" )
     for %%M in (%SOFTTV_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:SOFTTV" )
     for %%M in (%PIOUSB_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:PIOUSB" )
-    for %%M in (%HSTX_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:HSTX" )
 )
 
 :: Count pairs

@@ -162,6 +162,12 @@ if(ZERO2 AND ZERO2_PIO_USB)
         ZERO2_PIO_USB_PIO_NUM=2
         PICO_DEFAULT_PIO_USB_DP_PIN=28   # D- is GP29 (PIO_USB_PINOUT_DPDM)
     )
+    # PIO-USB adds ~15.3 KB of flash, which pushed the 4 MB image 2148 B past the hard
+    # GM.DLS floor (2026-11-26). The 48K custom ROM then shares the 128K custom ROM's
+    # slot (page 0): -16 KB, at the price of one custom ROM overwriting the other.
+    if(NOT FLASH_16MB)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE NO_SEPARATE_48K_CUSTOM=1)
+    endif()
 endif()
 
 include(cmake/source-flags.cmake)

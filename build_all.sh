@@ -115,13 +115,13 @@ SOFTTV_TARGETS="MURM MURM2"
 # ~18 KB of SRAM, hence two separate images instead of a runtime toggle.
 PIOUSB_TARGETS="ZERO2"
 
-# Targets whose display sits on GPIO 12-19, where the RP2350's HSTX serializer
-# lives: they also ship an HSTX image (-DHDMI_HSTX=TMDS, named ...-VGA-HDMI-HSTX-*).
-# Their plain VGA_HDMI image is pinned to the PIO back-end (-DHDMI_HSTX=OFF), or
-# CMake's AUTO would make it HSTX too and the two images would be the same.
-# PICO_PC2 ships ONLY an HSTX image (HDMI-only board, HSTX-mandatory lane order):
-# it is in ONLY16_TARGETS, so build_all never emits a PIO variant of it.
-HSTX_TARGETS="PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS PICO_PC2"
+# Boards whose display sits on GPIO 12-19, where the RP2350's HSTX serializer lives.
+# Base names only: a _W / _WS module on the same carrier counts as its base board.
+# They ship ONLY the HSTX image (-DHDMI_HSTX=TMDS, named ...-VGA-HDMI-HSTX-*), which
+# drives VGA as well as HDMI, so a PIO VGA_HDMI image would be redundant (owner
+# 2026-11-26); for PICO_PC2 (HDMI-only, HSTX-mandatory lane order) it is impossible.
+# Every other board's VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF).
+HSTX_TARGETS="PICO_PC MURM2 PICO_PC2"
 
 # Flash types: every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON,
 # "-16MB" in the file name, adds ZXM-MoonSound with its embedded ROM). The W/WS
@@ -201,7 +201,14 @@ fi
 # ("target:display:4" / "target:display:16").
 BASE_PAIRS=()
 for TARGET in $TARGETS; do
-    BASE_PAIRS+=("${TARGET}:VGA_HDMI")
+    BASE_BOARD="${TARGET%_WS}"; BASE_BOARD="${BASE_BOARD%_W}"
+    IS_HSTX=false
+    for HX_T in $HSTX_TARGETS; do [ "$BASE_BOARD" = "$HX_T" ] && IS_HSTX=true; done
+    if $IS_HSTX; then
+        BASE_PAIRS+=("${TARGET}:HSTX")
+    else
+        BASE_PAIRS+=("${TARGET}:VGA_HDMI")
+    fi
     for TFT_T in $TFT_TARGETS; do
         if [ "$TARGET" = "$TFT_T" ]; then
             BASE_PAIRS+=("${TARGET}:TFT_ILI9341")
@@ -226,21 +233,11 @@ for TARGET in $TARGETS; do
             break
         fi
     done
-    for HX_T in $HSTX_TARGETS; do
-        if [ "$TARGET" = "$HX_T" ]; then
-            BASE_PAIRS+=("${TARGET}:HSTX")
-            break
-        fi
-    done
 done
 BUILD_PAIRS=()
 for PAIR in "${BASE_PAIRS[@]}"; do
     IS_W=false
     for W_T in $W_TARGETS $ONLY16_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
-    # PICO_PC2 is HDMI-only and its lane order (clock pair in the middle) makes
-    # the PIO TMDS back-end impossible: no plain VGA_HDMI image exists for it,
-    # only the HSTX one (below).
-    if [ "$PAIR" = "PICO_PC2:VGA_HDMI" ]; then continue; fi
     for FT in $FLASH_TYPES; do
         if $IS_W && [ "$FT" != "16" ]; then continue; fi
         BUILD_PAIRS+=("${PAIR}:${FT}")

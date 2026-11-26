@@ -84,10 +84,10 @@ $SofttvTargets = @("MURM", "MURM2")
 # Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
 # Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
 $PiousbTargets = @("ZERO2")
-# Display on GPIO 12-19 (the RP2350 HSTX pins): also ship an HSTX image
-# (-DHDMI_HSTX=TMDS). Their plain VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF),
-# or CMake's AUTO would make it HSTX too and the two images would be the same.
-$HstxTargets   = @("PICO_PC", "MURM2", "MURM2_W", "PICO_PC_W", "MURM2_WS", "PICO_PC_WS", "PICO_PC2")
+# Display on GPIO 12-19 (the RP2350 HSTX pins). Base names: _W/_WS count as their base
+# board. They ship ONLY the HSTX image (-DHDMI_HSTX=TMDS), which drives VGA too (owner
+# 2026-11-26; PICO_PC2 cannot run PIO at all). Other VGA_HDMI images are pinned to PIO.
+$HstxTargets   = @("PICO_PC", "MURM2", "PICO_PC2")
 
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
@@ -101,8 +101,12 @@ $Only16Targets = @("PICO_PC2")   # PICO_PC2 = Olimex RP2350pc, 16 MB on board. Z
 # Build list of (target, display) pairs, then expand each into its flash types
 $BasePairs = @()
 foreach ($Target in $Targets) {
-    # PICO_PC2 is HDMI-only with an HSTX-mandatory lane order: no PIO VGA_HDMI image.
-    if ($Target -ne "PICO_PC2") { $BasePairs += ,@{ Target = $Target; Display = "VGA_HDMI" } }
+    $BaseBoard = $Target -replace '_WS?$', ''
+    if ($HstxTargets -contains $BaseBoard) {
+        $BasePairs += ,@{ Target = $Target; Display = "HSTX" }
+    } else {
+        $BasePairs += ,@{ Target = $Target; Display = "VGA_HDMI" }
+    }
     if ($TftTargets -contains $Target) {
         $BasePairs += ,@{ Target = $Target; Display = "TFT_ILI9341" }
     }
@@ -114,9 +118,6 @@ foreach ($Target in $Targets) {
     }
     if ($PiousbTargets -contains $Target) {
         $BasePairs += ,@{ Target = $Target; Display = "PIOUSB" }
-    }
-    if ($HstxTargets -contains $Target) {
-        $BasePairs += ,@{ Target = $Target; Display = "HSTX" }
     }
 }
 $BuildPairs = @()

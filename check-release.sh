@@ -48,24 +48,24 @@ RAM_BASE=536870912  # 0x20000000
 # differ in GPIO count/pins, not SRAM.
 BOARDS=(
     "MURM|build-all/MURM/bin/MinSizeRel/m1p2-speccy-VGA-HDMI-4MB-*.elf|532480|RP2350"
-    "MURM2|build-all/MURM2/bin/MinSizeRel/m2p2-speccy-VGA-HDMI-4MB-*.elf|532480|RP2350"
-    "PICO_PC|build-all/PICO_PC/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-4MB-*.elf|532480|RP2350"
+    "MURM2|build-all/MURM2-HSTX/bin/MinSizeRel/m2p2-speccy-VGA-HDMI-HSTX-4MB-*.elf|532480|RP2350"
+    "PICO_PC|build-all/PICO_PC-HSTX/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-HSTX-4MB-*.elf|532480|RP2350"
     "PICO_DV|build-all/PICO_DV/bin/MinSizeRel/DVp2-speccy-VGA-HDMI-4MB-*.elf|532480|RP2350"
     "ZERO2|build-all/ZERO2/bin/MinSizeRel/z0p2-speccy-VGA-HDMI-4MB-*.elf|532480|RP2350"
     "MURM-16M|build-all/MURM-16MB/bin/MinSizeRel/m1p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
-    "MURM2-16M|build-all/MURM2-16MB/bin/MinSizeRel/m2p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
-    "PICO_PC-16M|build-all/PICO_PC-16MB/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "MURM2-16M|build-all/MURM2-HSTX-16MB/bin/MinSizeRel/m2p2-speccy-VGA-HDMI-HSTX-16MB-*.elf|532480|RP2350"
+    "PICO_PC-16M|build-all/PICO_PC-HSTX-16MB/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-HSTX-16MB-*.elf|532480|RP2350"
     "PICO_DV-16M|build-all/PICO_DV-16MB/bin/MinSizeRel/DVp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
     "ZERO2-16M|build-all/ZERO2-16MB/bin/MinSizeRel/z0p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
     "PICO_PC2-16M|build-all/PICO_PC2-HSTX-16MB/bin/MinSizeRel/PC2p2-speccy-VGA-HDMI-HSTX-16MB-*.elf|532480|RP2350"
     "MURM_W|build-all/MURM_W/bin/MinSizeRel/m1p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
-    "MURM2_W|build-all/MURM2_W/bin/MinSizeRel/m2p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "MURM2_W|build-all/MURM2_W-HSTX/bin/MinSizeRel/m2p2w-speccy-VGA-HDMI-HSTX-*.elf|532480|RP2350"
     "PICO_DV_W|build-all/PICO_DV_W/bin/MinSizeRel/DVp2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
-    "PICO_PC_W|build-all/PICO_PC_W/bin/MinSizeRel/PCp2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "PICO_PC_W|build-all/PICO_PC_W-HSTX/bin/MinSizeRel/PCp2w-speccy-VGA-HDMI-HSTX-*.elf|532480|RP2350"
     "MURM_WS|build-all/MURM_WS/bin/MinSizeRel/m1p2ws-speccy-VGA-HDMI-*.elf|532480|RP2350"
-    "MURM2_WS|build-all/MURM2_WS/bin/MinSizeRel/m2p2ws-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "MURM2_WS|build-all/MURM2_WS-HSTX/bin/MinSizeRel/m2p2ws-speccy-VGA-HDMI-HSTX-*.elf|532480|RP2350"
     "PICO_DV_WS|build-all/PICO_DV_WS/bin/MinSizeRel/DVp2ws-speccy-VGA-HDMI-*.elf|532480|RP2350"
-    "PICO_PC_WS|build-all/PICO_PC_WS/bin/MinSizeRel/PCp2ws-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "PICO_PC_WS|build-all/PICO_PC_WS-HSTX/bin/MinSizeRel/PCp2ws-speccy-VGA-HDMI-HSTX-*.elf|532480|RP2350"
 )
 
 # --- Fixed boot-time heap mallocs, default config ---
