@@ -1575,7 +1575,11 @@ v_cnt steps at h=591, INT v=257 h=657) and the owner's Karabas GO capture
   paint 288 lines = our window, see docs/ds80-line-palette-plan.md round 4); the paragraph
   below is the Karabas-window measurement, now the Black mode of Machine > Profi/Karabas > Options > DS80 edges
   (default Timed = everything, as before); Black = the whole Karabas raster: paper 55 + its
-  window (cols 4..155, rows 8..279 of a window starting on line 31); Timed = paper 48, all timed. profi513
+  window (cols 4..155, rows 8..279 of a window starting on line 31); Timed = paper 48, all timed.
+  **2026-11-26 later: Timed moved to paper 55 as well** (owner, mcprofi3 Palette Test: Timed
+  had 7 more lines of squares above the yellow band than Black / the GO). Both modes now share
+  the Karabas raster; Timed = the whole 288x180 window timed, Black = the crop. Host-checked
+  (yellow at y=130 in both), hw-confirmed 2026-11-27 on m2p2 (`debug/m2p2-ds80p55c-4MB-1.1.4`, with the re-patched Palette Test). profi513
   on the GO: its coloured tile row fills the whole top border and ~8 lines of the bottom one,
   then black (effect over); at line 48 our paper cut the top row to 9 rows with a grey row
   above. Now identical. The 720x576 band has 24 rows, the machine shows 16: rows outside

@@ -181,6 +181,13 @@ audio must keep working with it (option 1 does not touch the island slots).
 
 ## DONE 2026-11-26: ROMain 2.A1 + the Palette Test patched in place (no repack needed)
 
+**Re-patched 2026-11-27** (owner): the DS80 raster moved to paper 55 in both edges modes, so
+the window is lines 31..318. The B=#17 patch (lines 24..311) left a solid band at the bottom
+on hw; the stock test (37..310) leaves 6 lines on top and 8 at the bottom. Now `LD B,#1E`
+(#25EE 24->1E) + `LD IX,#0120` (#25E7 12->20) = lines 31..318: host bench, Timed has no run
+longer than one line (2 px) from the top row to the bottom row, Black the same inside its
+crop. hw-confirmed 2026-11-27 on m2p2. Bench keys for 2.A1: 7x Down, Return (Test&Tools), Down, Return.
+
 The packer is ZX0 (Einar Saukas; the boot at #0000 of 2.92 IS dzx0_standard: `LD BC,#FFFF /
 PUSH BC` = initial offset -1, `LD A,#80`, interlaced Elias gamma with `RL C / RL B`,
 last-offset matches via `EX (SP),HL / ADD HL,DE`; 2.A1 first LDIRs #3879 bytes to #8000 and

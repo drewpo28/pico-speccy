@@ -1774,11 +1774,10 @@ static uint8_t* prevBrdptr8; // 4-bit packed: 1 byte = 2 pixels
 static void applyDS80BorderGeometry(bool on) {
     if (on) {
         VIDEO::tStatesPerLine = TSTATES_PER_LINE_PROFI_DS80;
-        const bool kar = Config::ds80_edges == 1;   // Black = the Karabas raster (Video.h)
-        VIDEO::tStatesScreen  = kar ? TS_SCREEN_PROFI_DS80_KAR : TS_SCREEN_PROFI_DS80;
+        const bool kar = Config::ds80_edges == 1;   // Black = Karabas-visible crop (Video.h)
+        VIDEO::tStatesScreen  = TS_SCREEN_PROFI_DS80;   // Karabas raster for Timed and Black
         const bool tall = (int)VIDEO::vga.yres >= 288;  // 720×576: 24-row top/bottom bands
-        VIDEO::tStatesBorder = tall ? (kar ? TS_BORDER_PROFI_DS80_288_KAR : TS_BORDER_PROFI_DS80_288)
-                                    : (kar ? TS_BORDER_PROFI_DS80_240_KAR : TS_BORDER_PROFI_DS80_240);
+        VIDEO::tStatesBorder = tall ? TS_BORDER_PROFI_DS80_288 : TS_BORDER_PROFI_DS80_240;
         lin_end  = tall ? DS80_BORDER_TOP : 0;
         lin_end2 = lin_end + 240;
         // Defensive: never let the border/content machines run past the fb
