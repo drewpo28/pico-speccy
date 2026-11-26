@@ -1106,11 +1106,13 @@ static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const u
 }
 #endif
 
-#if !HDMI_EXPANDER
 extern volatile bool hdmi_lpal_on;
-static void __attribute__((noinline)) hdmi_lpal_line(uint line);
 static uint32_t hdmi_lp_pal_last[16];          // tentative: defined with the row palette below
 static const uint8_t *hdmi_lp_pair_lut;
+#if !HDMI_EXPANDER
+static void __attribute__((noinline)) hdmi_lpal_line(uint line);
+#else
+static void __attribute__((noinline)) hdmi_lpal_row_x(int y);
 #endif
 static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     static uint32_t inx_buf_dma;
@@ -1382,6 +1384,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         uint8_t* input_buffer = getLineBuffer(y);
         if (!input_buffer) return;
 #if HDMI_EXPANDER
+        if (hdmi_lpal_on) hdmi_lpal_row_x(y);   // DS80 row palette: pages are read below
         // The command list first (it does not depend on the pixels), so the fast path
         // below can write pixel words straight into it. One call site: it inlines.
         tl_n = hdmi_tl_active(wbuf, &hdmi_tl_g, &hdmi_tl_w, 1,
@@ -2744,7 +2747,6 @@ void hdmi_set_profi_ds80_mode(bool active,
     // active=false: deactivate (skip if already inactive)
     if (active && (!palette16_rgb888 || !pair_lut)) return;
     if (!active && !profi_ds80_active) return;
-#if !HDMI_EXPANDER
     // The row palette owns the two pages; a whole-table write takes them back.
     if (hdmi_lpal_on) hdmi_lpal_enable(false, NULL, NULL, 0);
     if (active) {
@@ -2753,7 +2755,6 @@ void hdmi_set_profi_ds80_mode(bool active,
     } else {
         hdmi_lp_pair_lut = NULL;
     }
-#endif
 
     if (active) {
         // Snapshot only on first activation, not on refresh
@@ -3184,11 +3185,127 @@ void hdmi_lpal_base(const uint32_t *pal) {
     hdmi_lp_base_ix = ix;
 }
 #else
-bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
-    (void)rows; (void)cnt; (void)nrows;
-    return !on;   // the expander build: not yet (its ISR converts colours itself — easy, owed)
+// ---- the HSTX command-expander build ----
+// Pixels are XRGB8888 words taken from the two pages (conv_color_b, HDMI_PX_IX) by the
+// line ISR when it RENDERS a line (hdmi_fb_to_px & co.) and TMDS-encoded by the HSTX
+// itself, so the VGA scheme applies: no second set, no page switch, no encoding —
+// before fb row y is rendered its entries go into a running palette and the changed
+// cells' words are rewritten in place (hdmi_write_pair's expander form: level888).
+// Off: CRT mask (the pages differ), dither (indices | 0x40), the big modes.
+typedef struct {
+    uint16_t owner[256];      // (ink << 4) | paper that wrote the slot, 0xFFFF = none
+    uint32_t cur[16];         // the colours the pages hold
+    uint32_t run[16];         // the palette of the row being rendered
+    int      last_y;          // last fb row applied (-1 = none this frame)
+} hdmi_lp_state_t;
+
+volatile bool hdmi_lpal_on = false;
+static hdmi_lp_state_t *hdmi_lp = NULL;
+static const uint16_t *volatile hdmi_lp_rows = NULL;
+static const uint8_t *volatile hdmi_lp_cnt = NULL;
+static volatile int hdmi_lp_n = 0;
+static uint32_t hdmi_lp_base[2][16];
+static volatile uint8_t hdmi_lp_base_ix = 0;
+
+static inline __attribute__((always_inline)) uint32_t hdmi_lp_lv(uint32_t v) {
+    const uint32_t x = (v * 85u + 1u) >> 1;
+    return x > 255u ? 255u : x;
 }
-void hdmi_lpal_base(const uint32_t *pal) { (void)pal; }
+static inline __attribute__((always_inline)) uint32_t hdmi_lp_lvl8(uint32_t v) {
+#if HDMI_TMDS_LEVEL_CLAMP
+    return v < HDMI_TMDS_LEVEL_LO ? HDMI_TMDS_LEVEL_LO : (v > HDMI_TMDS_LEVEL_HI ? HDMI_TMDS_LEVEL_HI : v);
+#else
+    return v;
+#endif
+}
+// hdmi_tmds_level888, inlined here so the ISR path stays in RAM.
+static inline __attribute__((always_inline)) uint32_t hdmi_lp_level888(uint32_t c) {
+    return (hdmi_lp_lvl8((c >> 16) & 0xff) << 16) | (hdmi_lp_lvl8((c >> 8) & 0xff) << 8)
+         | hdmi_lp_lvl8(c & 0xff);
+}
+
+static void __attribute__((noinline)) __not_in_flash_func(hdmi_lpal_row_x)(int y) {
+    hdmi_lp_state_t *st = hdmi_lp;
+    if (!st || y == st->last_y) return;
+    int r = st->last_y + 1;
+    if (y < st->last_y || st->last_y < 0) {           // a new frame: from the base
+        const uint32_t *b = hdmi_lp_base[hdmi_lp_base_ix & 1];
+        for (int i = 0; i < 16; i++) st->run[i] = b[i];
+        r = 0;
+    }
+    const uint16_t *tab = hdmi_lp_rows;
+    const uint8_t *cnt = hdmi_lp_cnt;
+    const int n = hdmi_lp_n;
+    for (; r <= y; r++) {
+        if (r < 0) continue;
+        if (!tab || !cnt || r >= n) break;
+        int k = cnt[r];
+        if (k > LPAL_K) k = LPAL_K;
+        for (int j = 0; j < k; j++) {
+            const uint16_t e = tab[r * LPAL_K + j];
+            st->run[(e >> 9) & 15] = (hdmi_lp_lv((e >> 3) & 7) << 16)
+                                   | (hdmi_lp_lv((e >> 6) & 7) << 8) | hdmi_lp_lv(e & 7);
+        }
+    }
+    st->last_y = y;
+    hdmi_word_t *pa = HDMI_PAGE_A, *pb = HDMI_PAGE_B;
+    const uint8_t *lut = hdmi_lp_pair_lut;
+    for (int c = 0; c < 16; c++) {
+        if (st->run[c] == st->cur[c]) continue;
+        st->cur[c] = st->run[c];
+        const hdmi_word_t w = hdmi_lp_level888(st->cur[c]);
+        for (int q = 0; q < 16; q++) {
+            uint8_t slot = lut[c * 16 + q];                  // c as ink: the left word
+            if (st->owner[slot] == (uint16_t)(c << 4 | q)) pa[HDMI_PX_IX(slot, 0)] = pb[HDMI_PX_IX(slot, 0)] = w;
+            slot = lut[q * 16 + c];                          // c as paper: the right word
+            if (st->owner[slot] == (uint16_t)(q << 4 | c)) pa[HDMI_PX_IX(slot, 1)] = pb[HDMI_PX_IX(slot, 1)] = w;
+        }
+    }
+}
+
+bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
+    if (!on) {
+        if (!hdmi_lpal_on) return true;
+        hdmi_lpal_on = false;
+        const uint l0 = hdmi_current_line;
+        const uint32_t t0 = time_us_32();
+        while (hdmi_current_line == l0 && time_us_32() - t0 < 2000) tight_loop_contents();
+        const uint l1 = hdmi_current_line;
+        while (hdmi_current_line == l1 && time_us_32() - t0 < 2000) tight_loop_contents();
+        hdmi_lp_rows = NULL; hdmi_lp_cnt = NULL; hdmi_lp_n = 0;
+        free(hdmi_lp); hdmi_lp = NULL;
+        return true;
+    }
+    if (hdmi_lpal_on) return true;
+    if (!profi_ds80_active || !hdmi_lp_pair_lut || !rows || !cnt || nrows <= 0
+        || hdmi_crt_level || hdmi_dither || hdmi_big_scale)
+        return false;
+    extern void* tryMalloc(size_t n);
+    hdmi_lp_state_t *st = (hdmi_lp_state_t *)tryMalloc(sizeof *st);
+    if (!st) return false;
+    for (int i = 0; i < 256; i++) st->owner[i] = 0xFFFF;
+    for (int ink = 0; ink < 16; ink++)
+        for (int paper = 0; paper < 16; paper++) {
+            const uint8_t slot = hdmi_lp_pair_lut[ink * 16 + paper];
+            if (st->owner[slot] == 0xFFFF) st->owner[slot] = (uint16_t)(ink << 4 | paper);
+        }
+    for (int i = 0; i < 16; i++)
+        st->cur[i] = st->run[i] = hdmi_lp_base[0][i] = hdmi_lp_base[1][i] = hdmi_lp_pal_last[i];
+    st->last_y = -1;
+    hdmi_lp_rows = rows; hdmi_lp_cnt = cnt; hdmi_lp_n = nrows;
+    hdmi_lp = st;
+    __dmb();
+    hdmi_lpal_on = true;
+    return true;
+}
+
+void hdmi_lpal_base(const uint32_t *pal) {
+    if (!pal) return;
+    const uint8_t ix = (uint8_t)((hdmi_lp_base_ix & 1) ^ 1);
+    for (int i = 0; i < 16; i++) hdmi_lp_base[ix][i] = pal[i] & 0x00ffffff;
+    __dmb();
+    hdmi_lp_base_ix = ix;
+}
 #endif
 
 void graphics_init_hdmi() {

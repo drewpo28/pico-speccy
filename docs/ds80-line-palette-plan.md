@@ -102,6 +102,14 @@ vga_make_pair / vga_pwm_word (GCC outlined the header's vga_pwm_word into flash)
 PWM and wide-flat. Refused with the CRT mask on and in the big x2/x3/x4 modes.
 `vga_lpal_row` 1.9 KB RAM (cell encoder inlined), no bl out of RAM.
 
+## HSTX command expander (2026-11-26, hw-confirmed m2p2 2026-11-26; builds `debug/m2p2-lpal-{16MB,4MB}-1.1.4`)
+
+Same scheme as VGA: the pages (conv_color_b, XRGB8888 per pixel, HDMI_PX_IX) are read by the
+line ISR when it renders a line and the HSTX encodes TMDS itself, so `hdmi_lpal_row_x(y)`
+(RAM, 460 B, no bl) runs before the row's pixels are built and rewrites the changed cells'
+words in place in both pages: level888(colour), ink = word 0, paper = word 1 of the slot.
+No cap needed (a word store per slot). Refused with the CRT mask, dither and big modes.
+
 ## Hw check: DONE 2026-11-26 (owner, DVp2w: "проверено на железе")
 
 Everything below was on the owner's list for that run; kept as the record of what it covered.
