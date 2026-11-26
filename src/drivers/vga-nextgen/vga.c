@@ -1205,6 +1205,16 @@ void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
 //   The even-line pair is low(even_x,even_y)/high(odd_x,even_y), the odd-line one
 //   low(even_x,odd_y)/high(odd_x,odd_y) — Bayer positions 0/1 and 2/3 of vga_bayer4(),
 //   packed by vga_pack_pair().
+// DS80 row palette (graphics.h): not on VGA yet — the pair colours come from
+// vga_crt_subpixels (dither, grille), which the line ISR cannot call. The render is
+// line-ahead here, so it is race-free once a RAM-side colour cache exists (owed).
+// Refusing keeps the per-frame palette.
+bool vga_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
+    (void)rows; (void)cnt; (void)nrows;
+    return !on;
+}
+void vga_lpal_base(const uint32_t *pal) { (void)pal; }
+
 void vga_set_profi_ds80_mode(bool active,
                               const uint32_t *palette16_rgb888,
                               const uint8_t  *pair_lut) {

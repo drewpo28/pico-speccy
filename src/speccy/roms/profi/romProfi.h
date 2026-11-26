@@ -8,8 +8,9 @@ extern "C" const unsigned char gb_rom_profi_bank1[];
 // overlays over the stock bank1 / Sinclair 128K halves (profi_overlays.h).
 extern "C" const unsigned char gb_rom_profi_pq_bank0[];
 // "Karabas" romset (profi_bank0_karabas.c): official Karabas-Pro ROMain bank0
-// with the graphical boot menu (CP/M / boot-from-SD / TR-DOS / Sinclair /
-// Test&Tools). bank1 = stock bank1 + ROMain overlay (ramdisk TR-DOS mods),
+// (2.A1 since 2026-11-26, two bytes of its Palette Test patched for our 288-row
+// window — see the .c header) with the graphical boot menu (CP/M / boot-from-SD /
+// TR-DOS / Sinclair / Test&Tools). bank1 = stock bank1 + ROMain overlay (ramdisk TR-DOS mods),
 // bank2 = stock Profi bank2 overlay (byte-identical in the ROMain image),
 // bank3 = plain Sinclair 128K second half (byte-identical, NO overlay) — see
 // romset dispatch in Config.cpp.

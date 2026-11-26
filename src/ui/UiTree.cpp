@@ -658,6 +658,12 @@ static bool p_nextActive() {
     if (m < 0) return Config::arch == A_NEXT;
     return ((m >> 8) & 0xFF) == A_NEXT;
 }
+// Profi or Karabas (two Machine rows over one hardware, see below): staged pick first.
+static bool p_profiActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    const int a = (m < 0) ? (int)Config::arch : ((m >> 8) & 0xFF);
+    return a == A_PROFI || a == A_KARABAS;
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -960,6 +966,16 @@ static const Node kMurmuzavr[] = {
     NM_RADIO(TXT_MACH_MURM_SIZE, SET_MEM_PG_CNT, opt_murmuzavr, nullptr),
 };
 
+// Profi / Karabas: one Options level for both rows. DS80 edges — what the 720x576
+// window shows around the picture a Karabas-Pro would blank (Video.h DS80_VIS_*).
+static const Option opt_ds80_edges[] = {
+    { "Timed (as output)",  0, "Timed" },
+    { "Black (as Karabas)", 1, "Black" },
+};
+static const Node kProfi[] = {
+    NM_RADIO(TXT_MACH_DS80_EDGES, SET_DS80_EDGES, opt_ds80_edges, nullptr),
+};
+
 // TS-Conf RAM is a fixed 4 MB (Config::TSCONF_PAGES) — the only size a ZX-Evo
 // has — so the level holds the CPU cap alone.
 static const Node kTsconf[] = {
@@ -1033,6 +1049,7 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_ROM_PHOENIX, SET_MACHINE, opt_mach_phoenix, p_extRam),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
+    NM_SUB  (NM_IND TXT_MACH_OPTS, kProfi, p_profiActive),
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_OPTS, kTsconf, p_tsconfActive),

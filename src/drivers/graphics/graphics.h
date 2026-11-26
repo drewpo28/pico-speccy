@@ -97,6 +97,20 @@ void vga_set_profi_ds80_mode(bool active,
                               const uint32_t *palette16_rgb888,
                               const uint8_t  *pair_lut);
 
+// DS80 palette per framebuffer row (Profi / Karabas port #7E written mid-frame;
+// docs/ds80-line-palette-plan.md). The emulator owns the row table: LPAL_K entries
+// per fb row, each (cell << 9) | (G3 << 6) | (R3 << 3) | B3 — a 3:3:3 Profi colour,
+// levels {0,43,85,128,170,213,255,255} — and cnt[row] of them used; an entry holds
+// from that row on. The palette at row 0 is the base (graphics_lpal_base, sent at
+// every frame end). enable(true) answers false when the driver / video mode cannot
+// do it (the caller keeps the per-frame palette); enable(false) returns with the
+// driver's own pair tables free to be rewritten whole again (re-push the palette).
+#define LPAL_K 4
+bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows);
+void hdmi_lpal_base(const uint32_t *palette16_rgb888);
+bool vga_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows);
+void vga_lpal_base(const uint32_t *palette16_rgb888);
+
 void draw_text(const char string[TEXTMODE_COLS + 1], uint32_t x, uint32_t y, uint8_t color, uint8_t bgcolor);
 void draw_window(const char title[TEXTMODE_COLS + 1], uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 

@@ -396,6 +396,12 @@ static int s_snapW = 0, s_snapH = 0;
 // ("the palette blinks", owner 2026-11-14).
 static uint32_t s_snapPal[256], s_snapPair[256][2];
 static bool s_snapPairMode = false;
+// Row palette at snapshot time (host_lpal_*): table, base, slot owners.
+static bool s_snapLpal = false;
+static std::vector<uint16_t> s_snapLpRows;
+static std::vector<uint8_t> s_snapLpCnt;
+static uint32_t s_snapLpBase[16];
+static uint16_t s_snapLpOwner[256];
 // The window waits for a new snapshot on this (one wake-up per frame, not a 1 ms poll).
 static std::mutex s_snapCvMx;
 static std::condition_variable s_snapCv;
@@ -422,6 +428,14 @@ extern "C" void host_frame_done(void) {
         memcpy(s_snapPal, host_palette, sizeof s_snapPal);
         memcpy(s_snapPair, host_pair_rgb, sizeof s_snapPair);
         s_snapPairMode = host_pair_mode;
+        s_snapLpal = host_lpal_on && host_lpal_rows && host_lpal_cnt;
+        if (s_snapLpal) {
+            const int n = host_lpal_n;
+            s_snapLpRows.assign(host_lpal_rows, host_lpal_rows + (size_t)n * LPAL_K);
+            s_snapLpCnt.assign(host_lpal_cnt, host_lpal_cnt + n);
+            memcpy(s_snapLpBase, host_lpal_base, sizeof s_snapLpBase);
+            memcpy(s_snapLpOwner, host_pair_owner, sizeof s_snapLpOwner);
+        }
     }
     s_snapMs.store(SDL_GetTicks(), std::memory_order_relaxed);
     s_snapSeq.fetch_add(1, std::memory_order_release);
@@ -473,15 +487,29 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         if (k >= 256) return c;
         return ((((c >> 16) & 0xFF) * k >> 8) << 16) | ((((c >> 8) & 0xFF) * k >> 8) << 8) | ((c & 0xFF) * k >> 8);
     };
+    // Row palette: the running 16 colours, from the base, with each row's entries.
+    const bool lp = pair && (useSnap ? s_snapLpal : (host_lpal_on && host_lpal_rows && host_lpal_cnt));
+    const uint16_t* lpRows = lp ? (useSnap ? s_snapLpRows.data() : (const uint16_t*)host_lpal_rows) : nullptr;
+    const uint8_t* lpCnt = lp ? (useSnap ? s_snapLpCnt.data() : (const uint8_t*)host_lpal_cnt) : nullptr;
+    const int lpN = lp ? (useSnap ? (int)s_snapLpCnt.size() : (int)host_lpal_n) : 0;
+    const uint16_t* lpOwner = useSnap ? s_snapLpOwner : host_pair_owner;
+    uint32_t lpPal[16];
+    if (lp) memcpy(lpPal, useSnap ? s_snapLpBase : host_lpal_base, sizeof lpPal);
     for (int y = 0; y < yres; y++) {
         const uint8_t* row = fb[y];
+        if (lp && y < lpN)
+            for (int j = 0; j < lpCnt[y] && j < LPAL_K; j++) {
+                const uint16_t e = lpRows[y * LPAL_K + j];
+                lpPal[(e >> 9) & 15] = host_lpal_rgb(e);
+            }
         uint32_t* d0 = (uint32_t*)((uint8_t*)pix + (size_t)(2 * y) * pitch);
         uint32_t* d1 = (uint32_t*)((uint8_t*)pix + (size_t)(2 * y + 1) * pitch);
         if (!row) { memset(d0, 0, w * 4); memset(d1, 0, w * 4); continue; }
         for (int x = 0; x < xres; x++) {
             const uint8_t b = row[x ^ 2];
             uint32_t l, r;
-            if (pair) { l = pairT[b][0]; r = pairT[b][1]; }
+            if (lp && lpOwner[b] != 0xFFFF) { l = lpPal[lpOwner[b] >> 4]; r = lpPal[lpOwner[b] & 15]; }
+            else if (pair) { l = pairT[b][0]; r = pairT[b][1]; }
             else l = r = palT[b];
             if (crt && !crtShape) { l = tap(l, m[(2 * x) & 3]); r = tap(r, m[(2 * x + 1) & 3]); }
             d0[2 * x] = 0xFF000000u | l;

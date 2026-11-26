@@ -100,6 +100,7 @@ uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_P
 uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
 uint8_t  Config::evo_raster = 0;       // BaseConf raster: Pentagon
 uint8_t  Config::screen_top = 0;       // 48 / 192 / 48
+uint8_t  Config::ds80_edges = 0;       // Timed
 bool     Config::tsconf_vdac2 = false;
 bool     Config::vdac2BootOff = false;
 bool     Config::tsconf_vdac2_smooth = false;
@@ -2025,6 +2026,9 @@ void Config::load() {
         int sct = 0;
         nvs_get_i("screen_top", sct, sts);
         screen_top = (sct >= 0 && sct <= 2) ? (uint8_t)sct : 0;
+        int d8e = 0;
+        nvs_get_i("ds80_edges", d8e, sts);
+        ds80_edges = (d8e == 1) ? 1 : 0;
         nvs_get_b("tsconf_vdac2", tsconf_vdac2, sts);
         nvs_get_b("tsconf_vdac2_smooth", tsconf_vdac2_smooth, sts);
         nvs_get_b("tsconf_vdac2_adapt", tsconf_vdac2_adapt, sts);
@@ -2410,6 +2414,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
     nvs_set_i(buf,"evo_raster", evo_raster);
     nvs_set_i(buf,"screen_top", screen_top);
+    nvs_set_i(buf,"ds80_edges", ds80_edges);
     nvs_set_str(buf,"tsconf_vdac2", (tsconf_vdac2 || vdac2BootOff) ? "true" : "false");
     nvs_set_str(buf,"tsconf_vdac2_smooth", tsconf_vdac2_smooth ? "true" : "false");
     nvs_set_str(buf,"tsconf_vdac2_adapt", tsconf_vdac2_adapt ? "true" : "false");

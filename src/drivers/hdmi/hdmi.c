@@ -77,6 +77,17 @@ static int dma_chan;
 //каналы работы с конвертацией палитры
 static int dma_chan_pal_conv_ctrl __attribute__((unused));
 static int dma_chan_pal_conv __attribute__((unused));
+#if !HDMI_EXPANDER
+// One word the chain data -> pg -> ctrl writes into the converter SM's INSTR at the
+// end of EVERY line (dma_chan_pg): the DS80 row palette's page switch, `set x, page`
+// for the line about to start, at the line boundary itself and not from the ISR
+// (an ISR late by more than the sync+porch — SD, USB, a flash stall — switched the
+// page mid-line and showed the set being rewritten: hw 2026-11-26, rows torn). A
+// NOP (mov y, y) otherwise: the grille loop sets X per byte, x3 keeps its base in X.
+#define HDMI_PIO_NOP 0xa042u
+static int dma_chan_pg;
+static volatile uint32_t hdmi_lp_instr = HDMI_PIO_NOP;
+#endif
 
 //DMA буферы
 //основные строчные данные
@@ -102,8 +113,10 @@ static int      hdmi_scanline_line_n = 0;
 static uint8_t hdmi_scanline_buf[HDMI_LINE_BYTES_MAX];
 // (The x3 mode runs 3 px per byte: its DMA line is 384 bytes, see HDMI_X3_LINE.)
 // The two PIO-path line buffers sit behind the 1024-word palette in conv_color.
-#define HDMI_CONV_WORDS (1024 + 2 * (HDMI_LINE_BYTES_MAX / 4))
-_Static_assert(HDMI_CONV_WORDS >= 1240, "conv_color must still hold the pair-mode snapshot");
+// Page A (1024 words), page B (1024 words, 2026-11-26: moved here from SCRATCH_Y so
+// the two pages sit in one 8 KB block the converter can switch between with one
+// `set x` — the DS80 row palette, hdmi_lpal_*), then the two line buffers.
+#define HDMI_CONV_WORDS (2048 + 2 * (HDMI_LINE_BYTES_MAX / 4))
 #endif
 
 //ДМА палитра для конвертации
@@ -138,7 +151,12 @@ void hdmi_lut_clear(void) { memset(conv_color, 0, sizeof conv_color); }
 // come out of a non-striped bank, off the SRAM0-7 stripe both cores hammer.
 // The alignas stays as a tripwire — if this ever moves back to a general
 // region, the linker still has to honour the PIO's requirement.
+#if HDMI_EXPANDER
 static alignas(4096) __scratch_y("hdmi_palette_b") uint32_t conv_color_b[1024];
+#else
+// Page B right behind page A (see HDMI_CONV_WORDS).
+#define conv_color_b (conv_color + 1024)
+#endif
 
 #if HDMI_EXPANDER
 // Palette pages for the expander build, both in SCRATCH_Y: page A = words 0..511,
@@ -168,7 +186,7 @@ static uint32_t __scratch_x("hdmi_desc") hdmi_desc[3][2];
 #else
 #define HDMI_PAGE_A ((hdmi_word_t *)conv_color)
 #define HDMI_PAGE_B ((hdmi_word_t *)conv_color_b)
-#define HDMI_SNAP_WORDS 1240
+#define HDMI_SNAP_WORDS 1024   // page A (page B is re-derived on the way out)
 #define HDMI_SNAP_SRC   conv_color
 #define HDMI_DESC_ADDR(k) (&DMA_BUF_ADDR[(k)])
 #endif
@@ -471,23 +489,48 @@ static volatile uint32_t hdmi_dbg_frame_ct = 0;
 // line_bytes is even (400, or 408 in the 720-wide modes), so the A/B phase is identical on every line and every
 // frame. A dropped byte would flip the phase for the rest of the frame — but that
 // already means a corrupted line.
+//
+// 2026-11-26: page B moved right behind page A (conv_color + 4 KB), and the address
+// became (Y << 17) | (page << 12) | (byte << 4) with Y = conv_color >> 17 (conv_color
+// sits at 0x20020000, 128 KB aligned: hdmi_init checks it). The page comes from X's
+// low 5 bits, so the program sets it itself per source pixel (instructions 0..11, the
+// A/B grille as before), OR — the DS80 row palette, hdmi_lpal_* — runs 12..16, where
+// X is set from OUTSIDE once per fb row by one `set x, 0/1` through SMx_INSTR: page A
+// and page B are then two whole table sets, one shown while the next row's colours
+// are written into the other. One exec'd `set x` touches neither ISR nor OSR, so it
+// is safe at any instruction boundary. Switching between the two loops is done by
+// the wrap registers only, never by a jump into the middle: 0..11 -> 12..16 falls
+// through at instruction 11, 12..16 -> 0..11 leaves through the jmp at 17.
+#define HDMI_CONV_C0_TOP 11
+#define HDMI_CONV_C1_BOT 12
+#define HDMI_CONV_C1_TOP 16
 uint16_t pio_program_instructions_conv_HDMI[] = {
-    //         //     .wrap_target
+    //         //     .wrap_target (grille loop)
     0x80a0, //  0: pull   block
     0x40e8, //  1: in     osr, 8
-    0x4034, //  2: in     x, 20        ; even fb byte -> palette page A
-    0x8020, //  3: push   block
-    0x80a0, //  4: pull   block
-    0x40e8, //  5: in     osr, 8
-    0x4054, //  6: in     y, 20        ; odd  fb byte -> palette page B
-    0x8020, //  7: push   block
-    //     .wrap
+    0xe020, //  2: set    x, 0         ; even fb byte -> palette page A
+    0x4025, //  3: in     x, 5
+    0x404f, //  4: in     y, 15
+    0x8020, //  5: push   block
+    0x80a0, //  6: pull   block
+    0x40e8, //  7: in     osr, 8
+    0xe021, //  8: set    x, 1         ; odd  fb byte -> palette page B
+    0x4025, //  9: in     x, 5
+    0x404f, // 10: in     y, 15
+    0x8020, // 11: push   block
+    //     .wrap (grille loop)
+    0x80a0, // 12: pull   block        ; row-palette loop: page = X, set from outside
+    0x40e8, // 13: in     osr, 8
+    0x4025, // 14: in     x, 5
+    0x404f, // 15: in     y, 15
+    0x8020, // 16: push   block
+    0x0000, // 17: jmp    0            ; row-palette loop -> grille loop
 };
 
 
 const struct pio_program pio_program_conv_addr_HDMI = {
     .instructions = pio_program_instructions_conv_HDMI,
-    .length = 8,
+    .length = 18,
     .origin = -1,
 };
 
@@ -1063,6 +1106,12 @@ static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const u
 }
 #endif
 
+#if !HDMI_EXPANDER
+extern volatile bool hdmi_lpal_on;
+static void __attribute__((noinline)) hdmi_lpal_line(uint line);
+static uint32_t hdmi_lp_pal_last[16];          // tentative: defined with the row palette below
+static const uint8_t *hdmi_lp_pair_lut;
+#endif
 static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     static uint32_t inx_buf_dma;
     static uint line = 0;
@@ -1111,6 +1160,9 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         ++line;
     }
     hdmi_current_line = line; // expose to main context for palette refresh sync
+#if !HDMI_EXPANDER
+    if (hdmi_lpal_on) hdmi_lpal_line(line);   // DS80 row palette (main RAM, see there)
+#endif
 
 #if HDMI_AUDIO_DEBUG_STAGES
     // Stage clock must tick before the per-line early returns below
@@ -1647,8 +1699,12 @@ static inline bool hdmi_init() {
         pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)hdmi_x3_page >> 13));
         pio_set_y(PIO_VIDEO_ADDR, SM_conv, 8u);
     } else {
-        pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
-        pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
+        // X is the page (the program sets it); Y the 128 KB block conv_color starts.
+        if ((uint32_t)conv_color & 0x1FFFFu)
+            printf("hdmi_init: conv_color %p is not 128 KB aligned - the picture will be garbage\n",
+                   (void *)conv_color);
+        pio_set_x(PIO_VIDEO_ADDR, SM_conv, 0);
+        pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 17));
     }
 #endif // !HDMI_EXPANDER
 
@@ -1694,7 +1750,8 @@ static inline bool hdmi_init() {
     //настройка PIO SM для конвертации
 
     pio_sm_config c_c = pio_get_default_sm_config();
-    sm_config_set_wrap(&c_c, offs_prg1, offs_prg1 + (hdmi_conv_prog->length - 1));
+    sm_config_set_wrap(&c_c, offs_prg1, offs_prg1 + (hdmi_conv_prog == &pio_program_conv_addr_HDMI
+                                                     ? HDMI_CONV_C0_TOP : hdmi_conv_prog->length - 1));
     sm_config_set_in_shift(&c_c, true, false, 32);
 
     pio_sm_init(PIO_VIDEO_ADDR, SM_conv, offs_prg1, &c_c);
@@ -1926,13 +1983,13 @@ static inline bool hdmi_init() {
     int line_dma = hdmi_x3_on ? HDMI_X3_LINE : hdmi_mode.line_bytes;
     if (line_dma > HDMI_LINE_BYTES_MAX) line_dma = HDMI_LINE_BYTES_MAX;   // x3 without its page: no picture, no overrun
     int line_u32 = (line_dma + 3) / 4; // uint32_t per line buffer (426 is not a multiple of 4)
-    dma_lines[0] = &conv_color[1024];
-    dma_lines[1] = &conv_color[1024 + line_u32];
+    dma_lines[0] = &conv_color[2048];
+    dma_lines[1] = &conv_color[2048 + line_u32];
 
     //основной рабочий канал
     dma_channel_config cfg_dma = dma_channel_get_default_config(dma_chan);
     channel_config_set_transfer_data_size(&cfg_dma, DMA_SIZE_8);
-    channel_config_set_chain_to(&cfg_dma, dma_chan_ctrl); // chain to other channel
+    channel_config_set_chain_to(&cfg_dma, dma_chan_pg); // -> page word -> ctrl (next line)
     // Win DMA-arbiter against other channels (audio I2S, SD, PSRAM): this feeds
     // the TMDS PIO FIFO; starving it underruns the line → HDMI sync loss.
     channel_config_set_high_priority(&cfg_dma, true);
@@ -1955,6 +2012,25 @@ static inline bool hdmi_init() {
         &dma_lines[0][0], // read address
         line_dma, //
         false // Don't start yet
+    );
+
+    // The page word (see hdmi_lp_instr): one 32-bit write into the converter's
+    // INSTR register when the line's bytes are all in its FIFO — the bytes still
+    // queued there are front-porch ones, identical in both pages. Then the ctrl
+    // channel, as before.
+    cfg_dma = dma_channel_get_default_config(dma_chan_pg);
+    channel_config_set_transfer_data_size(&cfg_dma, DMA_SIZE_32);
+    channel_config_set_chain_to(&cfg_dma, dma_chan_ctrl);
+    channel_config_set_high_priority(&cfg_dma, true);   // in the line chain: no bubble
+    channel_config_set_read_increment(&cfg_dma, false);
+    channel_config_set_write_increment(&cfg_dma, false);
+    dma_channel_configure(
+        dma_chan_pg,
+        &cfg_dma,
+        &PIO_VIDEO_ADDR->sm[SM_conv].instr,
+        (const void *)&hdmi_lp_instr,
+        1,
+        false
     );
 
     //контрольный канал для основного
@@ -2668,6 +2744,16 @@ void hdmi_set_profi_ds80_mode(bool active,
     // active=false: deactivate (skip if already inactive)
     if (active && (!palette16_rgb888 || !pair_lut)) return;
     if (!active && !profi_ds80_active) return;
+#if !HDMI_EXPANDER
+    // The row palette owns the two pages; a whole-table write takes them back.
+    if (hdmi_lpal_on) hdmi_lpal_enable(false, NULL, NULL, 0);
+    if (active) {
+        for (int i = 0; i < 16; i++) hdmi_lp_pal_last[i] = palette16_rgb888[i] & 0x00ffffff;
+        hdmi_lp_pair_lut = pair_lut;
+    } else {
+        hdmi_lp_pair_lut = NULL;
+    }
+#endif
 
     if (active) {
         // Snapshot only on first activation, not on refresh
@@ -2876,6 +2962,235 @@ void hdmi_set_profi_ds80_mode(bool active,
     }
 }
 
+// ============================================================
+// DS80 palette per fb row (docs/ds80-line-palette-plan.md, graphics.h hdmi_lpal_*)
+//
+// Page A and page B become two whole table sets: row k is shown from set k & 1, and
+// while row k-1 is on screen the line ISR writes row k's changed cells into the
+// other set. The converter runs its row-palette loop (instructions 12..16), where
+// the page is X, set by the `set x` word dma_chan_pg writes at every line end (see pio_program_instructions_conv_HDMI). Timing, with pixel
+// doubling: the buffer rendered on odd line 2k+1 (fb row k) plays on lines 2k+2 and
+// 2k+3, so the even ISR at line 2k switches X to row k-1 (starting now) and fills
+// set k & 1, which nothing shows until line 2k+2: race-free, and the even ISRs did
+// no work before. Sync, porch and island slots are written to both pages already.
+// Off: the CRT grille (pages differ), x3/x4/x2-pad modes, scanlines, line maps.
+// ============================================================
+#if !HDMI_EXPANDER
+typedef struct {
+    hdmi_word_t w[3];         // the colour's symbol per channel, packed alone (ch0 = blue)
+    int8_t d[3];              // its disparity per channel (sign decides the paper complement)
+} hdmi_lp_rec_t;
+
+typedef struct {
+    hdmi_word_t bitw[3][10];  // packed word of each symbol bit, per channel (XOR basis)
+    hdmi_word_t zero[3];      // packed word of symbol 0, per channel
+    hdmi_word_t cmask[3];     // XOR that complements data bits 0..7 of a packed channel
+    uint16_t sym[256];        // TMDS symbol of a channel value (level-clamped)
+    int8_t dsp[256];          // its disparity
+    uint16_t owner[256];      // (ink << 4) | paper that wrote the slot, 0xFFFF = none
+    hdmi_lp_rec_t rec[2][16]; // encodings of the colours each set holds
+    uint32_t rgb[2][16];      // ... and the colours (raw RGB888)
+    uint32_t run[16];         // the palette of the row being prepared
+} hdmi_lp_state_t;
+
+volatile bool hdmi_lpal_on = false;
+static hdmi_lp_state_t *hdmi_lp = NULL;
+static const uint16_t *volatile hdmi_lp_rows = NULL;
+static const uint8_t *volatile hdmi_lp_cnt = NULL;
+static volatile int hdmi_lp_n = 0;
+static uint32_t hdmi_lp_base[2][16];
+static volatile uint8_t hdmi_lp_base_ix = 0;
+volatile uint32_t hdmi_lp_late_ct = 0;         // rows whose cells did not all fit the line
+static uint32_t hdmi_lp_pal_last[16];          // the palette both pages hold (last push)
+static const uint8_t *hdmi_lp_pair_lut = NULL;
+// Profi 3-bit level -> 8 bits: {0,43,85,128,170,213,255,255} (Video.cpp's table),
+// as arithmetic: a const table would land in flash and the ISR must not read flash.
+static inline __attribute__((always_inline)) uint32_t hdmi_lp_lv(uint32_t v) {
+    const uint32_t x = (v * 85u + 1u) >> 1;
+    return x > 255u ? 255u : x;
+}
+
+static inline __attribute__((always_inline)) hdmi_word_t hdmi_lp_pack(const hdmi_lp_state_t *st, uint32_t sym, int ch) {
+    hdmi_word_t w = st->zero[ch];
+    for (int b = 0; b < 10; b++) if (sym & (1u << b)) w ^= st->bitw[ch][b];
+    return w;
+}
+
+static void __not_in_flash_func(hdmi_lp_encode)(hdmi_lp_state_t *st, hdmi_lp_rec_t *r, uint32_t rgb) {
+    const uint8_t v[3] = { (uint8_t)rgb, (uint8_t)(rgb >> 8), (uint8_t)(rgb >> 16) };   // ch0 = B
+    for (int ch = 0; ch < 3; ch++) {
+        r->w[ch] = hdmi_lp_pack(st, st->sym[v[ch]], ch);
+        r->d[ch] = st->dsp[v[ch]];
+    }
+}
+
+// The pair word of (ink, paper): the paper's channels complemented where their
+// disparity has the ink's sign — hdmi_set_profi_ds80_mode's DC balance, per channel.
+static inline __attribute__((always_inline)) hdmi_word_t hdmi_lp_paper(const hdmi_lp_state_t *st, const hdmi_lp_rec_t *ink,
+                                        const hdmi_lp_rec_t *pap) {
+    hdmi_word_t w = 0;
+    for (int ch = 0; ch < 3; ch++)
+        w |= pap->w[ch] ^ ((ink->d[ch] * pap->d[ch] >= 0) ? st->cmask[ch] : 0);
+    return w;
+}
+
+// Cell c of set s becomes rgb: every slot it owns as ink or as paper.
+static void __not_in_flash_func(hdmi_lp_cell)(hdmi_lp_state_t *st, int s, int c, uint32_t rgb) {
+    hdmi_lp_rec_t *rec = st->rec[s];
+    hdmi_lp_encode(st, &rec[c], rgb);
+    st->rgb[s][c] = rgb;
+    hdmi_word_t *pg = (hdmi_word_t *)(conv_color + s * 1024);
+    const uint8_t *lut = hdmi_lp_pair_lut;
+    const hdmi_word_t ink_c = rec[c].w[0] | rec[c].w[1] | rec[c].w[2];
+    for (int p = 0; p < 16; p++) {
+        const uint8_t slot = lut[c * 16 + p];
+        if (st->owner[slot] != (uint16_t)(c << 4 | p)) continue;
+        pg[HDMI_SLOT_IX(slot, 0)] = ink_c;
+        pg[HDMI_SLOT_IX(slot, 1)] = hdmi_lp_paper(st, &rec[c], &rec[p]);
+    }
+    for (int i = 0; i < 16; i++) {
+        if (i == c) continue;
+        const uint8_t slot = lut[i * 16 + c];
+        if (st->owner[slot] != (uint16_t)(i << 4 | c)) continue;
+        pg[HDMI_SLOT_IX(slot, 1)] = hdmi_lp_paper(st, &rec[i], &rec[c]);
+    }
+}
+
+// From the line ISR (main RAM: SCRATCH_X is full), every line while the row palette runs.
+static void __attribute__((noinline)) __not_in_flash_func(hdmi_lpal_line)(uint line) {
+    hdmi_lp_state_t *st = hdmi_lp;
+    if (!st || hdmi_vmap_cur || hdmi_scanlines) return;
+    const struct video_mode_t *m = &hdmi_isr_mode;
+    // Row r is rendered by the odd ISR 2r+1 and PLAYS on lines 2r+3 and 2r+4 (the
+    // render ISR reprograms the ctrl channel for line+1 with the buffer of the row
+    // BEFORE, then renders into the other one; hw 2026-11-26: the first cut assumed
+    // 2r+2/2r+3 and the second play of every row came out with the next row's
+    // palette, 1-px runs in the border). So: the word dma_chan_pg writes at the end
+    // of this line is the page of line+1 = row ((line+1)-3)>>1, and the even ISR L
+    // writes row (L>>1)-1 — line L plays row (L>>1)-2 from the OTHER set, line L+1
+    // starts the row being written. Blanking keeps the last row's page.
+    if (line >= 2 && line < (uint)m->v_active + 2)
+        hdmi_lp_instr = 0xe020u | (((line - 2) >> 1) & 1);
+    if ((line & 1) || line < 2) return;
+    const uint k = (line >> 1) - 1, rows = (uint)m->v_active >> 1;
+    if (k >= rows) return;
+    const uint32_t t0 = time_us_32();
+    if (k == 0) {
+        const uint32_t *b = hdmi_lp_base[hdmi_lp_base_ix & 1];
+        for (int i = 0; i < 16; i++) st->run[i] = b[i];
+    }
+    const int y = (int)k + m->v_offset;
+    const uint16_t *tab = hdmi_lp_rows;
+    const uint8_t *cnt = hdmi_lp_cnt;
+    if (tab && cnt && y >= 0 && y < hdmi_lp_n) {
+        int n = cnt[y];
+        if (n > LPAL_K) n = LPAL_K;
+        for (int j = 0; j < n; j++) {
+            const uint16_t e = tab[y * LPAL_K + j];
+            st->run[(e >> 9) & 15] = (hdmi_lp_lv((e >> 3) & 7) << 16)
+                                   | (hdmi_lp_lv((e >> 6) & 7) << 8) | hdmi_lp_lv(e & 7);
+        }
+    }
+    // The set must be complete before line L+1 starts, i.e. within this line: stop
+    // at ~18 us after entry (a cell is ~2-3 us at 378 MHz). Cells left over keep
+    // their old colour for this row and are caught when this set is next written
+    // (row k+2 compares against the whole running palette again).
+    const int s = (int)(k & 1);
+    for (int c = 0; c < 16; c++)
+        if (st->run[c] != st->rgb[s][c]) {
+            if (time_us_32() - t0 > 18) { hdmi_lp_late_ct++; break; }
+            hdmi_lp_cell(st, s, c, st->run[c]);
+        }
+}
+
+bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
+    if (!on) {
+        if (!hdmi_lpal_on) return true;
+        hdmi_lpal_on = false;
+        // Let any ISR inside hdmi_lpal_line finish (it runs at the top of a line).
+        const uint l0 = hdmi_current_line;
+        const uint32_t t0 = time_us_32();
+        while (hdmi_current_line == l0 && time_us_32() - t0 < 2000) tight_loop_contents();
+        const uint l1 = hdmi_current_line;
+        while (hdmi_current_line == l1 && time_us_32() - t0 < 2000) tight_loop_contents();
+        hdmi_lp_instr = HDMI_PIO_NOP;
+        pio_sm_set_wrap(PIO_VIDEO_ADDR, SM_conv, offs_prg1, offs_prg1 + HDMI_CONV_C0_TOP);
+        hdmi_lp_rows = NULL; hdmi_lp_cnt = NULL; hdmi_lp_n = 0;
+        free(hdmi_lp); hdmi_lp = NULL;
+        return true;
+    }
+    if (hdmi_lpal_on) return true;
+    const struct video_mode_t *m = &hdmi_isr_mode;
+    if (!profi_ds80_active || !hdmi_lp_pair_lut || !rows || !cnt || nrows <= 0
+        || hdmi_conv_prog != &pio_program_conv_addr_HDMI || hdmi_x3_on
+        || m->x3 || m->x4_offset || m->x2_pad || hdmi_scanlines || hdmi_crt_level
+        || ((uint32_t)conv_color & 0x1FFFFu))
+        return false;
+    extern void* tryMalloc(size_t n);
+    hdmi_lp_state_t *st = (hdmi_lp_state_t *)tryMalloc(sizeof *st);
+    if (!st) return false;
+    for (int ch = 0; ch < 3; ch++) {
+        st->zero[ch] = hdmi_pack1(&hdmi_pins, 0, ch);
+        for (int b = 0; b < 10; b++) st->bitw[ch][b] = hdmi_pack1(&hdmi_pins, (uint16_t)(1u << b), ch) ^ st->zero[ch];
+        st->cmask[ch] = hdmi_pack1(&hdmi_pins, 0xFF, ch) ^ st->zero[ch];
+    }
+    for (int v = 0; v < 256; v++) {
+        const uint8_t lv = (uint8_t)hdmi_tmds_level888((uint32_t)v);
+        st->sym[v] = (uint16_t)tmds_encoder(lv);
+        st->dsp[v] = (int8_t)hdmi_tmds_disp(st->sym[v]);
+    }
+    // The packing must be per-channel XOR-linear for the above to hold: prove it on
+    // the colours the pages hold now before trusting it in the ISR.
+    for (int i = 0; i < 16; i++) {
+        const uint32_t c = hdmi_lp_pal_last[i] & 0x00ffffff;
+        const uint32_t cl = hdmi_tmds_level888(c);
+        const hdmi_word_t ref = get_ser_diff_data(tmds_encoder((cl >> 16) & 0xff),
+                                                  tmds_encoder((cl >> 8) & 0xff), tmds_encoder(cl & 0xff));
+        hdmi_lp_encode(st, &st->rec[0][i], c);
+        if ((st->rec[0][i].w[0] | st->rec[0][i].w[1] | st->rec[0][i].w[2]) != ref) {
+            printf("hdmi_lpal: packed words do not compose - row palette off\n");
+            free(st);
+            return false;
+        }
+    }
+    for (int i = 0; i < 256; i++) st->owner[i] = 0xFFFF;
+    for (int ink = 0; ink < 16; ink++)
+        for (int paper = 0; paper < 16; paper++) {
+            const uint8_t slot = hdmi_lp_pair_lut[ink * 16 + paper];
+            if (st->owner[slot] == 0xFFFF) st->owner[slot] = (uint16_t)(ink << 4 | paper);
+        }
+    for (int s = 0; s < 2; s++)
+        for (int i = 0; i < 16; i++) {
+            st->rgb[s][i] = hdmi_lp_pal_last[i] & 0x00ffffff;
+            if (s) st->rec[1][i] = st->rec[0][i];
+        }
+    for (int i = 0; i < 16; i++) {
+        st->run[i] = hdmi_lp_base[0][i] = hdmi_lp_base[1][i] = hdmi_lp_pal_last[i] & 0x00ffffff;
+    }
+    hdmi_lp_rows = rows; hdmi_lp_cnt = cnt; hdmi_lp_n = nrows;
+    hdmi_lp = st;
+    __dmb();
+    hdmi_lpal_on = true;
+    // Both pages hold the same palette now, so whichever page X names first is right.
+    pio_sm_set_wrap(PIO_VIDEO_ADDR, SM_conv, offs_prg1 + HDMI_CONV_C1_BOT, offs_prg1 + HDMI_CONV_C1_TOP);
+    return true;
+}
+
+void hdmi_lpal_base(const uint32_t *pal) {
+    if (!pal) return;
+    const uint8_t ix = (uint8_t)((hdmi_lp_base_ix & 1) ^ 1);
+    for (int i = 0; i < 16; i++) hdmi_lp_base[ix][i] = pal[i] & 0x00ffffff;
+    __dmb();
+    hdmi_lp_base_ix = ix;
+}
+#else
+bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows) {
+    (void)rows; (void)cnt; (void)nrows;
+    return !on;   // the expander build: not yet (its ISR converts colours itself — easy, owed)
+}
+void hdmi_lpal_base(const uint32_t *pal) { (void)pal; }
+#endif
+
 void graphics_init_hdmi() {
     // PIO и DMA
     // Name the PIO before dying: this runs on core1, which core0 does not wait
@@ -2905,6 +3220,7 @@ void graphics_init_hdmi() {
 #if !HDMI_EXPANDER
     dma_chan_pal_conv_ctrl = dma_claim_unused_channel(true);
     dma_chan_pal_conv = dma_claim_unused_channel(true);
+    dma_chan_pg = dma_claim_unused_channel(true);
 #endif
     // (The command expander build claims no PIO at all: the line ISR writes pixel
     // words itself. BoardPins::auxPio() still assumes HDMI owns pio2 — untrue here

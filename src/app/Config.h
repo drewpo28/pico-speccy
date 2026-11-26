@@ -238,6 +238,12 @@ public:
     // rows of top border in the 288-row window (bottom 48/40/32). A real Pentagon shows
     // 64 top + 48 bottom lines; 288 rows cannot hold both. VIDEO::screenTopRows().
     static uint8_t  screen_top;
+    // Machine > Profi/Karabas > Options > DS80 edges (720x576): what the window shows
+    // where a Karabas-Pro blanks (profi_video.vhd: 12 T of border each side and 16 lines
+    // above/below the paper = 152 T x 272; our window is 180 T x 288 rows, Video.h DS80_VIS_*).
+    // 0 = Timed (default): every tact and row as the machine outputs it; 1 = Black
+    // where a Karabas blanks, as the Karabas GO shows it. VIDEO::ds80EdgesApply().
+    static uint8_t  ds80_edges;
     // VDAC2 (FT812) video board on the Z-Controller SPI (Ft812.h). Reboot-class:
     // its 1 MB RAM_G is carved out of the butter PSRAM at boot (Buffer::pageBudget).
     static bool     tsconf_vdac2;

@@ -19,6 +19,20 @@ volatile bool host_pair_mode = false;
 uint32_t host_pair_rgb[256][2];
 std::atomic<uint32_t> host_frames{0};
 
+#include <cstdlib>
+
+uint32_t host_lpal_rgb(uint16_t e) {
+    static const uint8_t gr[8] = {0, 43, 85, 128, 170, 213, 255, 255};
+    return ((uint32_t)gr[(e >> 3) & 7] << 16) | ((uint32_t)gr[(e >> 6) & 7] << 8) | gr[e & 7];
+}
+
+volatile bool host_lpal_on = false;
+const uint16_t* volatile host_lpal_rows = nullptr;
+const uint8_t* volatile host_lpal_cnt = nullptr;
+volatile int host_lpal_n = 0;
+uint32_t host_lpal_base[16];
+uint16_t host_pair_owner[256];
+
 extern "C" {
 bool SELECT_VGA = false;
 volatile bool profi_ds80_active = false;
@@ -27,25 +41,46 @@ void graphics_set_palette(uint8_t i, uint32_t c) { host_palette[i] = c & 0x00fff
 void vga_set_palette_entry(uint8_t i, uint32_t c) { (void)i; (void)c; }
 void vga_set_palette_entry_solid(uint8_t i, uint32_t c) { host_palette[i] = c & 0x00ffffff; }
 
+
 static void pair_mode(bool active, const uint32_t* pal16, const uint8_t* lut) {
     if (active && (!pal16 || !lut)) return;
     if (active) {
         bool written[256] = {};
+        for (int i = 0; i < 256; i++) host_pair_owner[i] = 0xFFFF;
+        for (int i = 0; i < 16; i++) host_lpal_base[i] = pal16[i] & 0x00ffffff;
         for (int ink = 0; ink < 16; ink++)
             for (int paper = 0; paper < 16; paper++) {
                 const uint8_t s = lut[ink * 16 + paper];
                 if (written[s]) continue;
                 written[s] = true;
+                host_pair_owner[s] = (uint16_t)(ink << 4 | paper);
                 host_pair_rgb[s][0] = pal16[ink] & 0x00ffffff;
                 host_pair_rgb[s][1] = pal16[paper] & 0x00ffffff;
             }
-        host_pair_rgb[255][0] = host_pair_rgb[255][1] = pal16[0] & 0x00ffffff;
+        host_pair_rgb[255][0] = host_pair_rgb[255][1] = 0;   // the drivers' black border fill
     }
     host_pair_mode = active;
     profi_ds80_active = active;
 }
 void hdmi_set_profi_ds80_mode(bool a, const uint32_t* p, const uint8_t* l) { pair_mode(a, p, l); }
 void vga_set_profi_ds80_mode(bool a, const uint32_t* p, const uint8_t* l) { pair_mode(a, p, l); }
+
+// Row palette: present() walks the rows itself (host_main.cpp), so enabling is just
+// handing over the table. PICOSPECCY_NOLPAL=1 refuses it (the per-frame palette).
+static bool lpal_enable(bool on, const uint16_t* rows, const uint8_t* cnt, int n) {
+    if (on && (getenv("PICOSPECCY_NOLPAL") || !host_pair_mode)) return false;
+    if (on) { host_lpal_rows = rows; host_lpal_cnt = cnt; host_lpal_n = n; }
+    host_lpal_on = on;
+    if (!on) { host_lpal_rows = nullptr; host_lpal_cnt = nullptr; host_lpal_n = 0; }
+    return true;
+}
+static void lpal_base(const uint32_t* pal16) {
+    for (int i = 0; i < 16; i++) host_lpal_base[i] = pal16[i] & 0x00ffffff;
+}
+bool hdmi_lpal_enable(bool on, const uint16_t* r, const uint8_t* c, int n) { return lpal_enable(on, r, c, n); }
+bool vga_lpal_enable(bool on, const uint16_t* r, const uint8_t* c, int n) { return lpal_enable(on, r, c, n); }
+void hdmi_lpal_base(const uint32_t* p) { lpal_base(p); }
+void vga_lpal_base(const uint32_t* p) { lpal_base(p); }
 
 // The text mode of the graphics library is not used by this firmware.
 void draw_text(const char*, uint32_t, uint32_t, uint8_t, uint8_t) {}

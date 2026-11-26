@@ -118,10 +118,34 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 // −2T net calibration on top of that centres the effect around the paper: +1T measured
 // from hw screenshot side-strip asymmetry, −3T after FlushOnHalt phase-0 snap (CPU.cpp)
 // fixed the per-launch 0..3T wake-up jitter and locked the pattern 3T left of centre.
+// Kept at 48 (owner 2026-11-26) although Karabas-Pro's profi_video.vhd puts paper on line
+// 55 with 16-line borders (visible 152 T x 272 lines): mcprofi2016 paints 288 border lines
+// from line 24 (HALT + `LD BC,#9F` x 28 T), i.e. the original Profi's 24+240+24, and our
+// 720x576 window IS that 288-row / 180-T picture — every row and tact of it is timed,
+// nothing is stretched or blanked (Karabas shows 272 of these lines; a higher resolution
+// shows more). profi513 (same code, `LD BC,#63`) starts on line 15 and is 9 lines higher:
+// paper 39 was tried for it and rolled back by the owner the same day.
 #define TSTATES_PER_LINE_PROFI_DS80 192
 #define TS_SCREEN_PROFI_DS80   9238   // 48*192 + 24 - 2 (calibration)
 #define TS_BORDER_PROFI_DS80_240 9226 // 9238 - 16 (left border) + 4 (step=1 correction)
 #define TS_BORDER_PROFI_DS80_288 4618 // 9226 - 24*192 (24-row top band incl. blanking rows)
+// Machine > Profi/Karabas > Options > DS80 edges = Black: the KARABAS raster instead.
+// Karabas-Pro profi_video.vhd: v_cnt steps at h=591, INT at v=257 h=657 -> paper v=0 is
+// line 55 after INT (phase ~30); 12 T of border each side (pcpm_brd_left/right = 48 h) and
+// 16 lines above / below (brd_top/bot), the rest blanked: visible = line phase 13..164,
+// lines 39..310 = machine cols [4, 156) (paper cols 16..143), window rows 8..279 (the
+// window starts on line 31 with this raster; paper rows 24..263 as always) — symmetric
+// around the paper AND the lines the Palette Test paints (from line 37). hw-checked on
+// the owner's Karabas GO video 2026-11-26 (11.9 / 11.6 T of side border, 16.3 lines on
+// top). Black outside: 56 px each side, 16 px top and bottom. Timed keeps the Profi
+// raster above (paper 48, the whole window timed).
+#define TS_SCREEN_PROFI_DS80_KAR       10582  // 55*192 + 24 - 2
+#define TS_BORDER_PROFI_DS80_240_KAR   10570
+#define TS_BORDER_PROFI_DS80_288_KAR   5962   // 10570 - 24*192
+#define DS80_VIS_C0   4
+#define DS80_VIS_C1   156
+#define DS80_VIS_ROW0 8
+#define DS80_VIS_ROW1 279
 
 #define TS_BORDER_320x240 8948  // START OF BORDER 48 (+5 correction)
 #define TS_BORDER_320x240_128 8878  // START OF BORDER 128 (+5 correction)
@@ -657,6 +681,8 @@ public:
   // Re-derive the window from Config::screen_top on a running machine (menu commit,
   // between frames). No-op outside the standard 288-row geometry.
   static void screenTopApply();
+  // Video > DS80 edges changed (Config::ds80_edges): re-derive the DS80 window, repaint.
+  static void ds80EdgesApply();
   // A big HDMI mode that shows only part of the framebuffer is on screen (1024x768 x4:
   // the centre 256x192; 800x600 x3: the centre 264x200). Returns that window.
   static bool bigWindow(int& fbx, int& w, int& oy, int& h);

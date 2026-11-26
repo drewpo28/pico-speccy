@@ -1557,3 +1557,46 @@ drawn, at most 4 in a row (then one is drawn whatever the delay).
   differ from the no-skip run only in the FLASH phase (which emulated frame the shot
   caught). Owed on hw: Pentagon/128K heavy titles, TS-Conf, ATM EGA, Profi DS80, SAM,
   EP, Next, eLeMeNt HGFX - picture and border after skips, sound kept, FPS.
+
+## Profi/Karabas DS80 raster = Karabas RTL window; paper at line 55 (2026-11-26, host-checked vs owner's Karabas GO video, NOT hw-tested)
+
+Owner report: Karabas ROMain Test&Tools > Palette Test showed a solid band on the right and on top.
+Reference: Karabas-Pro `profi_video.vhd` (DS80: 24 MHz bus / 8 = CPU 3 MHz, 768 h/line, 4 h per T,
+v_cnt steps at h=591, INT v=257 h=657) and the owner's Karabas GO capture
+`debug/2026-11-26 12-34-36.mp4` (Palette Test, profi513.tap).
+- Visible window after INT: border line phase 15.75..167.75 T, i.e. 12.75..164.75 in our T
+  (Ports::output sees OUT (n),A at its 8th T, the port latches ~3 T later); lines 39..310,
+  paper v=0 = line 55 phase ~30, 16-line top/bottom borders. The GO shows exactly this
+  window (152 T x 272 lines), black around it.
+- Columns: `Update_Border_DS80` times only cols [DS80_VIS_C0=3, DS80_VIS_C1=155) (col c <->
+  phase c + 10); the rest of the row (h-blank + 720x576 pads) repeats the edge tact. Before,
+  cols 155..159 were timed and the pad copied col 159 = the test's colour switch at 166.
+- Rows: TS_SCREEN_PROFI_DS80 48 -> 55 was tried and REVERTED the same day (owner: the tests
+  paint 288 lines = our window, see docs/ds80-line-palette-plan.md round 4); the paragraph
+  below is the Karabas-window measurement, now the Black mode of Machine > Profi/Karabas > Options > DS80 edges
+  (default Timed = everything, as before); Black = the whole Karabas raster: paper 55 + its
+  window (cols 4..155, rows 8..279 of a window starting on line 31); Timed = paper 48, all timed. profi513
+  on the GO: its coloured tile row fills the whole top border and ~8 lines of the bottom one,
+  then black (effect over); at line 48 our paper cut the top row to 9 rows with a grey row
+  above. Now identical. The 720x576 band has 24 rows, the machine shows 16: rows outside
+  DS80_VIS_ROW0..1 (8 / 279) repeat the nearest visible row (`ds80Put`).
+- mcprofi2016's tile rows no longer line up with the paper edges (its "aligned at 48" was an
+  emulator-side fit). Horizontal border jumps by a few T per launch on the GO (owner: we used
+  to have that, fixed by the FlushOnHalt phase snap) — the column calibration is within it.
+- Cost: SRAM `.data` +304 B (ds80Put 480 B, Update_Border_DS80 304 B, carve helper 120 B;
+  was 600 B in one function; always_inline carve checks made it 2.3 KB). All bl in RAM.
+- The Palette Test itself rewrites palette cells 0/1 on EVERY line (#7E at phases 177 and 12,
+  i.e. in h-blank), so on the GO every line has its own colour across the whole screen, paper
+  included. Was two colours a frame (palette at vblank only); now the DS80 row palette,
+  `docs/ds80-line-palette-plan.md` (HDMI PIO/HSTX-raw + host; VGA still per frame).
+  hw-confirmed DVp2w 2026-11-26 (stripes straight, IDL 3300, ~0.5 ms faster than HEAD on the
+  test: A/B numbers in the plan).
+- Frame length differs too: ours 69888 T in DS80 (364 lines of 192 T = ZXMAK2's 3.5 MHz Profi),
+  Karabas 59904 T (312 lines, 3 MHz). Not touched.
+- shockmpr runs in the STANDARD screen (224 T lines), unaffected by this: it paints the border on
+  lines 40..288 (our 360x288 window starts at line 8 -> top 32 rows never painted), and every
+  other line OUTs at phase 169 = paper end, so the right border shows the next line's colour.
+  Karabas runs the standard screen on `pentagon_video.vhd` timing; ours is a Profi 69888 frame
+  with paper at line 56. DROPPED (owner 2026-11-26): shockmpr runs right in no emulator and
+  the hardware it was written for is unknown — not a reference.
+- Build: `debug/DVp2w-lpal-1.1.4` (raster + row palette + DS80 border span, 13:20:51), hw-ok.

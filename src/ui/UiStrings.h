@@ -107,6 +107,7 @@
 #define TXT_VID_BORDER_SIZE "Border size"
 #define TXT_VID_BORDER      "Render border"
 #define TXT_VID_SCREEN_TOP  "Screen position"
+#define TXT_MACH_DS80_EDGES "DS80 edges"
 #define TXT_VID_RENDER      "Render type"
 #define TXT_VID_GIGASCREEN  "Gigascreen"
 #define TXT_VID_FRAMESKIP   "Frame skip"

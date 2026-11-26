@@ -134,6 +134,15 @@ extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16,
 extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" volatile bool profi_ds80_active;
 extern "C" volatile uint hdmi_current_line;
+#ifndef LPAL_K
+#define LPAL_K 4   // entries per fb row of the DS80 row palette (graphics.h, same value)
+#endif
+#ifdef VGA_HDMI
+extern "C" bool hdmi_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows);
+extern "C" void hdmi_lpal_base(const uint32_t *palette16_rgb888);
+extern "C" bool vga_lpal_enable(bool on, const uint16_t *rows, const uint8_t *cnt, int nrows);
+extern "C" void vga_lpal_base(const uint32_t *palette16_rgb888);
+#endif
 #ifdef VGA_HDMI
 extern "C" int hdmi_beam_row(void);
 extern "C" int hdmi_blank_lines_left(void);
@@ -316,10 +325,52 @@ void VIDEO::rebuildDS80ColorLut() {
 // there is no DS80 output path, so this is a no-op for those builds.
 static inline uint32_t crtTransform(uint32_t rgb);   // CRT filter colour stage, defined below
 
+// ── DS80 palette per row (docs/ds80-line-palette-plan.md) ──────────────────────────
+// A #7E write while the frame is drawn lands in s_lpRows[row] (graphics.h LPAL_K
+// format); the driver walks the rows as it scans them out. The palette the frame
+// STARTS with is the base, sent at every frame end (profiPaletteApplyPending). Rows
+// the beam passes without a write are cleared on the way (lpalRecord, frame end),
+// so a guest that stops its effect falls back to the plain per-frame palette.
+static uint16_t* s_lpRows = nullptr;   // vga.yres * LPAL_K entries
+static uint8_t*  s_lpCnt  = nullptr;   // entries used per row
+static int  s_lpN = 0;                 // rows in the table (vga.yres)
+static int  s_lpLast = -1;             // last row written this frame
+static bool s_lpOn = false;            // the driver runs the row palette
+static bool s_lpRefused = false;       // the driver said no for this DS80 session
+static int  s_lpIdle = 0;              // frames without a mid-frame write
+static void lpalRecord(uint8_t idx, uint8_t profi_color);   // defined after the border geometry
+
+static bool lpalDriver(bool on) {
+#ifdef VGA_HDMI
+    extern bool SELECT_VGA;
+    return SELECT_VGA ? vga_lpal_enable(on, s_lpRows, s_lpCnt, s_lpN)
+                      : hdmi_lpal_enable(on, s_lpRows, s_lpCnt, s_lpN);
+#else
+    (void)on;
+    return false;
+#endif
+}
+
+// Hand the pair tables back to the plain per-frame path. The caller re-pushes the
+// palette (every caller of profi_ds80_driver_set does, by being one).
+static void lpalOff() {
+    if (!s_lpOn) return;
+    lpalDriver(false);
+    s_lpOn = false;
+    s_lpLast = -1;
+    free(s_lpRows); s_lpRows = nullptr;
+    free(s_lpCnt);  s_lpCnt = nullptr;
+    s_lpN = 0;
+}
+
 // noinline = FLASH: it is called on a mode switch, never per line, but it is reached
 // from the RAM-resident EndFrame; inlined there it dragged crtTransform's powf chain
 // into SRAM (~1 KB of EndFrame growth on the HSTX build in 1.0.8).
 static __attribute__((noinline)) void profi_ds80_driver_set(bool active, const uint32_t *palette16, const uint8_t *pair_lut) {
+    // A whole-table rewrite (palette push, menu palette, mode off) never runs
+    // under the row palette: the driver's two table sets would disagree.
+    lpalOff();
+    if (!active) s_lpRefused = false;   // a new DS80 session may try again
 #ifdef VGA_HDMI
     extern bool SELECT_VGA;
     // Run the DS80 palette through the CRT colour stage here rather than at the
@@ -445,6 +496,30 @@ void VIDEO::profiPaletteApplyPending() {
     // palette port — refreshing from profi_palette_live here would replace the
     // machine's own ZX palette with Profi's.
     if (timex_hires_live || bl_pair_live || sam_pair_live) { profi_palette_dirty = false; return; }
+    if (s_lpOn) {
+        // Row palette: the rows the beam did not reach since the last write carry
+        // nothing this frame; the next frame starts from the palette as it is now.
+        for (int r = s_lpLast + 1; r < s_lpN; r++) s_lpCnt[r] = 0;
+        const bool wrote = s_lpLast >= 0;
+        s_lpLast = -1;
+        if (wrote) s_lpIdle = 0;
+        if (!profi_ds80_active || profi_ds80_activate_pending || profi_ds80_deactivate_pending
+            || ++s_lpIdle > 100) {
+            // Gone quiet for 2 s (or the mode is going away): back to the
+            // per-frame palette, which gets the CRT mask back.
+            lpalOff();
+            if (profi_ds80_active) profi_palette_dirty = true;
+        } else {
+            __sync_synchronize();
+#ifdef VGA_HDMI
+            extern bool SELECT_VGA;
+            if (SELECT_VGA) vga_lpal_base(profi_palette_live);
+            else hdmi_lpal_base(profi_palette_live);
+#endif
+            profi_palette_dirty = false;
+            return;
+        }
+    }
     if (profi_palette_dirty && profi_ds80_active
         && !profi_ds80_activate_pending && !profi_ds80_deactivate_pending) {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
@@ -461,6 +536,11 @@ void VIDEO::profiPaletteWrite(uint8_t index, uint8_t profi_color) {
     profi_palette_live[idx] = newRgb;
     // Defer HDMI refresh to HDMI ISR vblank (set dirty flag, applied in EndFrame).
     profi_palette_dirty = true;
+    // Mid-frame: the colour holds from the beam's row on (Karabas: the palette is a
+    // RAM read per pixel). Not under a menu palette or the CRT colour stage.
+    if (!profi_palette_ui_saved_valid && !Config::crt_filter
+        && !timex_hires_live && !bl_pair_live && !sam_pair_live)
+        lpalRecord(idx, profi_color);
 }
 
 // Build profi_pair_lookup[ink][paper] → HDMI conv_color slot index.
@@ -1404,6 +1484,76 @@ static inline __attribute__((always_inline)) bool osdBarRange(bool stats, int xr
     return true;
 }
 static int  ds80_brd_col_off = 0;
+// The timed part of the DS80 window (Config::ds80_edges, Video.h DS80_VIS_*): machine
+// cols [ds80_vis_c0, ds80_vis_c1) and fb rows [ds80_vis_r0, ds80_vis_r1]. Timed
+// (default): every machine col and every row, the 720x576 side pads (10 cols each
+// side) copy the edge tact. Black: the Karabas-Pro window, black outside
+// (ds80_pad_black). (A "stretch the edge over the blanked part" mode existed for a
+// day — dropped by the owner 2026-11-26.)
+static int ds80_vis_c0 = 0, ds80_vis_c1 = 160;
+static int ds80_vis_r0 = 0, ds80_vis_r1 = 1 << 30;
+static bool ds80_pad_black = false;
+
+// One #7E write into the row table (see s_lpRows). The beam's fb row: border col 0
+// of row 0 is at tStatesBorder, line phase 10 (Update_Border_DS80); a write in the
+// first 88 T of a line holds for that line, a later one from the next (the Palette
+// Test writes at phases 12 and 177 — both in h-blank, both meant for the next pixels).
+// Flash: once per DS80 session. The driver starts from the palette it holds (the
+// last push); rows from here on override it.
+static __attribute__((noinline)) bool lpalStart(int yres) {
+#ifdef LPAL_DISABLE   // A/B twin: everything else the same, the row palette refused
+    (void)yres; s_lpRefused = true; return false;
+#endif
+    s_lpRows = (uint16_t*)tryCalloc((size_t)yres * LPAL_K * sizeof(uint16_t));
+    s_lpCnt  = (uint8_t*)tryCalloc((size_t)yres);
+    s_lpN = yres;
+    s_lpLast = -1;
+    s_lpIdle = 0;
+    if (!s_lpRows || !s_lpCnt || !lpalDriver(true)) {
+        free(s_lpRows); s_lpRows = nullptr;
+        free(s_lpCnt);  s_lpCnt = nullptr;
+        s_lpN = 0;
+        s_lpRefused = true;
+        Debug::log("[LPAL] row palette refused (driver / mode / heap) - per-frame palette");
+        return false;
+    }
+    s_lpOn = true;
+    Debug::log("[LPAL] row palette on, %d rows x %d", yres, LPAL_K);
+    return true;
+}
+
+// RAM: the Palette Test calls this ~550 times a frame (IDL -200..300 us from flash,
+// hw 2026-11-26).
+IRAM_ATTR __attribute__((noinline)) static void lpalRecord(uint8_t idx, uint8_t profi_color) {
+    if (!ds80_border_geom || s_lpRefused || !VIDEO::vga.frameBuffer) return;
+    const int yres = (int)VIDEO::vga.yres;
+    const int32_t rel = (int32_t)CPU::tstates - ((int32_t)VIDEO::tStatesBorder - 10) + 104;
+    int row = rel < 0 ? 0 : rel / TSTATES_PER_LINE_PROFI_DS80;
+    if (row >= yres) return;            // below the picture: it is the next frame's base
+    if (!s_lpOn && !lpalStart(yres)) return;
+    const uint8_t bx0 = VIDEO::profi_bx0_latch & 1;
+    const uint16_t e = (uint16_t)(((idx & 15) << 9) | (((profi_color >> 5) & 7) << 6)
+                                  | (((profi_color >> 2) & 7) << 3) | (((profi_color & 3) << 1) | bx0));
+    for (; row < s_lpN; row++) {
+        // Rows the beam crossed since the last write hold nothing this frame.
+        // (volatile: GCC made this a FLASH memset call from a RAM function.)
+        volatile uint8_t* cnt = s_lpCnt;
+        while (s_lpLast < row) cnt[++s_lpLast] = 0;
+        uint16_t* r = &s_lpRows[row * LPAL_K];
+        const int n = s_lpCnt[row];
+        int j = 0;
+        while (j < n && (r[j] >> 9) != (e >> 9)) j++;
+        if (j < n) { r[j] = e; return; }          // same cell again in this row: last wins
+        if (n < LPAL_K) {
+            r[n] = e;
+            __sync_synchronize();                 // the entry before the count (core1 reads)
+            s_lpCnt[row] = (uint8_t)(n + 1);
+            return;
+        }
+        // Row full: the write takes effect one row late.
+    }
+}
+
 static bool ds80_osd_carve = false; // stats box / LED panel up → carve the rect
 static int  ds80_cv_c0 = 0, ds80_cv_c1 = 0, ds80_cv_y0 = 0;   // ... in machine cols / fb rows
 static void Select_Update_Border(); // forward declaration
@@ -1624,9 +1774,11 @@ static uint8_t* prevBrdptr8; // 4-bit packed: 1 byte = 2 pixels
 static void applyDS80BorderGeometry(bool on) {
     if (on) {
         VIDEO::tStatesPerLine = TSTATES_PER_LINE_PROFI_DS80;
-        VIDEO::tStatesScreen  = TS_SCREEN_PROFI_DS80;
+        const bool kar = Config::ds80_edges == 1;   // Black = the Karabas raster (Video.h)
+        VIDEO::tStatesScreen  = kar ? TS_SCREEN_PROFI_DS80_KAR : TS_SCREEN_PROFI_DS80;
         const bool tall = (int)VIDEO::vga.yres >= 288;  // 720×576: 24-row top/bottom bands
-        VIDEO::tStatesBorder = tall ? TS_BORDER_PROFI_DS80_288 : TS_BORDER_PROFI_DS80_240;
+        VIDEO::tStatesBorder = tall ? (kar ? TS_BORDER_PROFI_DS80_288_KAR : TS_BORDER_PROFI_DS80_288)
+                                    : (kar ? TS_BORDER_PROFI_DS80_240_KAR : TS_BORDER_PROFI_DS80_240);
         lin_end  = tall ? DS80_BORDER_TOP : 0;
         lin_end2 = lin_end + 240;
         // Defensive: never let the border/content machines run past the fb
@@ -1641,6 +1793,12 @@ static void applyDS80BorderGeometry(bool on) {
         // Row width in uint16 cols minus the 160 visible T-cols, split evenly:
         // 640×480 (320 B/row → 160 cols) → 0; 720×576 (360 B → 180 cols) → 10.
         ds80_brd_col_off = ((int)VIDEO::vga.xres / 2 - 160) / 2;
+        const bool timed = !kar;
+        ds80_vis_c0 = timed ? 0 : DS80_VIS_C0;
+        ds80_vis_c1 = timed ? brdcol_end : DS80_VIS_C1;
+        ds80_vis_r0 = (tall && !timed) ? DS80_VIS_ROW0 : 0;
+        ds80_vis_r1 = (tall && !timed) ? DS80_VIS_ROW1 : (1 << 30);
+        ds80_pad_black = !timed;
         ds80_border_geom = true;
     } else {
         ds80_border_geom = false;
@@ -8368,6 +8526,17 @@ void VIDEO::screenTopApply() {
                top, (int)vga.yres - top - 192, tStatesBorder);
 }
 
+void VIDEO::ds80EdgesApply() {
+    if (!ds80_border_geom) return;      // picked up by the next DS80 activation
+    applyDS80BorderGeometry(true);      // re-derives raster + window from Config::ds80_edges
+    // Re-arm like screenTopApply: the paper line moved with the raster.
+    tstateDraw    = tStatesScreen;
+    lastBrdTstate = tStatesBorder;
+    DrawBorder    = &TopBorder_Blank;
+    brdChange     = false;
+    brdnextframe  = true;               // the next EndFrame repaints every border row
+}
+
 // True while a whole-line renderer owns the content rows and the per-T-state
 // border machine is parked (Scorpion GMX 640x200, every TS-Conf non-ZX mode):
 // the top/bottom bands are painted frame-granularly by gmxBorderFrame and their
@@ -10694,32 +10863,47 @@ IRAM_ATTR static void Update_Border_XOR() {
 // The HDMI/VGA ISR reads pair bytes in (x^2) order, so within an aligned
 // uint16 pair display order is swapped — same ^1 trick as Pentagon.
 // VIDEO::brd already holds the solid border pair byte replicated.
-// ds80_brd_col_off centres the 160 visible T-cols in wider rows (720×576);
-// the off-screen edge cols (h-blanking) are extended from the nearest tact.
-IRAM_ATTR static void Update_Border_DS80() {
-    if (ds80_osd_carve && brdlin_cnt >= ds80_cv_y0 && brdlin_cnt < ds80_cv_y0 + VIDEO::OSD_BAR_H) {
-        // Stats box / LED panel: owned by OSD::drawStats / LED::draw — skip it.
-        // 640x480: only the right-pad part is ever reached here (the content
-        // columns are the content renderer's, unless Paper is off); 720x576: the
-        // rect is in the bottom band.
-        const int c = brdcol_cnt + ds80_brd_col_off;
-        if (c >= ds80_cv_c0 && c < ds80_cv_c1) return;
-    }
-    const uint16_t v = (uint16_t)VIDEO::brd;
-    const int col = brdcol_cnt + ds80_brd_col_off;
+// ds80_brd_col_off centres the 160 machine T-cols in the 180-col 720x576 row; the
+// 10 pad cols each side repeat the edge tact (ds80_vis_c0 / c1 - 1).
+// Framebuffer col (uint16 units) of fb row `row` owned by an OSD rect.
+IRAM_ATTR __attribute__((noinline)) static bool ds80BrdCarved(int row, int col) {
+    // Stats box / LED panel: owned by OSD::drawStats / LED::draw. 640x480: only
+    // the right-pad part is ever reached here (the content columns are the
+    // content renderer's, unless Paper is off); 720x576: the rect is in the
+    // bottom band.
+    if (ds80_osd_carve && row >= ds80_cv_y0 && row < ds80_cv_y0 + VIDEO::OSD_BAR_H
+        && col >= ds80_cv_c0 && col < ds80_cv_c1) return true;
     // OSD::notify banner (top band at 720x576, the side pads of the first rows
     // at 640x480, the whole row under Paper off). The rect is 4-byte aligned and
     // col ^ 1 stays inside one 4-byte group, so testing col is enough.
-    if (brdlin_cnt < ts_notice_y1 && brdlin_cnt >= ts_notice_y0
-        && col * 2 >= ts_notice_x0 && col * 2 < ts_notice_x1) return;
-    brdptr16[col ^ 1] = v;
-    if (ds80_brd_col_off) {
-        if (brdcol_cnt == 0) {
-            for (int c = 0; c < ds80_brd_col_off; c++) brdptr16[c ^ 1] = v;
-        } else if (brdcol_cnt == brdcol_end - 1) {
-            for (int c = col + 1; c <= col + ds80_brd_col_off; c++) brdptr16[c ^ 1] = v;
-        }
-    }
+    return row < ts_notice_y1 && row >= ts_notice_y0
+        && col * 2 >= ts_notice_x0 && col * 2 < ts_notice_x1;
+}
+
+// Slot 255 is the drivers' (black, black) border fill byte — the Black edge mode.
+#define DS80_BLACK_PAIR 0xFFFFu
+IRAM_ATTR __attribute__((noinline)) static void ds80Put(int col, uint16_t v, uint16_t bandv) {
+    const int row = brdlin_cnt;
+    if (!ds80BrdCarved(row, col)) brdptr16[col ^ 1] = v;
+    int r, r1;
+    if (row == ds80_vis_r0) { r = 0; r1 = row; }
+    else if (row == ds80_vis_r1) { r = row + 1; r1 = (int)VIDEO::vga.yres; }
+    else return;
+    for (; r < r1; r++)
+        if (!ds80BrdCarved(r, col)) ((uint16_t*)VIDEO::vga.frameBuffer[r])[col ^ 1] = bandv;
+}
+
+IRAM_ATTR static void Update_Border_DS80() {
+    if ((unsigned)(brdcol_cnt - ds80_vis_c0) >= (unsigned)(ds80_vis_c1 - ds80_vis_c0)) return;
+    if (brdlin_cnt < ds80_vis_r0 || brdlin_cnt > ds80_vis_r1) return;
+    const uint16_t v = (uint16_t)VIDEO::brd;
+    const uint16_t pv = ds80_pad_black ? (uint16_t)DS80_BLACK_PAIR : v;   // the blanked part
+    const int col = brdcol_cnt + ds80_brd_col_off;
+    ds80Put(col, v, pv);
+    int c = 1, last = 0;   // the blanked edge cols, from the nearest visible tact
+    if (brdcol_cnt == ds80_vis_c0) { c = 0; last = col - 1; }
+    else if (brdcol_cnt == ds80_vis_c1 - 1) { c = col + 1; last = brdcol_end - 1 + 2 * ds80_brd_col_off; }
+    for (; c <= last; c++) ds80Put(c, pv, pv);
 }
 
 IRAM_ATTR static void Update_Border_XOR_Gig() {
@@ -10827,18 +11011,63 @@ IRAM_ATTR static void Update_Border_Span_XOR_Gig(int n) {
     }
 }
 
-// Fallback for shapes without a fast span (DS80): n per-column calls.
+// Fallback for shapes without a fast span: n per-column calls.
 IRAM_ATTR static void Update_Border_Span_Generic(int n) {
     int save = brdcol_cnt;
     for (int k = 0; k < n; k++) { Update_Border(); brdcol_cnt += brdcol_step; }
     brdcol_cnt = save;
 }
 
+// Uniform fill of fb cols [f0, f1) in the (x^2) pair order: the same index set as
+// per-column `[c ^ 1] = v` stores, only the odd edges need the swap (Span_XOR).
+IRAM_ATTR __attribute__((noinline)) static void ds80Fill(uint16_t* row, int f0, int f1, uint16_t v) {
+    if (f0 & 1) { row[f0 ^ 1] = v; f0++; }
+    if ((f1 & 1) && f1 > f0) { f1--; row[f1 ^ 1] = v; }
+    const uint32_t vv = (uint32_t)v | ((uint32_t)v << 16);
+    uint32_t* p = (uint32_t*)&row[f0];
+    for (int k = (f1 - f0) >> 1; k > 0; k--) *p++ = vv;
+}
+
+// DS80 span: what n Update_Border_DS80 calls paint, in word stores. The Karabas
+// Palette Test changes the border twice a line = ~92k per-column calls a frame,
+// 19 ms of core0 through the generic span (hw 2026-11-26). Rows an OSD rect sits
+// on (stats box, LED panel, notify) take the per-column path, which carves.
+IRAM_ATTR static void Update_Border_Span_DS80(int n) {
+    const int row = brdlin_cnt;
+    if (row < ds80_vis_r0 || row > ds80_vis_r1) return;
+    int c0 = brdcol_cnt, c1 = brdcol_cnt + n;
+    if (c0 < ds80_vis_c0) c0 = ds80_vis_c0;
+    if (c1 > ds80_vis_c1) c1 = ds80_vis_c1;
+    if (c0 >= c1) return;
+    // The band rows this row stands for (720x576: rows above the first / below the
+    // last visible one repeat it).
+    int r0 = row, r1 = row;
+    if (row == ds80_vis_r0) r0 = 0;
+    else if (row == ds80_vis_r1) r1 = (int)VIDEO::vga.yres - 1;
+    const bool carved =
+        (ds80_osd_carve && r1 >= ds80_cv_y0 && r0 < ds80_cv_y0 + VIDEO::OSD_BAR_H)
+        || (ts_notice_y1 > ts_notice_y0 && r1 >= ts_notice_y0 && r0 < ts_notice_y1);
+    if (carved) { Update_Border_Span_Generic(n); return; }
+    const int f0 = c0 + ds80_brd_col_off, f1 = c1 + ds80_brd_col_off;
+    const int fend = brdcol_end + 2 * ds80_brd_col_off;
+    const uint16_t v = (uint16_t)VIDEO::brd;
+    const uint16_t pv = ds80_pad_black ? (uint16_t)DS80_BLACK_PAIR : v;   // the blanked part
+    const bool le = c0 == ds80_vis_c0, re = c1 == ds80_vis_c1;             // the blanked edges
+    ds80Fill(brdptr16, f0, f1, v);
+    if (le) ds80Fill(brdptr16, 0, f0, pv);
+    if (re) ds80Fill(brdptr16, f1, fend, pv);
+    for (int r = r0; r <= r1; r++) {
+        if (r == row) continue;
+        uint16_t* rp = (uint16_t*)VIDEO::vga.frameBuffer[r];
+        ds80Fill(rp, le ? 0 : f0, re ? fend : f1, pv);
+    }
+}
+
 static void Select_Update_Border() {
     pwRefreshGate();  // geometry may have changed — re-evaluate the DMA window
     if (ds80_border_geom) {
         Update_Border = &Update_Border_DS80;  // Gigascreen is suspended in DS80
-        Update_Border_Span = &Update_Border_Span_Generic;
+        Update_Border_Span = &Update_Border_Span_DS80;
         return;
     }
     if (brdPairWrite) {
