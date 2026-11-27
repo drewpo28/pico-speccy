@@ -220,7 +220,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - F9 Volume down
 - F10 Volume up
 - F11 Hard reset
-- F12 Reset RP2350
+- F12 Power-cycle the machine (fresh RAM, cold boot of the emulated machine; video, clocks and PSRAM keep running)
 - ~ (Tilde) Max speed toggle
 - Pause Pause
 - ALT+F1 Hardware info
@@ -231,7 +231,8 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor; Spectrum Next: the DivMMC Drive button or Multiface; PK Hobbit: the shadow menu / SYSTEM PAGE)
 - ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K, KAY Service / TR-DOS / 128K / 48K, ATM-Turbo BIOS / CP/M / TR-DOS / 128K / 48K, ZX Evolution BaseConf EVO Reset Service / TR-DOS / 128K / 48K, Enterprise Soft reset (warm) / Hard reset (cold), eLeMeNt ZX adds SetUp (firmware); the SAM Coupé resets directly)
-- ALT+F12 USB Boot / Update Firmware
+- ALT+F12 Reboot the RP2350 (the full board reboot F12 used to be)
+- CTRL+F12 USB Boot / Update Firmware
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot
 - ALT+F4 Quick save snapshot

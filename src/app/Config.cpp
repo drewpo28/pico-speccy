@@ -330,7 +330,7 @@ void Config::initHotkeys() {
         { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_17
         { fabgl::VK_F10,    true,  false, false }, // HK_NMI
         { fabgl::VK_F11,    true,  false, false }, // HK_RESET_TO
-        { fabgl::VK_F12,    true,  false, false }, // HK_USB_BOOT
+        { fabgl::VK_F12,    false, true,  false }, // HK_USB_BOOT   — Ctrl+F12 (was Alt+F12 until HK_REBOOT_FULL took it)
         { fabgl::VK_PAGEUP, true,  false, false }, // HK_GIGASCREEN
         { fabgl::VK_F8,     true,  false, false }, // HK_LED_TOGGLE
         { fabgl::VK_F9,     true,  false, false }, // HK_POKE
@@ -339,6 +339,7 @@ void Config::initHotkeys() {
         { fabgl::VK_F3,     true,  false, false }, // HK_QUICK_LOAD
         { fabgl::VK_F4,     true,  false, false }, // HK_QUICK_SAVE
         { fabgl::VK_F7,     true,  false, false }, // HK_FAST_MENU
+        { fabgl::VK_F12,    true,  false, false }, // HK_REBOOT_FULL
     };
     for (int i = 0; i < HK_COUNT; i++)
         hotkeys[i] = defaults[i];
@@ -2011,6 +2012,17 @@ void Config::load() {
         // Same for the retired Ctrl+Alt+Home/End video-mode keys.
         hotkeys[HK_UNUSED_24] = { (uint16_t)fabgl::VK_NONE, false, false, true };
         hotkeys[HK_UNUSED_25] = { (uint16_t)fabgl::VK_NONE, false, false, true };
+        // Alt+F12 moved from USB boot to the full RP2350 reboot (2026-11-27, F12 became
+        // the light power cycle). A config saved before that still carries Alt+F12 on
+        // HK_USB_BOOT and, having no hkVK29 yet, the new default Alt+F12 on
+        // HK_REBOOT_FULL: the lower index would win and Alt+F12 would keep asking for
+        // USB mode. Move USB boot to its new default instead. A user who rebinds USB
+        // boot to Alt+F12 later must free it first (the capture refuses duplicates),
+        // so this never undoes a deliberate choice.
+        if (hotkeys[HK_USB_BOOT].vk == hotkeys[HK_REBOOT_FULL].vk &&
+            hotkeys[HK_USB_BOOT].alt == hotkeys[HK_REBOOT_FULL].alt &&
+            hotkeys[HK_USB_BOOT].ctrl == hotkeys[HK_REBOOT_FULL].ctrl)
+            hotkeys[HK_USB_BOOT] = { (uint16_t)fabgl::VK_F12, false, true, false };
         // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
         // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
         // applies the Pentagon-only clamp.

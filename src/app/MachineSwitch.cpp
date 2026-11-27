@@ -31,6 +31,8 @@
 #include "speccy/devices/storage/IDE.h"
 #include "net/ZiFiAT.h"
 #include "net/ZiFiSock.h"
+#include "speccy/machines/Next/NextReg.h"
+#include "speccy/machines/Enterprise/Ep.h"
 
 using std::string;
 
@@ -512,6 +514,38 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
     ESPectrum::logMachineState("switch");   // the state the switch starts from (reset logs the result)
     ESPectrum::reset();
     return true;
+}
+
+void powerCycle() {
+    const ArchIdx   arch   = (ArchIdx)Config::arch;
+    const RomsetIdx romset = (RomsetIdx)Config::romSet;
+    Debug::log("[powerCycle] arch=%s romSet=%d", archToStr(arch), (int)romset);
+    // A power cycle never resumes a snapshot (the old F12 cleared it before rebooting).
+    Config::ram_file = NO_RAM_FILE;
+    Config::last_ram_file = NO_RAM_FILE;
+    Config::save();
+    // The page backing is decided once in setup(); if it does not match the running
+    // machine any more, only setup() can fix it. Same tests as commit() above.
+    if ((arch == A_NEXT) != MemESP::nextRamReady ||
+        (butter_psram_size() == 0 &&
+         (arch == A_PROFI) != (MemESP::ram[56].memType() == mem_type_t::POINTER)) ||
+        Config::wantedPages(arch, romset) != MEM_PG_CNT) {
+        Debug::log("[powerCycle] memory layout differs from setup(): full reboot");
+        OSD::esp_hard_reset();   // never returns
+    }
+    ESPectrum::powerOnRamFill(arch, romset);
+    Config::requestMachine(arch, romset);   // re-binds the ROM pages from scratch
+    // Next: the guest's own NR 0x02 hard-reset sequence — NextReg::reset(true)
+    // re-arms the TBBLUE bootrom + config window, ESPectrum::reset() plugs it
+    // (its cfgBoot path).
+    if (arch == A_NEXT) NextReg::reset(true);
+    // esxDOS cold: divMMC RAM is not battery-backed (the Next keeps its own divMMC
+    // state through the hard-reset path above, as on the board).
+    if (arch != A_NEXT) DivMMC::init();
+    if (arch == A_ENT) Ep::coldStart();     // EP's plain reset is a warm EXOS start
+    Debug::led_blink();
+    if (arch == A_PROFI) ESPectrum::reset(0);   // Service ROM, as setup() boots it
+    else                 ESPectrum::reset();
 }
 
 } // namespace MachineSwitch

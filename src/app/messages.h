@@ -86,6 +86,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define OSD_TAPE_SELECT_ERR "No tape file selected"
 
 #define OSD_DLG_REBOOT "Reboot the board?"
+#define OSD_DLG_POWERCYCLE "Power-cycle the machine?"
 
 #define OSD_DLG_USBBOOT "Reboot to USB mode?"
 

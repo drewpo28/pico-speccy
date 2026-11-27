@@ -3441,8 +3441,9 @@ void ESPectrum::processKeyboard() {
         // F-key — swallowing the keypress here is the ONLY thing that kept them
         // from software that reads that log (Wild Commander's F1-F10 panel keys).
         // F11/F12 stay ours: F11 is the machine reset the patched TS-BIOS Setup
-        // footer names and F12 reboots the RP2350, which is what F12 does on a
-        // real ZX-Evo too (the AVR's hardware reset).
+        // footer names and F12 power-cycles the machine (Alt+F12 reboots the
+        // RP2350), which is what F12 does on a real ZX-Evo too (the AVR's
+        // hardware reset).
         const bool extKeysOn = (Z80Ops::isProfi && Config::profi_ext_keys)
             || (ZxEvoAvr::keysToGuest()
                 && KeytoESP != fabgl::VK_F11 && KeytoESP != fabgl::VK_F12)

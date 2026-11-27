@@ -39,6 +39,35 @@ GP9 = 4B, GP15 = 7B; no audio/AY-clock pin of M1/M2/W variants sits on them. Per
 as the plain NVS key `TFT_BRIGHTNESS` next to `TFT_FLAGS`. Modelled on MadedCat's
 Murmulator_rp2040 (`cfg_brightness`, `TFT_MIN_BRIGHTNESS + cfg_brightness*10`).
 
+## F12 = light power cycle, Alt+F12 = RP2350 reboot, Ctrl+F12 = USB boot (2026-11-27, host-checked 48K, NOT hw-tested)
+
+Owner's idea: F12 should not re-initialise video / CPU clock / VREG / flash and PSRAM
+timing. A watchdog reboot cannot keep those (PSM resets CLOCKS, RESETS and XIP, so the
+PLL, PIO, HSTX, DMA and QMI restart regardless; `ehr_tail` also has to drop to
+150 MHz / 1.10 V for the m1p2, `memory-sram-flash.md`), so F12 no longer reboots the
+chip at all:
+- `HK_REBOOT` (F12, "Power cycle machine") -> `MachineSwitch::powerCycle()`: clears
+  `ram_file`, `Config::save()`, `powerOnRamFill` (the cold-boot RAM pattern),
+  `Config::requestMachine` (ROMs re-bound), `DivMMC::init()` (esxDOS cold; not on the
+  Next), `NextReg::reset(true)` on the Next (the guest's NR 0x02 hard-reset path),
+  `Ep::coldStart()` on the Enterprise, then `ESPectrum::reset()` (`reset(0)` on Profi =
+  Service ROM, as setup() boots it). Video, clocks, VREG, QMI/PSRAM, USB, network and
+  mounted disks/cartridges stay. Same confirm dialog as before (Yes default).
+- Falls back to `esp_hard_reset()` only when the setup()-built layout no longer fits
+  the machine: Next vs `nextRamReady`, Profi forced-SRAM on a non-butter board,
+  `wantedPages != MEM_PG_CNT` (the `commit()` boundaries).
+- `HK_REBOOT_FULL` (new slot 29, Alt+F12) is the old full reboot. Alt+F12 belonged to
+  `HK_USB_BOOT`, which moved to **Ctrl+F12**; `Config::load` migrates a saved config
+  where both slots end up on the same key (old hkVK20 + default slot 29) back to
+  Ctrl+F12. Host-checked: old config -> Ctrl+F12 asks USB mode, Alt+F12 "Reboot the
+  board?".
+- What F12 no longer cures: PS/2 desync, a fragmented heap, anything setup() fixes
+  that reset() does not. A "works only after F12" report must now name Alt+F12 vs F12;
+  if F12 does not fix it, the gap is in the reset path (fix it there).
+- Hw check owed (DVp2w): F12 on 48K/128K/Pentagon+Gluk, Profi, Scorpion GMX, TS-Conf,
+  Next (TBBLUE chain must boot), Enterprise, +3 with disk, divMMC/esxDOS, NeoGS on;
+  monitor must NOT lose sync. Alt+F12 = old reboot, Ctrl+F12 = USB mode.
+
 ## A machine switch resets the CPU turbo (2026-11-18, hw-confirmed 2026-11-18 by the owner)
 
 Owner: switching machine sets the CPU clock back to that machine's default.

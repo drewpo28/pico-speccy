@@ -979,7 +979,8 @@ public:
         HK_QUICK_LOAD   = 26,
         HK_QUICK_SAVE   = 27,
         HK_FAST_MENU    = 28,  // Alt+F7: the fast menu popup (0-9)
-        HK_COUNT        = 29
+        HK_REBOOT_FULL  = 29,  // Alt+F12: reboot the RP2350 (HK_REBOOT/F12 is the light power cycle)
+        HK_COUNT        = 30
     };
 
     struct HotkeyBinding {
