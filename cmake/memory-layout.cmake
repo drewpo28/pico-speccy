@@ -365,8 +365,8 @@ if (ELMOVL_WIN_SIZE STREQUAL "AUTO")
 else()
     set(ELMOVL_WIN_SIZE_EFFECTIVE ${ELMOVL_WIN_SIZE})
 endif()
-if (NOT FLASH_16MB)
-    set(ELM_CODE_OVERLAY OFF)   # no eLeMeNt on 4 MB images (cmake/board.cmake): no window
+if (NOT ELEMENT_ZX)
+    set(ELM_CODE_OVERLAY OFF)   # no eLeMeNt in this build (cmake/board.cmake): no window
 endif()
 if (NOT ELM_CODE_OVERLAY)
     set(ELMOVL_WIN_SIZE_EFFECTIVE 0)

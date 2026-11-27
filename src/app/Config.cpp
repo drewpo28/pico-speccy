@@ -463,9 +463,9 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         newArch = A_PENT; newRomSet = R_NONE;
     }
     // eLeMeNt ZX: 2 MB of URAM, every page a plain pointer (like SAM).
-    // 4 MB images carry no eLeMeNt at all (FLASH_16MB, cmake/board.cmake).
-    if (newArch == A_ELM && !FLASH_16MB) {
-        OSD::bootNotice("eLeMeNt ZX: 16 MB firmware only - using Pentagon");
+    // A build with ELEMENT_ZX=0 carries no eLeMeNt at all (cmake/board.cmake).
+    if (newArch == A_ELM && !ELEMENT_ZX) {
+        OSD::bootNotice("eLeMeNt ZX: not in this firmware - using Pentagon");
         newArch = A_PENT; newRomSet = R_NONE;
     }
     if (newArch == A_ELM && butter_psram_size() < (4u << 20)) {

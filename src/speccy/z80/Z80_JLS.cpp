@@ -1913,7 +1913,7 @@ NX_OVL_CODE __attribute__((optimize("O2"))) void Z80::exec_nocheck_next(bool div
 // 0x4000 (ROM, divSD, URAM zone 0) the shared loop fetches; the ED prefix, the
 // ports and the traps go to it as well (nx_slow). The idle hook is Next-only.
 extern volatile uint8_t g_ngs_zxdma;   // GS.h: the NeoGS ZX-DMA window (gsDmaPeek8)
-#if FLASH_16MB   // 4 MB images: no eLeMeNt (cmake/board.cmake); g_elm_fastrd folds the callers away
+#if ELEMENT_ZX   // ELEMENT_ZX=0: no eLeMeNt (cmake/board.cmake); g_elm_fastrd folds the callers away
 namespace ElmMemory {
 // The LCU slot in RAM (PLANETOS maps it at #0000: `LD (0000),HL` / `LD (0004),DE` in,
 // `LD A,(0011)` / `LD HL,(0011)` out). The generic chain for a store was poke8 ->
@@ -2214,7 +2214,7 @@ elm_out:
     lastFlagQ = (nx_qs == nx_r);
     nxPub();
 }
-#endif // FLASH_16MB
+#endif // ELEMENT_ZX
 
 IRAM_ATTR void Z80::exec_nocheck() {
 
@@ -2233,7 +2233,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
     while (CPU::tstates < CPU::stFrame) {
 
 #if !NEO8_TRAP
-#if FLASH_16MB
+#if ELEMENT_ZX
         // eLeMeNt at fastmem level 1 (HGFX / the turbo ZX screen): its own switch loop
         // at 0x4000+ (elm_memory.h); below that the fetch here, one instruction at a time.
         if (g_elm_fastrd) {
@@ -2259,7 +2259,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
             }
             if (REG_PC < 0x4000) CPU::tstates += Elm::g_elm_romWait;   // OverClock 05 / 07: the M1 in the ROM area
         }
-#endif // FLASH_16MB
+#endif // ELEMENT_ZX
         if (g_next_fastrd && nbp <= 0 && prefixOpcode == 0) {   // mid DD/FD chain: one instruction below
             exec_nocheck_next(divmmc);
             continue;
@@ -5385,7 +5385,7 @@ Z80_COLD void Z80::zcInirBatch() {
 // COPY read hook, no chunky split, no write protect), slots 2-7 (plus the divMMC RAM at
 // #2000 as a destination, the Next's rule), within the slot, the slice and one raster line.
 volatile uint32_t g_elm_batch[4];   // PERF: LDIR batches / bytes, INIR batches / bytes
-#if FLASH_16MB   // 4 MB images: no eLeMeNt (cmake/board.cmake); g_elm_fastrd folds the callers away
+#if ELEMENT_ZX   // ELEMENT_ZX=0: no eLeMeNt (cmake/board.cmake); g_elm_fastrd folds the callers away
 static uint16_t s_elmLdPc, s_elmLdBc;
 static uint32_t s_elmLdT, s_elmLdDt;
 static uint16_t s_elmInPc;
@@ -5518,7 +5518,7 @@ Z80_COLD void Z80::elmInirBatch() {
     } while (0);
     s_elmInDt = T; s_elmInPc = pc; s_elmInB = REG_B; s_elmInT = CPU::tstates;
 }
-#endif // FLASH_16MB
+#endif // ELEMENT_ZX
 
 // Spectrum Next, an unrolled run of INI from the SD data port 0xEB (ED A2 x N):
 // called after the INI that started it, executes the following INIs of the run

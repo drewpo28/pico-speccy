@@ -743,12 +743,12 @@ static inline void nextFastrdSet(bool on) {
 // The eLeMeNt loop's gate (elm_memory.h, Z80::exec_nocheck_elm): fastmem level 1 on
 // the eLeMeNt. A drop ends the slice the same way (the loop tests it after a shared
 // handler only).
-#if FLASH_16MB
+#if ELEMENT_ZX
 bool g_elm_fastrd = false;
 #else
-static constexpr bool g_elm_fastrd = false;   // 4 MB images: no eLeMeNt (cmake/board.cmake)
+static constexpr bool g_elm_fastrd = false;   // ELEMENT_ZX=0: no eLeMeNt (cmake/board.cmake)
 #endif
-#if FLASH_16MB
+#if ELEMENT_ZX
 namespace Elm { extern volatile uint8_t g_elm_rdmask, g_elm_wrmask; }   // Element.cpp: slot bit set = generic access
 #endif
 // Slots 0-1 read plain only while nothing sits between the guest and ramCurrent
@@ -766,7 +766,7 @@ void elmFastSlotsUpdate() {
     g_z80_rd_all = rd == 0xFF;
 }
 static inline void elmFastrdSet(bool on) {
-#if FLASH_16MB
+#if ELEMENT_ZX
     on = on && CodeOverlay::elmResident();   // the loop lives in the .elmovl window: never without it
     if (g_elm_fastrd && !on && CPU::stFrame > CPU::tstates + 1) CPU::stFrame = CPU::tstates + 1;
     const bool was = g_elm_fastrd;

@@ -3,14 +3,14 @@
 // HGFX-2EN.TXT, wiki.ilnx.cz hgfx:ink_attr_copy. Independent of the machine.
 #pragma once
 #include <stdint.h>
-#ifndef FLASH_16MB
-#define FLASH_16MB 1   // tools/elm_*_test builds: the whole machine (the firmware / host always define it)
+#ifndef ELEMENT_ZX
+#define ELEMENT_ZX 1   // tools/elm_*_test builds: the whole machine (the firmware / host always define it)
 #endif
 
-#if FLASH_16MB
+#if ELEMENT_ZX
 extern volatile bool g_elm_c1_live;
 #else
-constexpr bool g_elm_c1_live = false;   // 4 MB images: no eLeMeNt (cmake/board.cmake)
+constexpr bool g_elm_c1_live = false;   // ELEMENT_ZX=0: no eLeMeNt (cmake/board.cmake)
 #endif
 
 namespace Hgfx {
@@ -29,7 +29,7 @@ __attribute__((always_inline)) static inline uint8_t zxRow(uint16_t off) {     /
     return (uint8_t)(((off >> 11) << 6) | (((off >> 5) & 7) << 3) | ((off >> 8) & 7));
 }
 
-#if !FLASH_16MB
+#if !ELEMENT_ZX
 // 4 MB images: no eLeMeNt (cmake/board.cmake, ElmHgfx.cpp not built). What the shared
 // code calls, as constants that fold its branches away.
 constexpr uint8_t giga = 0;
@@ -116,6 +116,6 @@ void    repaint();            // the same, machine stopped
 void    paletteLost();        // applyPalette rewrote the slots
 uint8_t pairBorder(uint8_t zx);   // a ZX colour in the live pair frame
 int     borderSlot(uint8_t zx);   // the indexed border's palette slot, -1 = the ZX colour
-#endif // FLASH_16MB
+#endif // ELEMENT_ZX
 
 }

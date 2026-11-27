@@ -170,7 +170,7 @@ bool g_timex_machine = false;
 bool Z80Ops::isNext = false;
 bool Z80Ops::isSam = false;
 bool Z80Ops::isEnt = false;
-#if FLASH_16MB
+#if ELEMENT_ZX
 bool Z80Ops::isElm = false;
 #endif
 bool Z80Ops::idleHook = false;
@@ -356,7 +356,7 @@ void CPU::reset() {
     Z80Ops::isAtm = (Config::arch == A_ATM);
     Z80Ops::isSam = (Config::arch == A_SAM);
     Z80Ops::isEnt = (Config::arch == A_ENT);
-#if FLASH_16MB
+#if ELEMENT_ZX
     Z80Ops::isElm = (Config::isElm());
     if (Z80Ops::isElm) Elm::armPersonality();
 #endif   // e_zxi_000 -> the flag and timing chains below
@@ -1523,7 +1523,7 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
     if (__builtin_expect(g_atm_ro != 0, 0)) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
-#if FLASH_16MB   // bit 0x20: set by the eLeMeNt only (Element.cpp GM_ELM)
+#if ELEMENT_ZX   // bit 0x20: set by the eLeMeNt only (Element.cpp GM_ELM)
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;  // eLeMeNt windows
 #endif
         if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;
@@ -1796,7 +1796,7 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     // a window showing ROM drops it (gsDmaPoke8's twin).
     if (g_atm_ro) {
         if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
-#if FLASH_16MB
+#if ELEMENT_ZX
         if ((g_atm_ro & 0x20) && Elm::wrKind[address >> 8] && Elm::memWrite(address, value)) return;
 #endif
         if (((g_atm_ro >> (address >> 14)) & 1) && romWindowDrops(address)) return;

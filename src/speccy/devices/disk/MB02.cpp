@@ -202,7 +202,7 @@ void MB02::applyMapping() {
     // boot EPROM came up over the SetUp ROM, so F11 / Alt+F11 showed the BS-DOS
     // loader instead of the SetUp. The register is kept; the next reset re-applies.
     g_mb02_page0 = false;
-#if FLASH_16MB
+#if ELEMENT_ZX
     { extern uint8_t g_elm_nodiv; if (Config::isElm() && g_elm_nodiv) { MemESP::mb02_write_gate = true; MemESP::mb02_page_dirty = nullptr; return; } }
 #endif
     // Beside esxDOS, both want page 0 at reset and the one that maps first keeps it.

@@ -7,8 +7,8 @@
 // and URAM with LCU1. Registers of what is not built yet are stored only.
 #pragma once
 #include <stdint.h>
-#ifndef FLASH_16MB
-#define FLASH_16MB 1   // tools/elm_*_test builds: the whole machine (the firmware / host always define it)
+#ifndef ELEMENT_ZX
+#define ELEMENT_ZX 1   // tools/elm_*_test builds: the whole machine (the firmware / host always define it)
 #endif
 
 namespace Elm {
@@ -16,7 +16,7 @@ namespace Elm {
 enum { EK_NONE = 0, EK_TAKEN, EK_RESET, EK_SETUP };   // extraKey's answers (below)
 enum { WK_VRAM = 1, WK_REG = 2, WK_LCU = 5, WK_CHUNKY = 6, WK_COW = 13 };   // wrKind of the HGFX VRAM / register / LCU / chunky windows; the pair frame's captured screen (Hgfx::cowWrite)
 
-#if !FLASH_16MB
+#if !ELEMENT_ZX
 // 4 MB images: no eLeMeNt (cmake/board.cmake, Element*.cpp not built). The callers in
 // the shared code stay as they are; these constants fold their branches away.
 inline void reset() {}
@@ -188,6 +188,6 @@ static inline bool isPort(uint16_t address) {
            (address & 0xFEFF) == 0x9EFD || address == 0xEFF7 ||
            (lo == 0xFD && ((address >> 8) == 0x7F || (address >> 8) == 0x1F || (address >> 8) == 0xDF || (address >> 8) == 0xFD));
 }
-#endif // FLASH_16MB
+#endif // ELEMENT_ZX
 
 }

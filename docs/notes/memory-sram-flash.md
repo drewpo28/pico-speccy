@@ -269,6 +269,23 @@ whole flash-bank path:
 - What it bought is the RULE, not 1.6 MB: `.psramroms` is 1.42 MB on 4 MB and was already
   the area the bank was counted over ("traded"); the image then ended at 0x3C5F30, i.e.
   ~228 KB short of the top. Now any code may use that.
+- The 16 MB-only features came back to every image the same day (owner): eLeMeNt ZX
+  (new gate `ELEMENT_ZX`, cmake option ON; `FLASH_16MB` now means only YRW801 + the
+  built-in GM.DLS bank), PK Hobbit V2.9 (`HOBBIT_ALL_ROMS=1`), the separate 48K custom ROM
+  on ZERO2 PIO-USB (no `NO_SEPARATE_48K_CUSTOM`), the GS-Z80 switch loop (AUTO = ON).
+  Flash left: DVp2/m2p2/PCp2 4 MB 88 KB, m1p2 84 KB, z0p2 PIOUSB 72 KB, ST7789 136 KB.
+  **SRAM: heap ceiling -11.9 KB on 4 MB images** (DVp2: `__end__`..`__ovl_low_start`
+  120.7 -> 108.7 KB): `.gsovl` +8.2 KB (GS switch) lowers `__ovl_low_start`, eLeMeNt
+  `.data`/`.bss` in shared code +3.8 KB; `.elmovl` sits in `ram_128k` (free). Same as the
+  16 MB images already paid. Watch m1p2 (no butter): Profi used to boot with ~21 KB free.
+  Test ELFs `debug/DVp2-4mb-nodlsflash-1.1.4`, `debug/DVp2w-nodlsflash-1.1.4`.
+  **hw-run 2026-11-27 (owner, m1p2 4 MB with butter PSRAM, own build): eLeMeNt + MIDI GM.DLS +
+  NeoGS + 576p runs, Free RAM 46 KB.** m1p2 with SPI PSRAM only: Free RAM 10 KB (owner,
+  same day, config not given; was ~21 KB). Split on m1p2: GS switch `.gsovl` -8.2 KB (only
+  with GS on: an unloaded window goes back to the heap, CodeOverlay.cpp), eLeMeNt `.bss`
+  1.9 KB + Z80-core RAM code 1.9 KB (always). Ways back if ever needed: GS switch AUTO =
+  16 MB again (+8.2 KB with GS on), eLeMeNt tables into butter at eZX start (+1.9 KB).
+  Owner: noted only, nothing to change for now.
 
 Everything below about the bank region, its floors and the trade is HISTORY.
 

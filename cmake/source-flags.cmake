@@ -70,11 +70,11 @@ set_source_files_properties(src/drivers/sound/pwm_audio.cpp PROPERTIES
 # redcode/Z80 build configuration for GS (LGPLv3 library vendored in external/redcode/, with its Z80_compat.h)
 # GS_Z80_SWITCH (2026-11-20): z80_run's switch loop with inlined, opcode-specialised bodies and
 # cycles / R / PC in locals (Z80_redcode.c, tools/gen_gs_switch.py; numbers in docs/notes/neogs-gs.md).
-# +8.2 KB of .gsovl (SRAM on GS boots, and flash): AUTO = 16 MB images only - the 4 MB ones sit
-# at the GM.DLS floor (MURM2 4 MB did not link with it, 2026-11-20).
-set(GS_Z80_SWITCH "AUTO" CACHE STRING "GS-Z80 switch loop: AUTO (16 MB images), ON, OFF")
+# +8.2 KB of .gsovl (SRAM on GS boots, and flash): AUTO = every image (was 16 MB only while
+# the 4 MB ones sat at the GM.DLS floor, 2026-11-20..27).
+set(GS_Z80_SWITCH "AUTO" CACHE STRING "GS-Z80 switch loop: AUTO (every image), ON, OFF")
 if(GS_Z80_SWITCH STREQUAL "AUTO")
-    set(GS_Z80_SWITCH_EFFECTIVE ${FLASH_16MB})
+    set(GS_Z80_SWITCH_EFFECTIVE ON)
 else()
     set(GS_Z80_SWITCH_EFFECTIVE ${GS_Z80_SWITCH})
 endif()

@@ -46,11 +46,11 @@ visit https://zxespectrum.speccy.org/contacto
 
 // eLeMeNt ZX: the personality (e_zxi_000) as it was armed at the last reset
 // (Element.cpp, Elm::armPersonality) — read by the Config::isElm*Raster() predicates.
-#if FLASH_16MB
+#if ELEMENT_ZX
 extern uint8_t g_elm_personality;
 extern uint8_t g_elm_ff_off;        // Element.cpp: the SetUp switched the #FF (Timex) read off
 #else
-constexpr uint8_t g_elm_personality = 0, g_elm_ff_off = 0;   // 4 MB images: no eLeMeNt (cmake/board.cmake)
+constexpr uint8_t g_elm_personality = 0, g_elm_ff_off = 0;   // ELEMENT_ZX=0: no eLeMeNt (cmake/board.cmake)
 #endif
 
 namespace JoyProf { struct Profile; }
@@ -493,7 +493,7 @@ public:
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
     static bool isSam() { return arch == A_SAM; }
     static bool isEp() { return arch == A_ENT; }
-    static bool isElm() { return FLASH_16MB && arch == A_ELM; }   // constant false on 4 MB images
+    static bool isElm() { return ELEMENT_ZX && arch == A_ELM; }   // constant false with ELEMENT_ZX=0
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
     // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).

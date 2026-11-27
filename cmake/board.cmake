@@ -120,19 +120,23 @@ endif()
 # reads it from the SD card (src/speccy/devices/sound/MoonRom.h).
 set(MOONSOUND 1)
 add_compile_definitions(MOONSOUND=${MOONSOUND} YRW801_BUILTIN=${YRW801_BUILTIN})
-# HOBBIT_ALL_ROMS: the PK Hobbit V2.9 dump (13 KB) beside V4.4 LOGO and FORTH —
-# 16 MB only, the 4 MB image is too close to the GM.DLS floor.
-if(FLASH_16MB)
-    add_compile_definitions(HOBBIT_ALL_ROMS=1)
+# HOBBIT_ALL_ROMS: the PK Hobbit V2.9 dump (13 KB) beside V4.4 LOGO and FORTH. Was
+# 16 MB only until the GM.DLS flash floor went away (2026-11-27); now every image.
+add_compile_definitions(HOBBIT_ALL_ROMS=1)
+# ELEMENT_ZX (C define, 1/0): the eLeMeNt ZX machine (src/speccy/machines/Element, ~88 KB
+# of flash with its .elmovl load image + 24 KB SetUp/esxDOS ROMs). 16 MB only from
+# 2026-11-25 (it pushed the 4 MB images under the hard GM.DLS floor) to 2026-11-27, when
+# the floor went away; ON for every image now. -DELEMENT_ZX=OFF drops it again (sources
+# out of the glob in CMakeLists.txt, `#if ELEMENT_ZX` around its callers; a saved A_ELM
+# then boots as Pentagon, Config.cpp). It needs 4 MB of butter PSRAM at runtime anyway.
+option(ELEMENT_ZX "eLeMeNt ZX machine" ON)
+if(ELEMENT_ZX)
+    add_compile_definitions(ELEMENT_ZX=1)
 else()
-    add_compile_definitions(HOBBIT_ALL_ROMS=0)
+    add_compile_definitions(ELEMENT_ZX=0)
 endif()
-# FLASH_16MB (C define, 1/0): code that ships on 16 MB images only. `#if FLASH_16MB`
-# around a 16 MB-only machine's callers, and its sources out of the glob (CMakeLists.txt).
-# Since 2026-11-25: eLeMeNt ZX (src/speccy/machines/Element, ~88 KB of flash with its
-# .elmovl load image) - on 4 MB it pushed every image 50-100 KB under the hard GM.DLS
-# floor (memory-sram-flash.md); it needs 4 MB of butter PSRAM anyway. A saved A_ELM boots
-# as Pentagon on 4 MB (Config.cpp). The host build sets it to 1 (host/CMakeLists.txt).
+# FLASH_16MB (C define, 1/0): code that ships on 16 MB images only (nothing at the moment;
+# YRW801_BUILTIN / GM_BANK_BUILTIN above are the 16 MB-only data).
 if(FLASH_16MB)
     add_compile_definitions(FLASH_16MB=1)
 else()

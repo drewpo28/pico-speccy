@@ -396,7 +396,7 @@ __attribute__((always_inline)) inline uint8_t DivMMC::nextOpcode(uint16_t pc) {
 __attribute__((always_inline)) inline void DivMMC::preOpcFetch(uint16_t pc) {
     if (!opcodeTrapPage(pc)) return;
     pend_after = 0;
-#if FLASH_16MB
+#if ELEMENT_ZX
     { extern uint8_t g_elm_nodiv; if (g_elm_nodiv && !automap) return; }   // eLeMeNt ZX: URAM on top
 #endif
     { extern bool g_mb02_page0; if (g_mb02_page0 && !automap && !conmem) { if (pc == DIVMMC_TRAP_0066) nmi_bypass = false; return; } }   // MB-02+ holds page 0 (its EPROM boots)

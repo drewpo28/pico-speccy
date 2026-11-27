@@ -141,7 +141,7 @@ uint8_t *DivMMC::esxdos_rom = nullptr;
 uint8_t *DivMMC::rom_flat = nullptr;
 // eLeMeNt ZX: esxDOS from block 4 of its FlashRAM (Element.cpp, e_zxi_02D bit 0);
 // romSync prefers it over the built-in builds while set.
-#if FLASH_16MB
+#if ELEMENT_ZX
 extern const uint8_t* g_elm_divrom;
 #else
 static constexpr const uint8_t* g_elm_divrom = nullptr;   // 4 MB images: no eLeMeNt
