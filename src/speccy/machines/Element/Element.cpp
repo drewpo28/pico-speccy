@@ -1593,6 +1593,7 @@ void bootSettings() {
     s_dmaBoot = Config::dma_mode != 0;
     s_zifiBoot = Config::zifi_enabled != 0;
     Debug::log("[ELM] URAM %u MB (%s), personality %02X at power-up", (unsigned)(MEM_PG_CNT / 64), aasram() ? "AA-SRAM" : "no AA-SRAM", e[0x000]);
+    ElmFlash::bootFlush();
 }
 
 // e_zxi_038 bit 0 = the AA-SRAM 2 MB pack: the page strip is laid out at boot, so the

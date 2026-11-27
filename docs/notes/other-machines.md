@@ -705,6 +705,19 @@ already changed bytes 0-4 of ROM0. Fix: `Elm::windowsRebuild` sets `g_atm_ro` bi
 on the legacy mapping, and the CPU write hook lets the divMMC RAM and the Pentagon page-0 RAM through that bit
 (`romWindowDrops`, out of line: inlined it cost 532 B of RAM, the helper 96 B). Diagnostics that found it: the host bench's
 `PICOSPECCY_PCLOG=from:count` (PC/SP/bytes at PC per frame) and `PICOSPECCY_PEEK=addr:len,...` (host_main.cpp).
+**SetUp auto-install covers all four Areas (2026-11-27, bench, NOT hw-tested, `debug/DVp2w-elm-setupall-1.1.4`):**
+`ElmFlash::installBuiltin` used to fill block 7 of Areas 0-2 only, and only when blank; the SetUp entry boots block 7
+of the CURRENT Area (`e_00F`), so Area 3 (the SetUp can pick it) answered "SetUp not flashed" for good. Now block 7
+of all four Areas gets the built-in SetUp unless it already holds one (id `LMN128` at +11, any version); the MB03+SD
+esxDOS stays Areas 0-2 only. `docs/element-setup-plan.md` §2.3.
+Second half (same day, owner: "at the first start flash/fram are not created"): since the 2026-11-24 frame-slack rule
+(`Elm::flush` writes only in a frame with 3 ms idle, or after 30 s) a built image and a blank FRAM lived in PSRAM only;
+a power-off or a pulled card before that left the card bare (the 11-02 logs show the immediate write). Now
+`ElmFlash::bootFlush` at the end of `Elm::bootSettings` writes a missing `flash.bin` / `fram.bin` (blank FRAM too) and
+the install sectors right at boot (no frame to protect there). Bench: both files exist 4 s after a fresh start, the next
+start reads them without a rewrite. `debug/DVp2w-elm-setupall2-1.1.4` (its `build:` stamp still says 09:40:35, ELF
+linked 09:47, `ElmFlash::bootFlush` present), NOT hw-tested.
+
 **SetUp Shift+R / Shift+L = a machine reset (2026-11-03, bench):** the SetUp writes its registers and leaves by `RST 0`
 (C544). The first Element port write had already put the normal ROMs back, so the RST ran the ROM on at #0000 into a
 WARM esxDOS (divMMC RAM intact, browser state too) and the personality, applied at reset only, stayed the old one; the

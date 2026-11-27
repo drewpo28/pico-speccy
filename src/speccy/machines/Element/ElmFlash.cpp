@@ -83,7 +83,7 @@ void modelWrite(uint8_t* img, uint32_t off, uint8_t v, uint32_t* dirty) {
 static uint8_t* s_img;
 static uint8_t* s_fram;
 static uint32_t s_dirty[4];            // 128 sectors
-static bool s_framDirty, s_fileMissing;
+static bool s_framDirty, s_fileMissing, s_framMissing;
 static uint32_t s_flushMs;
 
 uint8_t* image() { return s_img; }
@@ -155,21 +155,32 @@ static void build() {
     installBuiltin(false);
 }
 
-// The board's own firmware pieces (elm_roms.h), where a block is still blank: the SetUp
-// into block 7 and the MB03+SD esxDOS into block 4 of the three ROM Areas — a fresh
-// image has them from the start, an older card's image gets them on the first mount
-// (owner, 2026-11-04: no flasher tapes to run). Block 4 of a built image holds the
-// generic esxDOS, so there the MB03+SD build replaces it outright (`fresh`).
+// A SetUp image starts `DI; LD SP,0; IM 1; XOR A; LD I,A; JR ..` and carries the id
+// "LMN128" at +11 (any version); anything else in block 7 cannot be entered.
+static bool hasSetup(uint8_t area) {
+    const uint8_t* b = block(area, BLOCK_SETUP);
+    return b && memcmp(b + 11, "LMN128", 6) == 0;
+}
+
+// The board's own firmware pieces (elm_roms.h): the SetUp into block 7 of all four
+// Areas where it is missing (blank or not a SetUp), the MB03+SD esxDOS into a blank
+// block 4 of the three ROM Areas — a fresh image has them from the start, an older
+// card's image gets them on the first mount (owner, 2026-11-04: no flasher tapes to
+// run). Block 4 of a built image holds the generic esxDOS, so there the MB03+SD build
+// replaces it outright (`fresh`). Area 3 needs the SetUp too (2026-11-27): the SetUp
+// itself can select it (e_00F = 3), and the entry boots block 7 of the CURRENT Area,
+// so without it the SetUp could never be reached again ("not flashed").
 static void installBuiltin(bool existing) {
 #if ELM_ROMS_BUILTIN
-    for (int a = 0; a < 3; a++) {
+    for (int a = 0; a < 4; a++) {
         const uint32_t off7 = a * AREA + BLOCK_SETUP * BLOCK, off4 = a * AREA + BLOCK_ESXDOS * BLOCK;
-        if (blockBlank((uint8_t)a, BLOCK_SETUP)) {
+        if (!hasSetup((uint8_t)a)) {
             memset(s_img + off7, 0xFF, BLOCK);
             memcpy(s_img + off7, gb_rom_elm_setup, sizeof gb_rom_elm_setup);
             for (uint32_t o = off7; o < off7 + BLOCK; o += SECTOR) markDirty(existing ? s_dirty : nullptr, o);
             if (existing) Debug::log("[ELM] SetUp installed into block 7 of Area %d", a);
         }
+        if (a == 3) break;           // Area 3 = the user's own ROM set: its esxDOS block stays theirs
         if (!existing || blockBlank((uint8_t)a, BLOCK_ESXDOS)) {
             memset(s_img + off4, 0xFF, BLOCK);
             memcpy(s_img + off4, gb_rom_esxdos_elm, sizeof gb_rom_esxdos_elm);
@@ -188,9 +199,10 @@ bool ensure() {
         s_fram = (uint8_t*)Buffer::palloc(FRAM_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (s_fram) {
             memset(s_fram, 0xFF, FRAM_SIZE);
-            if (readFile(ELM_FRAM_PATH, s_fram, FRAM_SIZE)) Debug::log("[ELM] FRAM from " ELM_FRAM_PATH);
-            else Debug::log("[ELM] FRAM blank (no " ELM_FRAM_PATH ")");
-            s_framDirty = false;
+            s_framMissing = !readFile(ELM_FRAM_PATH, s_fram, FRAM_SIZE);
+            if (!s_framMissing) Debug::log("[ELM] FRAM from " ELM_FRAM_PATH);
+            else { memset(s_fram, 0xFF, FRAM_SIZE); Debug::log("[ELM] FRAM blank (no " ELM_FRAM_PATH ")"); }
+            s_framDirty = s_framMissing;   // a blank board's FRAM gets its file too (bootFlush)
         }
     }
     if (s_img) return true;
@@ -248,6 +260,18 @@ void flush(bool force, bool calm) {
             if (ok) s_framDirty = false;
             Debug::log("[ELM] FRAM -> " ELM_FRAM_PATH " %s", ok ? "ok" : "FAILED");
         }
+    }
+}
+
+// A fresh card (2026-11-27, owner: "at the first start flash/fram are not created"):
+// since the 2026-11-24 frame-slack rule the built image waited for a calm frame or
+// 30 s, so a power-off or a pulled card before that left the card without the files
+// (and without the installed SetUp). Setup has no frame to protect: write them here.
+// An existing image's install sectors go the same way.
+void bootFlush() {
+    if ((s_img && (s_fileMissing || anyDirty())) || (s_fram && (s_framMissing || s_framDirty))) {
+        flush(true);
+        if (!s_framDirty) s_framMissing = false;
     }
 }
 

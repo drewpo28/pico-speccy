@@ -27,7 +27,8 @@ bool blockBlank(uint8_t area, uint8_t blk);      // all #FF
 void write(uint32_t off, uint8_t v);             // a store into the flash window, off = image offset
 void framDirty();
 void flush(bool force = false, bool calm = true);   // file write-back (per frame; force on reboot; calm = the frame has slack for an SD write)
-void windowClosed();                             // layout 6 left: the session's sectors go to the file now
+void bootFlush();                                // at boot: a missing flash.bin / fram.bin is created now, not 30 s later
+void windowClosed();                           // layout 6 left: the session's sectors go to the file now
 
 // The JEDEC model alone, for tools/elm_flash_test.cpp: the state machine over `img`.
 void modelReset();
