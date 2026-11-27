@@ -3449,9 +3449,8 @@ void ESPectrum::processKeyboard() {
         // F-key — swallowing the keypress here is the ONLY thing that kept them
         // from software that reads that log (Wild Commander's F1-F10 panel keys).
         // F11/F12 stay ours: F11 is the machine reset the patched TS-BIOS Setup
-        // footer names and F12 power-cycles the machine (Alt+F12 reboots the
-        // RP2350), which is what F12 does on a real ZX-Evo too (the AVR's
-        // hardware reset).
+        // footer names and F12 reboots the RP2350, which is what F12 does on a
+        // real ZX-Evo too (the AVR's hardware reset).
         const bool extKeysOn = (Z80Ops::isProfi && Config::profi_ext_keys)
             || (ZxEvoAvr::keysToGuest()
                 && KeytoESP != fabgl::VK_F11 && KeytoESP != fabgl::VK_F12)
@@ -5012,7 +5011,7 @@ void ESPectrum::loop() {
       if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
       Config::last_ram_file = NO_RAM_FILE;
       if (rk == 1) {
-        // The board's restart is a power-up: the light power cycle (F12) — FRAM
+        // The board's restart is a power-up: the light power cycle (Alt+F12) — FRAM
         // registers, fresh RAM, esxDOS cold — and the RP2350 reboots only when a
         // boot-time item changed (AA-SRAM / divSD / DMA / UART: Elm::rebootWanted).
         MachineSwitch::powerCycle();

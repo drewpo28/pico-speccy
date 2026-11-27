@@ -34,12 +34,12 @@ bool commit(ArchIdx arch, RomsetIdx romset);
 // Does not return when leaving Profi's forced-SRAM layout.
 void commitAlf();
 
-// F12: power-cycle the RUNNING machine without rebooting the RP2350. Guest RAM gets
+// Alt+F12: power-cycle the RUNNING machine without rebooting the RP2350. Guest RAM gets
 // the power-on fill, the ROM is re-bound, esxDOS starts cold, Next re-arms its TBBLUE
 // boot chain (the NR 0x02 hard-reset path), the Enterprise does a cold EXOS start,
 // then the full ESPectrum::reset(). Clocks, VREG, QMI/PSRAM timing, video, USB and
 // the network are left running — no monitor resync, no bootrom. Falls back to
-// OSD::esp_hard_reset() (Alt+F12) only when the memory layout setup() built no longer
+// OSD::esp_hard_reset() (F12) only when the memory layout setup() built no longer
 // matches the machine (the same boundaries commit() reboots on).
 void powerCycle();
 

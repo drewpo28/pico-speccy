@@ -3467,13 +3467,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 ESPectrum::reset(0);
             } else
             ESPectrum::reset();
-        } else if (hkIdx == Config::HK_REBOOT) {
-            // F12: power-cycle the emulated machine, NOT the RP2350 — clocks, VREG,
+        } else if (hkIdx == Config::HK_POWER_CYCLE) {
+            // Alt+F12: power-cycle the emulated machine, NOT the RP2350 — clocks, VREG,
             // QMI/PSRAM, video and USB stay up (MachineSwitch::powerCycle). Falls
             // back to the full reboot by itself when the memory layout needs setup().
             if (confirmReboot(OSD_DLG_POWERCYCLE, /*default_yes=*/true))
                 MachineSwitch::powerCycle();
-        } else if (hkIdx == Config::HK_REBOOT_FULL) { // Alt+F12: RP2350 reboot
+        } else if (hkIdx == Config::HK_REBOOT) { // F12: RP2350 reboot
             // Yes is the default here: the user just pressed the reboot key, so a
             // second Enter is the confirmation, not an accident.
             if (confirmReboot(OSD_DLG_REBOOT, /*default_yes=*/true)) {
@@ -9244,7 +9244,7 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Volume down",          // HK_VOL_DOWN
     "Volume up",            // HK_VOL_UP
     "Hard reset",           // HK_HARD_RESET
-    "Power cycle machine",  // HK_REBOOT (F12, no RP2350 reboot)
+    "Reboot RP2350",        // HK_REBOOT
     "Max speed toggle",     // HK_MAX_SPEED
     "Pause",                // HK_PAUSE
     "Hardware info",        // HK_HW_INFO
@@ -9262,7 +9262,7 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Quick Load snapshot",  // HK_QUICK_LOAD
     "Quick Save snapshot",  // HK_QUICK_SAVE
     "Fast menu",            // HK_FAST_MENU
-    "Reboot RP2350",        // HK_REBOOT_FULL
+    "Power cycle machine",  // HK_POWER_CYCLE (no RP2350 reboot)
 };
 
 // The Help > Hot keys page of the new UI: description + current binding.
