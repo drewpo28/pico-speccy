@@ -29,12 +29,12 @@ yourself):
 4. **Draft exists and matches**: release `v<VERSION>` must exist, be a draft,
    and every asset name must end with `-<VERSION>.uf2`. Wrong version in
    assets → tell the user to re-run /draft-release. Expect one asset per
-   build_all.sh pair — currently **20**: seven boards × VGA-HDMI (m1p2,
-   DVp2, z0p2, the stock-W m1p2w/DVp2w and the Waveshare m1p2ws/DVp2ws;
-   the m2p2 and PCp2 families ship HSTX only), six HSTX images (PCp2, m2p2, m2p2w, PCp2w,
-   m2p2ws, PCp2ws), MURM and MURM2 × (ILI9341, ST7789, TV-SOFT), plus z0p2's
-   PIOUSB variant. If the
-   count differs, mention it in the confirmation so the user decides.
+   build_all.sh pair × flash type — currently **37**: 4 MB + 16 MB of m1p2,
+   DVp2, z0p2 (VGA-HDMI), PCp2, m2p2 (HSTX), MURM and MURM2 × (ILI9341, ST7789,
+   TV-SOFT), z0p2 PIOUSB = 24; the stock-W m1p2w/DVp2w (VGA-HDMI) and m2p2w/PCp2w
+   (HSTX) in 4 MB (Raspberry Pi Pico 2 W) + 16 MB (Pimoroni Pico Plus 2 W) = 8;
+   16 MB only: the Waveshare m1p2ws/DVp2ws/m2p2ws/PCp2ws = 4 and PC2p2 HSTX = 1.
+   If the count differs, mention it in the confirmation so the user decides.
 
 5. **Are you sure**: use AskUserQuestion with a summary (version, asset count,
    target commit — note if it differs from HEAD) and options

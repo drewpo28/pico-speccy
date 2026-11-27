@@ -20,6 +20,12 @@ bool intact() {
 #if HOST_BUILD
     return true;   // a PC: these ROMs are ordinary data in the executable
 #endif
+#if PSRAMROMS_ABSENT
+    // 4 MB stock-W image (Pico 2 W): .psramroms is not in the UF2 at all
+    // (cmake/memory-layout.cmake), so this board is "traded" from the first boot.
+    // Never trust bytes at __psramrom_start: an older image may have left a magic there.
+    return false;
+#endif
     if (regionSize() < sizeof(kMagic)) return false;   // nothing linked here
     const volatile uint8_t* p = (const volatile uint8_t*)__psramrom_start;
     for (size_t i = 0; i < sizeof(kMagic); i++)

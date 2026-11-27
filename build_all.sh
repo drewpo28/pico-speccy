@@ -124,11 +124,14 @@ PIOUSB_TARGETS="ZERO2"
 HSTX_TARGETS="PICO_PC MURM2 PICO_PC2"
 
 # Flash types: every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON,
-# "-16MB" in the file name, adds ZXM-MoonSound with its embedded ROM). The W/WS
+# "-16MB" in the file name, adds ZXM-MoonSound with its embedded ROM). The WS
 # boards exist as 16 MB modules only, so they get the 16 MB image alone (named
 # with -16MB like every other 16 MB image; their build dir keeps the plain name).
+# The stock-layout W boards get both since 2026-11-26: 16 MB = Pimoroni Pico Plus 2 W
+# (plain build dir, as before), 4 MB = Raspberry Pi Pico 2 W (build dir "-4MB").
 FLASH_TYPES="${FLASH_TYPES:-4 16}"
 W_TARGETS="MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
+WS_TARGETS="MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
 # Other boards that exist with 16 MB flash only: no 4 MB image either, but they
 # keep the -16MB build dir like any non-W 16 MB image.
 ONLY16_TARGETS="PICO_PC2"   # ZERO2 left 2026-11-11: some owners swap its flash for 4 MB
@@ -237,7 +240,7 @@ done
 BUILD_PAIRS=()
 for PAIR in "${BASE_PAIRS[@]}"; do
     IS_W=false
-    for W_T in $W_TARGETS $ONLY16_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
+    for W_T in $WS_TARGETS $ONLY16_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
     for FT in $FLASH_TYPES; do
         if $IS_W && [ "$FT" != "16" ]; then continue; fi
         BUILD_PAIRS+=("${PAIR}:${FT}")
@@ -260,11 +263,14 @@ LOG_DIR="$BUILD_ROOT/logs"
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
 # 4 MB images keep the historic dir names; a 16 MB one appends -16MB (the W/WS
-# boards are 16 MB only and keep their plain DIR names — the file name carries -16MB).
+# boards keep their plain DIR names for 16 MB — the file name carries -16MB — so the
+# 4 MB stock-W image is the one that takes a suffix there: -4MB).
 build_dir_for() {
     local target="$1" display="$2" flash="$3" suffix=""
     if [ "$flash" = "16" ]; then
         case " $W_TARGETS " in *" $target "*) ;; *) suffix="-16MB" ;; esac
+    else
+        case " $W_TARGETS " in *" $target "*) suffix="-4MB" ;; esac
     fi
     if [ "$display" = "VGA_HDMI" ]; then
         echo "$BUILD_ROOT/${target}${suffix}"

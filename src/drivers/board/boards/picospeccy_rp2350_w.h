@@ -20,10 +20,10 @@
 //      so the radio's PIO block stays at gpio_base 0 (WifiNet::init).
 //   2. The user LED is on the radio (WL_GPIO0) on both, so there is no
 //      PICO_DEFAULT_LED_PIN GPIO (the carrier arms pass 255).
-//   3. Flash: 16 MB on the Pico Plus 2 W, 4 MB on the Pico 2 W. The image is built
-//      for 16 MB: at 4 MB the CYW43 blob + lwIP (~290 KB) push the firmware past the
-//      linker's hard GM.DLS floor (measured 2026-10-12: ~94 KB short), so a plain
-//      Pico 2 W would need a slimmer build of its own.
+//   3. Flash: 16 MB on the Pico Plus 2 W, 4 MB on the Pico 2 W — two images, picked
+//      by FLASH_16MB (-16MB / -4MB in the file name). The 4 MB one leaves the
+//      PSRAM-only ROM overlay out of the UF2 (PSRAMROMS_ABSENT, memory-layout.cmake):
+//      the CYW43 blob + lwIP (~290 KB) do not fit 4 MB beside it.
 //   4. Package: the Pico Plus 2 W is an RP2350B (8 MB PSRAM on GPIO47), the Pico 2 W
 //      an RP2350A (no PSRAM). Like picospeccy_rp2350b.h this header claims the B
 //      package (PICO_RP2350A 0) and the firmware checks the real package at runtime

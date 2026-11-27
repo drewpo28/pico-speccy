@@ -958,9 +958,23 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   moves — the `I2S_PIO=pio0` / `NESPAD_PIO=pio0` defines are `*_WS` only.
 - **PIO**: radio pins < 32, so `WifiNet::init` does NOT re-base the aux block to 16
   (`radioBase` from `CYW43_PIN_WL_CLOCK/CS`); the SDK takes any block with room.
-- **Flash: 16 MB, so a plain 4 MB Raspberry Pi Pico 2 W is NOT supported** by these
-  images: at 4 MB the stock DVp2w was ~94 KB short of the linker's hard GM.DLS floor
-  (`__psramrom_start` 0x1027F000). A Pico 2 W build would need a slimmer firmware.
+- **Flash: two types since 2026-11-26 (owner).** `-DFLASH_16MB=ON` = Pimoroni Pico
+  Plus 2 W (as before); OFF = **Raspberry Pi Pico 2 W** (RP2350A, 4 MB, no PSRAM),
+  `*p2w-...-4MB-*`, build dir `build-all/<T>_W[-HSTX]-4MB`. Only `*_WS` forces 16 MB now.
+  Removing the hard GM.DLS floor alone was NOT enough: the 4 MB DVp2w overflowed
+  FLASH by 229 KB (4423472 B). So `PSRAMROMS_ABSENT=1` (cmake/memory-layout.cmake):
+  `.psramroms` data (GMX/ProfROM/ATM/EP/SAM/TS-BIOS/ScorpEvo/NGS ROMs, esxDOS 0.8.9,
+  1.21 MB) is NOLOAD in a dummy `PSRAMROM_VOID` region at 0x10400000 (not in the UF2);
+  the player/libxmp/FT812 code (~210 KB) goes to `.psramcode` in FLASH, because ld
+  adds linker stubs to a code section and that turns NOLOAD back into PROGBITS (a
+  UF2 block at 0x104xxxxx would wrap onto the firmware on a 4 MB chip).
+  `FlashRoms::intact()` returns false under `PSRAMROMS_ABSENT`, i.e. the board is in
+  the "traded" state from boot: Enterprise, ProfROM/ScorpEvo, esxDOS 0.8.9 are gone
+  (their boot notices still say "traded for the GM.DLS bank"); `__psramrom_start` =
+  first 4 KB after the firmware, the GM.DLS window = ~1 MB tail (0x10310000..0x103FD000
+  on DVp2w). Images ~3.2 MB. `picospeccy_rp2350_w.h` defaults to 16 MB, so the 4 MB
+  arm of board.cmake sets `PICO_FLASH_SIZE_BYTES` explicitly (it linked for 16 MB
+  without it). Test builds `debug/<tag>-pico2w4mb-1.1.4.elf`: **NOT hw-tested**.
 - `BUTTER_PSRAM_GPIO` = the carrier's plain value (probed only on an RP2350A; the
   Plus 2 W is B → GPIO47).
 - **User LED (checked 2026-11-21 against the SDK's pimoroni_pico_plus2_w_rp2350.h;

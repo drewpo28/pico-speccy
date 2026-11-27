@@ -82,17 +82,16 @@ endif()
 
 message(STATUS "PICO_BOARD: ${PICO_BOARD}")
 
-# 16 MB on the W modules (Waveshare RP2350B-Plus-W, Pimoroni Pico Plus 2 W), 4 MB
-# everywhere else. A plain 4 MB Pico 2 W is NOT covered by the *_W images: the radio
-# stack does not fit 4 MB above the hard GM.DLS floor. This is what buys room
-# for the ~230 KB CYW43 firmware blob: the GM.DLS bank takes everything above the
-# firmware (rp2350-memmap.ld), and on 4 MB the firmware has ~2.4 MB before it eats
-# into the GM_BANK_MIN_KB floor — a bound main has already overflowed once — against
-# ~14.3 MB here, where the same rule leaves the bank a 13.6 MB tail by itself.
+# The Waveshare W module (*_WS) is 16 MB only. The stock-layout *_W boards build in
+# both flash types like a plain board (2026-11-26): 16 MB (-DFLASH_16MB=ON) for the
+# Pimoroni Pico Plus 2 W, 4 MB for the Raspberry Pi Pico 2 W. The 4 MB *_W image does
+# not carry .psramroms (PSRAMROMS_ABSENT, cmake/memory-layout.cmake): the CYW43 blob +
+# lwIP + BTstack (~290 KB) do not fit beside it, and a Pico 2 W has no PSRAM to run most
+# of those machines anyway. No GM.DLS there either (no PSRAM, no built-in bank).
 # Any other board builds in two types, 4 MB (default) and 16 MB (-DFLASH_16MB=ON);
 # the board header's own 4 MB default is overridden here, before the SDK reads it
 # (the SDK then defines PICO_FLASH_SIZE_BYTES for the C code from this value too).
-if(PICOSPECCY_WIFI)
+if(PICOSPECCY_WIFI_WS)
     set(FLASH_16MB ON)
 endif()
 # The PICO_PC2 carries 16 MB flash on the board itself (netlist: W25Q128 on CS0)
@@ -112,6 +111,9 @@ if(FLASH_16MB)
     set(GM_BANK_BUILTIN 1)
 else()
     set(FLASH_SIZE 4096)
+    # Explicit: picospeccy_rp2350_w.h defaults to 16 MB (Pico Plus 2 W), and the
+    # 4 MB stock-W image (Pico 2 W) would otherwise link for 16 MB.
+    set(PICO_FLASH_SIZE_BYTES "4 * 1024 * 1024")
     set(YRW801_BUILTIN 0)
     set(GM_BANK_BUILTIN 0)
 endif()
