@@ -629,13 +629,13 @@ static bool p_showSam() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
-// Enterprise 64/128: ROMs in .psramroms, its 64/128K in the static page strip
-// (ram[0..7]) — no PSRAM needed.
+// Enterprise 64/128: ROMs in .psramroms (ordinary flash on the Pico 2 W image), its
+// 64/128K in the static page strip (ram[0..7]) — no PSRAM needed.
 static bool p_showEp() {
 #if !defined(VGA_HDMI)
     return false;
 #else
-    return FlashRoms::romsUsable();
+    return FlashRoms::flashRomsUsable();
 #endif
 }
 // eLeMeNt ZX: 2 MB of URAM in butter PSRAM.
@@ -845,7 +845,7 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, NM_MACH(A_SCORP, R_SCORP_GMX), TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
-        if (FlashRoms::romsUsable())   // ProfROM is in the tradeable flash overlay too
+        if (FlashRoms::flashRomsUsable())   // ProfROM runs without PSRAM (FlashRoms.h)
             opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
     }
     cnt = n;
@@ -1325,7 +1325,7 @@ static bool p_esxImages() {
 // only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
 // 0.9.0 has a TC2068 build (DivMMC::romSync).
 static bool p_esxVerRow() {
-    return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
+    return FlashRoms::flashRomsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 // MGT Plus D: a 48K / 128K / +2 bus (PlusD::machineOk), its drives the SAM pair.
@@ -1928,7 +1928,7 @@ static const Option* pref_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   };
         opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
-        if (FlashRoms::romsUsable())
+        if (FlashRoms::flashRomsUsable())
             opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, 4, TXT_ROM_SCORP_GMX_S };

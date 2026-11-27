@@ -665,8 +665,16 @@ message(STATUS "Code overlays: .nxovl ${NXOVL_WIN_SIZE_EFFECTIVE} B, .elmovl ${E
 # wrap onto the firmware on a 4 MB chip), and FlashRoms::intact() is false
 # for good: the board boots in the "traded" state every no-PSRAM board can already be
 # in (every consumer gates on FlashRoms::romsUsable()). Lost on a Pico 2 W versus a plain 4 MB board:
-# Enterprise, ProfROM/ScorpEvo (fall back to ZS-1024), esxDOS 0.8.9; the rest needs
-# butter PSRAM, which a Pico 2 W does not have.
+# nothing since 2026-11-27 (Enterprise, ProfROM/ScorpEvo, esxDOS 0.8.9 moved to ordinary
+# flash there, FlashRoms::flashRomsUsable); the rest needs butter PSRAM, which a Pico 2 W
+# does not have.
+# The ROM objects .psramroms collects; EXCLUDE_FILEd from the ordinary .rodata rules
+# (rp2350-memmap.ld). On the PSRAMROMS_ABSENT image the four that run without butter
+# PSRAM — Enterprise, ProfROM, ScorpEvo, esxDOS 0.8.9 (~430 KB) — are left out of the
+# list, so they land in ordinary flash .rodata (owner 2026-11-27: the Pico 2 W image
+# had ~820 KB to spare); their KEEP lines in .psramroms then match nothing.
+set(PSRAMROM_DATA_OBJECTS "*scorpion_gmx_rom.c.o*" "*tsconf_roms.c.o*" "*atm_roms.c.o*" "*sam_roms.c.o*" "*NGS_ROM.c.o*")
+set(PSRAMROM_FLASHABLE_OBJECTS "*scorpion_prof_rom.c.o*" "*ep_roms.c.o*" "*scorpion_evo_rom.c.o*" "*esxdos089_roms.c.o*")
 set(PSRAMROMS_ABSENT 0)
 set(PSRAMROMS_NOLOAD "")
 set(PSRAMROMS_REGION "FLASH =0xaa")
@@ -692,6 +700,10 @@ if(PICOSPECCY_WIFI AND NOT PICOSPECCY_WIFI_WS AND NOT FLASH_16MB)
     endif()
     set(PSRAMROMS_ABSENT_SYMS "__psramrom_start = ALIGN(__psramrom_lma_end, 4096);\n    __psramrom_end = __psramrom_start + 4096;")
 endif()
+if(NOT PSRAMROMS_ABSENT)
+    list(APPEND PSRAMROM_DATA_OBJECTS ${PSRAMROM_FLASHABLE_OBJECTS})
+endif()
+string(REPLACE ";" " " PSRAMROM_DATA_EXCLUDE "${PSRAMROM_DATA_OBJECTS}")
 target_compile_definitions(${PROJECT_NAME} PRIVATE PSRAMROMS_ABSENT=${PSRAMROMS_ABSENT})
 message(STATUS ".psramroms ${PSRAMROMS_REGION}")
 

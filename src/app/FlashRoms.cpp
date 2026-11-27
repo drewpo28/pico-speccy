@@ -35,4 +35,12 @@ bool intact() {
 
 bool romsUsable() { return intact(); }
 
+bool flashRomsUsable() {
+#if PSRAMROMS_ABSENT
+    return true;
+#else
+    return intact();
+#endif
+}
+
 }  // namespace FlashRoms

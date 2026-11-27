@@ -975,6 +975,15 @@ so). `debug/*p2w-*.elf` files from before 2026-10-12 are Waveshare builds.
   on DVp2w). Images ~3.2 MB. `picospeccy_rp2350_w.h` defaults to 16 MB, so the 4 MB
   arm of board.cmake sets `PICO_FLASH_SIZE_BYTES` explicitly (it linked for 16 MB
   without it). Test builds `debug/<tag>-pico2w4mb-1.1.4.elf`: **NOT hw-tested**.
+  **2026-11-27, merged into main (03db257c)**: the GM.DLS flash bank and its floors are
+  gone on every image, so "GM.DLS window" above is history (no GM.DLS on a Pico 2 W:
+  no PSRAM, no built-in bank). Same day (owner): **Enterprise, ProfROM/ScorpEvo and
+  esxDOS 0.8.9 are back on the Pico 2 W image** — their four ROM objects are left out
+  of `PSRAMROM_DATA_EXCLUDE` there (cmake/memory-layout.cmake), so they land in ordinary
+  flash `.rodata`; their gates use `FlashRoms::flashRomsUsable()` (true under
+  `PSRAMROMS_ABSENT`, `intact()` elsewhere), the PSRAM-only machines keep
+  `romsUsable()`. DVp2w 4 MB: 3.35 -> 3.79 MB (~400 KB free); other images unchanged.
+  `debug/DVp2w-4mb-eprof-1.1.4`, NOT hw-tested.
 - `BUTTER_PSRAM_GPIO` = the carrier's plain value (probed only on an RP2350A; the
   Plus 2 W is B → GPIO47).
 - **User LED (checked 2026-11-21 against the SDK's pimoroni_pico_plus2_w_rp2350.h;

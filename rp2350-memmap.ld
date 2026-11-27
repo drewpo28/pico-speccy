@@ -98,12 +98,12 @@ SECTIONS
          * which also swallowed every byte saved anywhere above them. */
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
         . = ALIGN(4);
-        /* The two EXCLUDE_FILEd ROM objects go to .psramroms at the very top of
-         * flash — see that section. They must be excluded HERE and in .data below,
+        /* The EXCLUDE_FILEd ROM objects (@PSRAMROM_DATA_EXCLUDE@, cmake/memory-layout.cmake)
+         * go to .psramroms at the very top of flash — see that section. They must be excluded HERE and in .data below,
          * because ld assigns an input section to the FIRST output section that
          * matches it in script order, and both of those come earlier. */
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
-                       *scorpion_gmx_rom.c.o* *scorpion_prof_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o* *sam_roms.c.o* *ep_roms.c.o* *NGS_ROM.c.o* *scorpion_evo_rom.c.o* *esxdos089_roms.c.o* *FtInflate.c.o* @PSRAMROM_CODE_EXCLUDE@) .rodata*)
+                       @PSRAMROM_DATA_EXCLUDE@ *FtInflate.c.o* @PSRAMROM_CODE_EXCLUDE@) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
     } > FLASH
@@ -193,7 +193,7 @@ SECTIONS
          * later in script order — keep it out of this catch-all too. */
         *(EXCLUDE_FILE(*FtInflate.c.o* @PSRAMROM_CODE_EXCLUDE@) .text*)
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o* *scorpion_prof_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o* *sam_roms.c.o* *ep_roms.c.o* *NGS_ROM.c.o* *scorpion_evo_rom.c.o* *esxdos089_roms.c.o* *FtInflate.c.o* @PSRAMROM_CODE_EXCLUDE@) .rodata*)
+        *(EXCLUDE_FILE(@PSRAMROM_DATA_EXCLUDE@ *FtInflate.c.o* @PSRAMROM_CODE_EXCLUDE@) .rodata*)
         . = ALIGN(4);
 
         *(.data*)

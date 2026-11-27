@@ -28,4 +28,10 @@ bool intact();
 // True if the ROMs may be bound this boot (== intact()).
 bool romsUsable();
 
+// The overlay ROMs that also run WITHOUT butter PSRAM: Enterprise, ProfROM/ScorpEvo,
+// esxDOS 0.8.9. On the 4 MB stock-W image (PSRAMROMS_ABSENT) they are linked into
+// ordinary flash instead of the absent overlay (cmake/memory-layout.cmake), so they
+// are always there; everywhere else they are in .psramroms (== intact()).
+bool flashRomsUsable();
+
 }  // namespace FlashRoms

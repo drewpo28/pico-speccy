@@ -723,7 +723,7 @@ bool DivMMC::romSync() {
     }
     const bool tc = Config::isTc2068();
     bool v089 = Config::esxdos_ver == 1 && !tc;
-    if (v089 && !FlashRoms::romsUsable()) v089 = false;
+    if (v089 && !FlashRoms::flashRomsUsable()) v089 = false;
     const uint8_t key = (uint8_t)(1 | (v089 << 1) | (tc << 2) | (divide_mode << 3));
     if (key == s_romKey && rom_loaded) return true;
 

@@ -1645,7 +1645,8 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "ATM ROM missing in flash");
-            if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
+            if (!FlashRoms::flashRomsUsable() &&
+                ((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
                 (isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)) ||
                  (RomsetIdx)(staged(SET_MACHINE) & 0xFF) == R_SCORP_PROF))
                 changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_1024),

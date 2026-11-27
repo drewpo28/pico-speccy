@@ -437,7 +437,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         } else if (newArch == A_SAM) {
             OSD::bootNotice("SAM Coupe ROM missing in flash - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
-        } else if (newArch == A_ENT) {
+        } else if (newArch == A_ENT && !FlashRoms::flashRomsUsable()) {
             OSD::bootNotice("Enterprise ROM missing in flash - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_TSCONF) {
@@ -446,7 +446,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
             newRomSet = R_SCORP;
-        } else if (newArch == A_SCORP && (isScorpEvoRomset(newRomSet) || newRomSet == R_SCORP_PROF)) {
+        } else if (newArch == A_SCORP && (isScorpEvoRomset(newRomSet) || newRomSet == R_SCORP_PROF)
+                   && !FlashRoms::flashRomsUsable()) {
             newRomSet = R_SCORP_1024;   // the same board on its stock ROM
         }
     }
@@ -871,7 +872,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         }
         // ScorpEvo's and ProfROM's images live in the tradeable .psramroms
         // (FlashRoms.h; ProfROM since 2026-10-04, to give the firmware flash back).
-        if ((isScorpEvoRomset(romSet) || romSet == R_SCORP_PROF) && !FlashRoms::romsUsable()) {
+        if ((isScorpEvoRomset(romSet) || romSet == R_SCORP_PROF) && !FlashRoms::flashRomsUsable()) {
             OSD::bootNotice("ProfROM missing in flash - using ZS-1024");
             Debug::log("[FlashRoms] ProfROM/ScorpEvo unavailable (ROM overlay missing) - ZS-1024");
             romSet = R_SCORP_1024;
