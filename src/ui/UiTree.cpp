@@ -659,11 +659,15 @@ static bool p_nextActive() {
     return ((m >> 8) & 0xFF) == A_NEXT;
 }
 // Profi or Karabas (two Machine rows over one hardware, see below): staged pick first.
-static bool p_profiActive() {
+// The UI-facing arch: Config holds A_PROFI for both, the romset tells Karabas apart.
+static int profiUiArch() {
     const int32_t m = Stage::get(SET_MACHINE);
-    const int a = (m < 0) ? (int)Config::arch : ((m >> 8) & 0xFF);
-    return a == A_PROFI || a == A_KARABAS;
+    return (m < 0) ? (int)archDisplay(Config::arch, Config::romSet) : ((m >> 8) & 0xFF);
 }
+// The shared Options level hangs under the row of the machine that is active, not
+// always under Karabas (owner, 2026-11-27).
+static bool p_profiOnly()   { return profiUiArch() == A_PROFI; }
+static bool p_karabasOnly() { return profiUiArch() == A_KARABAS; }
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -1048,8 +1052,9 @@ static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
     NM_RADIO(TXT_ROM_PHOENIX, SET_MACHINE, opt_mach_phoenix, p_extRam),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
+    NM_SUB  (NM_IND TXT_MACH_OPTS, kProfi, p_profiOnly),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
-    NM_SUB  (NM_IND TXT_MACH_OPTS, kProfi, p_profiActive),
+    NM_SUB  (NM_IND TXT_MACH_OPTS, kProfi, p_karabasOnly),
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_OPTS, kTsconf, p_tsconfActive),
