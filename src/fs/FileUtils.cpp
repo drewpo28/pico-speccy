@@ -372,15 +372,12 @@ static void bringUpFromCard() {
     RTC::adoptCardImage();
     Nvram24::adoptCardImage();
 
-    // GM.DLS: binds live when the bank lands in PSRAM (or the flash partition
-    // already holds it). A flash WRITE cannot happen here — erasing flash drops
-    // XIP for the whole QMI, and the display is streaming out of XIP-PSRAM by
-    // now — so that one case honestly needs a reboot and says so.
+    // GM.DLS: a card that arrived late brings the bank; load it into PSRAM live.
     if (Config::midi == 4 && !MidiSynth::bankReady()) {
         if (MidiSynth::applyBankLive())
             Debug::log("FileUtils: GM.DLS bank bound live\n");
         else
-            Debug::log("FileUtils: GM.DLS bank needs a flash write - reboot to use it\n");
+            Debug::log("FileUtils: GM.DLS bank not bound (no PSRAM room / no bank)\n");
     }
 }
 

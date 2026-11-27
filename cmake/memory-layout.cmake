@@ -1,5 +1,5 @@
 # Linker script, code overlay windows (.tsovl/.dmaovl/.ngsovl/.gsovl), the AY
-# stereo slot and the GM.DLS bank floor. Feeds rp2350-memmap.ld via configure_file.
+# stereo slot. Feeds rp2350-memmap.ld via configure_file.
 
 # Custom linker script reserves a fixed 128K region (RAM_PAGES01234567) for
 # the 8 Z80 RAM pages backing pages 0-7 (m16c_pages: pages0123/pages46/57).
@@ -651,24 +651,12 @@ endif()
 message(STATUS "Code overlays: .nxovl ${NXOVL_WIN_SIZE_EFFECTIVE} B, .elmovl ${ELMOVL_WIN_SIZE_EFFECTIVE} B, .ftovl ${FTOVL_WIN_SIZE_EFFECTIVE} B, .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .dmarovl ${DMAROVL_WIN_SIZE_EFFECTIVE} B, .ngsovl ${NGSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
 
 
-# The GM.DLS bank is everything above the firmware, to the top of flash — a dynamic
-# region since 2026-09-20, not a fixed partition (rp2350-memmap.ld has the full
-# reasoning). This is the floor the build refuses to fall below, and it is DELIBERATELY
-# 0: the guarantee that matters is the HARD floor in the linker script (the extended
-# window >= 1632 KB = a stock gm.dls), and this soft one only describes the region a
-# board gets WITHOUT trading the ROM overlay. Both boards it could speak for ignore it —
-# with no QSPI PSRAM the bank trades the GMX + TS-Conf ROMs for ~2.0 MB (they are
-# unreachable there anyway), and with QSPI PSRAM the bank lives in the butter arena and
-# never touches flash. It was 1632 for one day (2026-09-20) and came down when the
-# second GMX image landed; the one corner it protected — butter present but its arena
-# too small, i.e. Murmuzavr at 32 MB — now degrades to a logged, on-screen "bank not
-# installed" instead of a build failure. Raise it to 1632 to get the old wall back.
-set(GM_BANK_MIN_KB 0 CACHE STRING "Minimum GM.DLS bank region, KB (rp2350-memmap.ld __gm_bank_min)")
-message(STATUS "GM.DLS bank region: >= ${GM_BANK_MIN_KB} KB (dynamic: firmware end .. top of flash)")
+# The GM.DLS bank region above the firmware and its floors (GM_BANK_MIN_KB, the hard
+# 1632 KB one in the linker script) are gone since 2026-11-27: no bank is written into
+# flash any more, so the firmware may grow to the top of flash (rp2350-memmap.ld).
 
 # Pico-Zx-Player code (src/player/Player* + libxmp, ~177 KB) lives in .psramroms with the
-# butter-only ROMs: the player needs butter PSRAM, so a board that trades that range can
-# never reach it, and the hard GM.DLS floor counts only from __psramrom_start up. The
+# butter-only ROMs: the player needs butter PSRAM. The
 # patterns match by path ('*' crosses '/' in ld file patterns); PicoPlayer.cpp, which the
 # browser and menu call unconditionally, does NOT match "Player*".
 #

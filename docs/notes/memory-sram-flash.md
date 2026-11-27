@@ -241,6 +241,37 @@ provisioning"). It is the ROM path that never got it.
   little — then the same at 252 (no clock change happens there, only the re-tune) and at
   504; and a TR-DOS custom BIOS, which is the one slot whose target is `rom[4]`.
 
+## GM.DLS flash bank and its floor REMOVED (2026-11-27, owner; NOT hw-tested)
+
+Owner's poll: nobody kept a GM.DLS bank in flash, everybody loads it into PSRAM from the
+menu. So the 1.6 MB reserve above the firmware is gone on every image, and with it the
+whole flash-bank path:
+- `rp2350-memmap.ld`: no `__gm_bank_*` symbols, no hard (1632 KB) or soft
+  (`GM_BANK_MIN_KB`, removed from cmake/memory-layout.cmake) floor. One ASSERT left:
+  `__flash_binary_end <= __flash_free_end` (top of flash minus the BTstack key sectors,
+  `BT_FLASH_RESERVE`); FLASH's LENGTH catches a plain overflow.
+- `Buffer`: `TIER_FLASH`, `ALLOW_FLASH`/`FORCE_FLASH`, `initFlashPool`, `flashErase`/
+  `flashProgram` and the flash branch of `load()` (signature now `load(size, reader, ctx)`)
+  removed. `flashClockEnter/Exit` stay (custom ROM writer, OSDMain `flash_block`).
+- `MidiSynth`: a bank is loaded from SD into the butter arena ONLY (never the heap:
+  `loadBank` refuses without `butterPoolReady()` and a non-butter tier), at boot
+  (`provisionAtBoot`) and live (`applyBankLive`, never a reboot); 16 MB images keep the
+  built-in bank (`bindBuiltin`). No reflash scratch (watchdog scratch[2] is free), no
+  "Install this bank? (reboots)" dialog. `maxBankBytes()` = the butter arena; the bank
+  row hides without butter PSRAM on 4 MB images.
+- `FlashRoms`: only `intact()`/`romsUsable()` (magic check) remain; nothing trades
+  `.psramroms` any more, so the "ROM traded for the GM.DLS bank" fallbacks fire only on a
+  damaged image (messages now say "missing in flash").
+- Cost: a board WITHOUT butter PSRAM has no GM.DLS on a 4 MB image (16 MB: built-in bank).
+  The MIDI radio then has no "DLS Wavetable" row (`UiTree midi_modeOpts`, owner's report
+  2026-11-27), and a saved mode 4 drops to Off at boot with a notice
+  (`MidiSynth::provisionAtBoot`, like `GS::init` for NeoGS). Test: `debug/m1p2-4mb-nodlsflash2`.
+- What it bought is the RULE, not 1.6 MB: `.psramroms` is 1.42 MB on 4 MB and was already
+  the area the bank was counted over ("traded"); the image then ended at 0x3C5F30, i.e.
+  ~228 KB short of the top. Now any code may use that.
+
+Everything below about the bank region, its floors and the trade is HISTORY.
+
 ## Flash ceiling: the firmware competes with the GM.DLS bank (partition made DYNAMIC 2026-09-20, NOT hw-tested)
 
 **The GM.DLS bank is no longer a fixed partition.** `rp2350-memmap.ld` now derives

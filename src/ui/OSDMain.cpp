@@ -2750,7 +2750,7 @@ void OSD::loadAnyFile() {
             }
         }
         else if (ext == "dls") {
-            // GM.DLS soundbank — convert to a GMWB bank in CONFIG_DIR and flash
+            // GM.DLS soundbank — convert to a GMWB bank in CONFIG_DIR and load
             // it, the same pipeline as Audio→MIDI→GM.DLS→"Convert a .dls".
             if (!fromZip) FileUtils::DLS_Path = FileUtils::ALL_Path;
             string outBin = osdConvertDlsToBank(fname);
@@ -2765,14 +2765,11 @@ void OSD::loadAnyFile() {
                     Midi::enabled = 4; Midi::init();
                     MidiSubsys::request(true);
                     Config::save();
-                    // applyBankLive() loads THIS freshly-converted bank: live on PSRAM
-                    // (no reboot), else false → it must be written to flash at early boot.
-                    if (MidiSynth::applyBankLive()) {
+                    // applyBankLive() loads THIS freshly-converted bank into PSRAM live.
+                    if (MidiSynth::applyBankLive())
                         osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
-                    } else if (OSD::msgDialog("DLS Wavetable", MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
-                        osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
-                        OSD::esp_hard_reset();   // no PSRAM: provisionAtBoot writes it pre-video
-                    }
+                    else
+                        osdCenteredMsg("DLS bank does not fit PSRAM", LEVEL_WARN, 3000);
                 }
             }
         }
@@ -6848,9 +6845,6 @@ void OSD::MemoryInfo() {
     uint32_t flash_total = (1u << rx[3]);
     pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, " FLASH (%d MB):\n", (int)(flash_total >> 20));
     pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Firmware       : %d KB\n", (int)(fw / KB));
-    Buffer::PoolStat fp = Buffer::poolStat(Buffer::TIER_FLASH);
-    if (fp.total)
-        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Buffer pool    : %d/%d KB\n", (int)(fp.used / KB), (int)(fp.total / KB));
 
     // ── PSRAM ──────────────────────────────────────────────────────────────────
     // A chip that was found but is switched off (Debug > PSRAM) would otherwise just
@@ -7620,8 +7614,6 @@ const char* hidInfoText() {
 void OSD::HIDDevices() {
     nm::uiTextPageLive(TXT_INFO_HID, hidInfoText, 1000);
 }
-
-extern "C" uint8_t __gm_bank_start[];   // shared flash region (RP2350) — ALF cart load target
 
 // main.cpp: re-apply the QMI flash timing for `mhz` (RAM-resident, see below).
 extern void flash_timings(int mhz);

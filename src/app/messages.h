@@ -186,8 +186,6 @@ visit https://zxespectrum.speccy.org/contacto
 // this to ONE short line (a multi-line string makes the box span the whole screen).
 // Shown when a newly picked bank differs from flash: confirm the (reboot-to-)flash
 // so the user can decline and keep the current bank. Single short line.
-#define MSG_MIDI_BANK_INSTALL_Q "Install this bank? (reboots)"
-#define MSG_MIDI_BANK_FLASHING "Restarting to install DLS bank...\nBoot takes ~20-30s (LED blinks). Do\nNOT power off until it comes back."
 // On-device .dls -> gm_bank.bin conversion (RP2350): progress and result.
 #define MSG_MIDI_CONVERTING "Converting .dls to bank..."
 #define MSG_MIDI_CONVERT_OK "Soundbank created."

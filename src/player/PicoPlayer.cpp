@@ -91,7 +91,7 @@ static bool midiExt(const std::string& e) {
 }
 
 // Here, not in PlayerBulba.cpp: every Player*.cpp lives in .psramroms, which a board
-// with no QSPI PSRAM may have traded for its GM.DLS bank, while playableExt() is
+// without butter PSRAM never uses (FlashRoms::romsUsable gate), while playableExt() is
 // asked by the file browser on every board. Nothing this file runs before
 // available() may call into those files.
 bool bulbaExt(const std::string& e) {
@@ -120,8 +120,8 @@ Decoder* createDecoder(const std::string& e) {
 }
 
 bool available() {
-    // romsUsable(): the decoders live in .psramroms, which a GM.DLS bank may have
-    // overwritten while this board ran without butter PSRAM.
+    // romsUsable(): the decoders live in .psramroms (intact unless the image is
+    // damaged, FlashRoms.h).
     return butter_psram_size() > 0 && Buffer::butterPoolReady() && FlashRoms::romsUsable();
 }
 

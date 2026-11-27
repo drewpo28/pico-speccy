@@ -403,8 +403,12 @@ SECTIONS
     /* ── PSRAM-only ROM overlay ──────────────────────────────────────────────
      * The Scorpion GMX boot ROM and the two TS-BIOS pages, collected BY OBJECT
      * FILE (the .gsovl discipline: a generated ROM .c is all-ROM, so no per-array
-     * mark can be forgotten) and placed at the very top of the image, directly
-     * below the GM.DLS bank partition.
+     * mark can be forgotten) and placed at the very top of the image.
+     *
+     * HISTORY (until 2026-11-27): the range was "tradeable" — on a board with no
+     * butter PSRAM a GM.DLS bank could be written over it. The flash bank is gone;
+     * the paragraphs below describe that design and FlashRoms::intact() still checks
+     * the magic, but nothing writes here any more.
      *
      * Both machines gate on BUTTER/QSPI PSRAM at runtime (mach_scorpOpts's
      * butter_psram_size(), p_showTsconf's >= 1 MB) — SPI PSRAM on a MURM1 carrier
@@ -462,78 +466,18 @@ SECTIONS
 @FTOVL_SECTION@
     PROVIDE(__flash_binary_end = __psramrom_end);
 
-    /* ── GM.DLS wavetable bank flash region ──────────────────────────────────
-     * Everything above the firmware, up to the top of flash, for the user-provisioned
-     * wavetable bank (gm_bank.bin, µ-law). Nothing is emitted here at link time — there
-     * is no output section, only these symbols — so it is not in the UF2; the device
-     * writes it at runtime via flash_range_program (MidiSynth::provisionAtBoot) and
-     * reads it via XIP.
-     *
-     * DYNAMIC since 2026-09-20. It used to be a FIXED partition at the top of flash
-     * (1.59375 MB with the GMX ROM, 2.1875 MB without) that the firmware ASSERTed
-     * against. Two reasons it moved:
-     *   - the base was hand-maintained and always one build behind: it gave up 128 KB
-     *     in 2026-07 (fullscreen UI), 128 KB in 2026-08 (Byte test ROM), 64 KB on
-     *     2026-09-06 (TS-BIOS) and 32 KB on 2026-09-19 (ProfROM GMX v5.44), each time
-     *     AFTER a variant had already overflowed — and each time the slack between the
-     *     firmware end and the base (4-12 KB) was simply lost.
-     *   - on a 16 MB board (MURM_WS) a fixed 1.59 MB was absurd. The bank now takes the
-     *     whole tail with no board branch (the old GMX_IN_FLASH ternary and its
-     *     __gmx_rom_in_flash defsym are gone).
-     * The cost: the base moves with code size, so a bank already programmed into flash
-     * does not survive a firmware update — gm_bank_view() fails the header check at the
-     * new base and the bank re-provisions from SD. That was already true every time the
-     * partition was moved by hand, and is why moving it was always safe. It only bites
-     * a user who provisioned a bank and then runs with no SD card.
-     *
-     * 4 KB is enough alignment even though Buffer::flashErase passes 64 KB ranges: the
-     * bootrom's flash_range_erase takes the block size as an argument and does the
-     * unaligned head and tail with 4 KB sector erases itself.
-     *
-     * __gm_bank_min is the floor the BUILD refuses to go below (GM_BANK_MIN_KB in
-     * CMakeLists, default 1632 KB = the stock converted gm.dls, 1668026 B, rounded up
-     * to a 4 KB multiple). It is a POLICY number, not a hardware one, and the two
-     * boards it does NOT speak for are worth knowing before lowering it:
-     *   - no QSPI PSRAM: the bank can trade the GMX + TS-Conf ROM overlay for the room
-     *     instead (FlashRoms::extendedLive(), ~2.0 MB) — those ROMs are unreachable
-     *     there anyway, so a region below the floor merely makes that trade happen
-     *     sooner. Nothing is lost.
-     *   - with QSPI PSRAM: the bank is copied into the butter arena and never touches
-     *     flash at all (Buffer PREFER_PSRAM), so the region is unused.
-     * What lowering it really costs is the one corner where both fail: butter present
-     * but its arena too small for the bank (Murmuzavr at 32 MB reserves all but the
-     * 512 KB minimum). There the bank is refused with a logged "bank alloc failed" and
-     * MIDI falls back to the built-in wavetable — a degradation, not a crash. */
-    /* PICOSPECCY_BT: BTstack keeps its pairing keys in two flash sectors at
-     * PICO_FLASH_BANK_STORAGE_OFFSET = size - 4K - 8K (pico/btstack_flash_bank.h on
-     * RP2350), so the bank region stops 12 KB short of the end. 0 otherwise. */
-    __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH) - @BT_FLASH_RESERVE@;
-    __gm_bank_start = ALIGN(__psramrom_end, 4096);
-    __gm_bank_size  = __gm_bank_end - __gm_bank_start;
-    __gm_bank_min   = @GM_BANK_MIN_KB@ * 1024;
-
-    /* TWO floors, and they are different kinds of statement.
-     *
-     * The HARD one is physics: on a board with no QSPI PSRAM the bank may start at
-     * __psramrom_start instead, having traded the GMX + TS-Conf ROM overlay for the
-     * room (FlashRoms::extendedLive()). That extended window is the largest a bank
-     * can ever be on any board, so once IT falls below a stock gm.dls there is no
-     * configuration left that can hold one. 1632 KB = 1668026 B rounded up to a 4 KB
-     * multiple. Not a knob: nothing below it is a trade, it is simply broken.
-     *
-     * The SOFT one is GM_BANK_MIN_KB, on the plain region — the same wall the fixed
-     * partition used to be, kept as the default so this change moves no board. Lower
-     * it (or set it to 0) to hand the slack to the firmware instead; what that costs
-     * is in the comment above __gm_bank_end. Between the two floors a no-butter board
-     * simply trades its unreachable ROMs sooner, which is free, and a butter board
-     * never notices because its bank lives in the arena. */
-    __gm_bank_hard_min = 1632 * 1024;
-    ASSERT(__gm_bank_start <= __gm_bank_end,
-        "ERROR: firmware filled the whole flash - nothing left for the GM.DLS bank")
-    ASSERT(__gm_bank_end - __psramrom_start >= __gm_bank_hard_min,
-        "ERROR: even after trading the GMX + TS-Conf ROM overlay the GM.DLS bank could not hold a stock gm.dls - the firmware must give back flash (the GMX and ProfROM images are the two biggest ROMs)")
-    ASSERT(__gm_bank_size >= __gm_bank_min,
-        "ERROR: the GM.DLS bank region fell below GM_BANK_MIN_KB - shrink the firmware, or lower GM_BANK_MIN_KB (read the comment beside it in rp2350-memmap.ld first), or use a bigger flash")
+    /* ── Top of flash ─────────────────────────────────────────────────────────
+     * Until 2026-11-27 everything above the firmware was the GM.DLS bank region, a
+     * bank written there at runtime on boards without butter PSRAM, and two ASSERTs
+     * kept it >= 1632 KB (the "GM.DLS floor" every 4 MB image was squeezed against).
+     * The flash bank is gone (owner: nobody kept one there, banks load into PSRAM), so
+     * the firmware may now grow to the top of flash. FLASH's own LENGTH stops the
+     * link if it does not fit; this one keeps it clear of the sectors BTstack writes
+     * its pairing keys into (PICOSPECCY_BT: PICO_FLASH_BANK_STORAGE_OFFSET =
+     * size - 4K - 8K, pico/btstack_flash_bank.h on RP2350; 0 otherwise). */
+    __flash_free_end = ORIGIN(FLASH) + LENGTH(FLASH) - @BT_FLASH_RESERVE@;
+    ASSERT(__flash_binary_end <= __flash_free_end,
+        "ERROR: the firmware reaches the BTstack pairing-key sectors at the top of flash - shrink it or use a bigger flash")
 
     __StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X);
     __StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy);

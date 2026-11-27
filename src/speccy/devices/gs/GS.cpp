@@ -2455,9 +2455,9 @@ bool GS::init(uint32_t ram_size_bytes) {
     // after the trade has butter AND a spent range — refuse rather than run a GM.DLS
     // bank as Z80 code.
     if (s_ngs && !FlashRoms::romsUsable()) {
-        Debug::log("GS::init: NeoGS ROM traded for the GM.DLS bank - General Sound off");
+        Debug::log("GS::init: NeoGS ROM missing in flash - General Sound off");
         Config::gs_enabled = 0;
-        return gs_init_failed("NeoGS ROM traded for GM.DLS");
+        return gs_init_failed("NeoGS ROM missing in flash");
     }
     setClock();
 

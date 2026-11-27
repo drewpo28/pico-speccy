@@ -1638,18 +1638,18 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
                 isScorpGmxRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)))
                 changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP),
-                                 rep, "GMX ROM traded for the GM.DLS bank");
+                                 rep, "GMX ROM missing in flash");
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_TSCONF)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
-                                 rep, "TS-Conf ROM traded for the GM.DLS bank");
+                                 rep, "TS-Conf ROM missing in flash");
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
-                                 rep, "ATM ROM traded for the GM.DLS bank");
+                                 rep, "ATM ROM missing in flash");
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
                 (isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)) ||
                  (RomsetIdx)(staged(SET_MACHINE) & 0xFF) == R_SCORP_PROF))
                 changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_1024),
-                                 rep, "ProfROM traded for the GM.DLS bank");
+                                 rep, "ProfROM missing in flash");
         }
 
         if (!changed) return;

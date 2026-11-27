@@ -698,8 +698,8 @@ void DivMMC::nextRetn() {
 // DivIDE build, and for 0.9.0 Hugo Pinto's TC2068 builds (the TC2068's HOME ROM is
 // not Sinclair-derived, so it needs its own esxDOS). An overlaid ROM is flattened
 // into rom_flat — the automap reads page0_lo as a plain pointer, so a run list
-// must never reach the Z80 read path. 0.8.9 sits in .psramroms (gone on a board
-// that traded that range to the GM.DLS bank) and has no TC2068 build: 0.9.0 then.
+// must never reach the Z80 read path. 0.8.9 sits in .psramroms (gone from a damaged
+// image, FlashRoms::romsUsable) and has no TC2068 build: 0.9.0 then.
 // Called by init() and by ESPectrum::reset(), so a machine switch between a
 // Spectrum and the TC2068 takes the right build; a no-op while nothing changed.
 // eLeMeNt ZX: g_elm_divrom wins over the built-in builds; key 0x80 keeps it apart.

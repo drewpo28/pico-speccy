@@ -87,8 +87,8 @@ Each rule cost at least one hardware round; the story is in the notes file named
   share VMAs and have AUTO size terms in `cmake/memory-layout.cmake`: raise the term of
   the object whose code grew; resolve overlay addresses against section symbols, never
   addr2line.
-- **Flash ceiling:** 4 MB images sit near the hard GM.DLS floor; anything that does not
-  fit 4 MB goes behind `#if FLASH_16MB` (the C define, 1/0; eLeMeNt ZX is the first
+- **Flash ceiling:** the GM.DLS flash bank and its floor are gone (2026-11-27), 4 MB
+  images may fill the flash; anything that does not fit 4 MB goes behind `#if FLASH_16MB` (the C define, 1/0; eLeMeNt ZX is the first
   machine there), or, if it needs butter PSRAM anyway, into `.psramroms`
   (`PSRAMROM_CODE_OBJECTS`) (`memory-sram-flash.md`).
 - **Read the reference before guessing** (RTL, VHDL, the vendor's Reference, ROM

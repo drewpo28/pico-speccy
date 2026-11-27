@@ -432,17 +432,17 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // either already erased or about to be, on this very boot, by provisionAtBoot().
     if (!FlashRoms::romsUsable()) {
         if (newArch == A_ATM) {
-            OSD::bootNotice("ATM-Turbo ROM traded for the GM.DLS bank - using Pentagon");
+            OSD::bootNotice("ATM-Turbo ROM missing in flash - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SAM) {
-            OSD::bootNotice("SAM Coupe ROM traded for the GM.DLS bank - using Pentagon");
+            OSD::bootNotice("SAM Coupe ROM missing in flash - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_ENT) {
-            OSD::bootNotice("Enterprise ROM traded for the GM.DLS bank - using Pentagon");
+            OSD::bootNotice("Enterprise ROM missing in flash - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_TSCONF) {
-            OSD::bootNotice("TS-Conf ROM traded for the GM.DLS bank - using Pentagon");
-            Debug::log("[FlashRoms] TS-Conf unavailable (overlay traded) - Pentagon");
+            OSD::bootNotice("TS-Conf ROM missing in flash - using Pentagon");
+            Debug::log("[FlashRoms] TS-Conf unavailable (ROM overlay missing) - Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
             newRomSet = R_SCORP;
@@ -865,15 +865,15 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // ...and the same pick with the ROM traded away (FlashRoms.h). Distinct
         // message: nothing is wrong with the board, the bytes were spent.
         if (isScorpGmxRomset(romSet) && !FlashRoms::romsUsable()) {
-            OSD::bootNotice("GMX ROM traded for the GM.DLS bank - using Yellow PCB");
-            Debug::log("[FlashRoms] GMX unavailable (overlay traded) - Yellow");
+            OSD::bootNotice("GMX ROM missing in flash - using Yellow PCB");
+            Debug::log("[FlashRoms] GMX unavailable (ROM overlay missing) - Yellow");
             romSet = R_SCORP;
         }
         // ScorpEvo's and ProfROM's images live in the tradeable .psramroms
         // (FlashRoms.h; ProfROM since 2026-10-04, to give the firmware flash back).
         if ((isScorpEvoRomset(romSet) || romSet == R_SCORP_PROF) && !FlashRoms::romsUsable()) {
-            OSD::bootNotice("ProfROM traded for the GM.DLS bank - using ZS-1024");
-            Debug::log("[FlashRoms] ProfROM/ScorpEvo unavailable (overlay traded) - ZS-1024");
+            OSD::bootNotice("ProfROM missing in flash - using ZS-1024");
+            Debug::log("[FlashRoms] ProfROM/ScorpEvo unavailable (ROM overlay missing) - ZS-1024");
             romSet = R_SCORP_1024;
         }
         romSetScorp = romSet;

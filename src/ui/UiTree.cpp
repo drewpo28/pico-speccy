@@ -837,7 +837,7 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   };
         // butter PSRAM is what GMX needs; romsUsable() is whether its ROM is still
-        // in flash at all (FlashRoms.h — the GM.DLS bank may have been given it).
+        // in flash intact (FlashRoms.h).
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, NM_MACH(A_SCORP, R_SCORP_GMX), TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
@@ -1316,8 +1316,8 @@ static bool p_rtcRow() {
 static bool p_esxImages() {
     return Stage::get(SET_ESXDOS) != 0;
 }
-// esxDOS ROM release. 0.8.9 is in .psramroms: with that range traded to the GM.DLS
-// bank only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
+// esxDOS ROM release. 0.8.9 is in .psramroms: with that range missing (damaged image)
+// only 0.9.0 exists, and the row would offer nothing. Nor on the TC2068: only
 // 0.9.0 has a TC2068 build (DivMMC::romSync).
 static bool p_esxVerRow() {
     return FlashRoms::romsUsable() && !(devArch() == A_48K && isTc2068Romset(devRomset()));
@@ -1757,23 +1757,29 @@ static const Option opt_gs_clock[] = {          // values are Config::gs_clock i
 //
 // Value 3 is missing on purpose: it was "Software MIDI" (the procedural SoftSynth),
 // removed along with its preset row. The value is retired, never reused.
-static const Option opt_midi_mode[] = {
-    { "Off",           0 },
-    { "AY",            1 },
-    { "ShamaZX",       2 },
-    { "DLS Wavetable", 4 },
-};
+// "DLS Wavetable" only where a bank can play: butter PSRAM to load one into, or a
+// 16 MB image's built-in bank (the flash bank is gone since 2026-11-27). A saved 4 on
+// a board without either drops to Off at boot (MidiSynth::provisionAtBoot), so the
+// radio always has a marked row.
+static const Option* midi_modeOpts(uint8_t& cnt) {
+    static Option opts[4];
+    static uint8_t n = 0;
+    if (!n) {
+        opts[n++] = { "Off",     0, nullptr };
+        opts[n++] = { "AY",      1, nullptr };
+        opts[n++] = { "ShamaZX", 2, nullptr };
+        if (GM_BANK_BUILTIN || butter_psram_size()) opts[n++] = { "DLS Wavetable", 4, nullptr };
+    }
+    cnt = n;
+    return opts;
+}
 static bool p_midiDls()  { return Stage::get(SET_MIDI_MODE) == 4; }
-// The bank list needs a card, except on a 16 MB image, which carries its own bank.
-static bool p_midiBankVis() { return GM_BANK_BUILTIN || p_hasSD(); }
+// The bank list needs a card and butter PSRAM to load a bank into (the flash bank is
+// gone since 2026-11-27), except on a 16 MB image, which carries its own bank.
+static bool p_midiBankVis() { return GM_BANK_BUILTIN || (p_hasSD() && butter_psram_size()); }
 static const Option opt_midi_bank_hints[] = {
-    { SYM_ENTER " Select / install", 0 },
+    { SYM_ENTER " Select", 0 },
 };
-// Where the ~1.6 MB bank lives. Only a butter-PSRAM board has a choice: SPI PSRAM is
-// accessor-only and the engine reads samples through a raw pointer, so everywhere else
-// the flash partition is the sole home and the row would be a lie. PSRAM reloads from
-// SD each boot (a bank swap applies live); Flash survives reboots and a missing card
-// but is written only at early boot, so switching to it costs one reboot.
 // The chips only the DivMMC VGM-player plugin drives, grouped out of the
 // native-Spectrum rows. "All" flips the whole card family at once.
 // OPLL and SN76489 are greyed on TS-Conf: Wild Commander's VGM player (the
@@ -1809,9 +1815,9 @@ static const Node kAudio[] = {
     NM_BOOL (TXT_AUD_PIMUSICA,   SET_PIMUSICA,     p_pimusAvail),
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
-    NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
+    NM_RADIO_D (TXT_AUD_MIDI,           SET_MIDI_MODE,   midi_modeOpts,   nullptr),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
-    // a bank pick can applyBankLive() or defer a flash write to the next boot.
+    // a bank pick loads into PSRAM live (applyBankLive).
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
                 opt_midi_bank_hints, p_midiBankVis, p_midiDls),
     NM_RADIO_D (TXT_AUD_GS,          SET_GS_MODE,  gs_modeOpts,  p_gsAvail),

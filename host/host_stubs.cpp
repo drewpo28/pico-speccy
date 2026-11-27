@@ -33,9 +33,7 @@ char __HeapLimit[1];
 asm(".globl __flash_binary_start\n .set __flash_binary_start, host_flash_image\n"
     ".globl __flash_binary_end\n .set __flash_binary_end, host_flash_image + 0x200000\n"
     ".globl __psramrom_start\n .set __psramrom_start, host_flash_image + 0x200000\n"
-    ".globl __psramrom_end\n .set __psramrom_end, host_flash_image + 0x200000\n"
-    ".globl __gm_bank_start\n .set __gm_bank_start, host_flash_image + 0x200000\n"
-    ".globl __gm_bank_end\n .set __gm_bank_end, host_flash_image + 0x400000\n");
+    ".globl __psramrom_end\n .set __psramrom_end, host_flash_image + 0x200000\n");
 
 // libc malloc wrap (pico_malloc wraps malloc/free on the firmware).
 extern "C" void* __real_malloc(size_t n) { return malloc(n); }

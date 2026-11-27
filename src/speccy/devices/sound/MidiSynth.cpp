@@ -4,44 +4,23 @@
 #include <string.h>
 #include <stdint.h>
 #include "pico.h"
-#include "hardware/flash.h"      // flash_range_erase/program, FLASH_SECTOR_SIZE
-#include "hardware/sync.h"       // save_and_disable_interrupts
-#include "hardware/gpio.h"       // LED blink during the flash write
-#include "hardware/xip_cache.h"  // xip_cache_invalidate_all (safe: single-core boot)
-#include "hardware/watchdog.h"   // watchdog scratch reg carries the "force reflash" request across reboot
-#include "hardware/clocks.h"     // clock_get_hz(clk_sys) — capture/restore boot clock around the flash write
-#include "pico/stdlib.h"         // set_sys_clock_khz — flash the bank at a conservative 252 MHz
-
-// Force-reflash request, carried through the warm reset in a free watchdog scratch
-// register (SDK uses scratch[4..7]; [0..3] are free). No flash write at runtime —
-// just set this and reboot; provisionAtBoot() consumes it.
-#define MIDI_REFLASH_SCRATCH 2
-#define MIDI_REFLASH_MAGIC   0x4D494449u  /* 'MIDI' */
-#include "hardware/regs/addressmap.h"  // XIP_BASE
+#include "pico/stdlib.h"         // to_ms_since_boot
 #include "midi_wt.h"             // C wrapper over external/embeded-midi-synth
 #include "gm_bank.h"             // gm_bank_view, gm_bank_header_t, GM_BANK_VERSION
 #include "fs/FileUtils.h"           // fopen2/fclose2, FIL, f_read, f_size
 #include "app/Config.h"              // Config::midi
-#include "app/Buffer.h"              // tiered allocator: butter PSRAM, else flash partition
+#include "app/Buffer.h"              // the butter PSRAM arena the bank is loaded into
 #include "speccy/core/MemESP.h"              // butter_psram_size()
 #include "app/Debug.h"
 #include "ui/OSDMain.h"        // bootNotice — a refused bank must be visible without a UART
 #include <string>
 #include <vector>
 
-// The bank lives wherever Buffer places it, and there is nothing to configure: butter
-// PSRAM when the board has it (reloaded from SD each boot, so a bank swap applies
-// live), else the flash partition at the top of flash (a NOLOAD region in
-// rp2350-memmap.ld — not in the UF2; provisioned once from SD, survives reflashes and
-// a missing card). That is what PREFER_PSRAM | ALLOW_FLASH already means, so the ask
-// is one constant. The flash WINDOW is a runtime value — on a board with no butter
-// PSRAM it grows over the ROM overlay when a bank needs the room, see FlashRoms.h —
-// which costs the engine nothing: both homes are XIP-addressable and the bank format
-// is position-independent.
-#include "app/FlashRoms.h"
-
-// When the bank lives in PSRAM this holds the allocation; empty when it lives in
-// flash (then bankBase() returns the XIP partition pointer directly).
+// The bank's homes: butter PSRAM, loaded from SD (each boot, and live on a pick), or on
+// a 16 MB image the bank built into the firmware (played straight from XIP). The flash
+// partition a bank used to be WRITTEN into on boards without butter PSRAM (1.6 MB above
+// the firmware, provisioned at early boot) is gone since 2026-11-27 (owner: nobody kept
+// a bank in flash; the reserve is now firmware room on every 4 MB image).
 static Buffer g_bankBuf;
 
 // The audio bus is unsigned 0..255 (silence = 0), summed with beeper/AY/SAA then
@@ -107,21 +86,8 @@ static uint8_t dataLenForStatus(uint8_t status) {
 static const uint8_t GM_ON[6] = {0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7};
 static uint8_t gm_match = 0;
 
-// The flash window for THIS boot. Runtime, not a linker constant: extended storage
-// moves the base down over the ROM overlay. Everything else in this file — the pool
-// registration, the bind, the size cap, the picker's gate — goes through these two.
-static inline const uint8_t* bankFlashPtr()   { return FlashRoms::bankStart(); }
-static inline size_t         bankRegionSize() { return FlashRoms::bankSize(); }
-
-// The base the engine is bound to: the PSRAM copy when present, else the flash
-// partition (XIP). Both are directly addressable; the format is position-independent.
-// The bank bound when no SD bank is loaded: the built-in one on a 16 MB image, the
-// flash partition otherwise.
 #if GM_BANK_BUILTIN
 extern "C" const uint8_t gb_gm_bank_builtin[];
-static inline const uint8_t* bankFixedPtr()   { return gb_gm_bank_builtin; }
-#else
-static inline const uint8_t* bankFixedPtr()   { return bankFlashPtr(); }
 #endif
 // A 16 MB image treats an empty pick (and a pick that is gone from the card) as the
 // built-in bank; only an explicit SD path loads from the card.
@@ -134,53 +100,37 @@ static inline bool builtinPicked() {
 }
 
 static inline const uint8_t* bankBase() {
-    return g_bankBuf.ok() ? (const uint8_t*)g_bankBuf.data() : bankFixedPtr();
+#if GM_BANK_BUILTIN
+    if (!g_bankBuf.ok()) return gb_gm_bank_builtin;
+#endif
+    return (const uint8_t*)g_bankBuf.data();
 }
 
 size_t MidiSynth::bankPsramBytes() {
-    if (!g_bankBuf.ok()) return 0;
-    Buffer::Tier t = g_bankBuf.tier();
-    return (t == Buffer::TIER_BUTTER || t == Buffer::TIER_SPI) ? g_bankBuf.size() : 0;
+    return g_bankBuf.ok() && g_bankBuf.tier() == Buffer::TIER_BUTTER ? g_bankBuf.size() : 0;
 }
 
-// Where the bank the engine is bound to actually sits. Not the same thing as
-// what was asked for — PSRAM is only preferred, and falls back to flash when the arena
-// cannot hold the bank — so the Memory Info screen reports THIS.
+// Where the bank the engine is bound to sits — for the Memory Info MIDI line.
 const char* MidiSynth::bankLocation() {
-    // "flash+" is the EXTENDED window: the same partition grown down over the traded
-    // ROM overlay. Worth distinguishing here, because it is the one state in which two
-    // machines are missing from the Machine menu and this screen is where someone goes
-    // looking for why.
-    const char* flash = FlashRoms::extendedLive() ? "flash+" : "flash";
     if (!bank_ready) return "no bank";
-#if GM_BANK_BUILTIN
-    if (!g_bankBuf.ok()) return "built-in";     // bound to the bank inside the firmware
-#endif
-    if (!g_bankBuf.ok()) return flash;          // bound straight to the XIP partition
-    switch (g_bankBuf.tier()) {
-        case Buffer::TIER_BUTTER: return "PSRAM";
-        case Buffer::TIER_FLASH:  return flash;
-        default:                  return g_bankBuf.tierName();
-    }
+    if (!g_bankBuf.ok()) return "built-in";
+    return g_bankBuf.tier() == Buffer::TIER_BUTTER ? "PSRAM" : g_bankBuf.tierName();
 }
 
-// The bank's home, and it asks for no decision: butter PSRAM if there is any, the
-// flash partition otherwise. Buffer's own ladder is exactly that rule.
-static inline uint32_t bankAllocFlags() {
-    return Buffer::NEED_POINTER | Buffer::PREFER_PSRAM | Buffer::ALLOW_FLASH;
-}
-
-// Defined below; needed by bindFromPsram() above its definition.
+// Defined below.
 static FIL* openValidSdBank(size_t* outSize, gm_bank_header_t* outHdr);
 
-// Bind the engine to the bank already resident in the flash partition. No SD, no
-// write → safe anytime. Returns true if a valid v5 bank is present in flash.
-bool MidiSynth::bindFromFlash() {
+// Bind the engine to the bank built into a 16 MB image. False on a 4 MB image.
+bool MidiSynth::bindBuiltin() {
+#if GM_BANK_BUILTIN
     gm_bank_view_t v;
-    if (!gm_bank_view(bankFixedPtr(), &v)) return false;   // empty / invalid / old version
-    midi_wt_bind(bankFixedPtr());
+    if (!gm_bank_view(gb_gm_bank_builtin, &v)) return false;
+    midi_wt_bind(gb_gm_bank_builtin);
     bank_ready = true;
     return true;
+#else
+    return false;
+#endif
 }
 
 // Buffer::LoadReader over the open SD bank file: fill `dst` with `n` bytes at `off`.
@@ -191,21 +141,23 @@ static bool bankFileReader(void* ctx, void* dst, uint32_t off, uint32_t n) {
     return f_read(f, dst, n, &br) == FR_OK && br == n;
 }
 
-// Load the SD bank via Buffer, which places it (PSRAM preferred, else the flash
-// partition) and writes it accordingly — MidiSynth does not branch on memory type. mayWriteFlash=false forbids a flash erase (post-VIDEO::Init);
-// a PSRAM load is always allowed, so PSRAM storage never needs a reboot. Returns true
-// once bound.
-bool MidiSynth::loadBank(bool force, bool mayWriteFlash) {
+// Load the SD bank into the butter PSRAM arena and bind. Butter only: the heap is far
+// too small for a bank and a small one there would starve the emulator, and SPI PSRAM
+// is not pointer-addressable. Returns true once bound.
+bool MidiSynth::loadBank() {
+    if (!Buffer::butterPoolReady()) return false;
     size_t size; gm_bank_header_t hdr;
     FIL* f = openValidSdBank(&size, &hdr);
     if (!f) return false;                                  // no usable SD bank
     g_bankBuf.free();
-    if (!g_bankBuf.alloc(size, bankAllocFlags())) {
+    if (!g_bankBuf.alloc(size, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
+        g_bankBuf.tier() != Buffer::TIER_BUTTER) {
+        g_bankBuf.free();
         fclose2(f);
         Debug::log("MidiSynth: bank alloc failed (%uKB)", (unsigned)(size >> 10));
         return false;
     }
-    bool ok = g_bankBuf.load((uint32_t)size, force, bankFileReader, f, mayWriteFlash);
+    bool ok = g_bankBuf.load((uint32_t)size, bankFileReader, f);
     fclose2(f);
     gm_bank_view_t v;
     if (!ok || !gm_bank_view(g_bankBuf.data(), &v)) { g_bankBuf.free(); return false; }
@@ -218,10 +170,8 @@ bool MidiSynth::loadBank(bool force, bool mayWriteFlash) {
 void MidiSynth::init() {
     midi_status = midi_data_pos = midi_expected = 0;
     if (bank_ready) return;   // idempotent (already bound at boot by provisionAtBoot)
-    // Runtime / post-VIDEO::Init: a PSRAM load is safe (no reboot); a flash *write* is
-    // not (mayWriteFlash=false). If neither applies, bind any already-persisted flash bank.
-    if (loadBank(/*force=*/false, /*mayWriteFlash=*/false)) return;
-    bindFromFlash();
+    if (loadBank()) return;
+    bindBuiltin();
 }
 
 // Open one candidate path and validate its GMWB v5 header. Returns the open FIL*
@@ -295,104 +245,43 @@ size_t MidiSynth::selectedBankBytes() {
     return 0;
 }
 
-// What a bank may weigh here. The flash region — everything above the firmware to the
-// top of flash, ~1.6 MB on a 4 MB board and ~13.6 MB on a 16 MB one — is the
-// FLOOR, not the limit: with PSRAM storage the bank is copied into the butter arena
-// and never touches flash, so on a butter board the arena is the real ceiling. Gating
-// on the partition alone made every bank above it invisible in the picker and made the
-// on-device converter delete its own output (DLSbyXG.dls -> ~2.0 MB). Flash storage
-// This is a CAPABILITY figure: the arena's total, not its current free space — a live
-// apply may still fail on occupancy, and then the reboot path (provisionAtBoot, empty
-// arena) places it. The flash half is FlashRoms::bankCapacity(), i.e. the EXTENDED
-// window wherever a trade is possible: a bank has to be selectable before it can be
-// the reason the window grows (the picker's gate and the converter both read this).
-size_t MidiSynth::maxBankBytes() {
-    const size_t flash = FlashRoms::bankCapacity();
-    const size_t psram = Buffer::butterArenaBytes();
-    return psram > flash ? psram : flash;
-}
+// What a bank may weigh here: the butter arena's total (a CAPABILITY figure, not its
+// free space right now — a live apply may still fail on occupancy, and the next boot,
+// with an empty arena, places it). 0 on a board without butter PSRAM.
+size_t MidiSynth::maxBankBytes() { return Buffer::butterArenaBytes(); }
 
-// True if there is a valid gm_bank.bin on SD that is NOT already identical in the
-// flash region (flash empty/invalid, or a different bank) → a boot-time write is
-// needed. Cheap (reads only the 44-byte headers).
-bool MidiSynth::needsProvision() {
-    size_t size; gm_bank_header_t sdh;
-    FIL* f = openValidSdBank(&size, &sdh);
-    if (!f) return false;                       // no usable SD bank → nothing to install
-    fclose2(f);
-    gm_bank_view_t fv;
-    if (gm_bank_view(bankFlashPtr(), &fv) && memcmp(fv.header, &sdh, sizeof(sdh)) == 0)
-        return false;                           // flash already holds this exact bank
-    return true;
-}
-
-// EARLY-BOOT bank setup. MUST be called from setup() AFTER Buffer::initPools() (the
-// butter arena must exist) and BEFORE VIDEO::Init() — still single core (core1 is
-// launched later in main()), and a flash write needs XIP free of the live HDMI DMA.
-// Buffer decides the placement: QSPI/butter PSRAM if present (copy from SD, no flash
-// write, no reboot), else the flash partition (slow, LED blinks, commit-last,
-// retry-safe). The "reinstall" watchdog magic forces a flash rewrite.
+// EARLY-BOOT bank setup, from setup() AFTER Buffer::initPools() (the butter arena must
+// exist). Loads the selected SD bank into PSRAM; a 16 MB image falls back to its
+// built-in bank.
 void MidiSynth::provisionAtBoot() {
-    // Always register the flash partition (even when GM.DLS is off) so runtime apply
-    // decisions (applyBankLive) can compare against / write the flash tier.
-    Buffer::initFlashPool((uint8_t*)bankFlashPtr(), bankRegionSize());
-    // Which window this boot uses, and whether the ROM overlay is still standing. The
-    // one line that separates "my bank is too big" from "my Scorpion GMX vanished" in
-    // a log, and both questions arrive without the user knowing they are the same one.
-    Debug::log("MidiSynth: bank window @%p %uKB (overlay %s)",
-               (const void*)bankFlashPtr(), (unsigned)(bankRegionSize() >> 10),
-               FlashRoms::regionSize() < 16 ? "absent"
-                   : (FlashRoms::intact() ? (FlashRoms::extendedLive() ? "spending" : "intact")
-                                          : "traded"));
     if (Config::midi != 4) return;              // only GM.DLS mode provisions a bank
+#if !GM_BANK_BUILTIN
+    // No butter PSRAM (or switched off in the Debug menu) and no built-in bank: GM.DLS
+    // cannot play here. Off for this session, as GS::init does for NeoGS; the menu does
+    // not offer the mode on such a board (UiTree midi_modeOpts).
+    if (!butter_psram_size()) {
+        Debug::log("MidiSynth: GM.DLS needs butter PSRAM - MIDI off");
+        OSD::bootNotice(" DLS Wavetable needs PSRAM - MIDI off ");
+        Config::midi = 0;
+        return;
+    }
+#endif
+    Debug::log("MidiSynth: provisionAtBoot enter @%u ms",
+               (unsigned)to_ms_since_boot(get_absolute_time()));
+    if (loadBank()) return;
 
-    bool force = (watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] == MIDI_REFLASH_MAGIC);
-    // Consume the request only when there is a volume to satisfy it from: this
-    // function now runs on a card-less boot too (for initFlashPool above and the
-    // bindFromFlash fallback below), and eating the flag there would silently
-    // drop a reflash the user asked for.
-    if (force && FileUtils::fsMount) watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] = 0;
-    Debug::log("MidiSynth: provisionAtBoot enter @%u ms (force=%d)",
-                  (unsigned)to_ms_since_boot(get_absolute_time()), (int)force);
-
-    // Pre-video, single core → a flash write is permitted here.
-    if (loadBank(force, /*mayWriteFlash=*/true)) return;
-
-    // Nothing was installed. If a bank IS selected, say WHY, with both numbers — the
-    // flash region is DYNAMIC since 2026-09-20 (rp2350-memmap.ld: firmware end .. top
-    // of flash), so a firmware update can shrink it under a bank the user chose months
-    // ago, and until now the only report of that was a Debug::log line, which needs a
-    // UART to read. The write path itself cannot overrun (Buffer::flashErase/
-    // flashProgram clamp to the registered window, and Buffer::alloc refuses a bank
-    // larger than the pool) — what this adds is the ANSWER, not the safety.
-    //
-    // It has to sit AFTER loadBank, not before it: selectedBankBytes() deliberately
-    // ignores the cap (extendedLive() needs the true size to decide the ROM trade),
-    // while openValidSdBank() skips an oversized pick and falls back to a default
-    // bank — so a check up front would refuse a boot that in fact had a bank to
-    // install. maxBankBytes() is max(flash region, butter arena) and follows the
-    // trade, so it is the honest ceiling on every board.
+    // Nothing was installed. If a bank IS selected, say WHY, with the number — needs no
+    // UART. Not worded as "too big": a failed read or a full arena lands here too.
     if (const size_t want = selectedBankBytes()) {
         const size_t cap = maxBankBytes();
-        Debug::log("MidiSynth: bank %uKB NOT installed - %uKB available "
-                   "(flash region %uKB, PSRAM arena %uKB)",
-                   (unsigned)(want >> 10), (unsigned)(cap >> 10),
-                   (unsigned)(FlashRoms::bankCapacity() >> 10),
-                   (unsigned)(Buffer::butterArenaBytes() >> 10));
-        // Deliberately not worded as "too big": a failed read or a full arena lands
-        // here too, and the two numbers say which it was without claiming either.
+        Debug::log("MidiSynth: bank %uKB NOT installed - %uKB PSRAM arena",
+                   (unsigned)(want >> 10), (unsigned)(cap >> 10));
         OSD::bootNotice((std::string(" GM.DLS bank not installed: ") +
                          std::to_string(want >> 10) + " KB, " +
-                         std::to_string(cap >> 10) + " KB available ").c_str());
+                         std::to_string(cap >> 10) + " KB PSRAM available ").c_str());
     }
-
-    // No usable SD bank → bind whatever is already persisted in the flash region.
-    bindFromFlash();
+    bindBuiltin();
 }
-
-// alfCartProvisionAtBoot() removed: ALF cartridges are no longer flashed into the
-// shared region — they are served lazily from SD on demand (see src/speccy/machines/Alf.cpp).
-// The shared flash region is now GM.DLS-only.
 
 // Scan the SD for selectable GM wavetable banks: any *.bin in CONFIG_DIR or the
 // card root that carries a valid GMWB v5 header. Fills `paths` (full path, used as
@@ -441,8 +330,7 @@ size_t MidiSynth::scanBanks(std::vector<std::string>& paths,
     return paths.size();
 }
 
-// True if a valid gm_bank.bin is present on SD (used to gate the "reinstall" offer
-// so we never wipe a working flash bank when there is nothing to restore it from).
+// True if a valid bank is present on SD (the picker's "nothing to select" check).
 bool MidiSynth::sdBankAvailable() {
     size_t size; gm_bank_header_t sdh;
     FIL* f = openValidSdBank(&size, &sdh);
@@ -451,40 +339,18 @@ bool MidiSynth::sdBankAvailable() {
     return true;
 }
 
-// The window this boot is using, which is NOT always the plain partition — callers
-// that mean "what does the fixed partition hold" want FlashRoms::bankSizePlain().
-size_t MidiSynth::flashBankCapacity() { return bankRegionSize(); }
-
-// Force a re-provision on the NEXT boot. NO flash op here (that needs core1
-// locked out vs the HDMI ISR → froze): just drop a magic in a watchdog scratch
-// register that survives the warm reset. provisionAtBoot() sees it and rewrites
-// the bank from SD even if the header looks current (recovers a broken body).
-// Caller reboots (esp_hard_reset → watchdog reset → scratch preserved).
-void MidiSynth::requestReflash() {
-    watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] = MIDI_REFLASH_MAGIC;
-    bank_ready = false;
-}
-
+// (Re)load + bind the selected bank without a reboot: an SD bank into PSRAM, or the
+// built-in one on a 16 MB image. False = nothing bound (no PSRAM, no room, no bank).
 bool MidiSynth::applyBankLive() {
-    size_t size; gm_bank_header_t h;
-    FIL* f = openValidSdBank(&size, &h);
-#if GM_BANK_BUILTIN
-    if (!f) {                             // built-in picked (or the SD pick is gone)
-        bank_ready = false;
-        midi_wt_unbind();
-        g_bankBuf.free();
-        return bindFromFlash();
-    }
-#else
-    if (!f) return bank_ready;            // no SD bank → keep whatever is bound
-#endif
-    fclose2(f);
-    bank_ready = false;                   // tear down current; loadBank rebinds on success
+    bank_ready = false;                   // tear down current; rebind below
     midi_wt_unbind();
     g_bankBuf.free();
-    // No flash write here: lands in PSRAM (live), or a flash bank that is already
-    // current (skip). Returns false only if a flash write is needed → caller reboots.
-    return loadBank(/*force=*/false, /*mayWriteFlash=*/false);
+    if (builtinPicked()) return bindBuiltin();
+    if (loadBank()) return true;
+#if GM_BANK_BUILTIN
+    if (!sdBankAvailable()) return bindBuiltin();   // the SD pick is gone -> built-in
+#endif
+    return false;
 }
 
 void MidiSynth::deinit() {
@@ -492,13 +358,13 @@ void MidiSynth::deinit() {
     midi_status = midi_data_pos = midi_expected = 0;
     g_gate = 0;
     midi_wt_unbind();         // release the ~5 KB voice array (lazy; back to .bss-free)
-    g_bankBuf.free();         // release the PSRAM copy (no-op if the bank was in flash)
+    g_bankBuf.free();         // release the PSRAM copy (no-op for the built-in bank)
 }
 
 void MidiSynth::reset() {
     midi_status = midi_data_pos = midi_expected = 0;
     g_gate = 0;
-    if (bank_ready) midi_wt_bind(bankBase());   // re-bind = all-notes-off (PSRAM or flash)
+    if (bank_ready) midi_wt_bind(bankBase());   // re-bind = all-notes-off
 }
 
 void MidiSynth::feedByte(uint8_t b) {

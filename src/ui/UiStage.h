@@ -269,10 +269,6 @@ const char* romsetName(int32_t composite);
     /* sample RAM and the Profi layout are all decided in setup() from the PSRAM size,   */ \
     /* so it can only be honoured from a fresh boot — hence the reboot prompt.           */ \
     X(SET_PSRAM_ON,        AC_REBOOT, 0,                     get_psramOn,    put_psramOn,    nullptr,        -1)          \
-    /* Where the GM.DLS bank lives (PSRAM / flash partition). Not AC_REBOOT: switching to */ \
-    /* PSRAM applies live, and only the flash direction needs the early-boot write — the  */ \
-    /* hook runs the same applyBankLive()/confirm-install flow as the bank picker, after  */ \
-    /* the commit's Config::save() has already persisted the pick.                        */ \
     /* ── Video > TFT panel (rows exist on TFT builds only) ───────────────────── */      \
     /* TFT_INVERSION / TFT_FLAGS are read once, while st7789_init() builds its command  */ \
     /* list, so all four are reboot-class; the accessors are no-ops off a TFT build.     */ \

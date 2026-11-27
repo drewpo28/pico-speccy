@@ -482,33 +482,18 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
     }
 
     if (!MidiSynth::sdBankAvailable()) {
-        // No SD bank: keep an already-bound (flash) bank, else nothing to select.
-        if (MidiSynth::bankReady()) {
-            if (Config::midi_bank != prevBank) Config::save();
-            uiToast(MSG_MIDI_BANK_OK, false, 2000);
-        } else {
-            Config::midi_bank = prevBank;
-            uiToast("No DLS bank in flash or on SD", true, 3000);
-        }
+        Config::midi_bank = prevBank;
+        uiToast("No DLS bank on SD", true, 3000);
     } else if (MidiSynth::applyBankLive()) {
-        // Applied without a reboot: PSRAM storage loads the bank live, and a flash bank
-        // that is already current just rebinds.
+        // Loaded into PSRAM live: no reboot.
         Config::save();
         uiToast(MSG_MIDI_BANK_OK, false, 2000);
-    } else if (uiConfirm(MSG_MIDI_BANK_INSTALL_Q, "DLS Wavetable")) {
-        // The bank landed in flash (no butter PSRAM to hold it) and the
-        // partition holds a different bank → it must be written at EARLY BOOT
-        // (single core, pre-video). Commit + reboot. The mode may still be a staged
-        // edit this session — carry it into Config so the reboot comes up in DLS mode
-        // instead of silently dropping it.
-        if (Stage::get(SET_MIDI_MODE) == 4) Config::midi = 4;
-        Config::save();
-        uiToast("Installing DLS bank: boot takes ~20-30s, do NOT power off", false, 3000);
-        sleep_ms(2500);                         // let the warning be read; reset kills it
-        OSD::esp_hard_reset();
     } else {
-        Config::midi_bank = prevBank;           // declined -> revert + rebind the old one
+        // No butter PSRAM, or the arena cannot hold it: revert + rebind the old one.
+        Config::midi_bank = prevBank;
         MidiSynth::init();
+        uiToast(MidiSynth::maxBankBytes() ? "DLS bank does not fit PSRAM"
+                                          : "DLS bank needs PSRAM", true, 3000);
     }
 }
 

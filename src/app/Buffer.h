@@ -8,25 +8,18 @@
 //
 //   TIER_HEAP    SRAM heap (malloc)                  — directly addressable
 //   TIER_BUTTER  butter QSPI PSRAM (XIP @0x11000000) — directly addressable, RP2350
-//   TIER_FLASH   reserved flash partition (XIP)      — addressable READ-only; written
-//                                                       via flashErase/flashProgram
 //   TIER_SPI     SPI PSRAM (PIO)                     — accessor-only (read/write)
 //   TIER_SWAP    SD swap file                        — accessor-only (read/write)
 //
 // Two flavors:
-//   • NEED_POINTER  → data() returns a usable raw pointer. TIER_HEAP/TIER_BUTTER and
-//                     (read-only) TIER_FLASH qualify (mbedTLS / UART-IRQ / DMA need
-//                     real contiguous memory; FLASH is read-only, write via flash*()).
+//   • NEED_POINTER  → data() returns a usable raw pointer. TIER_HEAP/TIER_BUTTER/
+//                     TIER_ARENA qualify (mbedTLS / UART-IRQ / DMA need real
+//                     contiguous memory).
 //   • accessor      → may land in any tier; access via read()/write()/readBlock()/
 //                     writeBlock(). data() returns nullptr for SPI/SWAP.
 //
-// FLASH tier: a single fixed partition (e.g. the GM.DLS bank region) registered via
-// initFlashPool(). It is XIP-addressable for reads, so data() returns a usable
-// pointer, but it CANNOT be written by pointer store — use the flashErase/
-// flashProgram primitives (which run at a conservative 252 MHz, IRQs off, from RAM;
-// single-core / before VIDEO::Init only). This is the "QSPI-PSRAM if present, else
-// FLASH" fallback: ask for memory with PREFER_PSRAM|ALLOW_FLASH and you land in
-// butter PSRAM when it exists, otherwise the flash partition.
+// (A TIER_FLASH — the GM.DLS bank written into a flash partition on boards without
+// butter PSRAM — existed until 2026-11-27; removed with the 1.6 MB flash reserve.)
 //
 // The PSRAM arenas are carved from whatever butter/SPI space the existing
 // consumers (MemESP/Profi pages, DivMMC, GS) have NOT claimed — computed read-only
@@ -43,15 +36,10 @@ class Buffer {
 public:
     enum Flags {
         ALLOC_AUTO    = 0,
-        NEED_POINTER  = 1,   // must be addressable → heap / butter PSRAM / lent arena / flash
+        NEED_POINTER  = 1,   // must be addressable → heap / butter PSRAM / lent arena
         PREFER_PSRAM  = 2,   // try PSRAM before heap (keep heap free)
         USE_NET_ARENA = 4,   // may draw from a temporarily-lent SRAM arena (see lendArena)
-        ALLOW_FLASH   = 8,   // NEED_POINTER may fall back to the flash partition (read-only)
-        FORCE_FLASH   = 16,  // NEED_POINTER: the flash partition is the ONLY acceptable
-                             //   tier — no silent PSRAM/heap fallback. Implies ALLOW_FLASH.
-                             //   For a caller that wants persistence rather than speed
-                             //   (GM.DLS "Instrument storage: Flash"), where landing in
-                             //   PSRAM instead would quietly lose the property asked for.
+        // 8 / 16 were ALLOW_FLASH / FORCE_FLASH (the removed flash tier)
         HOT_SRAM      = 32,  // heap-first with a REDUCED headroom rule: take SRAM as long
                              //   as HEAP_HOT_MARGIN stays spare, instead of the generic
                              //   32 KB HEAP_SAFETY_MARGIN. For hot working state that a
@@ -65,7 +53,7 @@ public:
                              //   for the session — otherwise the heap is left too thin
                              //   for the OSD/browser/ZIP paths.
     };
-    enum Tier { TIER_NONE = 0, TIER_HEAP, TIER_BUTTER, TIER_SPI, TIER_SWAP, TIER_ARENA, TIER_FLASH };
+    enum Tier { TIER_NONE = 0, TIER_HEAP, TIER_BUTTER, TIER_SPI, TIER_SWAP, TIER_ARENA };
 
     Buffer() = default;
     ~Buffer() { free(); }
@@ -106,22 +94,16 @@ public:
     // predict a specific alloc.
     static size_t butterArenaBytes();
 
-    // Register the flash partition that backs TIER_FLASH (e.g. the GM.DLS bank
-    // region). `xipBase` is the partition's XIP address (>= XIP_BASE), `size` its
-    // length. Call once at boot, before any ALLOW_FLASH allocation. Idempotent.
-    static void initFlashPool(void* xipBase, size_t size);
-
     bool alloc(size_t bytes, uint32_t flags = ALLOC_AUTO);
     void free();
 
     bool        ok()   const { return _tier != TIER_NONE; }
     size_t      size() const { return _size; }
     Tier        tier() const { return _tier; }
-    bool        addressable() const { return _tier == TIER_HEAP || _tier == TIER_BUTTER || _tier == TIER_ARENA || _tier == TIER_FLASH; }
+    bool        addressable() const { return _tier == TIER_HEAP || _tier == TIER_BUTTER || _tier == TIER_ARENA; }
     const char* tierName() const;
 
-    // Raw pointer — valid for TIER_HEAP/TIER_BUTTER/TIER_ARENA and (read-only)
-    // TIER_FLASH, else nullptr. Never store through a TIER_FLASH pointer.
+    // Raw pointer — valid for TIER_HEAP/TIER_BUTTER/TIER_ARENA, else nullptr.
     uint8_t* data() { return addressable() ? _ptr : nullptr; }
 
     // Accessor API — valid for ALL tiers.
@@ -152,32 +134,18 @@ public:
 
     // Fill this (already-alloc'd) buffer with `size` bytes pulled via `reader`,
     // choosing the mechanics for the chosen tier transparently — the caller never
-    // branches on memory type:
-    //   • HEAP/BUTTER/ARENA: copy each chunk into place (SRAM bounce → CPU store,
-    //     safe for the XIP-PSRAM window where a DMA write would not be).
-    //   • FLASH: when !force and the partition already holds identical bytes, skip the
-    //     write; otherwise erase + program at a conservative 252 MHz, IRQs off,
-    //     COMMIT-LAST (the first sector is programmed LAST → an interrupted write
-    //     leaves byte 0 invalid = retry-safe), watchdog-guarded. The flash write MUST
-    //     run single-core, before VIDEO::Init(); pass mayWriteFlash=false to forbid it
-    //     (e.g. after video is up) — load() then returns false instead of erasing.
+    // branches on memory type. HEAP/BUTTER/ARENA: each chunk through an SRAM bounce,
+    // then a CPU store (safe for the XIP-PSRAM window where a DMA write would not be).
     // Returns true if the buffer holds the data on return; the caller validates it.
-    bool load(uint32_t size, bool force, LoadReader reader, void* ctx, bool mayWriteFlash = true);
+    bool load(uint32_t size, LoadReader reader, void* ctx);
 
-    // ── Flash partition write primitives (TIER_FLASH) ──────────────────────────
-    // Erase/program the partition registered via initFlashPool(). Offsets are
-    // partition-relative (0 = first byte). XIP-unsafe → run IRQs-off from RAM,
-    // SINGLE CORE and BEFORE VIDEO::Init() only (erasing flash stalls the QMI bus
-    // that the live HDMI DMA streams the framebuffer through). Bracket a batch of
-    // erase/program calls with flashClockEnter()/flashClockExit(): the clock drops
-    // to a conservative 252 MHz for the write (flash/QMI timing is marginal at the
-    // overclock; lowering clk_sys with timing set for the higher clock is the safe
-    // direction) and is restored after, dropping the XIP cache. Mirrors the proven
-    // approach in the old MidiSynth provisioning. No-op if no partition registered.
+    // ── Flash write clock window ───────────────────────────────────────────────
+    // A flash erase/program (the custom-ROM writer, OSDMain flash_block) must run at a
+    // conservative 252 MHz: flash/QMI timing is marginal at the overclock, and lowering
+    // clk_sys with timing set for the higher clock is the safe direction. Enter drops
+    // the clock; Exit restores it, re-tunes QMI and drops the XIP cache.
     static void flashClockEnter();
     static void flashClockExit();
-    static void flashErase(uint32_t off, uint32_t bytes);                 // 64 KB-block aligned
-    static void flashProgram(uint32_t off, const void* src, uint32_t bytes); // FLASH_PAGE_SIZE multiple
 
     // ── Temporarily-lent SRAM arena ────────────────────────────────────────────
     // Lend a fixed, already-allocated, directly-addressable SRAM region to the

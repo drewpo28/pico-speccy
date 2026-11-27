@@ -959,8 +959,8 @@ extern "C" unsigned board_kbd_clock_pin(void) {
 // scratch survives a watchdog reboot but is cleared by a power-on / RUN-pin
 // reset — exactly the boundary a "since power-on" uptime wants.
 // scratch[3] = 0x55 tag (top byte) | uptime seconds (24 bits ≈ 194 days).
-// scratch[2] is MIDI_REFLASH_SCRATCH (MidiSynth.cpp); 4..7 belong to the
-// SDK/bootrom watchdog_reboot vector.
+// scratch[2] is free (it was MidiSynth's reflash request until 2026-11-27); 4..7
+// belong to the SDK/bootrom watchdog_reboot vector.
 #define UPTIME_SCRATCH  3
 #define UPTIME_TAG      0x55000000u
 #define UPTIME_TAG_MASK 0xFF000000u

@@ -1249,8 +1249,7 @@ void ESPectrum::setup() {
   // ...and the Interface 2 cartridge: requestMachine below points rom[0] at it.
   If2::bindBoot();
   // NOTE: the GM.DLS bank (MidiSynth::provisionAtBoot) is set up later — after
-  // Buffer::initPools() so the butter PSRAM arena exists — but still before
-  // VIDEO::Init() (flash erase must precede the live HDMI DMA over XIP).
+  // Buffer::initPools(), so the butter PSRAM arena exists.
   sdcard_set_led_blink(Config::sdLedBlink); // onboard LED blink on SD access
   // The card was mounted (and switched to high speed, the default) before this
   // config could be read: an Off here takes it back to 25 MHz now.
@@ -1842,12 +1841,7 @@ void ESPectrum::setup() {
   // (flash CS0 + PSRAM CS1), so once the HDMI engine streams the framebuffer out of
   // XIP-PSRAM it would stall the bus and hang. Still single core (core1 launches
   // later in main()). No-op unless GM.DLS mode (Config::midi==4) is selected.
-  // Called even with no card: its own first statement registers the flash
-  // partition with the Buffer pool (which every later runtime decision compares
-  // against), and its fallback binds a bank already persisted there — so a
-  // card-less boot keeps working GM.DLS instead of losing it with the card. The
-  // SD-reading half self-gates: with no volume there is no bank file to read and
-  // no flash write happens.
+  // Called even with no card: a 16 MB image then binds its built-in bank.
   MidiSynth::provisionAtBoot();
 
   //=======================================================================================

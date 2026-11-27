@@ -15,9 +15,8 @@
 // Byte-for-byte identical to dls_pack.py output for the same .dls + rate, which is
 // the correctness criterion (validate on host before trusting on device).
 //
-// Run on core0 at runtime
-// (NOT the early-boot flash path): it only produces the .bin on SD; the existing
-// MidiSynth::provisionAtBoot() then installs it into flash after a reboot.
+// Run on core0 at runtime: it only produces the .bin on SD; MidiSynth::applyBankLive()
+// then loads it into PSRAM.
 #pragma once
 
 #include <stdint.h>
