@@ -23,6 +23,17 @@
 #include <hardware/clocks.h>
 #include <hardware/uart.h>
 #include <hardware/watchdog.h>    // watchdog_caused_reboot (boot breadcrumb)
+#include <hardware/resets.h>      // warm restart (board_warm_restart)
+#include <hardware/structs/io_bank0.h>
+#include <hardware/structs/pads_bank0.h>
+#include <hardware/structs/sio.h>
+#include <hardware/structs/nvic.h>
+#include <hardware/structs/systick.h>
+#include <hardware/structs/scb.h>
+#include <pico/runtime.h>
+#include <pico/runtime_init.h>
+#include <cstddef>
+#include "app/WarmBoot.h"
 extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
 extern "C" void pcprof_core1_poll(void);         // PcProf.cpp (a no-op without PERF_HIST)
 #include <hardware/structs/powman.h>  // chip_reset reason decode (boot breadcrumb)
@@ -973,7 +984,7 @@ extern "C" uint32_t uptime_seconds(void) {
 // Called once at main() entry, before anything can arm the watchdog.
 static void uptime_init(void) {
     uint32_t v = watchdog_hw->scratch[UPTIME_SCRATCH];
-    if (watchdog_caused_reboot() && (v & UPTIME_TAG_MASK) == UPTIME_TAG)
+    if (board_soft_boot() && (v & UPTIME_TAG_MASK) == UPTIME_TAG)
         s_uptime_offset_s = v & ~UPTIME_TAG_MASK;
     watchdog_hw->scratch[UPTIME_SCRATCH] = UPTIME_TAG | (s_uptime_offset_s & ~UPTIME_TAG_MASK);
 }
@@ -1452,6 +1463,156 @@ uint32_t __not_in_flash_func(butter_psram_probed)() { return 0; }
 void board_psram_disable() {
     psram_disabled_runtime = true;
     psram_set_disabled(true);   // the SPI/PIO chip (MURM1) reports absent too
+}
+
+// ── warm firmware restart (app/WarmBoot.h) ─────────────────────────────────────
+extern uint8_t flash_qe;            // flash_qe_fix() results, defined below
+extern uint8_t flash_qe_diag[6];
+extern "C" uint8_t linkVGA01;
+// What survives the jump to the reset handler: crt0 neither copies nor zeroes
+// .uninitialized_data. Everything the skipped init steps would have produced.
+#define WARM_MAGIC 0x5741524Du   // "WARM"
+struct WarmState {
+    uint32_t magic;
+    uint32_t clk_hz[CLK_COUNT];  // clock_get_hz() answers from a .bss table
+    int32_t  butter_size;        // BUTTER_PSRAM_SIZE (the probe result)
+    uint8_t  psram_pin;
+    uint8_t  link_vga;           // linkVGA01 (testPins)
+    uint8_t  jedec[4];           // rx[] (flash_info)
+    uint8_t  flash_qe;
+    uint8_t  qe_diag[6];
+    uint32_t check;
+};
+static WarmState __uninitialized_ram(s_warm_state);
+static bool s_warm_boot;         // .bss: decided by warm_early_resets, before anything else
+
+static uint32_t warm_check(const WarmState& w) {
+    const uint32_t* p = (const uint32_t*)&w;
+    uint32_t h = 0x9E3779B9u;
+    for (size_t i = 0; i < offsetof(WarmState, check) / 4; i++) h = (h ^ p[i]) * 0x01000193u;
+    return h;
+}
+
+extern "C" bool board_warm_boot(void) { return s_warm_boot; }
+extern "C" bool board_soft_boot(void) { return s_warm_boot || watchdog_caused_reboot(); }
+
+// The blocks a warm restart puts back into reset: every one a cold boot resets, except
+// what keeps the chip running from flash and PSRAM at its clock — the PLLs, the QSPI
+// pads and IO (flash + the QMI), IO_BANK0 / PADS_BANK0 (the PSRAM's CS1 is a bank-0
+// GPIO; the other pins are put back to their reset state by hand) — and SYSCFG / JTAG,
+// which a cold boot's early reset leaves alone too (USB-to-SWD).
+static constexpr uint32_t WARM_RESET_MASK = RESETS_RESET_BITS & ~(
+    (1u << RESET_IO_QSPI) | (1u << RESET_PADS_QSPI) |
+    (1u << RESET_PLL_USB) | (1u << RESET_PLL_SYS) |
+    (1u << RESET_IO_BANK0) | (1u << RESET_PADS_BANK0) |
+    (1u << RESET_SYSCFG) | (1u << RESET_JTAG));
+
+// Runtime init (registered in place of the SDK's, PICO_RUNTIME_SKIP_INIT_EARLY_RESETS
+// / _CLOCKS in CMakeLists.txt): the cold boot runs the SDK's own; a warm boot has its
+// peripherals in reset already (warm_tail) and must not touch the PLLs or IO_BANK0.
+static void warm_early_resets(void) {
+    s_warm_boot = s_warm_state.magic == WARM_MAGIC && s_warm_state.check == warm_check(s_warm_state);
+    s_warm_state.magic = 0;      // once: a crash before the next restart boots cold
+    if (!s_warm_boot) runtime_init_early_resets();
+}
+PICO_RUNTIME_INIT_FUNC_HW(warm_early_resets, PICO_RUNTIME_INIT_EARLY_RESETS);
+
+static void warm_clocks(void) {
+    if (!s_warm_boot) { runtime_init_clocks(); return; }
+    // The clocks run as the last session left them; only the table clock_get_hz()
+    // reads came back zeroed. The tick generators (clk_ref, not in RESETS) still run.
+    for (uint i = 0; i < CLK_COUNT; i++) clock_set_reported_hz((clock_handle_t)i, s_warm_state.clk_hz[i]);
+}
+PICO_RUNTIME_INIT_FUNC_HW(warm_clocks, PICO_RUNTIME_INIT_CLOCKS);
+
+extern "C" uint32_t __vectors[];
+extern char __StackTop;          // linker symbol (also used by the fault handler below)
+
+extern "C" __attribute__((noreturn, noinline, used)) void warm_tail(void) {
+    save_and_disable_interrupts();
+    uptime_refresh();            // the timer restarts from 0; the scratch keeps the total
+    WarmState& w = s_warm_state;
+    for (uint i = 0; i < CLK_COUNT; i++) w.clk_hz[i] = clock_get_hz((clock_handle_t)i);
+#ifdef BUTTER_PSRAM_GPIO
+    w.butter_size = BUTTER_PSRAM_SIZE;
+#else
+    w.butter_size = 0;
+#endif
+    w.psram_pin = psram_pin;
+    w.link_vga = linkVGA01;
+    memcpy(w.jedec, rx, sizeof w.jedec);
+    w.flash_qe = flash_qe;
+    memcpy(w.qe_diag, flash_qe_diag, sizeof w.qe_diag);
+    // Core1: parked by the reboot prologue (or never launched) — stop it for good; the
+    // next boot's multicore_launch_core1 starts it from the bootrom as after a reset.
+    multicore_reset_core1();
+    // The butter arena, as close_all() clears it for the hard reboot — the QMI keeps CS1.
+#ifdef BUTTER_PSRAM_GPIO
+    if (w.butter_size > 0 && !psram_disabled_runtime) memset((void*)PSRAM_DATA, 0, (size_t)w.butter_size);
+#endif
+    // Interrupts: nothing may fire between here and the new runtime's vector table.
+    for (uint i = 0; i < count_of(nvic_hw->icer); i++) { nvic_hw->icer[i] = ~0u; nvic_hw->icpr[i] = ~0u; }
+    systick_hw->csr = 0;
+    scb_hw->icsr = M33_ICSR_PENDSVCLR_BITS | M33_ICSR_PENDSTCLR_BITS;
+    // DMA, PIO, HSTX, USB, UART, SPI, I2C, PWM, timers, ADC...: back into reset.
+    reset_block_mask(WARM_RESET_MASK);
+    // Bank-0 pins as an IO_BANK0 reset would leave them, the PSRAM's CS1 excepted;
+    // SIO output / output-enable too (the PSM reset of a cold boot clears SIO).
+    const bool keepCs1 = w.butter_size > 0;
+    for (uint p = 0; p < NUM_BANK0_GPIOS; p++) {
+        if (keepCs1 && p == w.psram_pin) continue;
+        io_bank0_hw->io[p].ctrl = IO_BANK0_GPIO0_CTRL_RESET;
+        pads_bank0_hw->io[p] = PADS_BANK0_GPIO0_RESET;
+    }
+    for (uint i = 0; i < count_of(io_bank0_hw->intr); i++) {
+        io_bank0_hw->proc0_irq_ctrl.inte[i] = 0;
+        io_bank0_hw->proc1_irq_ctrl.inte[i] = 0;
+        io_bank0_hw->dormant_wake_irq_ctrl.inte[i] = 0;
+        io_bank0_hw->intr[i] = ~0u;          // the edge latches
+    }
+    sio_hw->gpio_oe_clr = ~0u;
+    sio_hw->gpio_clr = ~0u;
+    sio_hw->gpio_hi_oe_clr = 0xFFFFu;        // GPIO32-47 only: the upper bits are QSPI / USB
+    sio_hw->gpio_hi_clr = 0xFFFFu;
+    w.magic = WARM_MAGIC;
+    w.check = warm_check(w);
+    // Into crt0 the way the bootrom enters it: privileged thread mode on MSP, no FP
+    // context, the flash vector table, MSP from its first word, the reset handler.
+    register uint32_t* vt asm("r2") = __vectors;
+    __asm volatile (
+        "movs r0, #0          \n"
+        "msr  msplim, r0      \n"
+        "msr  control, r0     \n"
+        "isb                  \n"
+        "ldr  r1, =0xE000ED08 \n"   // SCB->VTOR
+        "str  r2, [r1]        \n"
+        "dsb                  \n"
+        "isb                  \n"
+        "ldr  r0, [r2]        \n"
+        "msr  msp, r0         \n"
+        "ldr  r0, [r2, #4]    \n"
+        "bx   r0              \n"
+        :: "r"(vt) : "r0", "r1", "memory");
+    __builtin_unreachable();
+}
+
+extern "C" void board_warm_restart(void) {
+    // From thread mode only: a reset handler entered from an exception would run the
+    // whole boot in handler mode. Nothing calls this from an ISR; if it ever does, the
+    // full reboot is the safe answer.
+    uint32_t ipsr;
+    __asm volatile ("mrs %0, ipsr" : "=r"(ipsr));
+    if (ipsr & 0x1FF) { watchdog_enable(1, true); while (true) {} }
+    // Finish on the core0 SRAM stack from its top, guard off: the butter arena that
+    // warm_tail clears may hold the stack we are on (the net/zip alt-stack, see
+    // OSD::esp_hard_reset).
+    __asm volatile (
+        "movs r1, #0        \n"
+        "msr  msplim, r1    \n"
+        "msr  msp, %0       \n"
+        "bl   warm_tail     \n"
+        :: "r"(&__StackTop) : "r1", "memory");
+    __builtin_unreachable();
 }
 
 // Linker-defined per-core stack bounds: core0 = top of main RAM (__Stack*, 8 KB —
@@ -1956,7 +2117,8 @@ int main() {
     if (Debug::uartBootWanted() && BoardPins::dbgUartInstance() >= 0)
 #endif
         Debug::uartStart((unsigned)BoardPins::dbgUartInstance(), BoardPins::dbgUartTxPin());
-    Debug::log("main: entry, wd_reboot=%d", (int)watchdog_caused_reboot());
+    Debug::log("main: entry, wd_reboot=%d warm=%d", (int)watchdog_caused_reboot(), (int)board_warm_boot());
+    const bool warm = board_warm_boot();
     // Decode WHY the chip reset (hw-traced 2026-07-21: "wd_reboot=0 mid-ZIP-extract"
     // reboots were undiagnosable — POR/BOR here means the supply sagged, RUN means
     // the reset button / debug probe, WDG means our own esp_hard_reset/crash path).
@@ -1972,6 +2134,15 @@ int main() {
                    (cr & POWMAN_CHIP_RESET_HAD_DP_RESET_REQ_BITS)         ? " DBG"    : "");
     }
     Debug::uartFlushSync();   // drain before the clock switch garbles it
+    if (warm) {
+        // Warm restart (app/WarmBoot.h): the chip kept its voltage, clk_sys and the QMI
+        // timing. The flash commands below would hand XIP back with boot2's 150 MHz
+        // timing at the running clock, so their results come from the last session.
+        memcpy(rx, s_warm_state.jedec, sizeof rx);
+        flash_qe = s_warm_state.flash_qe;
+        memcpy(flash_qe_diag, s_warm_state.qe_diag, sizeof flash_qe_diag);
+        Debug::log("main: warm restart at %u MHz, flash/VREG/PLL kept", (unsigned)(clock_get_hz(clk_sys) / MHZ));
+    } else {
     flash_info();
     flash_qe_fix();
     { extern size_t getFreeHeap(void); Debug::log("main: after flash_qe_fix, freeHeap=%u largest=%u", (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
@@ -2003,6 +2174,7 @@ int main() {
         }
         flash_timings(applied_boot_mhz);
     #endif
+    }   // !warm
 
     // clk_sys just changed → clk_peri with it: re-derive the early console's baud.
     // (No stdio_init_all() anywhere: the pico2 board header's PICO_DEFAULT_UART is
@@ -2048,7 +2220,7 @@ int main() {
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < (warm ? 0 : 6); i++) {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, true);
         sleep_ms(33);
@@ -2068,8 +2240,14 @@ int main() {
         #else
         psram_pin = chip_is_rp2350a() ? BUTTER_PSRAM_GPIO : 47;
         #endif
+        if (warm) {
+            // CS1 stayed XIP's, M1 kept its timing / QPI formats, the chip its QPI mode.
+            psram_pin = s_warm_state.psram_pin;
+            BUTTER_PSRAM_SIZE = s_warm_state.butter_size;
+        } else {
         Debug::log("main: psram_init begin");
         psram_init(psram_pin);
+        }
         butter_psram_size();
         Debug::log("main: butter=%u KB", butter_psram_size() >> 10);
     #endif
@@ -2104,7 +2282,7 @@ int main() {
     Debug::log("main: testPins skipped (HDMI-only board, lanes in use by HSTX)");
     #else
     Debug::log("main: testPins begin");
-    linkVGA01 = testPins(VGA_BASE_PIN, VGA_BASE_PIN + 1);
+    linkVGA01 = warm ? s_warm_state.link_vga : testPins(VGA_BASE_PIN, VGA_BASE_PIN + 1);
     { extern size_t getFreeHeap(void); Debug::log("main: testPins=%02X, freeHeap=%u largest=%u", linkVGA01, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable()); }
     #endif
     #endif
@@ -2153,7 +2331,7 @@ int main() {
     // here — see the WifiNet::init() call after multicore_launch_core1() below,
     // and why.
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < (warm ? 0 : 6); i++) {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, true);
         sleep_ms(33);

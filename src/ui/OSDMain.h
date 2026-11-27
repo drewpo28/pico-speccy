@@ -209,6 +209,8 @@ public:
     static string convertDlsToBank(const string& dlsPath);
 
     static void esp_hard_reset();
+    static void esp_warm_reset();        // app/WarmBoot.h: no chip reset, setup() in full
+    static void esp_settings_reboot();   // warm unless video / overclock settings changed
     // The Web Archives destination-folder picker (OSDFile.cpp), shared with the
     // snapshot converter. Returns the chosen folder, "" if cancelled.
     static string chooseFolder(const string& start);

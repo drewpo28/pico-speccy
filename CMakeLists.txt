@@ -227,6 +227,13 @@ pico_enable_stdio_usb(${PROJECT_NAME} 0)
 include(cmake/memory-layout.cmake)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
+# Warm firmware restart (src/app/WarmBoot.h): main.cpp registers its own early-reset
+# and clock init in their slots; on a cold boot they call the SDK's, on a warm one they
+# keep the PLLs, the clocks and IO_BANK0 (the PSRAM's CS1) as the last session left them.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PICO_RUNTIME_SKIP_INIT_EARLY_RESETS=1
+    PICO_RUNTIME_SKIP_INIT_CLOCKS=1
+)
 
 include(cmake/debug-defines.cmake)
 

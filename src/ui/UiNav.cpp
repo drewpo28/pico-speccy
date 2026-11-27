@@ -919,7 +919,7 @@ resume:
     // explained itself, and MachineSwitch left the machine untouched.
     // The "Apply+Reboot" button already carried the consent — reboot right away.
     if (rep.needsReboot)
-        OSD::esp_hard_reset();              // never returns
+        OSD::esp_settings_reboot();              // never returns
 
     // MUST run on every exit path: in DS80 our 16 colours are installed in the Profi
     // palette, so skipping this leaves the guest's screen painted in UI colours.

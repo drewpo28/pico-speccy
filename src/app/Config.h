@@ -114,6 +114,14 @@ public:
     static bool profileRename(uint8_t slot, const std::string& name);
     static bool profileLoad(uint8_t slot);          // copies over storage.nvs
     static void profileDelete(uint8_t slot);
+
+    // ── reboot class: warm restart vs full reboot (OSD::esp_settings_reboot) ─────
+    // The keys of storage.nvs a warm restart must not change under the running chip:
+    // the video ones and the overclock (clock, voltage, flash / PSRAM / TFT frequency).
+    // hwKeysSnapshot() records them at the end of setup(); hwKeysChanged() rereads
+    // storage.nvs (callers save() or rewrite it first) — true also when unreadable.
+    static void hwKeysSnapshot();
+    static bool hwKeysChanged();
     static bool loaded;  // true after successful load() from file/RAM
     // Set when save() refused to write because this session never loaded the
     // card's config (see the guard in save()). ESPectrum::loop turns it into a

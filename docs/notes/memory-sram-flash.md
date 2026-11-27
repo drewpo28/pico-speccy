@@ -135,6 +135,63 @@ internal pull-downs. Debugging trap that cost a round: while Hardware Info is OP
 the firmware rewrites AINSEL every second — OpenOCD channel scans race it (verify
 with CS readback beside every RESULT).
 
+## Warm restart: reboot for settings without a chip reset (2026-11-27, compiled + host-checked, NOT hw-tested, never linked)
+
+Owner's idea: a reboot that does not redo video / CPU clock / VREG / flash and PSRAM
+timing. `OSD::esp_settings_reboot()` (OSDMain.cpp) is now what every SETTINGS reboot
+calls: the staged-settings commit (`rep.needsReboot`), both budget-gate reboots, the
+NIC pin-conflict hooks, profile load, the `requestMachine` / `MachineSwitch` layout
+boundaries, `powerCycle`'s fallback, ALF leaving Profi, the eLeMeNt SetUp's boot-class
+items, `.nex` launch, `.pss` hardware merge. It takes the WARM restart unless
+`Config::hwKeysChanged()`: storage.nvs (read after the caller's save / file rewrite, so
+profile load and the .pss merge count too) differs from the snapshot taken at the end
+of setup() in any of cpu_mhz, vreq_voltage, max_flash/psram/tft_freq, video_driver,
+hdmi_vmode, vga_vmode, hdmi_clkdrv, vga_pwm, TFT_FLAGS, TFT_INVERSION — or no card / no
+snapshot (setup() not finished). Those take `esp_hard_reset()` as before. F12,
+Ctrl+Alt+Del, Reboot the board, factory/MOS reset, the video-mode confirm and the ROM
+flasher stay hard.
+
+`OSD::esp_warm_reset()` = the same `reboot_prologue()` as the hard reboot (NVRAM /
+Nvram24 / Elm flushes, 595 latch, core1 lockout, console drain), then
+`board_warm_restart()` (main.cpp, `src/app/WarmBoot.h`):
+- thread mode only (IPSR != 0 -> watchdog reboot); MSP to `__StackTop`, MSPLIM 0 (the
+  arena memset may hit an alt-stack, as in ehr), then `warm_tail()`:
+- state into `.uninitialized_data` (`s_warm_state`, magic + hash; crt0 neither copies
+  nor zeroes it): every `clock_get_hz`, BUTTER_PSRAM_SIZE, psram_pin, linkVGA01, the
+  JEDEC id (`rx`), flash_qe + diag; `uptime_refresh()`.
+- `multicore_reset_core1()`; butter arena memset (as `close_all`) but CS1 stays XIP's.
+- NVIC disable/unpend all, SysTick off, PendSV/SysTick pend cleared.
+- `reset_block_mask(WARM_RESET_MASK)`: every RESETS bit EXCEPT IO_QSPI, PADS_QSPI,
+  PLL_SYS, PLL_USB, IO_BANK0, PADS_BANK0, SYSCFG, JTAG. Bank-0 pins put back to their
+  reset value by hand (ctrl 0x1F, pad 0x116) except the PSRAM CS1; GPIO irq enables and
+  edge latches cleared; SIO OE/OUT cleared (GPIO32-47 only on the hi bank).
+- CONTROL 0, VTOR = `__vectors`, MSP = vector[0], `bx` vector[1] = crt0 `_reset_handler`
+  (no boot2 in crt0 on these builds: PICO_EMBED_XIP_SETUP is 0).
+Boot side: `PICO_RUNTIME_SKIP_INIT_EARLY_RESETS=1` / `_CLOCKS=1` (CMakeLists.txt) and
+main.cpp registers `warm_early_resets` (00100: decides `s_warm_boot`, clears the magic
+-> a crash later boots cold; cold = the SDK's `runtime_init_early_resets`) and
+`warm_clocks` (00500: cold = SDK `runtime_init_clocks`; warm = `clock_set_reported_hz`
+from the saved table only; the tick generators were never reset). `main()` with
+`board_warm_boot()`: no flash_info / flash_qe_fix (the bootrom flash API would hand XIP
+back with boot2's 150 MHz timing at the running clock), no VREG 1.60 + 100 ms, no PLL
+switch / flash_timings, no psram_init (size and pin restored), no testPins, no LED
+blinks. Everything else runs as on a cold boot: tuh_init, init_psram (PIO SPI chip),
+setup() in full, the post-setup clock block (normally a no-op: same clock), core1
+launch + graphics_init (video IS re-initialised in this first step), WiFi.
+`board_soft_boot()` (= warm || watchdog) replaces `watchdog_caused_reboot()` where a
+scratch tag is trusted: uptime, the UART console tag, the +3 and SAM disk auto-start.
+`Debug` boot header says `WARM`.
+- Bench (host = a process restart): eLeMeNt SetUp Storage none -> divSD + F11 ->
+  `esp_warm_reset called` / `ehr: warm restart`.
+- Firmware: compiled with the apt GCC 13.2 (no errors, `__pre_init_warm_*` in
+  `.preinit_array.00100/00500`, `s_warm_state` in `.uninitialized_data`), NOT linked:
+  GCC 13 overflows flash / SCRATCH_X / the overlay windows; the pinned 14.2 could not be
+  fetched here. First thing on hw: does the board come back at all; the log must show
+  `main: entry ... warm=1` and `main: warm restart at N MHz`.
+- Step 2 (not done): keep the video running across it — video driver state in a
+  section the restart does not touch, the framebuffer outside the heap, core1 in a
+  video-only loop meanwhile, the DMA/PIO/IRQ claims re-marked on the warm path.
+
 ## Hard RP2350 reset: the watchdog reboot keeps VREG at 1.60 V (m1p2, 2026-09-04; PICO_DV regression-clean, m1p2 verdict pending)
 
 **Round 2 (2026-09-03): the flash-timing patch above did NOT fix the m1p2.** Owner's

@@ -1198,7 +1198,7 @@ bool load(const string& path) {
         Debug::log("[PSS] %s: settings differ, rebooting into them", path.c_str());
         Config::ram_file = path;
         OSD::osdCenteredMsg(" Snapshot hardware differs - restarting ", LEVEL_INFO, 1200);
-        OSD::esp_hard_reset();
+        OSD::esp_settings_reboot();
         return false;   // not reached
     }
 
@@ -1224,7 +1224,7 @@ bool load(const string& path) {
             Config::save();
             Debug::log("[PSS] %s: crossing the Next boundary, rebooting", path.c_str());
             OSD::osdCenteredMsg(" Switching machine - restarting ", LEVEL_INFO, 1200);
-            OSD::esp_hard_reset();
+            OSD::esp_settings_reboot();
             return false;   // not reached
         }
     }

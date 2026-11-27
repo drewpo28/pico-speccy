@@ -1853,7 +1853,7 @@ void profiles_key(int32_t tag, uint8_t key) {
     // reboot is not optional: most of what a profile carries is reboot-class.
     Stage::discard();
     if (!Config::profileLoad(slot)) { uiToast(TXT_MSG_PROF_LOAD_ERR, true, 2000); return; }
-    OSD::esp_hard_reset();                            // never returns
+    OSD::esp_settings_reboot();                       // never returns (warm unless video / clock differ)
 }
 
 // ── Network ────────────────────────────────────────────────────────────────────

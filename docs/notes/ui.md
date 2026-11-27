@@ -62,8 +62,9 @@ F12 back to the full reboot.
   config where slot 20 and slot 29 end up on the same key (an old hkVK20 = Alt+F12 + the
   new default of slot 29) back to Ctrl+F12. Host-checked.
 - It does NOT replace the settings reboots (AC_REBOOT items, budget "needs a reboot",
-  machine-layout boundaries, profile load, .pss): those exist because setup() lays out
-  memory / overlays / pins from a fresh heap, and powerCycle does not run setup().
+  machine-layout boundaries, profile load, .pss): those need setup(). They go through
+  the WARM restart instead (`OSD::esp_settings_reboot`, memory-sram-flash.md "Warm
+  restart") unless video / overclock settings changed.
 - **eLeMeNt ZX**: `Elm::powerUpPrep()` runs first in `powerCycle` for A_ELM —
   `s_powered = false` so `Elm::reset` loads the FRAM (PowerUp counter), the boot-class
   picks (AA-SRAM, esxDOS, DMA, UART) follow the FRAM, and `Elm::rebootWanted()` joins

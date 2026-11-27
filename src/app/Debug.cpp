@@ -1,3 +1,4 @@
+#include "WarmBoot.h"
 #include "Debug.h"
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
@@ -204,7 +205,7 @@ unsigned Debug::uartTxPin()  { return s_dbg_uart ? s_dbg_tx_pin : 0xFFu; }
 
 bool Debug::uartBootWanted()
 {
-    return watchdog_caused_reboot() && watchdog_hw->scratch[DBG_UART_SCRATCH] == DBG_UART_TAG_ON;
+    return board_soft_boot() && watchdog_hw->scratch[DBG_UART_SCRATCH] == DBG_UART_TAG_ON;
 }
 
 void Debug::uartSetWanted(bool on)
@@ -407,7 +408,7 @@ void Debug::log2SD_impl(const string& data)
 
     std::string logEntry;
     if (first) {
-        const char* reason = watchdog_caused_reboot() ? "WATCHDOG" : "POWER-ON";
+        const char* reason = board_warm_boot() ? "WARM" : watchdog_caused_reboot() ? "WATCHDOG" : "POWER-ON";
         char hdr[64];
         snprintf(hdr, sizeof(hdr), "--- BOOT (%s) ---\n", reason);
         logEntry = std::string(hdr);

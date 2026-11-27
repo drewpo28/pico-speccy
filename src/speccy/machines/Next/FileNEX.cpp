@@ -74,7 +74,7 @@ bool FileNEX::load(const string& nex_fn) {
         Config::romSet = R_NEXT;
         Config::ram_file = nex_fn;
         Config::save();
-        OSD::esp_hard_reset();
+        OSD::esp_settings_reboot();
         return true; // not reached
     }
 

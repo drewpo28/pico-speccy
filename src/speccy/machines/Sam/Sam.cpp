@@ -4,6 +4,7 @@
 // PSRAM, and the shared RAM-resident hot paths (Ports::input/output, the accessors)
 // keep one predicted-not-taken test that sends a SAM access here.
 
+#include "app/WarmBoot.h"
 #include "Sam.h"
 #include "SamFdc.h"
 #include "SamClock.h"
@@ -226,7 +227,7 @@ void bootResume() {
     Config::samKeepTmp = false;
     if (watchdog_hw->scratch[BOOT_SCRATCH] != BOOT_TAG) return;
     watchdog_hw->scratch[BOOT_SCRATCH] = 0;
-    if (watchdog_caused_reboot() && Config::arch == A_SAM && SamFdc::mounted(0)) {
+    if (board_soft_boot() && Config::arch == A_SAM && SamFdc::mounted(0)) {
         Debug::log("[SAM] disk auto-boot armed after reboot");
         bootArm();
     }

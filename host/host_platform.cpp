@@ -134,6 +134,10 @@ static void host_restart(void) {
 }
 void watchdog_reboot(uint32_t, uint32_t, uint32_t) { host_restart(); }
 void watchdog_enable(uint32_t, bool) { host_restart(); }
+// The warm restart (app/WarmBoot.h): the process restart is the only reboot here.
+extern "C" bool board_warm_boot(void) { return false; }
+extern "C" bool board_soft_boot(void) { return watchdog_caused_reboot(); }
+extern "C" void board_warm_restart(void) { host_restart(); __builtin_unreachable(); }
 
 // ---- flash: writes go straight to the addresses (they sit in writable memory) ----------
 static void flash_unprotect(uint8_t* p, size_t n) {

@@ -345,7 +345,7 @@ bool startWhenReady(const std::string& path, Format format) {
     Config::romSet = R_NEXT;
     Config::ram_file = NO_RAM_FILE;
     Config::save();
-    OSD::esp_hard_reset();
+    OSD::esp_settings_reboot();
     return true; // not reached
 }
 

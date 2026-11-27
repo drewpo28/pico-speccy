@@ -63,6 +63,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "ESPectrum.h"
 #include "MachineSwitch.h"
+#include "WarmBoot.h"
 #include "NxFrameProf.h"
 #include "LastRun.h"
 #include "fs/FileUtils.h"
@@ -2104,7 +2105,7 @@ void ESPectrum::setup() {
   // tag can never fire on a later boot.
   if (watchdog_hw->scratch[P3BOOT_SCRATCH] == P3BOOT_TAG) {
     watchdog_hw->scratch[P3BOOT_SCRATCH] = 0;
-    if (watchdog_caused_reboot() && Config::isPlus3() && Plus3Fdc::mounted(0)) {
+    if (board_soft_boot() && Config::isPlus3() && Plus3Fdc::mounted(0)) {
       Debug::log("setup: +3 disk auto-start armed after reboot");
       plus3AutoBootArm();
     }
@@ -2170,6 +2171,9 @@ void ESPectrum::setup() {
   // measured from the mount would expire before the event it exists to
   // swallow (hw 2026-09-11: it announced itself on every boot and every F12).
   UsbMsc::armHotplug();
+
+  // What a settings reboot compares against to pick the warm restart (OSD::esp_settings_reboot).
+  Config::hwKeysSnapshot();
 
   // Last SRAM decision of the boot: everything else has taken its share, so the
   // Gigascreen prev-FB may now move from butter to the heap if there is room.
@@ -5019,7 +5023,7 @@ void ESPectrum::loop() {
         if (Elm::rebootWanted()) {    // AA-SRAM, esxDOS, DMA, UART: laid out by setup()
           Debug::log("[ELM] a boot-time item changed in the SetUp (AA-SRAM / divSD / DMA / UART): rebooting the board");
           Config::save();
-          OSD::esp_hard_reset();      // never returns
+          OSD::esp_settings_reboot(); // never returns
         }
         ESPectrum::reset();
       }

@@ -66,7 +66,7 @@ void commitAlf() {
         Config::arch = A_ALF;
         if (Config::pref_arch == A_PROFI) Config::pref_arch = A_LAST;
         Config::save();
-        OSD::esp_hard_reset();   // never returns; setup() re-lays out for ALF
+        OSD::esp_settings_reboot();   // never returns; setup() re-lays out for ALF
         return;
     }
     Config::save();
@@ -480,21 +480,21 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // extended-page strip that a Next boot never allocated. Config is
         // already saved above, so setup() lays out memory for the new arch.
         if ((Config::arch == A_NEXT) != (prevArch == A_NEXT)) {
-            OSD::esp_hard_reset();
+            OSD::esp_settings_reboot();
             return true;
         }
         bool profiSramLayout =
             (MemESP::ram[56].memType() == mem_type_t::POINTER);
         if (butter_psram_size() == 0
             && (arch == A_PROFI) != profiSramLayout) {
-            OSD::esp_hard_reset();
+            OSD::esp_settings_reboot();
             return true;
         }
         // TS-Conf boundary: the page-strip length itself changes (Config
         // saved above, setup() re-derives MEM_PG_CNT via wantedPages —
         // keep this comparison identical to the requestMachine guard).
         if (Config::wantedPages(arch, romset) != MEM_PG_CNT) {
-            OSD::esp_hard_reset();
+            OSD::esp_settings_reboot();
             return true;
         }
         // A menu machine switch is a NEW MACHINE, so give it the RAM a power-on
@@ -536,7 +536,7 @@ void powerCycle() {
          (arch == A_PROFI) != (MemESP::ram[56].memType() == mem_type_t::POINTER)) ||
         Config::wantedPages(arch, romset) != MEM_PG_CNT) {
         Debug::log("[powerCycle] memory layout differs from setup(): full reboot");
-        OSD::esp_hard_reset();   // never returns
+        OSD::esp_settings_reboot();   // never returns
     }
     ESPectrum::powerOnRamFill(arch, romset);
     Config::requestMachine(arch, romset);   // re-binds the ROM pages from scratch

@@ -721,7 +721,7 @@ static bool hook_zifiNic(int32_t nv, int32_t) {
         if (!g_discarding && BoardPins::zifiActiveNote()[0] &&
             uiConfirm(OSD_DLG_APPLYREBOOT, TXT_NET_NIC_SUB)) {
             Config::save();
-            OSD::esp_hard_reset();      // never returns
+            OSD::esp_settings_reboot();      // never returns
         }
     } else {
         ZiFi::enabled = 0;
@@ -753,7 +753,7 @@ static bool hook_zifiTransport(int32_t nv, int32_t ov) {
     if (!g_discarding && nvNote &&
         uiConfirm(OSD_DLG_APPLYREBOOT, TXT_NET_TRANSPORT)) {
         Config::save();
-        OSD::esp_hard_reset();          // never returns
+        OSD::esp_settings_reboot();          // never returns
     }
     // Leaving a conflicting pair frees its pins, but the displaced peripheral only
     // re-inits at boot — tell the user rather than force a reboot for a nicety.

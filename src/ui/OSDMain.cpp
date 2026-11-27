@@ -196,6 +196,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
 #include "app/MachineSwitch.h"
+#include "app/WarmBoot.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/devices/gs/GS.h"
 #include "speccy/machines/TsConf/TsConf.h"
@@ -433,8 +434,9 @@ void close_all(void);
 extern "C" __attribute__((noreturn)) void ehr_tail(void);
 void flash_timings(int mhz);                        // main.cpp
 void flash_timings_transition(int from_mhz, int to_mhz);
-void OSD::esp_hard_reset() {
-    Debug::log("esp_hard_reset called from %p", __builtin_return_address(0));
+// The part every reboot shares, the warm restart included: battery-backed state to
+// the card, the AY latch, core1 parked, the console drained.
+static void reboot_prologue() {
     // Battery-backed state first, and FORCED past its debounce. Both stores are
     // written by the guest and flushed lazily from ESPectrum::loop (1.5 s), so a
     // reboot arriving inside that window threw the guest's last edit away — and
@@ -474,6 +476,11 @@ void OSD::esp_hard_reset() {
     // nothing at all, and the last log line ended mid-format (hw 2026-09-23).
     Debug::log("ehr: core1 parked=%d, close_all", (int)c1parked);
     Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
+}
+
+void OSD::esp_hard_reset() {
+    Debug::log("esp_hard_reset called from %p", __builtin_return_address(0));
+    reboot_prologue();
     // close_all() zeroes the butter arena and then takes CS1 away from the QMI.
     // A reboot reached on an ALT stack palloc'd in that arena (the net/zip
     // alt-stack — e.g. a Web-catalog .rzx whose snapshot needs a machine-layout
@@ -526,6 +533,26 @@ extern "C" __attribute__((noreturn, noinline, used)) void ehr_tail(void) {
     while (true);
 }
 
+// Warm firmware restart (app/WarmBoot.h): setup() from a fresh heap, the chip's
+// voltage / clocks / flash and PSRAM timing kept.
+void OSD::esp_warm_reset() {
+    Debug::log("esp_warm_reset called from %p", __builtin_return_address(0));
+    reboot_prologue();
+    Debug::log("ehr: warm restart");
+    Debug::uartFlushSync();
+    board_warm_restart();
+}
+
+// A reboot to apply settings: warm, unless what changed is the video or the overclock
+// (clock, voltage, flash / PSRAM / TFT frequency) — those take the full reboot, and so
+// does anything when the saved config cannot be compared (no card). The comparison
+// reads storage.nvs, so it also sees what a profile load or a .pss merge wrote there.
+void OSD::esp_settings_reboot() {
+    if (FileUtils::fsMount && !Config::hwKeysChanged()) esp_warm_reset();
+    Debug::log("settings reboot: video / overclock settings changed -> full reboot");
+    esp_hard_reset();
+}
+
 static bool confirmReboot(const char* dlg, bool default_yes = false) {
     // Hotkeys arrive with no gfx session, hence the begin/end pair (nested callers
     // wrap us in their own suspend/resume, which re-installs after us).
@@ -558,7 +585,7 @@ bool OSD::featureBudgetGate(int featureId) {
         if (!confirmReboot(dlg.c_str())) return false;
         featureSetEnabled(f, true);
         Config::save();
-        esp_hard_reset();   // never returns
+        esp_settings_reboot();   // never returns
     }
 
     if (r == BUDGET_DENY || nCand == 0) {
@@ -615,7 +642,7 @@ bool OSD::featureBudgetGate(int featureId) {
             for (int i = 0; i < nCand; i++) if (sel[i]) featureSetEnabled(cand[i], false);
             featureSetEnabled(f, true);
             Config::save();
-            esp_hard_reset();                           // never returns
+            esp_settings_reboot();                      // never returns
         }
         nm::gfxEnd();
         return false;
@@ -7717,7 +7744,7 @@ bool OSD::loadAlfCart(const string& fname) {
     if (needGsReboot ||
         (butter_psram_size() == 0 &&
          MemESP::ram[56].memType() == mem_type_t::POINTER)) {
-        OSD::esp_hard_reset();   // never returns
+        OSD::esp_settings_reboot();   // never returns
         return true;
     }
     Config::requestMachine(A_ALF, R_ALF1);   // in-place machine switch (no reboot)

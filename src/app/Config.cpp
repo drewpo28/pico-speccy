@@ -508,7 +508,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
-        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+        OSD::esp_settings_reboot();   // never returns; setup() re-lays out memory
     }
     // GMX boundary: Scorpion GMX needs the 128-page (2 MB) strip, which — like
     // the Profi layout — is sized once in setup() and never grows at runtime.
@@ -526,7 +526,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
-        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+        OSD::esp_settings_reboot();   // never returns; setup() re-lays out memory
     }
     // TS-Conf boundary, same shape: the page-strip length itself changes
     // (256 pages vs 64, or a Murmuzavr pick), MemESP indexes ROM as
@@ -547,7 +547,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
-        OSD::esp_hard_reset();   // never returns; setup() reserves the window
+        OSD::esp_settings_reboot();   // never returns; setup() reserves the window
     }
     // eLeMeNt ZX too whatever the count: its hot path is in the Z80 DMA window, loaded at boot.
     if (wantedPages(newArch, newRomSet) != MEM_PG_CNT || (newArch == A_ELM && arch != A_ELM)) {
@@ -556,7 +556,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
-        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+        OSD::esp_settings_reboot();   // never returns; setup() re-lays out memory
     }
     arch = newArch;
     // Re-bind ROM overlays from scratch for this machine (RomOverlay.h). Each romset
@@ -2595,6 +2595,46 @@ struct LineReader {
 static bool lineIsKey(const string& l, const char* key) {
     const size_t k = strlen(key);
     return l.size() >= k + 1 && l.compare(0, k, key) == 0 && l[k] == '=';
+}
+
+// ── reboot class (Config.h: hwKeysSnapshot / hwKeysChanged) ──────────────────────
+static const char* const kHwKeys[] = {
+    "cpu_mhz", "vreq_voltage", "max_flash_freq", "max_psram_freq", "max_tft_freq",
+    "video_driver", "hdmi_vmode", "vga_vmode", "hdmi_clkdrv", "vga_pwm",
+    "TFT_FLAGS", "TFT_INVERSION",
+};
+static constexpr size_t kHwKeyCount = sizeof(kHwKeys) / sizeof(kHwKeys[0]);
+static string s_hwKeysBoot;     // empty = no snapshot: every settings reboot is a full one
+
+// "key=value" of each kHwKeys line, in kHwKeys order (a profile may order them
+// differently); false when storage.nvs cannot be read.
+static bool hwKeysRead(string& out) {
+    out.clear();
+    if (!FileUtils::fsMount) return false;
+    FIL* in = fopen2(STORAGE_NVS, FA_READ);
+    if (!in) return false;
+    string val[kHwKeyCount];
+    LineReader rd(in);
+    string l;
+    while (rd.line(l))
+        for (size_t k = 0; k < kHwKeyCount; k++)
+            if (lineIsKey(l, kHwKeys[k])) { val[k] = l; break; }
+    fclose2(in);
+    for (size_t k = 0; k < kHwKeyCount; k++) { out += val[k]; out += '\n'; }
+    return true;
+}
+
+void Config::hwKeysSnapshot() {
+    if (!hwKeysRead(s_hwKeysBoot)) s_hwKeysBoot.clear();
+}
+
+bool Config::hwKeysChanged() {
+    if (s_hwKeysBoot.empty()) return true;
+    string now;
+    if (!hwKeysRead(now)) return true;
+    if (now == s_hwKeysBoot) return false;
+    Debug::log("[reboot] video / overclock keys differ from the boot's");
+    return true;
 }
 
 // ── snapshot settings (.pss) ───────────────────────────────────────────────────
