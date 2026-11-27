@@ -1623,6 +1623,24 @@ bool rebootWanted() {
            (Config::dma_mode != 0) != s_dmaBoot || (Config::zifi_enabled != 0) != s_zifiBoot;
 }
 
+bool setupLive() { return s_setupLive; }
+
+void powerUpPrep() {
+    if (!s_r) return;
+    // F11 (or F12) pressed inside the SetUp instead of Shift+R: what it saved is what it
+    // meant, the same as at its RST 0 — validate at the reset that follows.
+    if (s_setupLive) { s_setupLive = false; s_fromSetup = true; Debug::log("[ELM] SetUp left by a reset key: saved settings apply"); }
+    if (ElmFlash::ensure()) {
+        const uint8_t* f = ElmFlash::fram();
+        if (f[0x000] <= 9 && f[0x001] != 0xFF) {
+            aasramWanted(f[0x038] & 1, "power-up e_zxi_038");
+            divsdWanted(f[0x001], "power-up e_zxi_001");
+            bootClassRegs(f);
+        }
+    }
+    s_powered = false;   // Elm::reset: the FRAM's registers, the PowerUp counter
+}
+
 uint8_t personality() {
     if (s_r) return s_r->e[0x000];
     if (ElmFlash::ensure()) { const uint8_t* f = ElmFlash::fram(); if (f[0x001] != 0xFF && f[0x000] <= 9) return f[0x000]; }

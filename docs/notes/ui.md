@@ -64,6 +64,20 @@ chip at all:
 - What F12 no longer cures: PS/2 desync, a fragmented heap, anything setup() fixes
   that reset() does not. A "works only after F12" report must now name Alt+F12 vs F12;
   if F12 does not fix it, the gap is in the reset path (fix it there).
+- **eLeMeNt ZX** (same day): `Elm::powerUpPrep()` runs first in `powerCycle` for
+  A_ELM — `s_powered = false` so `Elm::reset` loads the FRAM (PowerUp counter), the
+  boot-class picks (AA-SRAM, esxDOS, DMA, UART) follow the FRAM, and
+  `Elm::rebootWanted()` joins the layout test (only then the RP2350 reboots). The
+  SetUp's Shift+R / Shift+L (and the menu's personality pick: `takeReset` kind 1) now
+  go through `powerCycle` instead of `DivMMC::init + reset`; the EXTRA warm restart
+  (kind 2) is unchanged. **Bug fixed:** F11 (the board's RESET, `EK_RESET`) pressed
+  inside a running SetUp instead of Shift+R was a plain reset that kept the live
+  registers: what the SetUp had saved to the FRAM (FRAM-only pages, boot-class items,
+  the unsupported-value revert) was never applied. Now F11 with `Elm::setupLive()`
+  = the SetUp's exit = `powerCycle`. Bench: Element F12 -> esxDOS cold ("Detecting
+  Devices") -> menu; a FRAM that wants esxDOS/UART the NVS lacks -> full reboot. The
+  SetUp itself not run on the bench (no FlashSetUp_V2 image here) — Shift+R / F11
+  inside the SetUp NOT tested at all.
 - Hw check owed (DVp2w): F12 on 48K/128K/Pentagon+Gluk, Profi, Scorpion GMX, TS-Conf,
   Next (TBBLUE chain must boot), Enterprise, +3 with disk, divMMC/esxDOS, NeoGS on;
   monitor must NOT lose sync. Alt+F12 = old reboot, Ctrl+F12 = USB mode.

@@ -36,6 +36,8 @@ inline const char* speedName(uint8_t) { return ""; }
 inline void setSpeed(uint8_t) {}
 inline int  extraKey(uint16_t, bool, bool, bool, uint16_t) { return EK_NONE; }
 inline bool rebootWanted() { return false; }
+inline bool setupLive() { return false; }
+inline void powerUpPrep() {}
 inline void armPersonality() {}
 inline void cpuFlags() {}
 inline void remap() {}
@@ -106,6 +108,14 @@ void        setSpeed(uint8_t sel);    // apply + FRAM + Config::turbo + the cloc
 // Returns what the caller has to do; EK_NONE = not ours, the key goes on (enum at the top).
 int  extraKey(uint16_t vk, bool down, bool gui, bool plain, uint16_t resetVk);
 bool rebootWanted();                          // the SetUp changed the URAM size (AA-SRAM): the strip is laid out at boot
+// A SetUp session is running (its ROM booted and it has not left by RST 0 yet).
+bool setupLive();
+// MachineSwitch::powerCycle (F12, the SetUp's Shift+R / Shift+L, F11 inside the SetUp):
+// the reset that follows is a POWER-UP — Elm::reset loads the FRAM (not the live
+// registers), a running SetUp session counts as left (its registers are validated),
+// and the boot-class picks (AA-SRAM, esxDOS, DMA, UART) follow the FRAM now, so the
+// caller's rebootWanted() sees them.
+void powerUpPrep();
 // The personality e_zxi_000 names, applied at reset only (the SetUp restarts, FLASH6
 // flips it and back without one): CPU::reset arms it before its timing chain, then
 // cpuFlags() sets the Z80Ops machine flags, the floating bus and the frame target

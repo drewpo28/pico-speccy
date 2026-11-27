@@ -62,6 +62,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Config.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "ESPectrum.h"
+#include "MachineSwitch.h"
 #include "NxFrameProf.h"
 #include "LastRun.h"
 #include "fs/FileUtils.h"
@@ -3316,6 +3317,13 @@ void ESPectrum::processKeyboard() {
         if (ek == Elm::EK_RESET || ek == Elm::EK_SETUP) {   // the board's reset button, let go
           if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
           Config::last_ram_file = NO_RAM_FILE;
+          if (ek == Elm::EK_RESET && Elm::setupLive()) {
+            // F11 inside the SetUp: leave it the way Shift+R does, or what it saved
+            // (FRAM) stayed unapplied — the boot-class picks, the FRAM-only pages,
+            // the validation (owner 2026-11-27).
+            MachineSwitch::powerCycle();
+            continue;
+          }
           if (ek == Elm::EK_SETUP && !Elm::enterSetup())
             OSD::notify("SetUp not flashed: run FlashSetUp_V2.tap", LEVEL_WARN, 2000);
           ESPectrum::reset();
@@ -5003,13 +5011,19 @@ void ESPectrum::loop() {
                  Z80::getRegPC(), rk == 2 ? "warm" : "cold");
       if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
       Config::last_ram_file = NO_RAM_FILE;
-      if (Elm::rebootWanted()) {      // AA-SRAM, esxDOS, DMA, UART: laid out by setup()
-        Debug::log("[ELM] a boot-time item changed in the SetUp (AA-SRAM / divSD / DMA / UART): rebooting the board");
-        Config::save();
-        OSD::esp_hard_reset();        // never returns
+      if (rk == 1) {
+        // The board's restart is a power-up: the light power cycle (F12) — FRAM
+        // registers, fresh RAM, esxDOS cold — and the RP2350 reboots only when a
+        // boot-time item changed (AA-SRAM / divSD / DMA / UART: Elm::rebootWanted).
+        MachineSwitch::powerCycle();
+      } else {
+        if (Elm::rebootWanted()) {    // AA-SRAM, esxDOS, DMA, UART: laid out by setup()
+          Debug::log("[ELM] a boot-time item changed in the SetUp (AA-SRAM / divSD / DMA / UART): rebooting the board");
+          Config::save();
+          OSD::esp_hard_reset();      // never returns
+        }
+        ESPectrum::reset();
       }
-      if (rk == 1) DivMMC::init();
-      ESPectrum::reset();
     }
     if (Z80Ops::isNext && NextReg::resetPending) {
       // nextreg 0x02 (Reset). The WHOLE POINT of resetting through this

@@ -33,6 +33,7 @@
 #include "net/ZiFiSock.h"
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Enterprise/Ep.h"
+#include "speccy/machines/Element/Element.h"
 
 using std::string;
 
@@ -524,9 +525,13 @@ void powerCycle() {
     Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
     Config::save();
+    // eLeMeNt ZX: a power-up loads the FRAM, and its boot-class picks (AA-SRAM strip,
+    // esxDOS, DMA window, UART) land in Config here, before the layout test below.
+    if (arch == A_ELM) Elm::powerUpPrep();
     // The page backing is decided once in setup(); if it does not match the running
     // machine any more, only setup() can fix it. Same tests as commit() above.
-    if ((arch == A_NEXT) != MemESP::nextRamReady ||
+    if ((arch == A_ELM && Elm::rebootWanted()) ||
+        (arch == A_NEXT) != MemESP::nextRamReady ||
         (butter_psram_size() == 0 &&
          (arch == A_PROFI) != (MemESP::ram[56].memType() == mem_type_t::POINTER)) ||
         Config::wantedPages(arch, romset) != MEM_PG_CNT) {

@@ -740,7 +740,7 @@ in butter PSRAM; before VIDEO/AUDIO so the boot allocates per SetUp), and a live
 with the menu's hooks + `nm::Stage::reconcileQuiet()` (reconcileSubsystems with nothing staged, no prompts). Trap: a live
 apply during setup() (Elm::reset runs twice there) ran the reconcile before the subsystems existed. SetUp keys: Caps Shift
 + R / L (its key routine compares #52/#4C; the help line omits the Shift).
-**SetUp restart = esxDOS cold (hw 2026-11-03):** with `DivMMC::reset()` the divMMC RAM survived and esxDOS warm-booted
+**(2026-11-27: the restart is now `MachineSwitch::powerCycle` = a power-up from the FRAM, and F11 inside the SetUp does the same — `ui.md` "F12 = light power cycle".)** **SetUp restart = esxDOS cold (hw 2026-11-03):** with `DivMMC::reset()` the divMMC RAM survived and esxDOS warm-booted
 on the mount state of the previous personality / ROM pick: after Shift+L (FRAM defaults: 07 -> 01, e_02D 1 -> 0) the SPI
 trace had no sector 0 read, two root sectors, two SYS sectors and a stray cluster, then "No such FILE or DIR". Now
 `DivMMC::init()` (the menu's Hard Reset). AWORLD (LnxPckg APP) wants 384 free 8 KB URAM pages in Protect mode = the
